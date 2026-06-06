@@ -86,3 +86,40 @@ def test_raman_preprocess_api_returns_curve_preview(tmp_path, monkeypatch):
     assert len(payload["curves"][0]["x"]) == 9
     assert len(payload["curves"][0]["raw_y"]) == 9
     assert len(payload["curves"][0]["corrected_y"]) == 9
+
+
+def test_preprocess_preserves_original_names_and_returns_all_curves(tmp_path):
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    files = []
+    for idx in range(12):
+        source = tmp_path / f"sample_{idx:02d}_original.csv"
+        lines = ["RamanShift,Intensity"]
+        lines.extend(f"{point},{point * point + idx}" for point in range(1, 12))
+        source.write_text("\n".join(lines), encoding="utf-8")
+        files.append(source)
+
+    client = TestClient(app)
+    opened = [path.open("rb") for path in files]
+    try:
+        response = client.post(
+            "/api/preprocess/raman",
+            files=[("files", (path.name, handle, "text/csv")) for path, handle in zip(files, opened)],
+            data={
+                "start_row": "2",
+                "end_row": "10",
+                "baseline_order": "range_then_baseline",
+                "baseline_method": "poly",
+            },
+        )
+    finally:
+        for handle in opened:
+            handle.close()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["curves"]) == 12
+    assert payload["curves"][0]["name"] == "sample_00_original"
+    assert payload["curves"][-1]["name"] == "sample_11_original"
+    assert payload["preview"][0]["Name"] == "sample_00_original"
