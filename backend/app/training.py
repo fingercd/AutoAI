@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,8 +11,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -131,44 +135,6 @@ class Transformer1D(nn.Module):
         return self.head(seq.mean(dim=1))
 
 
-class CNNTransformer1D(nn.Module):
-    def __init__(
-        self,
-        input_length: int,
-        class_count: int,
-        dropout: float | None = None,
-        hidden_size: int = 64,
-        heads: int = 4,
-    ) -> None:
-        super().__init__()
-        dropout = 0.25 if dropout is None else dropout
-        heads = max(1, heads)
-        while hidden_size % heads != 0 and heads > 1:
-            heads -= 1
-        self.conv = nn.Sequential(
-            nn.Conv1d(1, hidden_size, kernel_size=7, padding=3),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Dropout(dropout),
-        )
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size,
-            nhead=heads,
-            dim_feedforward=hidden_size * 2,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
-        self.head = nn.Linear(hidden_size, class_count)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq = self.conv(x).transpose(1, 2)
-        seq = self.encoder(seq)
-        return self.head(seq.mean(dim=1))
-
-
 @dataclass
 class TrainConfig:
     epochs: int = 50
@@ -183,6 +149,21 @@ class TrainConfig:
     dropout: float | None = None
     hidden_size: int = 64
     transformer_heads: int = 4
+    logistic_c: float = 1.0
+    random_forest_n_estimators: int = 100
+    random_forest_max_depth: int | None = 3
+    random_forest_min_samples_leaf: int = 2
+    svm_c: float = 1.0
+    svm_gamma: str | float = 0.03
+    xgboost_n_estimators: int = 50
+    xgboost_max_depth: int = 2
+    xgboost_learning_rate: float = 0.1
+    xgboost_subsample: float = 0.9
+    xgboost_colsample_bytree: float = 0.9
+    xgboost_reg_lambda: float = 2.0
+
+
+TRADITIONAL_MODEL_TYPES = {"logistic_regression", "random_forest", "svm", "xgboost"}
 
 
 def _build_model(config: TrainConfig, input_length: int, class_count: int, sample_count: int) -> nn.Module:
@@ -195,8 +176,77 @@ def _build_model(config: TrainConfig, input_length: int, class_count: int, sampl
         return ResNet1D(input_length, class_count, config.dropout, max(config.hidden_size, 16))
     if model_type in {"transformer", "transformer_encoder"}:
         return Transformer1D(input_length, class_count, config.dropout, max(config.hidden_size, 16), config.transformer_heads)
-    if model_type in {"cnn_transformer", "cnn+transformer"}:
-        return CNNTransformer1D(input_length, class_count, config.dropout, max(config.hidden_size, 16), config.transformer_heads)
+    raise ValueError(f"Unsupported model_type: {config.model_type}")
+
+
+def _model_family(model_type: str) -> str:
+    return "traditional_ml" if model_type.lower() in TRADITIONAL_MODEL_TYPES else "deep_learning"
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value in {None, "", "none", "None"}:
+        return None
+    return int(value)
+
+
+def _build_traditional_model(config: TrainConfig, y: np.ndarray, class_count: int) -> Any:
+    model_type = config.model_type.lower()
+    class_weight = "balanced" if config.class_balance == "class_weight" else None
+    if model_type == "logistic_regression":
+        return LogisticRegression(
+            C=config.logistic_c,
+            max_iter=2000,
+            class_weight=class_weight,
+            solver="lbfgs",
+            random_state=config.seed,
+        )
+    if model_type == "random_forest":
+        return RandomForestClassifier(
+            n_estimators=config.random_forest_n_estimators,
+            max_depth=_parse_optional_int(config.random_forest_max_depth),
+            min_samples_leaf=config.random_forest_min_samples_leaf,
+            max_features="sqrt",
+            class_weight=class_weight,
+            random_state=config.seed,
+            n_jobs=-1,
+        )
+    if model_type == "svm":
+        gamma: str | float = config.svm_gamma
+        if isinstance(gamma, str) and gamma not in {"scale", "auto"}:
+            gamma = float(gamma)
+        return SVC(
+            C=config.svm_c,
+            gamma=gamma,
+            kernel="rbf",
+            probability=True,
+            class_weight=class_weight,
+            random_state=config.seed,
+        )
+    if model_type == "xgboost":
+        try:
+            from xgboost import XGBClassifier
+        except Exception as exc:
+            raise ValueError("当前环境未安装 xgboost，无法训练 XGBoost 模型") from exc
+        params: dict[str, Any] = {
+            "n_estimators": config.xgboost_n_estimators,
+            "max_depth": config.xgboost_max_depth,
+            "learning_rate": config.xgboost_learning_rate,
+            "subsample": config.xgboost_subsample,
+            "colsample_bytree": config.xgboost_colsample_bytree,
+            "reg_lambda": config.xgboost_reg_lambda,
+            "eval_metric": "logloss" if class_count == 2 else "mlogloss",
+            "random_state": config.seed,
+            "n_jobs": 1,
+        }
+        if class_count == 2:
+            params["objective"] = "binary:logistic"
+            if config.class_balance == "class_weight":
+                counts = np.bincount(y, minlength=class_count).astype(np.float32)
+                params["scale_pos_weight"] = float(counts[0] / max(counts[1], 1.0))
+        else:
+            params["objective"] = "multi:softprob"
+            params["num_class"] = class_count
+        return XGBClassifier(**params)
     raise ValueError(f"Unsupported model_type: {config.model_type}")
 
 
@@ -271,6 +321,30 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     }
 
 
+def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    pred = model.predict(x[indices])
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(x[indices])
+    else:
+        decision = model.decision_function(x[indices])
+        if decision.ndim == 1:
+            decision = np.column_stack([-decision, decision])
+        shifted = decision - decision.max(axis=1, keepdims=True)
+        probs = np.exp(shifted) / np.exp(shifted).sum(axis=1, keepdims=True)
+    true = y[indices]
+    return {
+        "accuracy": float(accuracy_score(true, pred)),
+        "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
+        "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
+        "recall": float(recall_score(true, pred, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(true, pred, labels=list(range(len(labels)))).tolist(),
+        "probabilities": np.asarray(probs, dtype=float).tolist(),
+        "pred": np.asarray(pred, dtype=int).tolist(),
+        "true": true.tolist(),
+    }
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -299,6 +373,86 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
     repeat_index = dataset.frame["Repeat_index"].astype(str).to_numpy()
     splits = _split_indices(y, repeat_index, config)
+
+    if _model_family(config.model_type) == "traditional_ml":
+        model = _build_traditional_model(config, y, len(label_names))
+        model.fit(x[splits["train"]], y[splits["train"]])
+        evaluations = {name: _evaluate_traditional_model(model, x, y, idx, label_names) for name, idx in splits.items()}
+        metrics = {
+            split: {key: value for key, value in result.items() if key not in {"probabilities", "pred", "true"}}
+            for split, result in evaluations.items()
+        }
+        history = [
+            {
+                "epoch": 1,
+                "train_loss": None,
+                "train_accuracy": metrics["train"]["accuracy"],
+                "valid_accuracy": metrics["valid"]["accuracy"],
+                "valid_macro_f1": metrics["valid"]["macro_f1"],
+                "best_valid_macro_f1": metrics["valid"]["macro_f1"],
+                "bad_epochs": 0,
+            }
+        ]
+
+        prediction_rows = []
+        for split, idxs in splits.items():
+            result = evaluations[split]
+            for local_idx, source_idx in enumerate(idxs):
+                row = {
+                    "dataset": split,
+                    "index": dataset.frame.iloc[source_idx]["Index"],
+                    "Repeat_index": dataset.frame.iloc[source_idx]["Repeat_index"],
+                    "true_label": label_names[result["true"][local_idx]],
+                    "pred_label": label_names[result["pred"][local_idx]],
+                }
+                for label, prob in zip(label_names, result["probabilities"][local_idx]):
+                    row[f"prob_{label}"] = float(prob)
+                prediction_rows.append(row)
+
+        config_out = {**config.__dict__, "data_path": str(Path(data_path).resolve()), "preprocess": norm_config}
+        (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
+        (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (run_dir / "split.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
+        (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
+        with (run_dir / "model.pkl").open("wb") as fh:
+            pickle.dump(model, fh)
+
+        status_payload = {
+            **previous_status,
+            "run_id": run_id,
+            "status": "success",
+            "metrics": metrics,
+            "history": history,
+            "model_type": config.model_type,
+            "model_family": "traditional_ml",
+            "model_artifact": "model.pkl",
+            "sample_count": sample_count,
+            "label_names": label_names,
+            "target_epochs": 1,
+            "actual_epochs": 1,
+            "best_valid_macro_f1": metrics["valid"]["macro_f1"],
+            "config": config_out,
+            "data_path": str(Path(data_path).resolve()),
+            "completed_at": _now_iso(),
+        }
+        (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "success",
+            "metrics": metrics,
+            "history": history,
+            "model_type": config.model_type,
+            "model_family": "traditional_ml",
+            "model_artifact": "model.pkl",
+            "sample_count": sample_count,
+            "label_names": label_names,
+            "target_epochs": 1,
+            "actual_epochs": 1,
+            "best_valid_macro_f1": metrics["valid"]["macro_f1"],
+            "run_dir": str(run_dir.resolve()),
+        }
 
     class_weights = None
     if config.class_balance == "class_weight":
@@ -383,6 +537,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "metrics": metrics,
         "history": history,
         "model_type": config.model_type,
+        "model_family": "deep_learning",
+        "model_artifact": "model.pt",
         "sample_count": sample_count,
         "label_names": label_names,
         "target_epochs": config.epochs,
@@ -406,6 +562,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "metrics": metrics,
         "history": history,
         "model_type": config.model_type,
+        "model_family": "deep_learning",
+        "model_artifact": "model.pt",
         "sample_count": sample_count,
         "label_names": label_names,
         "target_epochs": config.epochs,

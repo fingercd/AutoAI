@@ -27,7 +27,7 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert (run_dir / "predictions.csv").exists()
 
 
-@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "resnet1d", "transformer", "cnn_transformer"])
+@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "resnet1d", "transformer", "logistic_regression", "random_forest", "svm", "xgboost"])
 def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     import backend.app.training as training
 
@@ -47,6 +47,10 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     assert result["status"] == "success"
     assert result["model_type"] == model_type
     assert result["actual_epochs"] == 1
+    if result.get("model_family") == "traditional_ml":
+        assert (tmp_path / result["run_id"] / "model.pkl").exists()
+    else:
+        assert (tmp_path / result["run_id"] / "model.pt").exists()
 
 
 def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):

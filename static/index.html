@@ -358,28 +358,27 @@
                 <option value="mlp">MLP Baseline</option>
                 <option value="resnet1d">ResNet1D</option>
                 <option value="transformer">Transformer Encoder</option>
-                <option value="cnn_transformer">CNN + Transformer</option>
+                <option value="logistic_regression">逻辑回归</option>
+                <option value="random_forest">随机森林</option>
+                <option value="svm">支持向量机 SVM</option>
+                <option value="xgboost">XGBoost 梯度提升</option>
               </select>
               <label>划分方式</label>
               <select id="splitMode">
                 <option value="stratified">分层 8:1:1</option>
                 <option value="repeat_leave_one">Repeat_index 留一法首轮</option>
               </select>
-              <label>训练时间</label>
-              <select id="trainTime">
-                <option value="normal">正常：50 epoch</option>
-                <option value="deep">深入：100 epoch</option>
-              </select>
+              <div id="trainTimeBlock">
+                <label>训练时间</label>
+                <select id="trainTime">
+                  <option value="normal">正常：50 epoch</option>
+                  <option value="deep">深入：100 epoch</option>
+                </select>
+              </div>
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
               <div id="advancedOptions" class="hidden">
-                <label>Epoch</label>
-                <input id="epochs" type="number" value="50" min="1" max="500" />
-                <label>Batch size</label>
-                <input id="batchSize" type="number" value="16" min="1" max="256" />
-                <label>Learning rate</label>
-                <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
                 <label>标准化</label>
                 <select id="normalization">
                   <option value="zscore">zscore</option>
@@ -392,14 +391,56 @@
                   <option value="none">none</option>
                   <option value="class_weight">class_weight</option>
                 </select>
-                <label>Early stopping patience</label>
-                <input id="earlyStoppingPatience" type="number" value="20" min="0" max="100" />
-                <label>Dropout（留空自动）</label>
-                <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
-                <label>Hidden size</label>
-                <input id="hiddenSize" type="number" value="64" min="16" max="512" />
-                <label>Transformer heads</label>
-                <input id="transformerHeads" type="number" value="4" min="1" max="8" />
+                <div id="deepOptions">
+                  <label>Epoch</label>
+                  <input id="epochs" type="number" value="50" min="1" max="500" />
+                  <label>Batch size</label>
+                  <input id="batchSize" type="number" value="16" min="1" max="256" />
+                  <label>Learning rate</label>
+                  <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
+                  <label>Early stopping patience</label>
+                  <input id="earlyStoppingPatience" type="number" value="20" min="0" max="100" />
+                  <label>Dropout（留空自动）</label>
+                  <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
+                  <label>Hidden size</label>
+                  <input id="hiddenSize" type="number" value="64" min="16" max="512" />
+                  <label>Transformer heads</label>
+                  <input id="transformerHeads" type="number" value="4" min="1" max="8" />
+                </div>
+                <div id="traditionalOptions" class="hidden">
+                  <div id="logisticOptions">
+                    <label>逻辑回归 C</label>
+                    <input id="logisticC" type="number" value="1" min="0.01" max="100" step="0.1" />
+                  </div>
+                  <div id="randomForestOptions" class="hidden">
+                    <label>随机森林树数量</label>
+                    <input id="rfEstimators" type="number" value="100" min="10" max="1000" step="10" />
+                    <label>最大深度（留空不限制）</label>
+                    <input id="rfMaxDepth" type="number" value="3" min="1" max="50" />
+                    <label>叶节点最小样本数</label>
+                    <input id="rfMinSamplesLeaf" type="number" value="2" min="1" max="20" />
+                  </div>
+                  <div id="svmOptions" class="hidden">
+                    <label>SVM C</label>
+                    <input id="svmC" type="number" value="1" min="0.01" max="100" step="0.1" />
+                    <label>SVM gamma</label>
+                    <input id="svmGamma" type="text" value="0.03" placeholder="0.03 / scale / auto" />
+                  </div>
+                  <div id="xgboostOptions" class="hidden">
+                    <label>XGBoost 树数量</label>
+                    <input id="xgbEstimators" type="number" value="50" min="10" max="1000" step="10" />
+                    <label>XGBoost 最大深度</label>
+                    <input id="xgbMaxDepth" type="number" value="2" min="1" max="12" />
+                    <label>XGBoost 学习率</label>
+                    <input id="xgbLearningRate" type="number" value="0.1" min="0.001" max="1" step="0.01" />
+                    <label>XGBoost subsample</label>
+                    <input id="xgbSubsample" type="number" value="0.9" min="0.1" max="1" step="0.05" />
+                    <label>XGBoost colsample_bytree</label>
+                    <input id="xgbColsample" type="number" value="0.9" min="0.1" max="1" step="0.05" />
+                    <label>XGBoost L2 正则</label>
+                    <input id="xgbRegLambda" type="number" value="2" min="0" max="50" step="0.1" />
+                  </div>
+                </div>
                 <label>随机种子</label>
                 <input id="seed" type="number" value="42" min="0" />
               </div>
@@ -520,7 +561,7 @@
             <h3>三、AI 建模</h3>
             <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 的统一格式 CSV。设置 epoch、batch size、学习率、标准化和划分方式后点击开始训练。</p>
             <h3>四、结果下载</h3>
-            <p>训练成功后，可下载 predictions.csv、metrics.json 和 model.pt。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
+            <p>训练成功后，可下载 predictions.csv、metrics.json 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
             <div class="actions">
               <button class="primary" data-view-shortcut="raman">开始预处理</button>
               <button class="secondary" data-view-shortcut="modeling">去建模</button>
@@ -690,6 +731,21 @@
         renderSummary(result.summary);
       }
 
+      function isTraditionalModel(modelType = $("modelType").value) {
+        return ["logistic_regression", "random_forest", "svm", "xgboost"].includes(modelType);
+      }
+
+      function numberOrNull(id) {
+        const value = $(id).value.trim();
+        return value === "" ? null : Number(value);
+      }
+
+      function textNumberOrKeyword(id) {
+        const value = $(id).value.trim();
+        if (value === "scale" || value === "auto") return value;
+        return Number(value);
+      }
+
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         return {
@@ -704,6 +760,18 @@
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
+          logistic_c: Number($("logisticC").value),
+          random_forest_n_estimators: Number($("rfEstimators").value),
+          random_forest_max_depth: numberOrNull("rfMaxDepth"),
+          random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
+          svm_c: Number($("svmC").value),
+          svm_gamma: textNumberOrKeyword("svmGamma"),
+          xgboost_n_estimators: Number($("xgbEstimators").value),
+          xgboost_max_depth: Number($("xgbMaxDepth").value),
+          xgboost_learning_rate: Number($("xgbLearningRate").value),
+          xgboost_subsample: Number($("xgbSubsample").value),
+          xgboost_colsample_bytree: Number($("xgbColsample").value),
+          xgboost_reg_lambda: Number($("xgbRegLambda").value),
           seed: Number($("seed").value),
         };
       }
@@ -789,6 +857,15 @@
             else ctx.lineTo(x, y);
           });
           if (hasPoint) ctx.stroke();
+          ctx.fillStyle = item.color;
+          item.values.forEach((value, index) => {
+            if (!Number.isFinite(value)) return;
+            const x = pad.left + (index / Math.max(maxLen - 1, 1)) * plotWidth;
+            const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
+            ctx.beginPath();
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          });
           const legendX = pad.left + seriesIndex * 150;
           ctx.fillStyle = item.color;
           ctx.fillRect(legendX, 8, 12, 12);
@@ -896,12 +973,14 @@
           `;
           renderTrainingCharts(run.history || []);
           renderConfusionMatrix(run);
+          const modelArtifact = run.model_artifact || (run.model_family === "traditional_ml" ? "model.pkl" : "model.pt");
+          const modelLabel = modelArtifact.endsWith(".pkl") ? "下载模型 PKL" : "下载模型";
           $("downloads").innerHTML = `
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/predictions.csv">下载预测结果</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/metrics.json">下载指标</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/history.csv">下载训练曲线 CSV</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/status.json">下载完整 JSON</a>
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/model.pt">下载模型</a>
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/${modelArtifact}">${modelLabel}</a>
           `;
         }
         if (run.status === "failed") {
@@ -1045,6 +1124,18 @@
         `;
       }
 
+      function updateModelOptionVisibility() {
+        const modelType = $("modelType").value;
+        const traditional = isTraditionalModel(modelType);
+        $("trainTimeBlock").classList.toggle("hidden", traditional);
+        $("deepOptions").classList.toggle("hidden", traditional);
+        $("traditionalOptions").classList.toggle("hidden", !traditional);
+        $("logisticOptions").classList.toggle("hidden", modelType !== "logistic_regression");
+        $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
+        $("svmOptions").classList.toggle("hidden", modelType !== "svm");
+        $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
+      }
+
       function showView(viewName) {
         document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
         const navButton = document.querySelector(`nav button[data-view="${viewName}"]`);
@@ -1072,6 +1163,7 @@
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => showView("manual"));
+      $("modelType").addEventListener("change", updateModelOptionVisibility);
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");
       });
@@ -1099,6 +1191,7 @@
       });
 
       loadHealth();
+      updateModelOptionVisibility();
       loadSample().catch(() => {});
     </script>
   </body>

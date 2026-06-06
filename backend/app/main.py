@@ -159,7 +159,7 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 @app.get("/api/training/runs/{run_id}/artifact/{name}")
 def get_run_artifact(run_id: str, name: str) -> FileResponse:
-    allowed = {"config.json", "label_map.json", "split.json", "metrics.json", "history.csv", "predictions.csv", "model.pt", "status.json"}
+    allowed = {"config.json", "label_map.json", "split.json", "metrics.json", "history.csv", "predictions.csv", "model.pt", "model.pkl", "status.json"}
     if name not in allowed:
         raise HTTPException(status_code=400, detail="不允许下载该文件")
     path = RUNS_DIR / run_id / name
