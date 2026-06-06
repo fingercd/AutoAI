@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .parsers import preprocess_raw_files, summarize_modeling_csv
+from .parsers import preprocess_raw_files_with_preview, summarize_modeling_csv
 from .paths import DEFAULT_DATA, PREPROCESSED_DIR, RUNS_DIR, STATIC_DIR, UPLOADS_DIR, ensure_storage
 from .training import list_runs, train_model
 
@@ -94,7 +94,7 @@ def preprocess(
         raise HTTPException(status_code=400, detail="kind 必须是 raman 或 chromatography")
     saved_files = [_save_upload(file) for file in files]
     try:
-        frame = preprocess_raw_files(
+        result = preprocess_raw_files_with_preview(
             saved_files,
             kind=kind,
             start_row=start_row,
@@ -102,6 +102,7 @@ def preprocess(
             baseline_method=baseline_method,
             baseline_order=baseline_order,
         )
+        frame = result["frame"]
         output = PREPROCESSED_DIR / f"{kind}_{uuid.uuid4().hex[:10]}.csv"
         frame.to_csv(output, index=False, encoding="utf-8-sig")
         return {
@@ -109,6 +110,8 @@ def preprocess(
             "download_url": f"/api/files?path={output.resolve()}",
             "rows": int(len(frame)),
             "baseline_order": baseline_order if kind == "raman" else None,
+            "baseline_method": baseline_method if kind == "raman" else None,
+            "curves": result["curves"] if kind == "raman" else [],
             "preview": frame.head(5).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
         }
     except Exception as exc:

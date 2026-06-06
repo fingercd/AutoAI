@@ -312,6 +312,15 @@
                 <option value="range_then_baseline">先选数据范围，后基线预处理</option>
                 <option value="baseline_then_range">先基线预处理，后选数据范围</option>
               </select>
+              <label>基线校正方法</label>
+              <select id="ramanBaselineMethodMode">
+                <option value="arPLS">默认 arPLS</option>
+                <option value="custom">自选方法</option>
+              </select>
+              <div id="ramanCustomMethodBox" class="hidden">
+                <label>自选方法名称</label>
+                <input id="ramanCustomMethod" type="text" value="poly" placeholder="例如 poly / als / drPLS / arPLS" />
+              </div>
               <div class="actions">
                 <button class="primary" data-preprocess="raman">生成整理 CSV</button>
               </div>
@@ -427,6 +436,44 @@
           ctx.fillStyle = colors[ci % colors.length];
           ctx.fillText(`${curve.name} (${curve.label})`, pad + 8, pad + 18 + ci * 18);
         });
+      }
+
+      function drawPreprocessComparison(curve) {
+        const canvas = $("preprocessCurveCanvas");
+        if (!canvas || !curve) return;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const pad = 38;
+        const series = [
+          { label: "原始拉曼光谱", values: curve.raw_y, color: "#0f766e" },
+          { label: "基线校正后光谱", values: curve.corrected_y, color: "#b45309" },
+        ];
+        const allY = series.flatMap((item) => item.values || []);
+        if (!allY.length) return;
+        const minY = Math.min(...allY);
+        const maxY = Math.max(...allY);
+        ctx.strokeStyle = "#d8dee8";
+        ctx.strokeRect(pad, pad, canvas.width - pad * 2, canvas.height - pad * 2);
+        series.forEach((item, seriesIndex) => {
+          ctx.beginPath();
+          ctx.strokeStyle = item.color;
+          ctx.lineWidth = 2;
+          item.values.forEach((value, i) => {
+            const x = pad + (i / Math.max(item.values.length - 1, 1)) * (canvas.width - pad * 2);
+            const y = canvas.height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (canvas.height - pad * 2);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          ctx.fillStyle = item.color;
+          ctx.fillRect(pad + 8 + seriesIndex * 160, pad - 24, 12, 12);
+          ctx.fillStyle = "#344054";
+          ctx.fillText(item.label, pad + 26 + seriesIndex * 160, pad - 14);
+        });
+        ctx.fillStyle = "#667085";
+        ctx.fillText(curve.name || "", pad + 8, canvas.height - 12);
       }
 
       function renderSummary(summary) {
@@ -559,6 +606,70 @@
         `;
       }
 
+      function selectedRamanBaselineMethod() {
+        if ($("ramanBaselineMethodMode").value === "custom") {
+          return $("ramanCustomMethod").value.trim() || "arPLS";
+        }
+        return "arPLS";
+      }
+
+      async function preprocessEnhanced(kind) {
+        const filesInput = kind === "raman" ? $("ramanFiles") : $("chromFiles");
+        const start = kind === "raman" ? $("ramanStart").value : $("chromStart").value;
+        const end = kind === "raman" ? $("ramanEnd").value : $("chromEnd").value;
+        if (!filesInput.files.length) throw new Error("请选择文件");
+        const form = new FormData();
+        [...filesInput.files].forEach((file) => form.append("files", file));
+        form.append("start_row", start);
+        form.append("end_row", end);
+        if (kind === "raman") {
+          form.append("baseline_order", $("ramanBaselineOrder").value);
+          form.append("baseline_method", selectedRamanBaselineMethod());
+        }
+        const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
+        const orderText =
+          result.baseline_order === "baseline_then_range"
+            ? "先基线预处理，后选数据范围"
+            : result.baseline_order === "range_then_baseline"
+              ? "先选数据范围，后基线预处理"
+              : "不适用";
+        const previewRows = (result.preview || [])
+          .map((row) => `<tr><td>${row.Index ?? ""}</td><td>${row.Name ?? ""}</td><td>${row.Label ?? ""}</td><td>${row.Repeat_index ?? ""}</td></tr>`)
+          .join("");
+        const hasCurves = kind === "raman" && result.curves && result.curves.length;
+        const curveOptions = hasCurves
+          ? result.curves.map((curve, index) => `<option value="${index}">${curve.name}</option>`).join("")
+          : "";
+        $("preprocessResult").innerHTML = `
+          <div class="metrics">
+            <div class="metric">样本数<strong>${result.rows}</strong></div>
+            <div class="metric">基线顺序<strong style="font-size:14px">${orderText}</strong></div>
+            <div class="metric">基线方法<strong>${result.baseline_method || "不适用"}</strong></div>
+            <div class="metric">结果文件<strong style="font-size:14px">已生成</strong></div>
+          </div>
+          <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
+          ${
+            hasCurves
+              ? `<h3>原始拉曼光谱与基线校正后光谱</h3>
+                 <label>预览文件</label>
+                 <select id="preprocessCurveSelect">${curveOptions}</select>
+                 <canvas id="preprocessCurveCanvas" width="1000" height="320"></canvas>`
+              : ""
+          }
+          <h3>整理结果预览</h3>
+          <table>
+            <thead><tr><th>Index</th><th>Name</th><th>Label</th><th>Repeat_index</th></tr></thead>
+            <tbody>${previewRows}</tbody>
+          </table>
+        `;
+        if (hasCurves) {
+          const select = $("preprocessCurveSelect");
+          const renderSelected = () => drawPreprocessComparison(result.curves[Number(select.value || 0)]);
+          select.addEventListener("change", renderSelected);
+          renderSelected();
+        }
+      }
+
       async function loadRuns() {
         const runs = await api("/api/training/runs");
         const rows = runs
@@ -594,11 +705,14 @@
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => showView("manual"));
+      $("ramanBaselineMethodMode").addEventListener("change", () => {
+        $("ramanCustomMethodBox").classList.toggle("hidden", $("ramanBaselineMethodMode").value !== "custom");
+      });
       document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
         button.addEventListener("click", () => showView(button.dataset.viewShortcut));
       });
       document.querySelectorAll("[data-preprocess]").forEach((button) => {
-        button.addEventListener("click", () => preprocess(button.dataset.preprocess).catch((err) => alert(err.message)));
+        button.addEventListener("click", () => preprocessEnhanced(button.dataset.preprocess).catch((err) => alert(err.message)));
       });
 
       loadHealth();

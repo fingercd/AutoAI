@@ -29,14 +29,9 @@ def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):
     import backend.app.parsers as parsers
 
     source = tmp_path / "raman.csv"
-    source.write_text(
-        "RamanShift,Intensity\n"
-        "1,10\n"
-        "2,20\n"
-        "3,30\n"
-        "4,40\n",
-        encoding="utf-8",
-    )
+    lines = ["RamanShift,Intensity"]
+    lines.extend(f"{idx},{idx * idx + 10}" for idx in range(1, 12))
+    source.write_text("\n".join(lines), encoding="utf-8")
 
     def fake_baseline_correct(x, y, method):
         return y + len(y) * 100
@@ -57,5 +52,37 @@ def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):
         baseline_order="baseline_then_range",
     )
 
-    assert ast.literal_eval(range_first.iloc[0]["Intensity"]) == [220.0, 230.0]
-    assert ast.literal_eval(baseline_first.iloc[0]["Intensity"]) == [420.0, 430.0]
+    assert ast.literal_eval(range_first.iloc[0]["Intensity"]) == [214.0, 219.0]
+    assert ast.literal_eval(baseline_first.iloc[0]["Intensity"]) == [1114.0, 1119.0]
+
+
+def test_raman_preprocess_api_returns_curve_preview(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    source = tmp_path / "raman.csv"
+    lines = ["RamanShift,Intensity"]
+    lines.extend(f"{idx},{idx * idx + 10}" for idx in range(1, 12))
+    source.write_text("\n".join(lines), encoding="utf-8")
+
+    client = TestClient(app)
+    with source.open("rb") as file:
+        response = client.post(
+            "/api/preprocess/raman",
+            files=[("files", ("raman.csv", file, "text/csv"))],
+            data={
+                "start_row": "2",
+                "end_row": "10",
+                "baseline_order": "range_then_baseline",
+                "baseline_method": "poly",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["baseline_method"] == "poly"
+    assert payload["curves"]
+    assert set(payload["curves"][0]) == {"name", "x", "raw_y", "corrected_y"}
+    assert len(payload["curves"][0]["x"]) == 9
+    assert len(payload["curves"][0]["raw_y"]) == 9
+    assert len(payload["curves"][0]["corrected_y"]) == 9

@@ -137,11 +137,14 @@ def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
 def _baseline_correct(x: np.ndarray, y: np.ndarray, method: str) -> np.ndarray:
     try:
         import rampy
-
-        corrected, _baseline = rampy.baseline(x.astype(float), y.astype(float), method=method)
-        return np.asarray(corrected, dtype=np.float32).reshape(-1)
     except Exception:
         return _simple_baseline_correct(y)
+
+    try:
+        corrected, _baseline = rampy.baseline(x.astype(float), y.astype(float), method=method)
+        return np.asarray(corrected, dtype=np.float32).reshape(-1)
+    except Exception as exc:
+        raise ValueError(f"Baseline method {method} failed: {exc}") from exc
 
 
 def preprocess_raw_files(
@@ -182,3 +185,56 @@ def preprocess_raw_files(
             }
         )
     return pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
+
+
+def preprocess_raw_files_with_preview(
+    files: Iterable[str | Path],
+    kind: str,
+    start_row: int = 1,
+    end_row: int | None = None,
+    baseline_method: str = "arPLS",
+    baseline_order: str = "range_then_baseline",
+) -> dict:
+    if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
+        raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
+    records = []
+    curves = []
+    for index, file_path in enumerate(files, start=1):
+        path = Path(file_path)
+        full_x, full_y = read_raw_spectrum(path, kind=kind)
+        start = max(0, start_row - 1)
+        end = end_row if end_row and end_row > 0 else len(full_x)
+        if kind == "raman" and baseline_order == "baseline_then_range":
+            full_corrected_y = _baseline_correct(full_x, full_y, baseline_method)
+            x = full_x[start:end]
+            raw_y = full_y[start:end]
+            corrected_y = full_corrected_y[start:end]
+        else:
+            x = full_x[start:end]
+            raw_y = full_y[start:end]
+            corrected_y = raw_y.copy()
+            if kind == "raman":
+                corrected_y = _baseline_correct(x, corrected_y, baseline_method)
+        if len(x) == 0:
+            raise ValueError(f"{path.name} has no data in the selected row range")
+        records.append(
+            {
+                "Index": index,
+                "Name": path.stem,
+                "XXX": json.dumps(x.astype(float).tolist(), ensure_ascii=False),
+                "Intensity": json.dumps(corrected_y.astype(float).tolist(), ensure_ascii=False),
+                "Label": "",
+                "Repeat_index": "",
+            }
+        )
+        if len(curves) < 10:
+            curves.append(
+                {
+                    "name": path.stem,
+                    "x": x.astype(float).tolist(),
+                    "raw_y": raw_y.astype(float).tolist(),
+                    "corrected_y": corrected_y.astype(float).tolist(),
+                }
+            )
+    frame = pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
+    return {"frame": frame, "curves": curves}
