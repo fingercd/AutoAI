@@ -162,6 +162,77 @@
         font-size: 22px;
         margin-top: 4px;
       }
+      .training-state {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 14px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+      }
+      .spinner {
+        width: 24px;
+        height: 24px;
+        border: 3px solid #d8dee8;
+        border-top-color: var(--brand);
+        border-radius: 50%;
+        animation: spin 0.85s linear infinite;
+        flex: 0 0 auto;
+      }
+      .training-state strong {
+        display: block;
+        font-size: 14px;
+      }
+      .training-state span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .chart-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .chart-card {
+        min-width: 0;
+      }
+      .chart-card h3,
+      .matrix-card h3 {
+        margin: 0 0 8px;
+      }
+      .chart-card canvas {
+        height: 260px;
+      }
+      .matrix-card {
+        margin-top: 14px;
+      }
+      .matrix-wrap {
+        overflow-x: auto;
+      }
+      .matrix-table {
+        width: auto;
+        min-width: 360px;
+        border-collapse: separate;
+        border-spacing: 4px;
+      }
+      .matrix-table th,
+      .matrix-table td {
+        border-bottom: 0;
+        text-align: center;
+        padding: 9px 11px;
+      }
+      .matrix-table td {
+        border-radius: 6px;
+        background: #e7f4f2;
+        color: var(--brand-dark);
+        font-weight: 650;
+      }
+      .empty-state {
+        color: var(--muted);
+        margin-top: 12px;
+      }
       .status {
         display: inline-flex;
         align-items: center;
@@ -227,8 +298,14 @@
           border-bottom: 1px solid var(--line);
         }
         .grid,
-        .metrics {
+        .metrics,
+        .chart-grid {
           grid-template-columns: 1fr;
+        }
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
         }
       }
     </style>
@@ -306,7 +383,7 @@
                   <option value="class_weight">class_weight</option>
                 </select>
                 <label>Early stopping patience</label>
-                <input id="earlyStoppingPatience" type="number" value="5" min="0" max="50" />
+                <input id="earlyStoppingPatience" type="number" value="20" min="0" max="100" />
                 <label>Dropout（留空自动）</label>
                 <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
                 <label>Hidden size</label>
@@ -327,10 +404,11 @@
             <div class="panel wide">
               <h2>当前训练</h2>
               <div id="runStatus" class="status">尚未开始</div>
+              <div id="trainingProgress"></div>
               <div id="metrics" style="margin-top:14px"></div>
+              <div id="trainingCharts"></div>
+              <div id="confusionMatrix"></div>
               <div id="downloads" class="actions"></div>
-              <h3>状态详情</h3>
-              <pre id="runJson">{}</pre>
             </div>
           </div>
         </div>
@@ -610,8 +688,35 @@
         };
       }
 
+      function formatMetric(value) {
+        return Number.isFinite(Number(value)) ? Number(value).toFixed(3) : "-";
+      }
+
+      function formatTime(value) {
+        if (!value) return "-";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString("zh-CN", { hour12: false });
+      }
+
+      function resetTrainingPanel(message = "模型正在训练") {
+        $("runStatus").textContent = "准备开始";
+        $("runStatus").className = "status pending";
+        $("trainingProgress").innerHTML = `
+          <div class="training-state">
+            <div class="spinner"></div>
+            <div><strong>${message}</strong><span>正在创建新的训练任务，旧结果已清空。</span></div>
+          </div>
+        `;
+        $("metrics").innerHTML = "";
+        $("trainingCharts").innerHTML = "";
+        $("confusionMatrix").innerHTML = "";
+        $("downloads").innerHTML = "";
+      }
+
       async function startTrain() {
         if (!datasetPath) await loadSample();
+        resetTrainingPanel();
         const result = await api("/api/training/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -623,31 +728,164 @@
         poller = setInterval(pollRun, 1200);
       }
 
+      function drawLineChart(canvasId, series, options = {}) {
+        const canvas = $(canvasId);
+        if (!canvas) return;
+        const ctx = setupHiDpiCanvas(canvas);
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        ctx.clearRect(0, 0, width, height);
+        const pad = { left: 44, right: 18, top: 24, bottom: 34 };
+        const plotWidth = width - pad.left - pad.right;
+        const plotHeight = height - pad.top - pad.bottom;
+        const values = series.flatMap((item) => item.values).filter((value) => Number.isFinite(value));
+        if (!values.length) {
+          ctx.fillStyle = "#667085";
+          ctx.fillText("暂无曲线数据", pad.left, pad.top + 20);
+          return;
+        }
+        const minY = options.minY ?? Math.min(...values);
+        const maxY = options.maxY ?? Math.max(...values);
+        const ySpan = Math.max(maxY - minY, 1e-9);
+        const maxLen = Math.max(...series.map((item) => item.values.length), 1);
+        ctx.strokeStyle = "#d8dee8";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
+        ctx.fillStyle = "#667085";
+        ctx.font = "12px Segoe UI, Arial";
+        ctx.fillText(String((options.minY ?? minY).toFixed ? (options.minY ?? minY).toFixed(2) : minY), 8, pad.top + plotHeight);
+        ctx.fillText(String((options.maxY ?? maxY).toFixed ? (options.maxY ?? maxY).toFixed(2) : maxY), 8, pad.top + 4);
+        series.forEach((item, seriesIndex) => {
+          ctx.beginPath();
+          ctx.strokeStyle = item.color;
+          ctx.lineWidth = 2.1;
+          item.values.forEach((value, index) => {
+            const x = pad.left + (index / Math.max(maxLen - 1, 1)) * plotWidth;
+            const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
+            if (index === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          const legendX = pad.left + seriesIndex * 150;
+          ctx.fillStyle = item.color;
+          ctx.fillRect(legendX, 8, 12, 12);
+          ctx.fillStyle = "#344054";
+          ctx.fillText(item.label, legendX + 18, 18);
+        });
+      }
+
+      function renderTrainingCharts(history) {
+        if (!history || !history.length) {
+          $("trainingCharts").innerHTML = "";
+          return;
+        }
+        $("trainingCharts").innerHTML = `
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Loss 曲线</h3>
+              <canvas id="lossCanvas" width="900" height="260"></canvas>
+            </div>
+            <div class="chart-card">
+              <h3>验证指标变化</h3>
+              <canvas id="metricCanvas" width="900" height="260"></canvas>
+            </div>
+          </div>
+        `;
+        drawLineChart("lossCanvas", [{ label: "train loss", values: history.map((row) => Number(row.train_loss)), color: "#b45309" }]);
+        drawLineChart(
+          "metricCanvas",
+          [
+            { label: "valid acc", values: history.map((row) => Number(row.valid_accuracy)), color: "#0f766e" },
+            { label: "valid macro F1", values: history.map((row) => Number(row.valid_macro_f1)), color: "#475467" },
+            { label: "best F1", values: history.map((row) => Number(row.best_valid_macro_f1)), color: "#b42318" },
+          ],
+          { minY: 0, maxY: 1 },
+        );
+      }
+
+      function renderConfusionMatrix(run) {
+        const matrix = run.metrics?.test?.confusion_matrix || [];
+        if (!matrix.length) {
+          $("confusionMatrix").innerHTML = "";
+          return;
+        }
+        const labels = run.label_names || matrix.map((_, index) => `class_${index}`);
+        const header = labels.map((label) => `<th>${label}</th>`).join("");
+        const rows = matrix
+          .map((row, index) => `<tr><th>${labels[index]}</th>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`)
+          .join("");
+        $("confusionMatrix").innerHTML = `
+          <div class="matrix-card">
+            <h3>测试集混淆矩阵</h3>
+            <div class="matrix-wrap">
+              <table class="matrix-table">
+                <thead><tr><th>真实 \\ 预测</th>${header}</tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
       function renderRun(run) {
-        $("runStatus").textContent = `${run.run_id || ""} ${run.status}`;
+        const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "running" ? "训练中" : "等待训练";
+        $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
         $("runStatus").className = `status ${run.status || ""}`;
-        $("runJson").textContent = JSON.stringify(run, null, 2);
+        if (run.status === "pending" || run.status === "running") {
+          $("trainingProgress").innerHTML = `
+            <div class="training-state">
+              <div class="spinner"></div>
+              <div>
+                <strong>模型正在训练</strong>
+                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${run.config?.epochs || run.target_epochs || "-"} epoch · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+              </div>
+            </div>
+          `;
+          $("metrics").innerHTML = `
+            <div class="metrics">
+              <div class="metric">当前状态<strong>${statusText}</strong></div>
+              <div class="metric">目标 Epoch<strong>${run.config?.epochs || run.target_epochs || "-"}</strong></div>
+              <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
+              <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
+            </div>
+          `;
+          return;
+        }
         if (run.status === "success") {
           clearInterval(poller);
           const test = run.metrics.test || {};
           const valid = run.metrics.valid || {};
+          const train = run.metrics.train || {};
+          $("trainingProgress").innerHTML = "";
           $("metrics").innerHTML = `
             <div class="metrics">
-              <div class="metric">Test accuracy<strong>${(test.accuracy ?? 0).toFixed(3)}</strong></div>
-              <div class="metric">Test macro F1<strong>${(test.macro_f1 ?? 0).toFixed(3)}</strong></div>
-              <div class="metric">Valid accuracy<strong>${(valid.accuracy ?? 0).toFixed(3)}</strong></div>
-              <div class="metric">Valid macro F1<strong>${(valid.macro_f1 ?? 0).toFixed(3)}</strong></div>
+              <div class="metric">Train accuracy<strong>${formatMetric(train.accuracy)}</strong></div>
+              <div class="metric">Valid accuracy<strong>${formatMetric(valid.accuracy)}</strong></div>
+              <div class="metric">Test accuracy<strong>${formatMetric(test.accuracy)}</strong></div>
+              <div class="metric">Test macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
+              <div class="metric">训练 Epoch<strong>${run.actual_epochs || "-"}/${run.target_epochs || run.config?.epochs || "-"}</strong></div>
+              <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
+              <div class="metric">模型<strong style="font-size:16px">${run.model_type || run.config?.model_type || "-"}</strong></div>
+              <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
             </div>
           `;
+          renderTrainingCharts(run.history || []);
+          renderConfusionMatrix(run);
           $("downloads").innerHTML = `
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/predictions.csv">下载预测结果</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/metrics.json">下载指标</a>
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/history.csv">下载训练曲线 CSV</a>
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/status.json">下载完整 JSON</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/model.pt">下载模型</a>
           `;
         }
         if (run.status === "failed") {
           clearInterval(poller);
-          $("metrics").innerHTML = `<p style="color:var(--bad)">${run.error || "训练失败"}</p>`;
+          $("trainingProgress").innerHTML = "";
+          $("trainingCharts").innerHTML = "";
+          $("confusionMatrix").innerHTML = "";
+          $("downloads").innerHTML = "";
+          $("metrics").innerHTML = `<div class="training-state"><div><strong style="color:var(--bad)">训练失败</strong><span>${run.error || "请查看后台日志"}</span></div></div>`;
         }
       }
 
@@ -752,9 +990,40 @@
       async function loadRuns() {
         const runs = await api("/api/training/runs");
         const rows = runs
-          .map((run) => `<tr><td>${run.run_id}</td><td>${run.status}</td><td><button class="secondary" onclick="currentRunId='${run.run_id}'; pollRun(); document.querySelector('[data-view=modeling]').click()">查看</button></td></tr>`)
+          .map((run) => {
+            const trainAcc = run.metrics?.train?.accuracy;
+            const testAcc = run.metrics?.test?.accuracy;
+            return `
+              <tr>
+                <td>${formatTime(run.completed_at || run.started_at || run.created_at)}</td>
+                <td>${run.run_id}</td>
+                <td>${run.model_type || run.config?.model_type || "-"}</td>
+                <td>${run.sample_count || "-"}</td>
+                <td>${formatMetric(trainAcc)}</td>
+                <td>${formatMetric(testAcc)}</td>
+                <td><span class="status ${run.status || ""}">${run.status || "unknown"}</span></td>
+                <td><button class="secondary" onclick="currentRunId='${run.run_id}'; pollRun(); document.querySelector('[data-view=modeling]').click()">查看</button></td>
+              </tr>
+            `;
+          })
           .join("");
-        $("runsTable").innerHTML = `<table><thead><tr><th>Run ID</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+        $("runsTable").innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>Run ID</th>
+                <th>模型</th>
+                <th>数据量</th>
+                <th>训练准确率</th>
+                <th>测试准确率</th>
+                <th>状态</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows || `<tr><td colspan="8" class="empty-state">暂无训练记录</td></tr>`}</tbody>
+          </table>
+        `;
       }
 
       function showView(viewName) {

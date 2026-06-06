@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -178,7 +179,7 @@ class TrainConfig:
     split_mode: str = "stratified"
     class_balance: str = "none"
     model_type: str = "cnn1d"
-    early_stopping_patience: int = 5
+    early_stopping_patience: int = 20
     dropout: float | None = None
     hidden_size: int = 64
     transformer_heads: int = 4
@@ -270,16 +271,28 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     }
 
 
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
 def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
     config = TrainConfig(**{**TrainConfig().__dict__, **(config_data or {})})
     run_id = run_id or uuid.uuid4().hex[:12]
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    status_file = run_dir / "status.json"
+    previous_status: dict[str, Any] = {}
+    if status_file.exists():
+        try:
+            previous_status = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            previous_status = {}
 
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
     dataset = load_modeling_csv(data_path)
+    sample_count = int(len(dataset.labels))
     x, norm_config = _normalize(dataset.intensity, config.normalization)
     label_names = sorted(set(dataset.labels))
     label_to_id = {label: idx for idx, label in enumerate(label_names)}
@@ -363,16 +376,25 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     torch.save(model.state_dict(), run_dir / "model.pt")
+    status_payload = {
+        **previous_status,
+        "run_id": run_id,
+        "status": "success",
+        "metrics": metrics,
+        "history": history,
+        "model_type": config.model_type,
+        "sample_count": sample_count,
+        "label_names": label_names,
+        "target_epochs": config.epochs,
+        "actual_epochs": len(history),
+        "best_valid_macro_f1": best_score,
+        "config": config_out,
+        "data_path": str(Path(data_path).resolve()),
+        "completed_at": _now_iso(),
+    }
     (run_dir / "status.json").write_text(
         json.dumps(
-            {
-                "run_id": run_id,
-                "status": "success",
-                "metrics": metrics,
-                "history": history,
-                "model_type": config.model_type,
-                "actual_epochs": len(history),
-            },
+            status_payload,
             ensure_ascii=False,
             indent=2,
         ),
@@ -384,7 +406,11 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "metrics": metrics,
         "history": history,
         "model_type": config.model_type,
+        "sample_count": sample_count,
+        "label_names": label_names,
+        "target_epochs": config.epochs,
         "actual_epochs": len(history),
+        "best_valid_macro_f1": best_score,
         "run_dir": str(run_dir.resolve()),
     }
 

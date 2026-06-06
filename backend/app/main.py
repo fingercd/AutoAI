@@ -4,6 +4,7 @@ import json
 import shutil
 import traceback
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,18 +40,29 @@ def _save_upload(file: UploadFile) -> Path:
     return target
 
 
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
 def _write_status(run_id: str, payload: dict[str, Any]) -> None:
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "status.json").write_text(json.dumps({"run_id": run_id, **payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+    status_file = run_dir / "status.json"
+    previous: dict[str, Any] = {}
+    if status_file.exists():
+        try:
+            previous = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            previous = {}
+    status_file.write_text(json.dumps({"run_id": run_id, **previous, **payload}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _background_train(run_id: str, data_path: str, config: dict[str, Any]) -> None:
     try:
-        _write_status(run_id, {"status": "running", "data_path": data_path})
+        _write_status(run_id, {"status": "running", "data_path": data_path, "started_at": _now_iso()})
         train_model(data_path, config, run_id=run_id)
     except Exception as exc:
-        _write_status(run_id, {"status": "failed", "error": str(exc), "traceback": traceback.format_exc()})
+        _write_status(run_id, {"status": "failed", "error": str(exc), "traceback": traceback.format_exc(), "completed_at": _now_iso()})
 
 
 @app.get("/")
@@ -127,7 +139,7 @@ def create_run(background_tasks: BackgroundTasks, payload: dict[str, Any]) -> di
         raise HTTPException(status_code=404, detail="训练数据文件不存在")
     run_id = uuid.uuid4().hex[:12]
     config = payload.get("config") or {}
-    _write_status(run_id, {"status": "pending", "data_path": data_path, "config": config})
+    _write_status(run_id, {"status": "pending", "data_path": data_path, "config": config, "created_at": _now_iso()})
     background_tasks.add_task(_background_train, run_id, data_path, config)
     return {"run_id": run_id, "status": "pending"}
 
@@ -147,7 +159,7 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 @app.get("/api/training/runs/{run_id}/artifact/{name}")
 def get_run_artifact(run_id: str, name: str) -> FileResponse:
-    allowed = {"config.json", "label_map.json", "split.json", "metrics.json", "history.csv", "predictions.csv", "model.pt"}
+    allowed = {"config.json", "label_map.json", "split.json", "metrics.json", "history.csv", "predictions.csv", "model.pt", "status.json"}
     if name not in allowed:
         raise HTTPException(status_code=400, detail="不允许下载该文件")
     path = RUNS_DIR / run_id / name
