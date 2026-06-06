@@ -656,11 +656,14 @@
         ctx.fillRect(0, 0, width, height);
         const pad = 46;
         const rawLabel = kind === "chromatography" ? "原始色谱曲线" : "原始拉曼光谱";
-        const correctedLabel = kind === "chromatography" ? "基线校正后色谱曲线" : "基线校正后光谱";
-        const series = [
-          { label: rawLabel, values: curve.raw_y, color: "#0f766e" },
-          { label: correctedLabel, values: curve.corrected_y, color: "#b45309" },
-        ];
+        const correctedLabel = "基线校正后光谱";
+        const series =
+          kind === "chromatography"
+            ? [{ label: rawLabel, values: curve.raw_y, color: "#0f766e" }]
+            : [
+                { label: rawLabel, values: curve.raw_y, color: "#0f766e" },
+                { label: correctedLabel, values: curve.corrected_y, color: "#b45309" },
+              ];
         const allY = series.flatMap((item) => item.values || []);
         if (!allY.length) return;
         const minY = Math.min(...allY);
@@ -971,7 +974,11 @@
               <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
             </div>
           `;
-          renderTrainingCharts(run.history || []);
+          if (run.model_family === "traditional_ml") {
+            $("trainingCharts").innerHTML = "";
+          } else {
+            renderTrainingCharts(run.history || []);
+          }
           renderConfusionMatrix(run);
           const modelArtifact = run.model_artifact || (run.model_family === "traditional_ml" ? "model.pkl" : "model.pt");
           const modelLabel = modelArtifact.endsWith(".pkl") ? "下载模型 PKL" : "下载模型";
@@ -1056,7 +1063,7 @@
         const resultTarget = kind === "raman" ? $("preprocessResult") : $("chromPreprocessResult");
         const selectId = `${kind}PreprocessCurveSelect`;
         const canvasId = `${kind}PreprocessCurveCanvas`;
-        const title = kind === "chromatography" ? "原始色谱曲线与基线校正后曲线" : "原始拉曼光谱与基线校正后光谱";
+        const title = kind === "chromatography" ? "原始色谱曲线" : "原始拉曼光谱与基线校正后光谱";
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
