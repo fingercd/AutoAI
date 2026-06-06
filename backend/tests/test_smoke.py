@@ -1,6 +1,8 @@
 from pathlib import Path
 import ast
 
+import pytest
+
 from backend.app.parsers import summarize_modeling_csv
 from backend.app.training import train_model
 
@@ -23,6 +25,28 @@ def test_train_smoke(tmp_path, monkeypatch):
     run_dir = tmp_path / result["run_id"]
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "predictions.csv").exists()
+
+
+@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "resnet1d", "transformer", "cnn_transformer"])
+def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
+    import backend.app.training as training
+
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
+    result = train_model(
+        ROOT / "data.csv",
+        {
+            "epochs": 1,
+            "batch_size": 32,
+            "model_type": model_type,
+            "early_stopping_patience": 5,
+            "hidden_size": 32,
+            "transformer_heads": 4,
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["model_type"] == model_type
+    assert result["actual_epochs"] == 1
 
 
 def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):
