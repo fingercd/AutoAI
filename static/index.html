@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoAI 谱学建模平台</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #1d2430;
+        --muted: #667085;
+        --line: #d8dee8;
+        --brand: #0f766e;
+        --brand-dark: #115e59;
+        --warn: #b45309;
+        --bad: #b42318;
+        --good: #087443;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header {
+        background: #ffffff;
+        border-bottom: 1px solid var(--line);
+        padding: 16px 28px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 260px minmax(0, 1fr);
+        min-height: calc(100vh - 65px);
+      }
+      nav {
+        border-right: 1px solid var(--line);
+        background: #fff;
+        padding: 18px;
+      }
+      nav button {
+        width: 100%;
+        text-align: left;
+        border: 1px solid transparent;
+        background: transparent;
+        padding: 11px 12px;
+        border-radius: 6px;
+        color: var(--ink);
+        cursor: pointer;
+        font-size: 14px;
+      }
+      nav button.active {
+        background: #e7f4f2;
+        border-color: #b8ded8;
+        color: var(--brand-dark);
+        font-weight: 650;
+      }
+      section {
+        padding: 22px 28px 40px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .panel h2 {
+        margin: 0 0 14px;
+        font-size: 17px;
+      }
+      .panel h3 {
+        margin: 18px 0 10px;
+        font-size: 14px;
+      }
+      label {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+        margin: 10px 0 5px;
+      }
+      input,
+      select {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px 10px;
+        background: #fff;
+        color: var(--ink);
+      }
+      button.primary,
+      button.secondary {
+        min-height: 38px;
+        border: 0;
+        border-radius: 6px;
+        padding: 8px 13px;
+        cursor: pointer;
+        font-weight: 650;
+      }
+      button.primary {
+        background: var(--brand);
+        color: #fff;
+      }
+      button.primary:hover {
+        background: var(--brand-dark);
+      }
+      button.secondary {
+        background: #eef2f6;
+        color: var(--ink);
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(110px, 1fr));
+        gap: 10px;
+      }
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfe;
+      }
+      .metric strong {
+        display: block;
+        font-size: 22px;
+        margin-top: 4px;
+      }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 4px 10px;
+        border-radius: 99px;
+        background: #eef2f6;
+        color: var(--muted);
+        font-weight: 650;
+      }
+      .status.success {
+        background: #e7f8ef;
+        color: var(--good);
+      }
+      .status.failed {
+        background: #fee4e2;
+        color: var(--bad);
+      }
+      .status.running,
+      .status.pending {
+        background: #fff3d6;
+        color: var(--warn);
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow: auto;
+        background: #101828;
+        color: #f8fafc;
+        border-radius: 8px;
+        padding: 12px;
+        max-height: 280px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px;
+        text-align: left;
+      }
+      canvas {
+        width: 100%;
+        height: 260px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+      .hidden {
+        display: none;
+      }
+      .wide {
+        grid-column: 1 / -1;
+      }
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+        nav {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .grid,
+        .metrics {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AutoAI 谱学数据预处理及 AI 建模平台</h1>
+      <span id="health" class="status">连接中</span>
+    </header>
+    <main>
+      <nav>
+        <button class="active" data-view="modeling">AI 建模</button>
+        <button data-view="preprocess">数据预处理</button>
+        <button data-view="runs">训练记录</button>
+      </nav>
+      <section>
+        <div id="view-modeling" class="view">
+          <div class="grid">
+            <div class="panel">
+              <h2>数据集</h2>
+              <p>可直接加载项目根目录的 <code>data.csv</code>，也可以上传整理后的建模 CSV。</p>
+              <div class="actions">
+                <button class="primary" id="loadSample">加载当前 data.csv</button>
+                <label class="secondary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0">
+                  上传建模 CSV
+                  <input id="datasetFile" type="file" accept=".csv" class="hidden" />
+                </label>
+              </div>
+              <div id="datasetInfo"></div>
+            </div>
+            <div class="panel">
+              <h2>训练配置</h2>
+              <label>Epoch</label>
+              <input id="epochs" type="number" value="5" min="1" max="200" />
+              <label>Batch size</label>
+              <input id="batchSize" type="number" value="16" min="1" max="256" />
+              <label>Learning rate</label>
+              <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
+              <label>标准化</label>
+              <select id="normalization">
+                <option value="zscore">zscore</option>
+                <option value="minmax">minmax</option>
+                <option value="area">area</option>
+                <option value="none">none</option>
+              </select>
+              <label>划分方式</label>
+              <select id="splitMode">
+                <option value="stratified">分层 8:1:1</option>
+                <option value="repeat_leave_one">Repeat_index 留一法首轮</option>
+              </select>
+              <label>类别不平衡</label>
+              <select id="classBalance">
+                <option value="none">none</option>
+                <option value="class_weight">class_weight</option>
+              </select>
+              <div class="actions">
+                <button class="primary" id="startTrain">开始训练</button>
+              </div>
+            </div>
+            <div class="panel wide">
+              <h2>曲线预览</h2>
+              <canvas id="curveCanvas" width="1000" height="320"></canvas>
+            </div>
+            <div class="panel wide">
+              <h2>当前训练</h2>
+              <div id="runStatus" class="status">尚未开始</div>
+              <div id="metrics" style="margin-top:14px"></div>
+              <div id="downloads" class="actions"></div>
+              <h3>状态详情</h3>
+              <pre id="runJson">{}</pre>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-preprocess" class="view hidden">
+          <div class="grid">
+            <div class="panel">
+              <h2>拉曼预处理</h2>
+              <label>上传拉曼 CSV，可多选</label>
+              <input id="ramanFiles" type="file" multiple accept=".csv" />
+              <label>起始行</label>
+              <input id="ramanStart" type="number" value="1" min="1" />
+              <label>结束行</label>
+              <input id="ramanEnd" type="number" value="160" min="1" />
+              <div class="actions">
+                <button class="primary" data-preprocess="raman">生成整理 CSV</button>
+              </div>
+            </div>
+            <div class="panel">
+              <h2>色谱预处理</h2>
+              <label>上传色谱 CSV，可多选</label>
+              <input id="chromFiles" type="file" multiple accept=".csv" />
+              <label>起始行</label>
+              <input id="chromStart" type="number" value="1" min="1" />
+              <label>结束行</label>
+              <input id="chromEnd" type="number" value="160" min="1" />
+              <div class="actions">
+                <button class="primary" data-preprocess="chromatography">生成整理 CSV</button>
+              </div>
+            </div>
+            <div class="panel wide">
+              <h2>预处理结果</h2>
+              <div id="preprocessResult"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-runs" class="view hidden">
+          <div class="panel">
+            <h2>训练记录</h2>
+            <div class="actions">
+              <button class="secondary" id="refreshRuns">刷新</button>
+            </div>
+            <div id="runsTable"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      let datasetPath = null;
+      let currentRunId = null;
+      let poller = null;
+
+      const $ = (id) => document.getElementById(id);
+
+      async function api(url, options = {}) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          let detail = await response.text();
+          try {
+            detail = JSON.parse(detail).detail || detail;
+          } catch (_) {}
+          throw new Error(detail);
+        }
+        return response.json();
+      }
+
+      function drawCurves(curves) {
+        const canvas = $("curveCanvas");
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (!curves || !curves.length) return;
+        const pad = 34;
+        const colors = ["#0f766e", "#b45309", "#344054"];
+        const allY = curves.flatMap((c) => c.y);
+        const minY = Math.min(...allY);
+        const maxY = Math.max(...allY);
+        ctx.strokeStyle = "#d8dee8";
+        ctx.strokeRect(pad, pad, canvas.width - pad * 2, canvas.height - pad * 2);
+        curves.forEach((curve, ci) => {
+          ctx.beginPath();
+          ctx.strokeStyle = colors[ci % colors.length];
+          curve.y.forEach((value, i) => {
+            const x = pad + (i / Math.max(curve.y.length - 1, 1)) * (canvas.width - pad * 2);
+            const y = canvas.height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (canvas.height - pad * 2);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          ctx.fillStyle = colors[ci % colors.length];
+          ctx.fillText(`${curve.name} (${curve.label})`, pad + 8, pad + 18 + ci * 18);
+        });
+      }
+
+      function renderSummary(summary) {
+        datasetPath = summary.path;
+        const labels = Object.entries(summary.label_counts)
+          .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
+          .join("");
+        $("datasetInfo").innerHTML = `
+          <h3>数据摘要</h3>
+          <div class="metrics">
+            <div class="metric">样本数<strong>${summary.samples}</strong></div>
+            <div class="metric">类别数<strong>${summary.classes}</strong></div>
+            <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
+            <div class="metric">字段数<strong>${summary.columns.length}</strong></div>
+          </div>
+          <h3>标签分布</h3>
+          <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
+        `;
+        drawCurves(summary.curves);
+      }
+
+      async function loadHealth() {
+        try {
+          await api("/health");
+          $("health").textContent = "后端正常";
+          $("health").className = "status success";
+        } catch (err) {
+          $("health").textContent = "后端异常";
+          $("health").className = "status failed";
+        }
+      }
+
+      async function loadSample() {
+        const summary = await api("/api/sample/summary");
+        renderSummary(summary);
+      }
+
+      async function uploadDataset(file) {
+        const form = new FormData();
+        form.append("file", file);
+        const result = await api("/api/datasets/upload", { method: "POST", body: form });
+        datasetPath = result.dataset_path;
+        renderSummary(result.summary);
+      }
+
+      function configPayload() {
+        return {
+          epochs: Number($("epochs").value),
+          batch_size: Number($("batchSize").value),
+          learning_rate: Number($("learningRate").value),
+          normalization: $("normalization").value,
+          split_mode: $("splitMode").value,
+          class_balance: $("classBalance").value,
+          seed: 42,
+        };
+      }
+
+      async function startTrain() {
+        if (!datasetPath) await loadSample();
+        const result = await api("/api/training/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data_path: datasetPath, config: configPayload() }),
+        });
+        currentRunId = result.run_id;
+        pollRun();
+        clearInterval(poller);
+        poller = setInterval(pollRun, 1200);
+      }
+
+      function renderRun(run) {
+        $("runStatus").textContent = `${run.run_id || ""} ${run.status}`;
+        $("runStatus").className = `status ${run.status || ""}`;
+        $("runJson").textContent = JSON.stringify(run, null, 2);
+        if (run.status === "success") {
+          clearInterval(poller);
+          const test = run.metrics.test || {};
+          const valid = run.metrics.valid || {};
+          $("metrics").innerHTML = `
+            <div class="metrics">
+              <div class="metric">Test accuracy<strong>${(test.accuracy ?? 0).toFixed(3)}</strong></div>
+              <div class="metric">Test macro F1<strong>${(test.macro_f1 ?? 0).toFixed(3)}</strong></div>
+              <div class="metric">Valid accuracy<strong>${(valid.accuracy ?? 0).toFixed(3)}</strong></div>
+              <div class="metric">Valid macro F1<strong>${(valid.macro_f1 ?? 0).toFixed(3)}</strong></div>
+            </div>
+          `;
+          $("downloads").innerHTML = `
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/predictions.csv">下载预测结果</a>
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/metrics.json">下载指标</a>
+            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/model.pt">下载模型</a>
+          `;
+        }
+        if (run.status === "failed") {
+          clearInterval(poller);
+          $("metrics").innerHTML = `<p style="color:var(--bad)">${run.error || "训练失败"}</p>`;
+        }
+      }
+
+      async function pollRun() {
+        if (!currentRunId) return;
+        const run = await api(`/api/training/runs/${currentRunId}`);
+        renderRun(run);
+      }
+
+      async function preprocess(kind) {
+        const filesInput = kind === "raman" ? $("ramanFiles") : $("chromFiles");
+        const start = kind === "raman" ? $("ramanStart").value : $("chromStart").value;
+        const end = kind === "raman" ? $("ramanEnd").value : $("chromEnd").value;
+        if (!filesInput.files.length) throw new Error("请选择文件");
+        const form = new FormData();
+        [...filesInput.files].forEach((file) => form.append("files", file));
+        form.append("start_row", start);
+        form.append("end_row", end);
+        const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
+        $("preprocessResult").innerHTML = `
+          <p>已生成 ${result.rows} 条样本。</p>
+          <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
+          <pre>${JSON.stringify(result.preview, null, 2)}</pre>
+        `;
+      }
+
+      async function loadRuns() {
+        const runs = await api("/api/training/runs");
+        const rows = runs
+          .map((run) => `<tr><td>${run.run_id}</td><td>${run.status}</td><td><button class="secondary" onclick="currentRunId='${run.run_id}'; pollRun(); document.querySelector('[data-view=modeling]').click()">查看</button></td></tr>`)
+          .join("");
+        $("runsTable").innerHTML = `<table><thead><tr><th>Run ID</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+
+      document.querySelectorAll("nav button").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
+          $(`view-${button.dataset.view}`).classList.remove("hidden");
+          if (button.dataset.view === "runs") loadRuns();
+        });
+      });
+
+      $("loadSample").addEventListener("click", () => loadSample().catch((err) => alert(err.message)));
+      $("datasetFile").addEventListener("change", (event) => {
+        const file = event.target.files[0];
+        if (file) uploadDataset(file).catch((err) => alert(err.message));
+      });
+      $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
+      $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
+      document.querySelectorAll("[data-preprocess]").forEach((button) => {
+        button.addEventListener("click", () => preprocess(button.dataset.preprocess).catch((err) => alert(err.message)));
+      });
+
+      loadHealth();
+      loadSample().catch(() => {});
+    </script>
+  </body>
+</html>
