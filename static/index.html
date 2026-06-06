@@ -243,7 +243,8 @@
     </header>
     <main>
       <nav>
-        <button class="active" data-view="preprocess">数据预处理</button>
+        <button class="active" data-view="raman">拉曼预处理</button>
+        <button data-view="chromatography">色谱预处理</button>
         <button data-view="modeling">AI 建模</button>
         <button data-view="runs">训练记录</button>
       </nav>
@@ -264,29 +265,57 @@
             </div>
             <div class="panel">
               <h2>训练配置</h2>
-              <label>Epoch</label>
-              <input id="epochs" type="number" value="5" min="1" max="200" />
-              <label>Batch size</label>
-              <input id="batchSize" type="number" value="16" min="1" max="256" />
-              <label>Learning rate</label>
-              <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
-              <label>标准化</label>
-              <select id="normalization">
-                <option value="zscore">zscore</option>
-                <option value="minmax">minmax</option>
-                <option value="area">area</option>
-                <option value="none">none</option>
+              <label>模型架构</label>
+              <select id="modelType">
+                <option value="cnn1d">1D-CNN</option>
+                <option value="mlp">MLP Baseline</option>
+                <option value="resnet1d">ResNet1D</option>
+                <option value="transformer">Transformer Encoder</option>
+                <option value="cnn_transformer">CNN + Transformer</option>
               </select>
               <label>划分方式</label>
               <select id="splitMode">
                 <option value="stratified">分层 8:1:1</option>
                 <option value="repeat_leave_one">Repeat_index 留一法首轮</option>
               </select>
-              <label>类别不平衡</label>
-              <select id="classBalance">
-                <option value="none">none</option>
-                <option value="class_weight">class_weight</option>
+              <label>训练时间</label>
+              <select id="trainTime">
+                <option value="normal">正常：50 epoch</option>
+                <option value="deep">深入：100 epoch</option>
               </select>
+              <div class="actions">
+                <button class="secondary" id="advancedToggle" type="button">高级选项</button>
+              </div>
+              <div id="advancedOptions" class="hidden">
+                <label>Epoch</label>
+                <input id="epochs" type="number" value="50" min="1" max="500" />
+                <label>Batch size</label>
+                <input id="batchSize" type="number" value="16" min="1" max="256" />
+                <label>Learning rate</label>
+                <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
+                <label>标准化</label>
+                <select id="normalization">
+                  <option value="zscore">zscore</option>
+                  <option value="minmax">minmax</option>
+                  <option value="area">area</option>
+                  <option value="none">none</option>
+                </select>
+                <label>类别不平衡</label>
+                <select id="classBalance">
+                  <option value="none">none</option>
+                  <option value="class_weight">class_weight</option>
+                </select>
+                <label>Early stopping patience</label>
+                <input id="earlyStoppingPatience" type="number" value="5" min="0" max="50" />
+                <label>Dropout（留空自动）</label>
+                <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
+                <label>Hidden size</label>
+                <input id="hiddenSize" type="number" value="64" min="16" max="512" />
+                <label>Transformer heads</label>
+                <input id="transformerHeads" type="number" value="4" min="1" max="8" />
+                <label>随机种子</label>
+                <input id="seed" type="number" value="42" min="0" />
+              </div>
               <div class="actions">
                 <button class="primary" id="startTrain">开始训练</button>
               </div>
@@ -306,9 +335,9 @@
           </div>
         </div>
 
-        <div id="view-preprocess" class="view">
+        <div id="view-raman" class="view">
           <div class="grid">
-            <div class="panel">
+            <div class="panel wide">
               <h2>拉曼预处理</h2>
               <label>上传拉曼 CSV，可多选</label>
               <input id="ramanFiles" type="file" multiple accept=".csv" />
@@ -334,7 +363,16 @@
                 <button class="primary" data-preprocess="raman">生成整理 CSV</button>
               </div>
             </div>
-            <div class="panel">
+            <div class="panel wide">
+              <h2>预处理结果</h2>
+              <div id="preprocessResult"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-chromatography" class="view hidden">
+          <div class="grid">
+            <div class="panel wide">
               <h2>色谱预处理</h2>
               <label>上传色谱 CSV，可多选</label>
               <input id="chromFiles" type="file" multiple accept=".csv" />
@@ -348,7 +386,7 @@
             </div>
             <div class="panel wide">
               <h2>预处理结果</h2>
-              <div id="preprocessResult"></div>
+              <div id="chromPreprocessResult"></div>
             </div>
           </div>
         </div>
@@ -391,7 +429,7 @@
             <h3>四、结果下载</h3>
             <p>训练成功后，可下载 predictions.csv、metrics.json 和 model.pt。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
             <div class="actions">
-              <button class="primary" data-view-shortcut="preprocess">开始预处理</button>
+              <button class="primary" data-view-shortcut="raman">开始预处理</button>
               <button class="secondary" data-view-shortcut="modeling">去建模</button>
             </div>
           </div>
@@ -523,7 +561,6 @@
             <div class="metric">样本数<strong>${summary.samples}</strong></div>
             <div class="metric">类别数<strong>${summary.classes}</strong></div>
             <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
-            <div class="metric">字段数<strong>${summary.columns.length}</strong></div>
           </div>
           <h3>标签分布</h3>
           <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
@@ -556,6 +593,7 @@
       }
 
       function configPayload() {
+        const dropoutValue = $("dropout").value.trim();
         return {
           epochs: Number($("epochs").value),
           batch_size: Number($("batchSize").value),
@@ -563,7 +601,12 @@
           normalization: $("normalization").value,
           split_mode: $("splitMode").value,
           class_balance: $("classBalance").value,
-          seed: 42,
+          model_type: $("modelType").value,
+          early_stopping_patience: Number($("earlyStoppingPatience").value),
+          dropout: dropoutValue ? Number(dropoutValue) : null,
+          hidden_size: Number($("hiddenSize").value),
+          transformer_heads: Number($("transformerHeads").value),
+          seed: Number($("seed").value),
         };
       }
 
@@ -677,7 +720,8 @@
           ? result.curves.map((curve, index) => `<option value="${index}">${curve.name}</option>`).join("")
           : "";
         const curveSelectSize = hasCurves ? Math.min(result.curves.length, 10) : 1;
-        $("preprocessResult").innerHTML = `
+        const resultTarget = kind === "raman" ? $("preprocessResult") : $("chromPreprocessResult");
+        resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
             <div class="metric">基线顺序<strong style="font-size:14px">${orderText}</strong></div>
@@ -693,11 +737,6 @@
                  <canvas id="preprocessCurveCanvas" width="1000" height="320"></canvas>`
               : ""
           }
-          <h3>整理结果预览</h3>
-          <table>
-            <thead><tr><th>Index</th><th>Name</th><th>Label</th><th>Repeat_index</th></tr></thead>
-            <tbody>${previewRows}</tbody>
-          </table>
         `;
         if (hasCurves) {
           const select = $("preprocessCurveSelect");
@@ -745,6 +784,12 @@
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => showView("manual"));
+      $("advancedToggle").addEventListener("click", () => {
+        $("advancedOptions").classList.toggle("hidden");
+      });
+      $("trainTime").addEventListener("change", () => {
+        $("epochs").value = $("trainTime").value === "deep" ? "100" : "50";
+      });
       $("ramanBaselineMethodMode").addEventListener("change", () => {
         $("ramanCustomMethodBox").classList.toggle("hidden", $("ramanBaselineMethodMode").value !== "custom");
       });
