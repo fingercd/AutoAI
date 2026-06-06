@@ -174,7 +174,6 @@ def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
     payload = response.json()
     assert payload["baseline_method"] is None
     assert payload["curves"]
-    assert set(payload["curves"][0]) == {"name", "x", "raw_y", "corrected_y"}
+    assert set(payload["curves"][0]) == {"name", "x", "raw_y"}
     assert len(payload["curves"][0]["x"]) == 9
     assert len(payload["curves"][0]["raw_y"]) == 9
-    assert len(payload["curves"][0]["corrected_y"]) == 9

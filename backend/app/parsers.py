@@ -216,9 +216,11 @@ def preprocess_raw_files_with_preview(
         else:
             x = full_x[start:end]
             raw_y = full_y[start:end]
-            corrected_y = raw_y.copy()
-            if kind in {"raman", "chromatography"}:
+            if kind == "raman":
+                corrected_y = raw_y.copy()
                 corrected_y = _baseline_correct(x, corrected_y, baseline_method)
+            else:
+                corrected_y = raw_y.copy()
         if len(x) == 0:
             raise ValueError(f"{path.name} has no data in the selected row range")
         records.append(
@@ -232,12 +234,18 @@ def preprocess_raw_files_with_preview(
             }
         )
         curves.append(
-            {
+            ({
                 "name": display_name,
                 "x": x.astype(float).tolist(),
                 "raw_y": raw_y.astype(float).tolist(),
                 "corrected_y": corrected_y.astype(float).tolist(),
             }
+            if kind == "raman"
+            else {
+                "name": display_name,
+                "x": x.astype(float).tolist(),
+                "raw_y": raw_y.astype(float).tolist(),
+            })
         )
     frame = pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
     return {"frame": frame, "curves": curves}
