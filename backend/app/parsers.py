@@ -217,7 +217,7 @@ def preprocess_raw_files_with_preview(
             x = full_x[start:end]
             raw_y = full_y[start:end]
             corrected_y = raw_y.copy()
-            if kind == "raman":
+            if kind in {"raman", "chromatography"}:
                 corrected_y = _baseline_correct(x, corrected_y, baseline_method)
         if len(x) == 0:
             raise ValueError(f"{path.name} has no data in the selected row range")

@@ -147,3 +147,30 @@ def test_preprocess_preserves_original_names_and_returns_all_curves(tmp_path):
     assert payload["curves"][0]["name"] == "sample_00_original"
     assert payload["curves"][-1]["name"] == "sample_11_original"
     assert payload["preview"][0]["Name"] == "sample_00_original"
+
+
+def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    source = tmp_path / "chrom.csv"
+    lines = ["Time,Intensity"]
+    lines.extend(f"{idx},{idx * 2 + (10 if idx == 5 else 0)}" for idx in range(1, 12))
+    source.write_text("\n".join(lines), encoding="utf-8")
+
+    client = TestClient(app)
+    with source.open("rb") as file:
+        response = client.post(
+            "/api/preprocess/chromatography",
+            files=[("files", ("chrom.csv", file, "text/csv"))],
+            data={"start_row": "2", "end_row": "10"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["baseline_method"] is None
+    assert payload["curves"]
+    assert set(payload["curves"][0]) == {"name", "x", "raw_y", "corrected_y"}
+    assert len(payload["curves"][0]["x"]) == 9
+    assert len(payload["curves"][0]["raw_y"]) == 9
+    assert len(payload["curves"][0]["corrected_y"]) == 9

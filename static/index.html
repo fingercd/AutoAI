@@ -146,6 +146,16 @@
         gap: 10px;
         margin-top: 14px;
       }
+      .panel-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .panel-title h2 {
+        margin: 0;
+      }
       .metrics {
         display: grid;
         grid-template-columns: repeat(4, minmax(110px, 1fr));
@@ -398,8 +408,13 @@
               </div>
             </div>
             <div class="panel wide">
-              <h2>曲线预览</h2>
-              <canvas id="curveCanvas" width="1000" height="320"></canvas>
+              <div class="panel-title">
+                <h2>曲线预览</h2>
+                <button class="secondary" id="toggleCurvePreview" type="button">收起</button>
+              </div>
+              <div id="curvePreviewBody">
+                <canvas id="curveCanvas" width="1000" height="320"></canvas>
+              </div>
             </div>
             <div class="panel wide">
               <h2>当前训练</h2>
@@ -521,6 +536,8 @@
       let poller = null;
       let lastSummaryCurves = [];
       let lastPreprocessCurve = null;
+      let lastPreprocessCanvasId = "preprocessCurveCanvas";
+      let lastPreprocessKind = "raman";
 
       const $ = (id) => document.getElementById(id);
 
@@ -559,6 +576,7 @@
 
       function drawCurves(curves) {
         const canvas = $("curveCanvas");
+        if (!canvas || $("curvePreviewBody").classList.contains("hidden")) return;
         const { ctx, width, height } = setupHiDpiCanvas(canvas);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
@@ -588,17 +606,19 @@
         });
       }
 
-      function drawPreprocessComparison(curve) {
-        const canvas = $("preprocessCurveCanvas");
+      function drawPreprocessComparison(curve, canvasId = "preprocessCurveCanvas", kind = "raman") {
+        const canvas = $(canvasId);
         if (!canvas || !curve) return;
         const { ctx, width, height } = setupHiDpiCanvas(canvas);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
         const pad = 46;
+        const rawLabel = kind === "chromatography" ? "原始色谱曲线" : "原始拉曼光谱";
+        const correctedLabel = kind === "chromatography" ? "基线校正后色谱曲线" : "基线校正后光谱";
         const series = [
-          { label: "原始拉曼光谱", values: curve.raw_y, color: "#0f766e" },
-          { label: "基线校正后光谱", values: curve.corrected_y, color: "#b45309" },
+          { label: rawLabel, values: curve.raw_y, color: "#0f766e" },
+          { label: correctedLabel, values: curve.corrected_y, color: "#b45309" },
         ];
         const allY = series.flatMap((item) => item.values || []);
         if (!allY.length) return;
@@ -731,9 +751,7 @@
       function drawLineChart(canvasId, series, options = {}) {
         const canvas = $(canvasId);
         if (!canvas) return;
-        const ctx = setupHiDpiCanvas(canvas);
-        const width = canvas.clientWidth;
-        const height = canvas.clientHeight;
+        const { ctx, width, height } = setupHiDpiCanvas(canvas);
         ctx.clearRect(0, 0, width, height);
         const pad = { left: 44, right: 18, top: 24, bottom: 34 };
         const plotWidth = width - pad.left - pad.right;
@@ -759,13 +777,18 @@
           ctx.beginPath();
           ctx.strokeStyle = item.color;
           ctx.lineWidth = 2.1;
+          let hasPoint = false;
           item.values.forEach((value, index) => {
+            if (!Number.isFinite(value)) return;
             const x = pad.left + (index / Math.max(maxLen - 1, 1)) * plotWidth;
             const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
-            if (index === 0) ctx.moveTo(x, y);
+            if (!hasPoint) {
+              ctx.moveTo(x, y);
+              hasPoint = true;
+            }
             else ctx.lineTo(x, y);
           });
-          ctx.stroke();
+          if (hasPoint) ctx.stroke();
           const legendX = pad.left + seriesIndex * 150;
           ctx.fillStyle = item.color;
           ctx.fillRect(legendX, 8, 12, 12);
@@ -791,16 +814,18 @@
             </div>
           </div>
         `;
-        drawLineChart("lossCanvas", [{ label: "train loss", values: history.map((row) => Number(row.train_loss)), color: "#b45309" }]);
-        drawLineChart(
-          "metricCanvas",
-          [
-            { label: "valid acc", values: history.map((row) => Number(row.valid_accuracy)), color: "#0f766e" },
-            { label: "valid macro F1", values: history.map((row) => Number(row.valid_macro_f1)), color: "#475467" },
-            { label: "best F1", values: history.map((row) => Number(row.best_valid_macro_f1)), color: "#b42318" },
-          ],
-          { minY: 0, maxY: 1 },
-        );
+        requestAnimationFrame(() => {
+          drawLineChart("lossCanvas", [{ label: "train loss", values: history.map((row) => Number(row.train_loss)), color: "#b45309" }]);
+          drawLineChart(
+            "metricCanvas",
+            [
+              { label: "valid acc", values: history.map((row) => Number(row.valid_accuracy)), color: "#0f766e" },
+              { label: "valid macro F1", values: history.map((row) => Number(row.valid_macro_f1)), color: "#475467" },
+              { label: "best F1", values: history.map((row) => Number(row.best_valid_macro_f1)), color: "#b42318" },
+            ],
+            { minY: 0, maxY: 1 },
+          );
+        });
       }
 
       function renderConfusionMatrix(run) {
@@ -944,43 +969,37 @@
           form.append("baseline_method", selectedRamanBaselineMethod());
         }
         const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
-        const orderText =
-          result.baseline_order === "baseline_then_range"
-            ? "先基线预处理，后选数据范围"
-            : result.baseline_order === "range_then_baseline"
-              ? "先选数据范围，后基线预处理"
-              : "不适用";
-        const previewRows = (result.preview || [])
-          .map((row) => `<tr><td>${row.Index ?? ""}</td><td>${row.Name ?? ""}</td><td>${row.Label ?? ""}</td><td>${row.Repeat_index ?? ""}</td></tr>`)
-          .join("");
-        const hasCurves = kind === "raman" && result.curves && result.curves.length;
+        const hasCurves = result.curves && result.curves.length;
         const curveOptions = hasCurves
           ? result.curves.map((curve, index) => `<option value="${index}">${curve.name}</option>`).join("")
           : "";
         const curveSelectSize = hasCurves ? Math.min(result.curves.length, 10) : 1;
         const resultTarget = kind === "raman" ? $("preprocessResult") : $("chromPreprocessResult");
+        const selectId = `${kind}PreprocessCurveSelect`;
+        const canvasId = `${kind}PreprocessCurveCanvas`;
+        const title = kind === "chromatography" ? "原始色谱曲线与基线校正后曲线" : "原始拉曼光谱与基线校正后光谱";
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
-            <div class="metric">基线顺序<strong style="font-size:14px">${orderText}</strong></div>
-            <div class="metric">基线方法<strong>${result.baseline_method || "不适用"}</strong></div>
             <div class="metric">结果文件<strong style="font-size:14px">已生成</strong></div>
           </div>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
           ${
             hasCurves
-              ? `<h3>原始拉曼光谱与基线校正后光谱</h3>
+              ? `<h3>${title}</h3>
                  <label>预览文件</label>
-                 <select id="preprocessCurveSelect" size="${curveSelectSize}">${curveOptions}</select>
-                 <canvas id="preprocessCurveCanvas" width="1000" height="320"></canvas>`
+                 <select id="${selectId}" size="${curveSelectSize}">${curveOptions}</select>
+                 <canvas id="${canvasId}" width="1000" height="320"></canvas>`
               : ""
           }
         `;
         if (hasCurves) {
-          const select = $("preprocessCurveSelect");
+          const select = $(selectId);
           const renderSelected = () => {
             lastPreprocessCurve = result.curves[Number(select.value || 0)];
-            drawPreprocessComparison(lastPreprocessCurve);
+            lastPreprocessCanvasId = canvasId;
+            lastPreprocessKind = kind;
+            drawPreprocessComparison(lastPreprocessCurve, canvasId, kind);
           };
           select.addEventListener("change", renderSelected);
           renderSelected();
@@ -1056,6 +1075,12 @@
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");
       });
+      $("toggleCurvePreview").addEventListener("click", () => {
+        const body = $("curvePreviewBody");
+        const collapsed = body.classList.toggle("hidden");
+        $("toggleCurvePreview").textContent = collapsed ? "展开" : "收起";
+        if (!collapsed) drawCurves(lastSummaryCurves);
+      });
       $("trainTime").addEventListener("change", () => {
         $("epochs").value = $("trainTime").value === "deep" ? "100" : "50";
       });
@@ -1070,7 +1095,7 @@
       });
       window.addEventListener("resize", () => {
         if (lastSummaryCurves.length) drawCurves(lastSummaryCurves);
-        if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve);
+        if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
       });
 
       loadHealth();
