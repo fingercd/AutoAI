@@ -125,7 +125,7 @@ def preprocess(
             "rows": int(len(frame)),
             "baseline_order": baseline_order if kind == "raman" else None,
             "baseline_method": baseline_method if kind == "raman" else None,
-            "curves": result["curves"] if kind == "raman" else [],
+            "curves": result["curves"],
             "preview": frame.head(5).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
         }
     except Exception as exc:
