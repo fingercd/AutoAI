@@ -198,7 +198,7 @@
       }
       canvas {
         width: 100%;
-        height: 260px;
+        height: 320px;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: #fff;
@@ -394,6 +394,8 @@
       let datasetPath = null;
       let currentRunId = null;
       let poller = null;
+      let lastSummaryCurves = [];
+      let lastPreprocessCurve = null;
 
       const $ = (id) => document.getElementById(id);
 
@@ -409,26 +411,49 @@
         return response.json();
       }
 
+      function setupHiDpiCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        const width = Math.max(Math.round(rect.width), 1);
+        const height = Math.max(Math.round(rect.height), 1);
+        const pixelWidth = Math.round(width * ratio);
+        const pixelHeight = Math.round(height * ratio);
+        if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+          canvas.width = pixelWidth;
+          canvas.height = pixelHeight;
+        }
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.font = '12px "Segoe UI", Arial, sans-serif';
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        return { ctx, width, height };
+      }
+
       function drawCurves(curves) {
         const canvas = $("curveCanvas");
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, width, height);
         if (!curves || !curves.length) return;
-        const pad = 34;
+        const pad = 44;
         const colors = ["#0f766e", "#b45309", "#344054"];
         const allY = curves.flatMap((c) => c.y);
         const minY = Math.min(...allY);
         const maxY = Math.max(...allY);
         ctx.strokeStyle = "#d8dee8";
-        ctx.strokeRect(pad, pad, canvas.width - pad * 2, canvas.height - pad * 2);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad, pad, width - pad * 2, height - pad * 2);
         curves.forEach((curve, ci) => {
           ctx.beginPath();
           ctx.strokeStyle = colors[ci % colors.length];
+          ctx.lineWidth = 2;
           curve.y.forEach((value, i) => {
-            const x = pad + (i / Math.max(curve.y.length - 1, 1)) * (canvas.width - pad * 2);
-            const y = canvas.height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (canvas.height - pad * 2);
+            const x = pad + (i / Math.max(curve.y.length - 1, 1)) * (width - pad * 2);
+            const y = height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (height - pad * 2);
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           });
@@ -441,11 +466,11 @@
       function drawPreprocessComparison(curve) {
         const canvas = $("preprocessCurveCanvas");
         if (!canvas || !curve) return;
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        const pad = 38;
+        ctx.fillRect(0, 0, width, height);
+        const pad = 46;
         const series = [
           { label: "原始拉曼光谱", values: curve.raw_y, color: "#0f766e" },
           { label: "基线校正后光谱", values: curve.corrected_y, color: "#b45309" },
@@ -455,14 +480,15 @@
         const minY = Math.min(...allY);
         const maxY = Math.max(...allY);
         ctx.strokeStyle = "#d8dee8";
-        ctx.strokeRect(pad, pad, canvas.width - pad * 2, canvas.height - pad * 2);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad, pad, width - pad * 2, height - pad * 2);
         series.forEach((item, seriesIndex) => {
           ctx.beginPath();
           ctx.strokeStyle = item.color;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.2;
           item.values.forEach((value, i) => {
-            const x = pad + (i / Math.max(item.values.length - 1, 1)) * (canvas.width - pad * 2);
-            const y = canvas.height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (canvas.height - pad * 2);
+            const x = pad + (i / Math.max(item.values.length - 1, 1)) * (width - pad * 2);
+            const y = height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (height - pad * 2);
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           });
@@ -473,11 +499,12 @@
           ctx.fillText(item.label, pad + 26 + seriesIndex * 160, pad - 14);
         });
         ctx.fillStyle = "#667085";
-        ctx.fillText(curve.name || "", pad + 8, canvas.height - 12);
+        ctx.fillText(curve.name || "", pad + 8, height - 14);
       }
 
       function renderSummary(summary) {
         datasetPath = summary.path;
+        lastSummaryCurves = summary.curves || [];
         const labels = Object.entries(summary.label_counts)
           .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
           .join("");
@@ -492,7 +519,7 @@
           <h3>标签分布</h3>
           <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
         `;
-        drawCurves(summary.curves);
+        drawCurves(lastSummaryCurves);
       }
 
       async function loadHealth() {
@@ -664,7 +691,10 @@
         `;
         if (hasCurves) {
           const select = $("preprocessCurveSelect");
-          const renderSelected = () => drawPreprocessComparison(result.curves[Number(select.value || 0)]);
+          const renderSelected = () => {
+            lastPreprocessCurve = result.curves[Number(select.value || 0)];
+            drawPreprocessComparison(lastPreprocessCurve);
+          };
           select.addEventListener("change", renderSelected);
           renderSelected();
         }
@@ -713,6 +743,10 @@
       });
       document.querySelectorAll("[data-preprocess]").forEach((button) => {
         button.addEventListener("click", () => preprocessEnhanced(button.dataset.preprocess).catch((err) => alert(err.message)));
+      });
+      window.addEventListener("resize", () => {
+        if (lastSummaryCurves.length) drawCurves(lastSummaryCurves);
+        if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve);
       });
 
       loadHealth();
