@@ -88,18 +88,27 @@ def preprocess(
     start_row: int = Form(1),
     end_row: int | None = Form(None),
     baseline_method: str = Form("arPLS"),
+    baseline_order: str = Form("range_then_baseline"),
 ) -> dict[str, Any]:
     if kind not in {"raman", "chromatography"}:
         raise HTTPException(status_code=400, detail="kind 必须是 raman 或 chromatography")
     saved_files = [_save_upload(file) for file in files]
     try:
-        frame = preprocess_raw_files(saved_files, kind=kind, start_row=start_row, end_row=end_row, baseline_method=baseline_method)
+        frame = preprocess_raw_files(
+            saved_files,
+            kind=kind,
+            start_row=start_row,
+            end_row=end_row,
+            baseline_method=baseline_method,
+            baseline_order=baseline_order,
+        )
         output = PREPROCESSED_DIR / f"{kind}_{uuid.uuid4().hex[:10]}.csv"
         frame.to_csv(output, index=False, encoding="utf-8-sig")
         return {
             "output_path": str(output.resolve()),
             "download_url": f"/api/files?path={output.resolve()}",
             "rows": int(len(frame)),
+            "baseline_order": baseline_order if kind == "raman" else None,
             "preview": frame.head(5).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
         }
     except Exception as exc:

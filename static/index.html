@@ -40,6 +40,12 @@
         font-size: 22px;
         margin: 0;
       }
+      .title-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
       main {
         display: grid;
         grid-template-columns: 260px minmax(0, 1fr);
@@ -220,17 +226,20 @@
   </head>
   <body>
     <header>
-      <h1>AutoAI 谱学数据预处理及 AI 建模平台</h1>
+      <div class="title-row">
+        <h1>AutoAI 谱学数据预处理及 AI 建模平台</h1>
+        <button class="secondary" id="manualButton" type="button">使用说明</button>
+      </div>
       <span id="health" class="status">连接中</span>
     </header>
     <main>
       <nav>
-        <button class="active" data-view="modeling">AI 建模</button>
-        <button data-view="preprocess">数据预处理</button>
+        <button class="active" data-view="preprocess">数据预处理</button>
+        <button data-view="modeling">AI 建模</button>
         <button data-view="runs">训练记录</button>
       </nav>
       <section>
-        <div id="view-modeling" class="view">
+        <div id="view-modeling" class="view hidden">
           <div class="grid">
             <div class="panel">
               <h2>数据集</h2>
@@ -288,7 +297,7 @@
           </div>
         </div>
 
-        <div id="view-preprocess" class="view hidden">
+        <div id="view-preprocess" class="view">
           <div class="grid">
             <div class="panel">
               <h2>拉曼预处理</h2>
@@ -298,6 +307,11 @@
               <input id="ramanStart" type="number" value="1" min="1" />
               <label>结束行</label>
               <input id="ramanEnd" type="number" value="160" min="1" />
+              <label>基线校正顺序</label>
+              <select id="ramanBaselineOrder">
+                <option value="range_then_baseline">先选数据范围，后基线预处理</option>
+                <option value="baseline_then_range">先基线预处理，后选数据范围</option>
+              </select>
               <div class="actions">
                 <button class="primary" data-preprocess="raman">生成整理 CSV</button>
               </div>
@@ -328,6 +342,40 @@
               <button class="secondary" id="refreshRuns">刷新</button>
             </div>
             <div id="runsTable"></div>
+          </div>
+        </div>
+
+        <div id="view-manual" class="view hidden">
+          <div class="panel">
+            <h2>使用手册</h2>
+            <h3>一、拉曼数据预处理</h3>
+            <p>上传多个拉曼 CSV 后，设置起始行和结束行，系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Repeat_index。</p>
+            <p>基线校正顺序有两种：</p>
+            <table>
+              <thead><tr><th>方式</th><th>处理流程</th><th>适合情况</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>先选数据范围，后基线预处理</td>
+                  <td>先截取目标行范围，只对截取后的片段做 baseline 校正。</td>
+                  <td>只关心某个目标区间，希望区间外强峰不影响校正。</td>
+                </tr>
+                <tr>
+                  <td>先基线预处理，后选数据范围</td>
+                  <td>先对整条原始光谱做 baseline 校正，再截取目标行范围。</td>
+                  <td>希望基线估计利用完整光谱的整体背景趋势。</td>
+                </tr>
+              </tbody>
+            </table>
+            <h3>二、色谱数据预处理</h3>
+            <p>上传多个色谱 CSV 后，设置起始行和结束行。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
+            <h3>三、AI 建模</h3>
+            <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 的统一格式 CSV。设置 epoch、batch size、学习率、标准化和划分方式后点击开始训练。</p>
+            <h3>四、结果下载</h3>
+            <p>训练成功后，可下载 predictions.csv、metrics.json 和 model.pt。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
+            <div class="actions">
+              <button class="primary" data-view-shortcut="preprocess">开始预处理</button>
+              <button class="secondary" data-view-shortcut="modeling">去建模</button>
+            </div>
           </div>
         </div>
       </section>
@@ -492,9 +540,20 @@
         [...filesInput.files].forEach((file) => form.append("files", file));
         form.append("start_row", start);
         form.append("end_row", end);
+        if (kind === "raman") {
+          form.append("baseline_order", $("ramanBaselineOrder").value);
+          form.append("baseline_method", "arPLS");
+        }
         const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
+        const orderText =
+          result.baseline_order === "baseline_then_range"
+            ? "先基线预处理，后选数据范围"
+            : result.baseline_order === "range_then_baseline"
+              ? "先选数据范围，后基线预处理"
+              : "不适用";
         $("preprocessResult").innerHTML = `
           <p>已生成 ${result.rows} 条样本。</p>
+          <p>基线校正顺序：${orderText}</p>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
           <pre>${JSON.stringify(result.preview, null, 2)}</pre>
         `;
@@ -506,6 +565,15 @@
           .map((run) => `<tr><td>${run.run_id}</td><td>${run.status}</td><td><button class="secondary" onclick="currentRunId='${run.run_id}'; pollRun(); document.querySelector('[data-view=modeling]').click()">查看</button></td></tr>`)
           .join("");
         $("runsTable").innerHTML = `<table><thead><tr><th>Run ID</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+
+      function showView(viewName) {
+        document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
+        const navButton = document.querySelector(`nav button[data-view="${viewName}"]`);
+        if (navButton) navButton.classList.add("active");
+        document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
+        $(`view-${viewName}`).classList.remove("hidden");
+        if (viewName === "runs") loadRuns();
       }
 
       document.querySelectorAll("nav button").forEach((button) => {
@@ -525,6 +593,10 @@
       });
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
+      $("manualButton").addEventListener("click", () => showView("manual"));
+      document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
+        button.addEventListener("click", () => showView(button.dataset.viewShortcut));
+      });
       document.querySelectorAll("[data-preprocess]").forEach((button) => {
         button.addEventListener("click", () => preprocess(button.dataset.preprocess).catch((err) => alert(err.message)));
       });

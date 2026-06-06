@@ -150,18 +150,26 @@ def preprocess_raw_files(
     start_row: int = 1,
     end_row: int | None = None,
     baseline_method: str = "arPLS",
+    baseline_order: str = "range_then_baseline",
 ) -> pd.DataFrame:
+    if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
+        raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
     records = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
         x, y = read_raw_spectrum(path, kind=kind)
         start = max(0, start_row - 1)
         end = end_row if end_row and end_row > 0 else len(x)
-        x = x[start:end]
-        y = y[start:end]
+        if kind == "raman" and baseline_order == "baseline_then_range":
+            y = _baseline_correct(x, y, baseline_method)
+            x = x[start:end]
+            y = y[start:end]
+        else:
+            x = x[start:end]
+            y = y[start:end]
         if len(x) == 0:
             raise ValueError(f"{path.name} 在所选行范围内没有数据")
-        if kind == "raman":
+        if kind == "raman" and baseline_order != "baseline_then_range":
             y = _baseline_correct(x, y, baseline_method)
         records.append(
             {
