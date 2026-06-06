@@ -92,6 +92,7 @@ def preprocess(
 ) -> dict[str, Any]:
     if kind not in {"raman", "chromatography"}:
         raise HTTPException(status_code=400, detail="kind 必须是 raman 或 chromatography")
+    original_names = [Path(file.filename or f"sample_{idx}").stem for idx, file in enumerate(files, start=1)]
     saved_files = [_save_upload(file) for file in files]
     try:
         result = preprocess_raw_files_with_preview(
@@ -101,6 +102,7 @@ def preprocess(
             end_row=end_row,
             baseline_method=baseline_method,
             baseline_order=baseline_order,
+            display_names=original_names,
         )
         frame = result["frame"]
         output = PREPROCESSED_DIR / f"{kind}_{uuid.uuid4().hex[:10]}.csv"

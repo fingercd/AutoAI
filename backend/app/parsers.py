@@ -154,12 +154,14 @@ def preprocess_raw_files(
     end_row: int | None = None,
     baseline_method: str = "arPLS",
     baseline_order: str = "range_then_baseline",
+    display_names: list[str] | None = None,
 ) -> pd.DataFrame:
     if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
         raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
     records = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
+        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         x, y = read_raw_spectrum(path, kind=kind)
         start = max(0, start_row - 1)
         end = end_row if end_row and end_row > 0 else len(x)
@@ -177,7 +179,7 @@ def preprocess_raw_files(
         records.append(
             {
                 "Index": index,
-                "Name": path.stem,
+                "Name": display_name,
                 "XXX": json.dumps(x.astype(float).tolist(), ensure_ascii=False),
                 "Intensity": json.dumps(y.astype(float).tolist(), ensure_ascii=False),
                 "Label": "",
@@ -194,6 +196,7 @@ def preprocess_raw_files_with_preview(
     end_row: int | None = None,
     baseline_method: str = "arPLS",
     baseline_order: str = "range_then_baseline",
+    display_names: list[str] | None = None,
 ) -> dict:
     if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
         raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
@@ -201,6 +204,7 @@ def preprocess_raw_files_with_preview(
     curves = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
+        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         full_x, full_y = read_raw_spectrum(path, kind=kind)
         start = max(0, start_row - 1)
         end = end_row if end_row and end_row > 0 else len(full_x)
@@ -220,21 +224,20 @@ def preprocess_raw_files_with_preview(
         records.append(
             {
                 "Index": index,
-                "Name": path.stem,
+                "Name": display_name,
                 "XXX": json.dumps(x.astype(float).tolist(), ensure_ascii=False),
                 "Intensity": json.dumps(corrected_y.astype(float).tolist(), ensure_ascii=False),
                 "Label": "",
                 "Repeat_index": "",
             }
         )
-        if len(curves) < 10:
-            curves.append(
-                {
-                    "name": path.stem,
-                    "x": x.astype(float).tolist(),
-                    "raw_y": raw_y.astype(float).tolist(),
-                    "corrected_y": corrected_y.astype(float).tolist(),
-                }
-            )
+        curves.append(
+            {
+                "name": display_name,
+                "x": x.astype(float).tolist(),
+                "raw_y": raw_y.astype(float).tolist(),
+                "corrected_y": corrected_y.astype(float).tolist(),
+            }
+        )
     frame = pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
     return {"frame": frame, "curves": curves}
