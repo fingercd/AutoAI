@@ -14,7 +14,6 @@ import torch
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -143,6 +142,9 @@ class TrainConfig:
     seed: int = 42
     normalization: str = "zscore"
     split_mode: str = "stratified"
+    split_train: int = 8
+    split_valid: int = 1
+    split_test: int = 1
     class_balance: str = "none"
     model_type: str = "cnn1d"
     early_stopping_patience: int = 20
@@ -266,33 +268,65 @@ def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
 
 
 def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> dict[str, list[int]]:
-    indices = np.arange(len(labels))
-    if config.split_mode == "repeat_leave_one":
-        values, counts = np.unique(repeat_index, return_counts=True)
-        test_repeat = values[np.argmax(counts)]
-        test_idx = indices[repeat_index == test_repeat]
-        rest_idx = indices[repeat_index != test_repeat]
-        train_idx, valid_idx = train_test_split(
-            rest_idx,
-            test_size=0.2,
-            random_state=config.seed,
-            stratify=labels[rest_idx] if len(np.unique(labels[rest_idx])) > 1 else None,
-        )
-    else:
-        train_valid_idx, test_idx = train_test_split(
-            indices,
-            test_size=0.1,
-            random_state=config.seed,
-            stratify=labels,
-        )
-        valid_ratio = 0.1 / 0.9
-        train_idx, valid_idx = train_test_split(
-            train_valid_idx,
-            test_size=valid_ratio,
-            random_state=config.seed,
-            stratify=labels[train_valid_idx],
-        )
-    return {"train": train_idx.tolist(), "valid": valid_idx.tolist(), "test": test_idx.tolist()}
+    ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
+    if any(value < 0 for value in ratios) or sum(ratios) != 10:
+        raise ValueError("划分比例必须是非负整数，且训练:验证:测试三项相加必须等于 10")
+    if ratios[0] <= 0:
+        raise ValueError("训练集比例必须大于 0")
+
+    group_values = np.asarray(sorted(np.unique(repeat_index).tolist()))
+    nonzero_splits = sum(1 for value in ratios if value > 0)
+    if len(group_values) < nonzero_splits:
+        raise ValueError(f"当前只有 {len(group_values)} 个 Repeat_index 分组，无法划分为 {nonzero_splits} 个非空集合")
+
+    group_to_label: dict[str, int] = {}
+    for group in group_values:
+        group_labels = np.unique(labels[repeat_index == group])
+        if len(group_labels) != 1:
+            raise ValueError(f"Repeat_index={group} 内存在多个 Label，无法按组划分")
+        group_to_label[str(group)] = int(group_labels[0])
+
+    valid_count = max(1, int(np.floor(len(group_values) * ratios[1] / 10))) if ratios[1] > 0 else 0
+    test_count = max(1, int(np.floor(len(group_values) * ratios[2] / 10))) if ratios[2] > 0 else 0
+    if valid_count + test_count >= len(group_values):
+        train_count = 1
+        overflow = valid_count + test_count + train_count - len(group_values)
+        while overflow > 0 and test_count > (1 if ratios[2] > 0 else 0):
+            test_count -= 1
+            overflow -= 1
+        while overflow > 0 and valid_count > (1 if ratios[1] > 0 else 0):
+            valid_count -= 1
+            overflow -= 1
+        if overflow > 0:
+            raise ValueError("Repeat_index 分组数量太少，无法完成当前比例划分")
+    train_count = len(group_values) - valid_count - test_count
+
+    rng = np.random.default_rng(config.seed)
+    label_to_groups: dict[int, list[str]] = {}
+    for group, label in group_to_label.items():
+        label_to_groups.setdefault(label, []).append(group)
+    for groups in label_to_groups.values():
+        rng.shuffle(groups)
+
+    def take_stratified(count: int) -> set[str]:
+        selected: set[str] = set()
+        while len(selected) < count and any(label_to_groups.values()):
+            labels_by_remaining = sorted(label_to_groups, key=lambda label: len(label_to_groups[label]), reverse=True)
+            for label in labels_by_remaining:
+                if len(selected) >= count:
+                    break
+                if label_to_groups[label]:
+                    selected.add(label_to_groups[label].pop())
+        return selected
+
+    test_groups = take_stratified(test_count)
+    valid_groups = take_stratified(valid_count)
+    train_groups = {group for groups in label_to_groups.values() for group in groups}
+    split_groups = {"train": train_groups, "valid": valid_groups, "test": test_groups}
+    return {
+        split: np.where(np.isin(repeat_index, list(groups)))[0].tolist()
+        for split, groups in split_groups.items()
+    }
 
 
 def _loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
