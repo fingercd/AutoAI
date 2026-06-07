@@ -17,6 +17,23 @@ def test_data_csv_summary():
     assert summary["curve_length"] == 160
 
 
+def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
+    source = tmp_path / "gbk_modeling.csv"
+    frame = (
+        "AutoAI 谱学建模平台,Name,XXX,Intensity,Label,Repeat_index\n"
+        '1,s1,"[1, 2, 3]","[4, 5, 6]",A,1\n'
+        '2,s2,"[1, 2, 3]","[6, 5, 4]",B,1\n'
+    )
+    source.write_bytes(frame.encode("gbk"))
+
+    summary = summarize_modeling_csv(source)
+
+    assert summary["samples"] == 2
+    assert summary["classes"] == 2
+    assert summary["curve_length"] == 3
+    assert summary["columns"][0] == "Index"
+
+
 def test_train_smoke(tmp_path, monkeypatch):
     import backend.app.training as training
 

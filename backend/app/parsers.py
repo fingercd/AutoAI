@@ -39,7 +39,9 @@ def _parse_array(value: object, field: str, row_number: int) -> list[float]:
 
 def load_modeling_csv(path: str | Path) -> ModelingDataset:
     path = Path(path)
-    frame = pd.read_csv(path, encoding="utf-8-sig")
+    frame = _read_csv_flexible(path)
+    if "Index" not in frame.columns and REQUIRED_MODELING_COLUMNS.difference({"Index"}).issubset(frame.columns):
+        frame = frame.rename(columns={frame.columns[0]: "Index"})
     missing = REQUIRED_MODELING_COLUMNS.difference(frame.columns)
     if missing:
         raise ValueError(f"建模数据缺少字段: {', '.join(sorted(missing))}")
@@ -93,11 +95,22 @@ def summarize_modeling_csv(path: str | Path) -> dict:
 
 
 def _read_csv_flexible(path: str | Path) -> pd.DataFrame:
-    encodings = ("utf-8-sig", "utf-8", "gbk")
+    encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
     last_error: Exception | None = None
     for encoding in encodings:
         try:
             return pd.read_csv(path, sep=None, engine="python", encoding=encoding)
+        except Exception as exc:
+            last_error = exc
+    raise ValueError(f"无法读取 CSV 文件 {Path(path).name}: {last_error}")
+
+
+def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
+    encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
+    last_error: Exception | None = None
+    for encoding in encodings:
+        try:
+            return pd.read_csv(path, header=None, sep=None, engine="python", encoding=encoding)
         except Exception as exc:
             last_error = exc
     raise ValueError(f"无法读取 CSV 文件 {Path(path).name}: {last_error}")
@@ -108,7 +121,7 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
     frame = _read_csv_flexible(path)
     numeric = frame.apply(pd.to_numeric, errors="coerce")
     if numeric.shape[1] < 2 or numeric.iloc[:, :2].dropna().empty:
-        frame = pd.read_csv(path, header=None, sep=None, engine="python", encoding="utf-8-sig")
+        frame = _read_csv_no_header_flexible(path)
         numeric = frame.apply(pd.to_numeric, errors="coerce")
     numeric = numeric.iloc[:, :2].dropna()
     if numeric.empty:
