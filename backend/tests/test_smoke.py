@@ -1,9 +1,10 @@
 from pathlib import Path
 import ast
+import json
 
 import pytest
 
-from backend.app.parsers import summarize_modeling_csv
+from backend.app.parsers import load_modeling_csv, summarize_modeling_csv
 from backend.app.training import train_model
 
 
@@ -22,7 +23,7 @@ def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     frame = (
         "AutoAI 谱学建模平台,Name,XXX,Intensity,Label,Repeat_index\n"
         '1,s1,"[1, 2, 3]","[4, 5, 6]",A,1\n'
-        '2,s2,"[1, 2, 3]","[6, 5, 4]",B,1\n'
+        '2,s2,"[1, 2, 3]","[6, 5, 4]",B,2\n'
     )
     source.write_bytes(frame.encode("gbk"))
 
@@ -32,6 +33,67 @@ def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     assert summary["classes"] == 2
     assert summary["curve_length"] == 3
     assert summary["columns"][0] == "Index"
+
+
+def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int = 2) -> None:
+    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    index = 1
+    for group in range(1, group_count + 1):
+        label = "A" if group <= (group_count + 1) // 2 else "B"
+        for repeat in range(repeats):
+            rows.append(f'{index},s{group}_{repeat},"[1, 2, 3, 4]","[{group}, {group + 1}, {group + 2}, {group + 3}]",{label},{group}')
+            index += 1
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+
+def test_repeat_index_summary_and_incomplete_group_error(tmp_path):
+    source = tmp_path / "bad_repeat.csv"
+    _write_grouped_modeling_csv(source, group_count=4, repeats=2)
+    text = source.read_text(encoding="utf-8")
+    source.write_text("\n".join(text.splitlines()[:-1]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Repeat_index 重复测量次数不一致"):
+        load_modeling_csv(source)
+
+
+def test_custom_split_uses_repeat_index_groups(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=11, repeats=2)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
+    result = train_model(
+        source,
+        {
+            "model_type": "logistic_regression",
+            "split_mode": "custom",
+            "split_train": 7,
+            "split_valid": 1,
+            "split_test": 2,
+        },
+    )
+    split = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+    frame = load_modeling_csv(source).frame
+
+    split_group_counts = {
+        name: frame.iloc[idxs]["Repeat_index"].nunique()
+        for name, idxs in split.items()
+    }
+    assert split_group_counts == {"train": 8, "valid": 1, "test": 2}
+    assert set(frame.iloc[split["train"]]["Repeat_index"]).isdisjoint(set(frame.iloc[split["valid"]]["Repeat_index"]))
+    assert set(frame.iloc[split["train"]]["Repeat_index"]).isdisjoint(set(frame.iloc[split["test"]]["Repeat_index"]))
+
+
+def test_custom_split_ratio_must_sum_to_ten(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=5, repeats=2)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
+    with pytest.raises(ValueError, match="相加必须等于 10"):
+        train_model(source, {"model_type": "logistic_regression", "split_train": 7, "split_valid": 1, "split_test": 1})
 
 
 def test_train_smoke(tmp_path, monkeypatch):

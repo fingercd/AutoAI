@@ -19,6 +19,7 @@ class ModelingDataset:
     x_axis: list[list[float]]
     intensity: np.ndarray
     labels: list[str]
+    repeat_index: list[str]
 
 
 def _parse_array(value: object, field: str, row_number: int) -> list[float]:
@@ -49,6 +50,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     x_axis: list[list[float]] = []
     y_values: list[list[float]] = []
     labels: list[str] = []
+    repeat_indices: list[str] = []
     for idx, row in frame.iterrows():
         row_number = idx + 2
         x = _parse_array(row["XXX"], "XXX", row_number)
@@ -58,26 +60,67 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         label = str(row["Label"]).strip()
         if not label or label.lower() == "nan":
             raise ValueError(f"第 {row_number} 行 Label 为空，建模前请补充标签")
+        repeat = str(row["Repeat_index"]).strip()
+        if not repeat or repeat.lower() == "nan":
+            raise ValueError(f"第 {row_number} 行 Repeat_index 为空，建模前请补充样品分组编号")
         x_axis.append(x)
         y_values.append(y)
         labels.append(label)
+        repeat_indices.append(repeat)
 
     lengths = {len(values) for values in y_values}
     if len(lengths) != 1:
         raise ValueError(f"当前训练版本要求曲线长度一致，检测到长度: {sorted(lengths)}")
 
-    return ModelingDataset(frame=frame, x_axis=x_axis, intensity=np.asarray(y_values, dtype=np.float32), labels=labels)
+    frame = frame.copy()
+    frame["Label"] = labels
+    frame["Repeat_index"] = repeat_indices
+    repeat_summary = _repeat_index_summary(frame)
+    if repeat_summary["inconsistent_labels"]:
+        details = ", ".join(f"{item['repeat_index']}={item['labels']}" for item in repeat_summary["inconsistent_labels"])
+        raise ValueError(f"同一个 Repeat_index 内出现多个 Label，请检查: {details}")
+    if repeat_summary["incomplete_groups"]:
+        expected = repeat_summary["expected_repeats_per_group"]
+        details = ", ".join(f"{item['repeat_index']}={item['count']}" for item in repeat_summary["incomplete_groups"])
+        raise ValueError(f"Repeat_index 重复测量次数不一致，期望每组 {expected} 条，异常分组: {details}")
+
+    return ModelingDataset(frame=frame, x_axis=x_axis, intensity=np.asarray(y_values, dtype=np.float32), labels=labels, repeat_index=repeat_indices)
+
+
+def _repeat_index_summary(frame: pd.DataFrame) -> dict:
+    grouped = frame.groupby("Repeat_index", sort=True)
+    group_rows = []
+    inconsistent_labels = []
+    for repeat, group in grouped:
+        labels = sorted(str(item) for item in group["Label"].dropna().astype(str).unique())
+        count = int(len(group))
+        group_rows.append({"repeat_index": str(repeat), "count": count, "label": labels[0] if len(labels) == 1 else " / ".join(labels)})
+        if len(labels) > 1:
+            inconsistent_labels.append({"repeat_index": str(repeat), "labels": labels})
+
+    counts = [item["count"] for item in group_rows]
+    expected = int(pd.Series(counts).mode().iloc[0]) if counts else 0
+    incomplete_groups = [item for item in group_rows if item["count"] != expected]
+    return {
+        "group_count": int(len(group_rows)),
+        "expected_repeats_per_group": expected,
+        "groups": group_rows,
+        "inconsistent_labels": inconsistent_labels,
+        "incomplete_groups": incomplete_groups,
+    }
 
 
 def summarize_modeling_csv(path: str | Path) -> dict:
     dataset = load_modeling_csv(path)
     labels = pd.Series(dataset.labels)
     lengths = [len(item) for item in dataset.x_axis]
+    repeat_summary = _repeat_index_summary(dataset.frame)
     return {
         "path": str(Path(path).resolve()),
         "samples": int(len(dataset.labels)),
         "classes": int(labels.nunique()),
         "label_counts": {str(k): int(v) for k, v in labels.value_counts().sort_index().items()},
+        "repeat_index": repeat_summary,
         "curve_length": int(lengths[0]) if lengths else 0,
         "curve_lengths": {str(k): int(v) for k, v in pd.Series(lengths).value_counts().sort_index().items()},
         "columns": list(dataset.frame.columns),

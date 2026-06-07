@@ -365,9 +365,17 @@
               </select>
               <label>划分方式</label>
               <select id="splitMode">
-                <option value="stratified">分层 8:1:1</option>
-                <option value="repeat_leave_one">Repeat_index 留一法首轮</option>
+                <option value="default">默认 8:1:1</option>
+                <option value="custom">自定义比例</option>
               </select>
+              <div id="customSplitOptions" class="hidden">
+                <label>自定义比例（训练 / 验证 / 测试，相加必须为 10）</label>
+                <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
+                  <input id="splitTrain" type="number" value="8" min="0" max="10" />
+                  <input id="splitValid" type="number" value="1" min="0" max="10" />
+                  <input id="splitTest" type="number" value="1" min="0" max="10" />
+                </div>
+              </div>
               <div id="trainTimeBlock">
                 <label>训练时间</label>
                 <select id="trainTime">
@@ -697,13 +705,21 @@
         const labels = Object.entries(summary.label_counts)
           .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
           .join("");
+        const repeat = summary.repeat_index || {};
+        const repeatRows = (repeat.groups || [])
+          .map((row) => `<tr><td>${row.repeat_index}</td><td>${row.label}</td><td>${row.count}</td></tr>`)
+          .join("");
         $("datasetInfo").innerHTML = `
           <h3>数据摘要</h3>
           <div class="metrics">
             <div class="metric">样本数<strong>${summary.samples}</strong></div>
             <div class="metric">类别数<strong>${summary.classes}</strong></div>
             <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
+            <div class="metric">Repeat_index 种数<strong>${repeat.group_count ?? "-"}</strong></div>
+            <div class="metric">每组测量数<strong>${repeat.expected_repeats_per_group ?? "-"}</strong></div>
           </div>
+          <h3>Repeat_index 分组</h3>
+          <table><thead><tr><th>Repeat_index</th><th>Label</th><th>数量</th></tr></thead><tbody>${repeatRows}</tbody></table>
           <h3>标签分布</h3>
           <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
         `;
@@ -751,12 +767,21 @@
 
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
+        const splitTrain = $("splitMode").value === "custom" ? Number($("splitTrain").value) : 8;
+        const splitValid = $("splitMode").value === "custom" ? Number($("splitValid").value) : 1;
+        const splitTest = $("splitMode").value === "custom" ? Number($("splitTest").value) : 1;
+        if (splitTrain + splitValid + splitTest !== 10) {
+          throw new Error("自定义划分比例必须相加等于 10，例如 7:1:2");
+        }
         return {
           epochs: Number($("epochs").value),
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
           split_mode: $("splitMode").value,
+          split_train: splitTrain,
+          split_valid: splitValid,
+          split_test: splitTest,
           class_balance: $("classBalance").value,
           model_type: $("modelType").value,
           early_stopping_patience: Number($("earlyStoppingPatience").value),
@@ -1143,6 +1168,10 @@
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
       }
 
+      function updateSplitOptionVisibility() {
+        $("customSplitOptions").classList.toggle("hidden", $("splitMode").value !== "custom");
+      }
+
       function showView(viewName) {
         document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
         const navButton = document.querySelector(`nav button[data-view="${viewName}"]`);
@@ -1171,6 +1200,7 @@
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => showView("manual"));
       $("modelType").addEventListener("change", updateModelOptionVisibility);
+      $("splitMode").addEventListener("change", updateSplitOptionVisibility);
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");
       });
@@ -1199,6 +1229,7 @@
 
       loadHealth();
       updateModelOptionVisibility();
+      updateSplitOptionVisibility();
       loadSample().catch(() => {});
     </script>
   </body>
