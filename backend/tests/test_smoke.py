@@ -96,6 +96,40 @@ def test_custom_split_ratio_must_sum_to_ten(tmp_path, monkeypatch):
         train_model(source, {"model_type": "logistic_regression", "split_train": 7, "split_valid": 1, "split_test": 1})
 
 
+def test_external_test_dataset_uses_train_valid_split(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    train_source = tmp_path / "train.csv"
+    test_source = tmp_path / "test.csv"
+    _write_grouped_modeling_csv(train_source, group_count=10, repeats=2)
+    _write_grouped_modeling_csv(test_source, group_count=4, repeats=2)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
+    result = train_model(train_source, {"model_type": "logistic_regression", "test_data_path": str(test_source)})
+    split = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+
+    assert len(split["train"]) == 16
+    assert len(split["valid"]) == 4
+    assert len(split["test"]) == 8
+    assert result["sample_count"] == 20
+    assert result["test_sample_count"] == 8
+
+
+def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    train_source = tmp_path / "train.csv"
+    test_source = tmp_path / "test.csv"
+    _write_grouped_modeling_csv(train_source, group_count=6, repeats=2)
+    _write_grouped_modeling_csv(test_source, group_count=2, repeats=2)
+    text = test_source.read_text(encoding="utf-8").replace(",A,", ",C,").replace(",B,", ",C,")
+    test_source.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
+    with pytest.raises(ValueError, match="测试集包含训练集中不存在的 Label"):
+        train_model(train_source, {"model_type": "logistic_regression", "test_data_path": str(test_source)})
+
+
 def test_train_smoke(tmp_path, monkeypatch):
     import backend.app.training as training
 

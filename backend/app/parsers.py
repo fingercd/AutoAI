@@ -127,12 +127,14 @@ def summarize_modeling_csv(path: str | Path) -> dict:
         "preview": dataset.frame.head(8).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
         "curves": [
             {
+                "index": int(dataset.frame.iloc[i]["Index"]) if str(dataset.frame.iloc[i]["Index"]).isdigit() else str(dataset.frame.iloc[i]["Index"]),
                 "name": str(dataset.frame.iloc[i]["Name"]),
                 "label": dataset.labels[i],
+                "repeat_index": dataset.repeat_index[i],
                 "x": dataset.x_axis[i],
                 "y": dataset.intensity[i].astype(float).tolist(),
             }
-            for i in range(min(3, len(dataset.labels)))
+            for i in range(len(dataset.labels))
         ],
     }
 

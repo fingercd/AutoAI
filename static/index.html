@@ -161,6 +161,9 @@
         grid-template-columns: repeat(4, minmax(110px, 1fr));
         gap: 10px;
       }
+      .summary-metrics {
+        grid-template-columns: repeat(5, minmax(95px, 1fr));
+      }
       .metric {
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -340,15 +343,18 @@
           <div class="grid">
             <div class="panel">
               <h2>数据集</h2>
-              <p>可直接加载项目根目录的 <code>data.csv</code>，也可以上传整理后的建模 CSV。</p>
               <div class="actions">
-                <button class="primary" id="loadSample">加载当前 data.csv</button>
-                <label class="secondary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0">
-                  上传建模 CSV
+                <label class="primary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0;border-radius:6px;padding:8px 13px;font-weight:650;background:var(--brand);color:#fff">
+                  加载数据集
                   <input id="datasetFile" type="file" accept=".csv" class="hidden" />
+                </label>
+                <label class="secondary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0">
+                  加载测试集
+                  <input id="testDatasetFile" type="file" accept=".csv" class="hidden" />
                 </label>
               </div>
               <div id="datasetInfo"></div>
+              <div id="testDatasetInfo"></div>
             </div>
             <div class="panel">
               <h2>训练配置</h2>
@@ -369,7 +375,7 @@
                 <option value="custom">自定义比例</option>
               </select>
               <div id="customSplitOptions" class="hidden">
-                <label>自定义比例（训练 / 验证 / 测试，相加必须为 10）</label>
+                <label id="customSplitLabel">自定义比例（训练 / 验证 / 测试，相加必须为 10）</label>
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
                   <input id="splitTrain" type="number" value="8" min="0" max="10" />
                   <input id="splitValid" type="number" value="1" min="0" max="10" />
@@ -462,6 +468,15 @@
                 <button class="secondary" id="toggleCurvePreview" type="button">收起</button>
               </div>
               <div id="curvePreviewBody">
+                <div class="actions">
+                  <select id="curveSourceSelect" style="max-width:180px">
+                    <option value="train">数据集曲线</option>
+                    <option value="test">测试集曲线</option>
+                  </select>
+                  <select id="curveSelect" style="max-width:320px"></select>
+                  <input id="curveIndexInput" type="text" placeholder="Index：1,3,5 或 1-5" style="max-width:240px" />
+                  <button class="secondary" id="showCurveIndexes" type="button">显示</button>
+                </div>
                 <canvas id="curveCanvas" width="1000" height="320"></canvas>
               </div>
             </div>
@@ -581,9 +596,12 @@
 
     <script>
       let datasetPath = null;
+      let testDatasetPath = null;
       let currentRunId = null;
       let poller = null;
       let lastSummaryCurves = [];
+      let lastTestSummaryCurves = [];
+      let currentCurveSource = "train";
       let lastPreprocessCurve = null;
       let lastPreprocessCanvasId = "preprocessCurveCanvas";
       let lastPreprocessKind = "raman";
@@ -632,7 +650,7 @@
         ctx.fillRect(0, 0, width, height);
         if (!curves || !curves.length) return;
         const pad = 44;
-        const colors = ["#0f766e", "#b45309", "#344054"];
+        const colors = ["#0f766e", "#b45309", "#344054", "#7c3aed", "#b42318", "#2563eb", "#087443"];
         const allY = curves.flatMap((c) => c.y);
         const minY = Math.min(...allY);
         const maxY = Math.max(...allY);
@@ -651,8 +669,61 @@
           });
           ctx.stroke();
           ctx.fillStyle = colors[ci % colors.length];
-          ctx.fillText(`${curve.name} (${curve.label})`, pad + 8, pad + 18 + ci * 18);
+          const legend = `${curve.index ?? ""} ${curve.name} / ${curve.label} / R${curve.repeat_index ?? ""}`;
+          ctx.fillText(legend.slice(0, 90), pad + 8, pad + 18 + ci * 18);
         });
+      }
+
+      function activeCurveList() {
+        return currentCurveSource === "test" ? lastTestSummaryCurves : lastSummaryCurves;
+      }
+
+      function curveDisplayName(curve) {
+        return `${curve.index ?? ""} | ${curve.name} | ${curve.label} | R${curve.repeat_index ?? ""}`;
+      }
+
+      function populateCurveSelect() {
+        const curves = activeCurveList();
+        $("curveSourceSelect").value = currentCurveSource;
+        $("curveSelect").innerHTML = curves.map((curve, index) => `<option value="${index}">${curveDisplayName(curve)}</option>`).join("");
+        drawSelectedCurve();
+      }
+
+      function drawSelectedCurve() {
+        const curves = activeCurveList();
+        const selected = curves[Number($("curveSelect").value || 0)];
+        drawCurves(selected ? [selected] : []);
+      }
+
+      function parseIndexExpression(input) {
+        const values = new Set();
+        input
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .forEach((part) => {
+            if (part.includes("-")) {
+              const [start, end] = part.split("-").map((value) => Number(value.trim()));
+              if (Number.isFinite(start) && Number.isFinite(end)) {
+                for (let value = Math.min(start, end); value <= Math.max(start, end); value += 1) values.add(String(value));
+              }
+            } else {
+              const value = Number(part);
+              if (Number.isFinite(value)) values.add(String(value));
+            }
+          });
+        return values;
+      }
+
+      function drawCurvesByIndex() {
+        const requested = parseIndexExpression($("curveIndexInput").value);
+        if (!requested.size) {
+          drawSelectedCurve();
+          return;
+        }
+        const curves = activeCurveList().filter((curve) => requested.has(String(curve.index)));
+        if (!curves.length) throw new Error("没有找到对应 Index 的曲线");
+        drawCurves(curves);
       }
 
       function drawPreprocessComparison(curve, canvasId = "preprocessCurveCanvas", kind = "raman") {
@@ -699,9 +770,15 @@
         ctx.fillText(curve.name || "", pad + 8, height - 14);
       }
 
-      function renderSummary(summary) {
-        datasetPath = summary.path;
-        lastSummaryCurves = summary.curves || [];
+      function renderSummary(summary, options = {}) {
+        const isTest = options.kind === "test";
+        if (isTest) {
+          testDatasetPath = summary.path;
+          lastTestSummaryCurves = summary.curves || [];
+        } else {
+          datasetPath = summary.path;
+          lastSummaryCurves = summary.curves || [];
+        }
         const labels = Object.entries(summary.label_counts)
           .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
           .join("");
@@ -709,21 +786,25 @@
         const repeatRows = (repeat.groups || [])
           .map((row) => `<tr><td>${row.repeat_index}</td><td>${row.label}</td><td>${row.count}</td></tr>`)
           .join("");
-        $("datasetInfo").innerHTML = `
-          <h3>数据摘要</h3>
-          <div class="metrics">
+        const target = isTest ? $("testDatasetInfo") : $("datasetInfo");
+        target.innerHTML = `
+          <h3>${isTest ? "测试集摘要" : "数据摘要"}</h3>
+          <div class="metrics summary-metrics">
             <div class="metric">样本数<strong>${summary.samples}</strong></div>
             <div class="metric">类别数<strong>${summary.classes}</strong></div>
-            <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
-            <div class="metric">Repeat_index 种数<strong>${repeat.group_count ?? "-"}</strong></div>
+            <div class="metric">样品种类<strong>${repeat.group_count ?? "-"}</strong></div>
             <div class="metric">每组测量数<strong>${repeat.expected_repeats_per_group ?? "-"}</strong></div>
+            <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
           </div>
           <h3>Repeat_index 分组</h3>
           <table><thead><tr><th>Repeat_index</th><th>Label</th><th>数量</th></tr></thead><tbody>${repeatRows}</tbody></table>
           <h3>标签分布</h3>
           <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
         `;
-        drawCurves(lastSummaryCurves);
+        if (isTest) currentCurveSource = "test";
+        else currentCurveSource = "train";
+        updateSplitOptionVisibility();
+        populateCurveSelect();
       }
 
       async function loadHealth() {
@@ -746,8 +827,14 @@
         const form = new FormData();
         form.append("file", file);
         const result = await api("/api/datasets/upload", { method: "POST", body: form });
-        datasetPath = result.dataset_path;
         renderSummary(result.summary);
+      }
+
+      async function uploadTestDataset(file) {
+        const form = new FormData();
+        form.append("file", file);
+        const result = await api("/api/datasets/upload", { method: "POST", body: form });
+        renderSummary(result.summary, { kind: "test" });
       }
 
       function isTraditionalModel(modelType = $("modelType").value) {
@@ -768,10 +855,10 @@
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const splitTrain = $("splitMode").value === "custom" ? Number($("splitTrain").value) : 8;
-        const splitValid = $("splitMode").value === "custom" ? Number($("splitValid").value) : 1;
-        const splitTest = $("splitMode").value === "custom" ? Number($("splitTest").value) : 1;
+        const splitValid = $("splitMode").value === "custom" ? Number($("splitValid").value) : (testDatasetPath ? 2 : 1);
+        const splitTest = testDatasetPath ? 0 : ($("splitMode").value === "custom" ? Number($("splitTest").value) : 1);
         if (splitTrain + splitValid + splitTest !== 10) {
-          throw new Error("自定义划分比例必须相加等于 10，例如 7:1:2");
+          throw new Error(testDatasetPath ? "自定义训练/验证比例必须相加等于 10，例如 8:2" : "自定义划分比例必须相加等于 10，例如 7:1:2");
         }
         return {
           epochs: Number($("epochs").value),
@@ -831,12 +918,12 @@
       }
 
       async function startTrain() {
-        if (!datasetPath) await loadSample();
+        if (!datasetPath) throw new Error("请先加载数据集");
         resetTrainingPanel();
         const result = await api("/api/training/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data_path: datasetPath, config: configPayload() }),
+          body: JSON.stringify({ data_path: datasetPath, test_data_path: testDatasetPath, config: configPayload() }),
         });
         currentRunId = result.run_id;
         pollRun();
@@ -1169,6 +1256,31 @@
       }
 
       function updateSplitOptionVisibility() {
+        const hasTest = Boolean(testDatasetPath);
+        const defaultOption = $("splitMode").querySelector('option[value="default"]');
+        defaultOption.textContent = hasTest ? "默认 8:2" : "默认 8:1:1";
+        $("customSplitLabel").textContent = hasTest ? "自定义比例（训练 / 验证，相加必须为 10）" : "自定义比例（训练 / 验证 / 测试，相加必须为 10）";
+        $("splitTest").classList.toggle("hidden", hasTest);
+        if (hasTest && $("splitTest").value !== "0") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+        }
+        if (!hasTest && $("splitTest").value === "0") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "1";
+          $("splitTest").value = "1";
+        }
+        if (hasTest && $("splitMode").value !== "custom") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+        }
+        if (!hasTest && $("splitMode").value !== "custom") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "1";
+          $("splitTest").value = "1";
+        }
         $("customSplitOptions").classList.toggle("hidden", $("splitMode").value !== "custom");
       }
 
@@ -1191,10 +1303,25 @@
         });
       });
 
-      $("loadSample").addEventListener("click", () => loadSample().catch((err) => alert(err.message)));
       $("datasetFile").addEventListener("change", (event) => {
         const file = event.target.files[0];
         if (file) uploadDataset(file).catch((err) => alert(err.message));
+      });
+      $("testDatasetFile").addEventListener("change", (event) => {
+        const file = event.target.files[0];
+        if (file) uploadTestDataset(file).catch((err) => alert(err.message));
+      });
+      $("curveSourceSelect").addEventListener("change", () => {
+        currentCurveSource = $("curveSourceSelect").value;
+        populateCurveSelect();
+      });
+      $("curveSelect").addEventListener("change", drawSelectedCurve);
+      $("showCurveIndexes").addEventListener("click", () => {
+        try {
+          drawCurvesByIndex();
+        } catch (err) {
+          alert(err.message);
+        }
       });
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
@@ -1230,7 +1357,7 @@
       loadHealth();
       updateModelOptionVisibility();
       updateSplitOptionVisibility();
-      loadSample().catch(() => {});
+      populateCurveSelect();
     </script>
   </body>
 </html>

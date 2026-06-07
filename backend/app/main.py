@@ -59,7 +59,7 @@ def _write_status(run_id: str, payload: dict[str, Any]) -> None:
 
 def _background_train(run_id: str, data_path: str, config: dict[str, Any]) -> None:
     try:
-        _write_status(run_id, {"status": "running", "data_path": data_path, "started_at": _now_iso()})
+        _write_status(run_id, {"status": "running", "data_path": data_path, "test_data_path": config.get("test_data_path"), "started_at": _now_iso()})
         train_model(data_path, config, run_id=run_id)
     except Exception as exc:
         _write_status(run_id, {"status": "failed", "error": str(exc), "traceback": traceback.format_exc(), "completed_at": _now_iso()})
@@ -137,9 +137,14 @@ def create_run(background_tasks: BackgroundTasks, payload: dict[str, Any]) -> di
     data_path = payload.get("data_path") or str(DEFAULT_DATA.resolve())
     if not Path(data_path).exists():
         raise HTTPException(status_code=404, detail="训练数据文件不存在")
+    test_data_path = payload.get("test_data_path")
+    if test_data_path and not Path(test_data_path).exists():
+        raise HTTPException(status_code=404, detail="测试数据文件不存在")
     run_id = uuid.uuid4().hex[:12]
     config = payload.get("config") or {}
-    _write_status(run_id, {"status": "pending", "data_path": data_path, "config": config, "created_at": _now_iso()})
+    if test_data_path:
+        config = {**config, "test_data_path": test_data_path}
+    _write_status(run_id, {"status": "pending", "data_path": data_path, "test_data_path": test_data_path, "config": config, "created_at": _now_iso()})
     background_tasks.add_task(_background_train, run_id, data_path, config)
     return {"run_id": run_id, "status": "pending"}
 
