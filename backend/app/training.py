@@ -11,127 +11,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.svm import SVC
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .models import build_deep_model, build_traditional_model, model_family
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
-
-
-class CNN1D(nn.Module):
-    def __init__(self, input_length: int, class_count: int, sample_count: int, dropout: float | None = None, hidden_size: int = 64) -> None:
-        super().__init__()
-        if input_length < 500:
-            channels = [1, 16, 32]
-        elif input_length <= 3000:
-            channels = [1, 24, 48, 64]
-        else:
-            channels = [1, 32, 64, 96, 128]
-        dropout = dropout if dropout is not None else (0.45 if sample_count < 100 else 0.25)
-        layers: list[nn.Module] = []
-        for in_channels, out_channels in zip(channels, channels[1:]):
-            layers.extend(
-                [
-                    nn.Conv1d(in_channels, out_channels, kernel_size=5, padding=2),
-                    nn.BatchNorm1d(out_channels),
-                    nn.ReLU(),
-                    nn.MaxPool1d(2),
-                    nn.Dropout(dropout),
-                ]
-            )
-        self.features = nn.Sequential(*layers, nn.AdaptiveAvgPool1d(1))
-        self.classifier = nn.Linear(channels[-1], class_count)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.features(x).squeeze(-1)
-        return self.classifier(x)
-
-
-class MLPBaseline(nn.Module):
-    def __init__(self, input_length: int, class_count: int, dropout: float | None = None, hidden_size: int = 128) -> None:
-        super().__init__()
-        dropout = 0.35 if dropout is None else dropout
-        self.net = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(input_length, hidden_size),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size, max(hidden_size // 2, 16)),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(max(hidden_size // 2, 16), class_count),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class ResidualBlock1D(nn.Module):
-    def __init__(self, channels: int, dropout: float) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv1d(channels, channels, kernel_size=5, padding=2),
-            nn.BatchNorm1d(channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Conv1d(channels, channels, kernel_size=5, padding=2),
-            nn.BatchNorm1d(channels),
-        )
-        self.relu = nn.ReLU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.relu(x + self.net(x))
-
-
-class ResNet1D(nn.Module):
-    def __init__(self, input_length: int, class_count: int, dropout: float | None = None, hidden_size: int = 48) -> None:
-        super().__init__()
-        dropout = 0.3 if dropout is None else dropout
-        self.stem = nn.Sequential(nn.Conv1d(1, hidden_size, kernel_size=7, padding=3), nn.BatchNorm1d(hidden_size), nn.ReLU())
-        self.blocks = nn.Sequential(ResidualBlock1D(hidden_size, dropout), nn.MaxPool1d(2), ResidualBlock1D(hidden_size, dropout))
-        self.head = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(hidden_size, class_count))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.blocks(self.stem(x)))
-
-
-class Transformer1D(nn.Module):
-    def __init__(
-        self,
-        input_length: int,
-        class_count: int,
-        dropout: float | None = None,
-        hidden_size: int = 64,
-        heads: int = 4,
-        layers: int = 2,
-    ) -> None:
-        super().__init__()
-        dropout = 0.25 if dropout is None else dropout
-        heads = max(1, heads)
-        while hidden_size % heads != 0 and heads > 1:
-            heads -= 1
-        self.proj = nn.Linear(1, hidden_size)
-        self.pos = nn.Parameter(torch.zeros(1, input_length, hidden_size))
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size,
-            nhead=heads,
-            dim_feedforward=hidden_size * 2,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=layers)
-        self.head = nn.Linear(hidden_size, class_count)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq = x.transpose(1, 2)
-        seq = self.proj(seq) + self.pos[:, : seq.shape[1], :]
-        seq = self.encoder(seq)
-        return self.head(seq.mean(dim=1))
 
 
 @dataclass
@@ -151,7 +37,12 @@ class TrainConfig:
     dropout: float | None = None
     hidden_size: int = 64
     transformer_heads: int = 4
-    logistic_c: float = 1.0
+    unet_depth: int = 3
+    dscarnet_inception_blocks: int = 1
+    knn_n_neighbors: int = 5
+    knn_weights: str = "distance"
+    knn_metric: str = "minkowski"
+    knn_p: int = 2
     random_forest_n_estimators: int = 100
     random_forest_max_depth: int | None = 3
     random_forest_min_samples_leaf: int = 2
@@ -163,93 +54,6 @@ class TrainConfig:
     xgboost_subsample: float = 0.9
     xgboost_colsample_bytree: float = 0.9
     xgboost_reg_lambda: float = 2.0
-
-
-TRADITIONAL_MODEL_TYPES = {"logistic_regression", "random_forest", "svm", "xgboost"}
-
-
-def _build_model(config: TrainConfig, input_length: int, class_count: int, sample_count: int) -> nn.Module:
-    model_type = config.model_type.lower()
-    if model_type in {"cnn1d", "1d-cnn", "1dcnn"}:
-        return CNN1D(input_length, class_count, sample_count, config.dropout, config.hidden_size)
-    if model_type in {"mlp", "mlp_baseline"}:
-        return MLPBaseline(input_length, class_count, config.dropout, max(config.hidden_size, 32))
-    if model_type in {"resnet1d", "resnet"}:
-        return ResNet1D(input_length, class_count, config.dropout, max(config.hidden_size, 16))
-    if model_type in {"transformer", "transformer_encoder"}:
-        return Transformer1D(input_length, class_count, config.dropout, max(config.hidden_size, 16), config.transformer_heads)
-    raise ValueError(f"Unsupported model_type: {config.model_type}")
-
-
-def _model_family(model_type: str) -> str:
-    return "traditional_ml" if model_type.lower() in TRADITIONAL_MODEL_TYPES else "deep_learning"
-
-
-def _parse_optional_int(value: Any) -> int | None:
-    if value in {None, "", "none", "None"}:
-        return None
-    return int(value)
-
-
-def _build_traditional_model(config: TrainConfig, y: np.ndarray, class_count: int) -> Any:
-    model_type = config.model_type.lower()
-    class_weight = "balanced" if config.class_balance == "class_weight" else None
-    if model_type == "logistic_regression":
-        return LogisticRegression(
-            C=config.logistic_c,
-            max_iter=2000,
-            class_weight=class_weight,
-            solver="lbfgs",
-            random_state=config.seed,
-        )
-    if model_type == "random_forest":
-        return RandomForestClassifier(
-            n_estimators=config.random_forest_n_estimators,
-            max_depth=_parse_optional_int(config.random_forest_max_depth),
-            min_samples_leaf=config.random_forest_min_samples_leaf,
-            max_features="sqrt",
-            class_weight=class_weight,
-            random_state=config.seed,
-            n_jobs=-1,
-        )
-    if model_type == "svm":
-        gamma: str | float = config.svm_gamma
-        if isinstance(gamma, str) and gamma not in {"scale", "auto"}:
-            gamma = float(gamma)
-        return SVC(
-            C=config.svm_c,
-            gamma=gamma,
-            kernel="rbf",
-            probability=True,
-            class_weight=class_weight,
-            random_state=config.seed,
-        )
-    if model_type == "xgboost":
-        try:
-            from xgboost import XGBClassifier
-        except Exception as exc:
-            raise ValueError("当前环境未安装 xgboost，无法训练 XGBoost 模型") from exc
-        params: dict[str, Any] = {
-            "n_estimators": config.xgboost_n_estimators,
-            "max_depth": config.xgboost_max_depth,
-            "learning_rate": config.xgboost_learning_rate,
-            "subsample": config.xgboost_subsample,
-            "colsample_bytree": config.xgboost_colsample_bytree,
-            "reg_lambda": config.xgboost_reg_lambda,
-            "eval_metric": "logloss" if class_count == 2 else "mlogloss",
-            "random_state": config.seed,
-            "n_jobs": 1,
-        }
-        if class_count == 2:
-            params["objective"] = "binary:logistic"
-            if config.class_balance == "class_weight":
-                counts = np.bincount(y, minlength=class_count).astype(np.float32)
-                params["scale_pos_weight"] = float(counts[0] / max(counts[1], 1.0))
-        else:
-            params["objective"] = "multi:softprob"
-            params["num_class"] = class_count
-        return XGBClassifier(**params)
-    raise ValueError(f"Unsupported model_type: {config.model_type}")
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -270,7 +74,7 @@ def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
 def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> dict[str, list[int]]:
     ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
     if any(value < 0 for value in ratios) or sum(ratios) != 10:
-        raise ValueError("划分比例必须是非负整数，且训练:验证:测试三项相加必须等于 10")
+        raise ValueError("划分比例必须是非负整数，且训练、验证、测试三项相加必须等于 10")
     if ratios[0] <= 0:
         raise ValueError("训练集比例必须大于 0")
 
@@ -445,8 +249,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         splits = _split_indices(y, repeat_index, config)
     _validate_splits(splits, y, label_names)
 
-    if _model_family(config.model_type) == "traditional_ml":
-        model = _build_traditional_model(config, y[splits["train"]], len(label_names))
+    if model_family(config.model_type) == "traditional_ml":
+        model = build_traditional_model(config, y[splits["train"]], len(label_names))
         model.fit(x[splits["train"]], y[splits["train"]])
         evaluations = {name: _evaluate_traditional_model(model, x, y, idx, label_names) for name, idx in splits.items()}
         metrics = {
@@ -538,7 +342,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
         class_weights = torch.tensor((counts.sum() / np.maximum(counts, 1.0)) / len(label_names), dtype=torch.float32)
 
-    model = _build_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
+    model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
