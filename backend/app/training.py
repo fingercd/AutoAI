@@ -329,6 +329,15 @@ def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainCo
     }
 
 
+def _validate_external_test_dataset(train_labels: list[str], train_curve_length: int, test_dataset: Any) -> None:
+    unknown_labels = sorted(set(test_dataset.labels).difference(train_labels))
+    if unknown_labels:
+        raise ValueError(f"测试集包含训练集中不存在的 Label: {', '.join(unknown_labels)}")
+    test_lengths = {len(values) for values in test_dataset.x_axis}
+    if test_lengths != {train_curve_length}:
+        raise ValueError(f"测试集曲线长度必须与训练数据一致，训练长度 {train_curve_length}，测试集长度 {sorted(test_lengths)}")
+
+
 def _loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
     tx = torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1)
     ty = torch.tensor(y[indices], dtype=torch.long)
@@ -384,7 +393,9 @@ def _now_iso() -> str:
 
 
 def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
-    config = TrainConfig(**{**TrainConfig().__dict__, **(config_data or {})})
+    test_data_path = (config_data or {}).get("test_data_path")
+    config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
+    config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
     run_id = run_id or uuid.uuid4().hex[:12]
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -406,10 +417,25 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     label_to_id = {label: idx for idx, label in enumerate(label_names)}
     y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
     repeat_index = dataset.frame["Repeat_index"].astype(str).to_numpy()
-    splits = _split_indices(y, repeat_index, config)
+    test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
+    test_sample_count = int(len(test_dataset.labels)) if test_dataset is not None else 0
+    if test_dataset is not None:
+        _validate_external_test_dataset(label_names, x.shape[1], test_dataset)
+        split_config = TrainConfig(**{**config.__dict__, "split_valid": config.split_valid + config.split_test, "split_test": 0})
+        splits = _split_indices(y, repeat_index, split_config)
+        test_x, _test_norm_config = _normalize(test_dataset.intensity, config.normalization)
+        test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
+        test_offset = len(y)
+        x = np.concatenate([x, test_x], axis=0)
+        y = np.concatenate([y, test_y], axis=0)
+        combined_frame = pd.concat([dataset.frame, test_dataset.frame], ignore_index=True)
+        splits["test"] = list(range(test_offset, test_offset + len(test_y)))
+    else:
+        combined_frame = dataset.frame
+        splits = _split_indices(y, repeat_index, config)
 
     if _model_family(config.model_type) == "traditional_ml":
-        model = _build_traditional_model(config, y, len(label_names))
+        model = _build_traditional_model(config, y[splits["train"]], len(label_names))
         model.fit(x[splits["train"]], y[splits["train"]])
         evaluations = {name: _evaluate_traditional_model(model, x, y, idx, label_names) for name, idx in splits.items()}
         metrics = {
@@ -434,8 +460,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             for local_idx, source_idx in enumerate(idxs):
                 row = {
                     "dataset": split,
-                    "index": dataset.frame.iloc[source_idx]["Index"],
-                    "Repeat_index": dataset.frame.iloc[source_idx]["Repeat_index"],
+                    "index": combined_frame.iloc[source_idx]["Index"],
+                    "Repeat_index": combined_frame.iloc[source_idx]["Repeat_index"],
                     "true_label": label_names[result["true"][local_idx]],
                     "pred_label": label_names[result["pred"][local_idx]],
                 }
@@ -443,7 +469,12 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                     row[f"prob_{label}"] = float(prob)
                 prediction_rows.append(row)
 
-        config_out = {**config.__dict__, "data_path": str(Path(data_path).resolve()), "preprocess": norm_config}
+        config_out = {
+            **config.__dict__,
+            "data_path": str(Path(data_path).resolve()),
+            "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
+            "preprocess": norm_config,
+        }
         (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
         (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
         (run_dir / "split.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -463,12 +494,14 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             "model_family": "traditional_ml",
             "model_artifact": "model.pkl",
             "sample_count": sample_count,
+            "test_sample_count": test_sample_count,
             "label_names": label_names,
             "target_epochs": 1,
             "actual_epochs": 1,
             "best_valid_macro_f1": metrics["valid"]["macro_f1"],
             "config": config_out,
             "data_path": str(Path(data_path).resolve()),
+            "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
             "completed_at": _now_iso(),
         }
         (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -481,6 +514,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             "model_family": "traditional_ml",
             "model_artifact": "model.pkl",
             "sample_count": sample_count,
+            "test_sample_count": test_sample_count,
             "label_names": label_names,
             "target_epochs": 1,
             "actual_epochs": 1,
@@ -490,10 +524,10 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
 
     class_weights = None
     if config.class_balance == "class_weight":
-        counts = np.bincount(y, minlength=len(label_names)).astype(np.float32)
+        counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
         class_weights = torch.tensor((counts.sum() / np.maximum(counts, 1.0)) / len(label_names), dtype=torch.float32)
 
-    model = _build_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=x.shape[0])
+    model = _build_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
@@ -547,8 +581,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         for local_idx, source_idx in enumerate(idxs):
             row = {
                 "dataset": split,
-                "index": dataset.frame.iloc[source_idx]["Index"],
-                "Repeat_index": dataset.frame.iloc[source_idx]["Repeat_index"],
+                "index": combined_frame.iloc[source_idx]["Index"],
+                "Repeat_index": combined_frame.iloc[source_idx]["Repeat_index"],
                 "true_label": label_names[result["true"][local_idx]],
                 "pred_label": label_names[result["pred"][local_idx]],
             }
@@ -556,7 +590,12 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
 
-    config_out = {**config.__dict__, "data_path": str(Path(data_path).resolve()), "preprocess": norm_config}
+    config_out = {
+        **config.__dict__,
+        "data_path": str(Path(data_path).resolve()),
+        "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
+        "preprocess": norm_config,
+    }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "split.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -574,12 +613,14 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "model_family": "deep_learning",
         "model_artifact": "model.pt",
         "sample_count": sample_count,
+        "test_sample_count": test_sample_count,
         "label_names": label_names,
         "target_epochs": config.epochs,
         "actual_epochs": len(history),
         "best_valid_macro_f1": best_score,
         "config": config_out,
         "data_path": str(Path(data_path).resolve()),
+        "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "completed_at": _now_iso(),
     }
     (run_dir / "status.json").write_text(
@@ -599,6 +640,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "model_family": "deep_learning",
         "model_artifact": "model.pt",
         "sample_count": sample_count,
+        "test_sample_count": test_sample_count,
         "label_names": label_names,
         "target_epochs": config.epochs,
         "actual_epochs": len(history),
