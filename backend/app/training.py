@@ -338,6 +338,16 @@ def _validate_external_test_dataset(train_labels: list[str], train_curve_length:
         raise ValueError(f"测试集曲线长度必须与训练数据一致，训练长度 {train_curve_length}，测试集长度 {sorted(test_lengths)}")
 
 
+def _validate_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str]) -> None:
+    for split_name, indices in splits.items():
+        if not indices:
+            raise ValueError(f"{split_name} 集为空，请增加样品种类或调整划分比例")
+    train_labels = set(np.unique(y[splits["train"]]).tolist())
+    missing = [label for idx, label in enumerate(label_names) if idx not in train_labels]
+    if missing:
+        raise ValueError(f"训练集中缺少类别: {', '.join(missing)}。请增加样品种类或调整划分比例")
+
+
 def _loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
     tx = torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1)
     ty = torch.tensor(y[indices], dtype=torch.long)
@@ -433,6 +443,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     else:
         combined_frame = dataset.frame
         splits = _split_indices(y, repeat_index, config)
+    _validate_splits(splits, y, label_names)
 
     if _model_family(config.model_type) == "traditional_ml":
         model = _build_traditional_model(config, y[splits["train"]], len(label_names))
