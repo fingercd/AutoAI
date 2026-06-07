@@ -66,7 +66,7 @@ def test_custom_split_uses_repeat_index_groups(tmp_path, monkeypatch):
     result = train_model(
         source,
         {
-            "model_type": "logistic_regression",
+            "model_type": "knn",
             "split_mode": "custom",
             "split_train": 7,
             "split_valid": 1,
@@ -93,7 +93,7 @@ def test_custom_split_ratio_must_sum_to_ten(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
     with pytest.raises(ValueError, match="相加必须等于 10"):
-        train_model(source, {"model_type": "logistic_regression", "split_train": 7, "split_valid": 1, "split_test": 1})
+        train_model(source, {"model_type": "knn", "split_train": 7, "split_valid": 1, "split_test": 1})
 
 
 def test_external_test_dataset_uses_train_valid_split(tmp_path, monkeypatch):
@@ -105,7 +105,7 @@ def test_external_test_dataset_uses_train_valid_split(tmp_path, monkeypatch):
     _write_grouped_modeling_csv(test_source, group_count=4, repeats=2)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
-    result = train_model(train_source, {"model_type": "logistic_regression", "test_data_path": str(test_source)})
+    result = train_model(train_source, {"model_type": "knn", "test_data_path": str(test_source)})
     split = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
 
     assert len(split["train"]) == 16
@@ -127,7 +127,7 @@ def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
     with pytest.raises(ValueError, match="测试集包含训练集中不存在的 Label"):
-        train_model(train_source, {"model_type": "logistic_regression", "test_data_path": str(test_source)})
+        train_model(train_source, {"model_type": "knn", "test_data_path": str(test_source)})
 
 
 def test_train_smoke(tmp_path, monkeypatch):
@@ -140,7 +140,7 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert (run_dir / "predictions.csv").exists()
 
 
-@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "resnet1d", "transformer", "logistic_regression", "random_forest", "svm", "xgboost"])
+@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "transformer", "unet1d", "dscarnet", "knn", "random_forest", "svm", "xgboost"])
 def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     import backend.app.training as training
 

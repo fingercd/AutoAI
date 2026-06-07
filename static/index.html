@@ -362,12 +362,13 @@
               <select id="modelType">
                 <option value="cnn1d">1D-CNN</option>
                 <option value="mlp">MLP Baseline</option>
-                <option value="resnet1d">ResNet1D</option>
-                <option value="transformer">Transformer Encoder</option>
-                <option value="logistic_regression">逻辑回归</option>
-                <option value="random_forest">随机森林</option>
-                <option value="svm">支持向量机 SVM</option>
-                <option value="xgboost">XGBoost 梯度提升</option>
+                <option value="transformer">Transformer</option>
+                <option value="unet1d">UNet1D</option>
+                <option value="dscarnet">DSCARNet</option>
+                <option value="knn">KNN</option>
+                <option value="random_forest">Random Forest</option>
+                <option value="svm">SVM</option>
+                <option value="xgboost">XGBoost</option>
               </select>
               <label>划分方式</label>
               <select id="splitMode">
@@ -420,11 +421,29 @@
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
                   <label>Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
+                  <label>UNet1D depth</label>
+                  <input id="unetDepth" type="number" value="3" min="2" max="5" />
+                  <label>DSCARNet inception blocks</label>
+                  <input id="dscarnetInceptionBlocks" type="number" value="1" min="1" max="3" />
                 </div>
                 <div id="traditionalOptions" class="hidden">
-                  <div id="logisticOptions">
-                    <label>逻辑回归 C</label>
-                    <input id="logisticC" type="number" value="1" min="0.01" max="100" step="0.1" />
+                  <div id="knnOptions">
+                    <label>KNN neighbors</label>
+                    <input id="knnNeighbors" type="number" value="5" min="1" max="99" step="1" />
+                    <label>KNN weights</label>
+                    <select id="knnWeights">
+                      <option value="distance">distance</option>
+                      <option value="uniform">uniform</option>
+                    </select>
+                    <label>KNN metric</label>
+                    <select id="knnMetric">
+                      <option value="minkowski">minkowski</option>
+                      <option value="euclidean">euclidean</option>
+                      <option value="manhattan">manhattan</option>
+                      <option value="cosine">cosine</option>
+                    </select>
+                    <label>KNN p</label>
+                    <input id="knnP" type="number" value="2" min="1" max="9" step="1" />
                   </div>
                   <div id="randomForestOptions" class="hidden">
                     <label>随机森林树数量</label>
@@ -848,7 +867,7 @@
       }
 
       function isTraditionalModel(modelType = $("modelType").value) {
-        return ["logistic_regression", "random_forest", "svm", "xgboost"].includes(modelType);
+        return ["knn", "random_forest", "svm", "xgboost"].includes(modelType);
       }
 
       function numberOrNull(id) {
@@ -885,7 +904,12 @@
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
-          logistic_c: Number($("logisticC").value),
+          unet_depth: Number($("unetDepth").value),
+          dscarnet_inception_blocks: Number($("dscarnetInceptionBlocks").value),
+          knn_n_neighbors: Number($("knnNeighbors").value),
+          knn_weights: $("knnWeights").value,
+          knn_metric: $("knnMetric").value,
+          knn_p: Number($("knnP").value),
           random_forest_n_estimators: Number($("rfEstimators").value),
           random_forest_max_depth: numberOrNull("rfMaxDepth"),
           random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
@@ -1231,7 +1255,7 @@
         $("trainTimeBlock").classList.toggle("hidden", traditional);
         $("deepOptions").classList.toggle("hidden", traditional);
         $("traditionalOptions").classList.toggle("hidden", !traditional);
-        $("logisticOptions").classList.toggle("hidden", modelType !== "logistic_regression");
+        $("knnOptions").classList.toggle("hidden", modelType !== "knn");
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
         $("svmOptions").classList.toggle("hidden", modelType !== "svm");
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
