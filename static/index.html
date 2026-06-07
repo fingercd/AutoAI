@@ -602,6 +602,7 @@
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
       let currentCurveSource = "train";
+      let currentCurveMode = "selected";
       let lastPreprocessCurve = null;
       let lastPreprocessCanvasId = "preprocessCurveCanvas";
       let lastPreprocessKind = "raman";
@@ -690,6 +691,7 @@
       }
 
       function drawSelectedCurve() {
+        currentCurveMode = "selected";
         const curves = activeCurveList();
         const selected = curves[Number($("curveSelect").value || 0)];
         drawCurves(selected ? [selected] : []);
@@ -723,7 +725,20 @@
         }
         const curves = activeCurveList().filter((curve) => requested.has(String(curve.index)));
         if (!curves.length) throw new Error("没有找到对应 Index 的曲线");
+        currentCurveMode = "index";
         drawCurves(curves);
+      }
+
+      function redrawCurrentCurvePreview() {
+        if (currentCurveMode === "index" && $("curveIndexInput").value.trim()) {
+          try {
+            drawCurvesByIndex();
+          } catch (_) {
+            drawSelectedCurve();
+          }
+        } else {
+          drawSelectedCurve();
+        }
       }
 
       function drawPreprocessComparison(curve, canvasId = "preprocessCurveCanvas", kind = "raman") {
@@ -816,11 +831,6 @@
           $("health").textContent = "后端异常";
           $("health").className = "status failed";
         }
-      }
-
-      async function loadSample() {
-        const summary = await api("/api/sample/summary");
-        renderSummary(summary);
       }
 
       async function uploadDataset(file) {
@@ -1118,34 +1128,6 @@
         renderRun(run);
       }
 
-      async function preprocess(kind) {
-        const filesInput = kind === "raman" ? $("ramanFiles") : $("chromFiles");
-        const start = kind === "raman" ? $("ramanStart").value : $("chromStart").value;
-        const end = kind === "raman" ? $("ramanEnd").value : $("chromEnd").value;
-        if (!filesInput.files.length) throw new Error("请选择文件");
-        const form = new FormData();
-        [...filesInput.files].forEach((file) => form.append("files", file));
-        form.append("start_row", start);
-        form.append("end_row", end);
-        if (kind === "raman") {
-          form.append("baseline_order", $("ramanBaselineOrder").value);
-          form.append("baseline_method", "arPLS");
-        }
-        const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
-        const orderText =
-          result.baseline_order === "baseline_then_range"
-            ? "先基线预处理，后选数据范围"
-            : result.baseline_order === "range_then_baseline"
-              ? "先选数据范围，后基线预处理"
-              : "不适用";
-        $("preprocessResult").innerHTML = `
-          <p>已生成 ${result.rows} 条样本。</p>
-          <p>基线校正顺序：${orderText}</p>
-          <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
-          <pre>${JSON.stringify(result.preview, null, 2)}</pre>
-        `;
-      }
-
       function selectedRamanBaselineMethod() {
         if ($("ramanBaselineMethodMode").value === "custom") {
           return $("ramanCustomMethod").value.trim() || "arPLS";
@@ -1335,7 +1317,7 @@
         const body = $("curvePreviewBody");
         const collapsed = body.classList.toggle("hidden");
         $("toggleCurvePreview").textContent = collapsed ? "展开" : "收起";
-        if (!collapsed) drawCurves(lastSummaryCurves);
+        if (!collapsed) redrawCurrentCurvePreview();
       });
       $("trainTime").addEventListener("change", () => {
         $("epochs").value = $("trainTime").value === "deep" ? "100" : "50";
@@ -1350,7 +1332,7 @@
         button.addEventListener("click", () => preprocessEnhanced(button.dataset.preprocess).catch((err) => alert(err.message)));
       });
       window.addEventListener("resize", () => {
-        if (lastSummaryCurves.length) drawCurves(lastSummaryCurves);
+        if (lastSummaryCurves.length || lastTestSummaryCurves.length) redrawCurrentCurvePreview();
         if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
       });
 
