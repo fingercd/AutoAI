@@ -173,8 +173,8 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
         raise ValueError(f"{path.name} 没有可解析的两列数值数据")
     x = numeric.iloc[:, 0].to_numpy(dtype=np.float32)
     y = numeric.iloc[:, 1].to_numpy(dtype=np.float32)
-    if kind not in {"raman", "chromatography"}:
-        raise ValueError("kind 必须是 raman 或 chromatography")
+    if kind not in {"raman", "chromatography", "hplc"}:
+        raise ValueError("kind 必须是 raman、chromatography 或 hplc")
     return x, y
 
 
@@ -205,11 +205,37 @@ def _baseline_correct(x: np.ndarray, y: np.ndarray, method: str) -> np.ndarray:
         raise ValueError(f"Baseline method {method} failed: {exc}") from exc
 
 
+def _range_indexer(
+    x: np.ndarray,
+    start_row: int,
+    end_row: int | None,
+    range_mode: str,
+    x_min: float | None,
+    x_max: float | None,
+) -> tuple[slice | np.ndarray, str]:
+    if range_mode == "row":
+        start = max(0, start_row - 1)
+        end = end_row if end_row and end_row > 0 else len(x)
+        return slice(start, end), "行范围"
+    if range_mode != "x_value":
+        raise ValueError("range_mode must be row or x_value")
+    if x_min is None and x_max is None:
+        raise ValueError("按 X 轴数值取范围时，请至少填写下限或上限")
+    lower = float("-inf") if x_min is None else float(x_min)
+    upper = float("inf") if x_max is None else float(x_max)
+    if lower > upper:
+        raise ValueError("X 轴范围下限不能大于上限")
+    return (x >= lower) & (x <= upper), "X 轴数值范围"
+
+
 def preprocess_raw_files(
     files: Iterable[str | Path],
     kind: str,
     start_row: int = 1,
     end_row: int | None = None,
+    range_mode: str = "row",
+    x_min: float | None = None,
+    x_max: float | None = None,
     baseline_method: str = "arPLS",
     baseline_order: str = "range_then_baseline",
     display_names: list[str] | None = None,
@@ -221,17 +247,16 @@ def preprocess_raw_files(
         path = Path(file_path)
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         x, y = read_raw_spectrum(path, kind=kind)
-        start = max(0, start_row - 1)
-        end = end_row if end_row and end_row > 0 else len(x)
+        indexer, range_label = _range_indexer(x, start_row, end_row, range_mode, x_min, x_max)
         if kind == "raman" and baseline_order == "baseline_then_range":
             y = _baseline_correct(x, y, baseline_method)
-            x = x[start:end]
-            y = y[start:end]
+            x = x[indexer]
+            y = y[indexer]
         else:
-            x = x[start:end]
-            y = y[start:end]
+            x = x[indexer]
+            y = y[indexer]
         if len(x) == 0:
-            raise ValueError(f"{path.name} 在所选行范围内没有数据")
+            raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
         if kind == "raman" and baseline_order != "baseline_then_range":
             y = _baseline_correct(x, y, baseline_method)
         records.append(
@@ -252,6 +277,9 @@ def preprocess_raw_files_with_preview(
     kind: str,
     start_row: int = 1,
     end_row: int | None = None,
+    range_mode: str = "row",
+    x_min: float | None = None,
+    x_max: float | None = None,
     baseline_method: str = "arPLS",
     baseline_order: str = "range_then_baseline",
     display_names: list[str] | None = None,
@@ -264,23 +292,22 @@ def preprocess_raw_files_with_preview(
         path = Path(file_path)
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         full_x, full_y = read_raw_spectrum(path, kind=kind)
-        start = max(0, start_row - 1)
-        end = end_row if end_row and end_row > 0 else len(full_x)
+        indexer, range_label = _range_indexer(full_x, start_row, end_row, range_mode, x_min, x_max)
         if kind == "raman" and baseline_order == "baseline_then_range":
             full_corrected_y = _baseline_correct(full_x, full_y, baseline_method)
-            x = full_x[start:end]
-            raw_y = full_y[start:end]
-            corrected_y = full_corrected_y[start:end]
+            x = full_x[indexer]
+            raw_y = full_y[indexer]
+            corrected_y = full_corrected_y[indexer]
         else:
-            x = full_x[start:end]
-            raw_y = full_y[start:end]
+            x = full_x[indexer]
+            raw_y = full_y[indexer]
             if kind == "raman":
                 corrected_y = raw_y.copy()
                 corrected_y = _baseline_correct(x, corrected_y, baseline_method)
             else:
                 corrected_y = raw_y.copy()
         if len(x) == 0:
-            raise ValueError(f"{path.name} has no data in the selected row range")
+            raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
         records.append(
             {
                 "Index": index,
