@@ -13,6 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+import numpy as np
+
+from .hplc import preprocess_hplc_files_with_preview
 from .parsers import preprocess_raw_files_with_preview, summarize_modeling_csv
 from .paths import DEFAULT_DATA, PREPROCESSED_DIR, RUNS_DIR, STATIC_DIR, UPLOADS_DIR, ensure_storage
 from .training import list_runs, train_model
@@ -30,6 +33,18 @@ app.add_middleware(
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+UI_PAGES = {
+    "workbench": "ui-workbench.html",
+    "wizard": "ui-wizard.html",
+    "dashboard": "ui-dashboard.html",
+    "console": "ui-console.html",
+    "minimal-lab": "ui-minimal-lab.html",
+    "swiss": "ui-swiss.html",
+    "dark-instrument": "ui-dark-instrument.html",
+    "warm-paper": "ui-warm-paper.html",
+}
 
 
 def _save_upload(file: UploadFile) -> Path:
@@ -70,6 +85,19 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/ui")
+def ui_gallery() -> FileResponse:
+    return FileResponse(STATIC_DIR / "ui-gallery.html")
+
+
+@app.get("/ui/{name}")
+def ui_variant(name: str) -> FileResponse:
+    filename = UI_PAGES.get(name)
+    if not filename:
+        raise HTTPException(status_code=404, detail="UI 方案不存在")
+    return FileResponse(STATIC_DIR / filename)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -99,35 +127,81 @@ def preprocess(
     files: list[UploadFile] = File(...),
     start_row: int = Form(1),
     end_row: int | None = Form(None),
+    range_mode: str = Form("row"),
+    x_min: float | None = Form(None),
+    x_max: float | None = Form(None),
     baseline_method: str = Form("arPLS"),
     baseline_order: str = Form("range_then_baseline"),
+    hplc_interpolate: bool = Form(True),
+    hplc_subtract_min: bool = Form(True),
+    hplc_normalize_area: bool = Form(True),
 ) -> dict[str, Any]:
-    if kind not in {"raman", "chromatography"}:
-        raise HTTPException(status_code=400, detail="kind 必须是 raman 或 chromatography")
+    if kind not in {"raman", "chromatography", "hplc"}:
+        raise HTTPException(status_code=400, detail="kind 必须是 raman、chromatography 或 hplc")
     original_names = [Path(file.filename or f"sample_{idx}").stem for idx, file in enumerate(files, start=1)]
     saved_files = [_save_upload(file) for file in files]
     try:
-        result = preprocess_raw_files_with_preview(
-            saved_files,
-            kind=kind,
-            start_row=start_row,
-            end_row=end_row,
-            baseline_method=baseline_method,
-            baseline_order=baseline_order,
-            display_names=original_names,
-        )
+        if kind == "hplc":
+            result = preprocess_hplc_files_with_preview(
+                saved_files,
+                start_row=start_row,
+                end_row=end_row,
+                range_mode=range_mode,
+                x_min=x_min,
+                x_max=x_max,
+                display_names=original_names,
+                interpolate=hplc_interpolate,
+                subtract_min=hplc_subtract_min,
+                normalize_area=hplc_normalize_area,
+            )
+        else:
+            result = preprocess_raw_files_with_preview(
+                saved_files,
+                kind=kind,
+                start_row=start_row,
+                end_row=end_row,
+                range_mode=range_mode,
+                x_min=x_min,
+                x_max=x_max,
+                baseline_method=baseline_method,
+                baseline_order=baseline_order,
+                display_names=original_names,
+            )
         frame = result["frame"]
         output = PREPROCESSED_DIR / f"{kind}_{uuid.uuid4().hex[:10]}.csv"
         frame.to_csv(output, index=False, encoding="utf-8-sig")
-        return {
+        response: dict[str, Any] = {
             "output_path": str(output.resolve()),
             "download_url": f"/api/files?path={output.resolve()}",
             "rows": int(len(frame)),
-            "baseline_order": baseline_order if kind == "raman" else None,
-            "baseline_method": baseline_method if kind == "raman" else None,
+            "range_mode": range_mode,
+            "x_min": x_min,
+            "x_max": x_max,
             "curves": result["curves"],
             "preview": frame.head(5).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
         }
+        if kind == "hplc":
+            response.update({
+                "baseline_order": None,
+                "baseline_method": None,
+                "hplc_interpolate": hplc_interpolate,
+                "hplc_subtract_min": hplc_subtract_min,
+                "hplc_normalize_area": hplc_normalize_area,
+                "common_time": result.get("common_time", []),
+            })
+            if result.get("common_time"):
+                npy_path = PREPROCESSED_DIR / f"common_time_{output.stem}.npy"
+                np.save(npy_path, np.array(result["common_time"], dtype=np.float32))
+                response["common_time_path"] = str(npy_path.resolve())
+        elif kind == "raman":
+            response.update({
+                "baseline_order": baseline_order,
+                "baseline_method": baseline_method,
+            })
+        else:
+            response["baseline_order"] = None
+            response["baseline_method"] = None
+        return response
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

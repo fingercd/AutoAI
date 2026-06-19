@@ -517,10 +517,23 @@
               <h2>拉曼预处理</h2>
               <label>上传拉曼 CSV，可多选</label>
               <input id="ramanFiles" type="file" multiple accept=".csv" />
-              <label>起始行</label>
-              <input id="ramanStart" type="number" value="1" min="1" />
-              <label>结束行</label>
-              <input id="ramanEnd" type="number" value="160" min="1" />
+              <label>范围选择方式</label>
+              <select id="ramanRangeMode">
+                <option value="row">按行号范围</option>
+                <option value="x_value">按 X 轴数值范围</option>
+              </select>
+              <div id="ramanRowRange">
+                <label>起始行</label>
+                <input id="ramanStart" type="number" value="1" min="1" />
+                <label>结束行</label>
+                <input id="ramanEnd" type="number" value="160" min="1" />
+              </div>
+              <div id="ramanValueRange" class="hidden">
+                <label>拉曼位移下限（留空不限制）</label>
+                <input id="ramanXMin" type="number" step="any" placeholder="例如 400" />
+                <label>拉曼位移上限（留空不限制）</label>
+                <input id="ramanXMax" type="number" step="any" placeholder="例如 1800" />
+              </div>
               <label>基线校正顺序</label>
               <select id="ramanBaselineOrder">
                 <option value="range_then_baseline">先选数据范围，后基线预处理</option>
@@ -552,10 +565,34 @@
               <h2>色谱预处理</h2>
               <label>上传色谱 CSV，可多选</label>
               <input id="chromFiles" type="file" multiple accept=".csv" />
-              <label>起始行</label>
-              <input id="chromStart" type="number" value="1" min="1" />
-              <label>结束行</label>
-              <input id="chromEnd" type="number" value="160" min="1" />
+              <label>范围选择方式</label>
+              <select id="chromRangeMode">
+                <option value="row">按行号范围</option>
+                <option value="x_value">按 X 轴数值范围</option>
+              </select>
+              <div id="chromRowRange">
+                <label>起始行</label>
+                <input id="chromStart" type="number" value="1" min="1" />
+                <label>结束行</label>
+                <input id="chromEnd" type="number" value="160" min="1" />
+              </div>
+              <div id="chromValueRange" class="hidden">
+                <label>时间下限（留空不限制）</label>
+                <input id="chromXMin" type="number" step="any" placeholder="例如 0.5" />
+                <label>时间上限（留空不限制）</label>
+                <input id="chromXMax" type="number" step="any" placeholder="例如 12" />
+              </div>
+              <div>
+                <label style="font-weight:600">
+                  <input type="checkbox" id="chromHplcMode" onchange="toggleHplcOptions()" />
+                  启用 HPLC 高级预处理（插值对齐 + 消负 + 面积归一化）
+                </label>
+                <div id="chromHplcOptions" class="hidden" style="margin-left:1.5em">
+                  <label><input type="checkbox" id="chromHplcInterp" checked /> 线性插值到统一时间轴</label>
+                  <label><input type="checkbox" id="chromHplcSubMin" checked /> 减最小值消除负值</label>
+                  <label><input type="checkbox" id="chromHplcNormArea" checked /> 面积归一化 (总面积=1)</label>
+                </div>
+              </div>
               <div class="actions">
                 <button class="primary" data-preprocess="chromatography">生成整理 CSV</button>
               </div>
@@ -581,7 +618,7 @@
           <div class="panel">
             <h2>使用手册</h2>
             <h3>一、拉曼数据预处理</h3>
-            <p>上传多个拉曼 CSV 后，设置起始行和结束行，系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Repeat_index。</p>
+            <p>上传多个拉曼 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是拉曼位移。系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Repeat_index。</p>
             <p>基线校正顺序有两种：</p>
             <table>
               <thead><tr><th>方式</th><th>处理流程</th><th>适合情况</th></tr></thead>
@@ -599,7 +636,7 @@
               </tbody>
             </table>
             <h3>二、色谱数据预处理</h3>
-            <p>上传多个色谱 CSV 后，设置起始行和结束行。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
+            <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
             <h3>三、AI 建模</h3>
             <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 的统一格式 CSV。设置 epoch、batch size、学习率、标准化和划分方式后点击开始训练。</p>
             <h3>四、结果下载</h3>
@@ -768,15 +805,20 @@
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
         const pad = 46;
-        const rawLabel = kind === "chromatography" ? "原始色谱曲线" : "原始拉曼光谱";
-        const correctedLabel = "基线校正后光谱";
-        const series =
-          kind === "chromatography"
-            ? [{ label: rawLabel, values: curve.raw_y, color: "#0f766e" }]
-            : [
-                { label: rawLabel, values: curve.raw_y, color: "#0f766e" },
-                { label: correctedLabel, values: curve.corrected_y, color: "#b45309" },
-              ];
+        let series;
+        if (kind === "hplc") {
+          series = [
+            { label: "插值/消负前", values: curve.raw_y, color: "#94a3b8", dashed: true },
+            { label: "处理后", values: curve.processed_y, color: "#2563eb" },
+          ];
+        } else if (kind === "chromatography") {
+          series = [{ label: "原始色谱曲线", values: curve.raw_y, color: "#0f766e" }];
+        } else {
+          series = [
+            { label: "原始拉曼光谱", values: curve.raw_y, color: "#0f766e" },
+            { label: "基线校正后光谱", values: curve.corrected_y, color: "#b45309" },
+          ];
+        }
         const allY = series.flatMap((item) => item.values || []);
         if (!allY.length) return;
         const minY = Math.min(...allY);
@@ -787,7 +829,9 @@
         series.forEach((item, seriesIndex) => {
           ctx.beginPath();
           ctx.strokeStyle = item.color;
-          ctx.lineWidth = 2.2;
+          ctx.lineWidth = item.dashed ? 1.2 : 2.2;
+          if (item.dashed) ctx.setLineDash([6, 4]);
+          else ctx.setLineDash([]);
           item.values.forEach((value, i) => {
             const x = pad + (i / Math.max(item.values.length - 1, 1)) * (width - pad * 2);
             const y = height - pad - ((value - minY) / Math.max(maxY - minY, 1e-9)) * (height - pad * 2);
@@ -795,6 +839,7 @@
             else ctx.lineTo(x, y);
           });
           ctx.stroke();
+          ctx.setLineDash([]);
           ctx.fillStyle = item.color;
           ctx.fillRect(pad + 8 + seriesIndex * 160, pad - 24, 12, 12);
           ctx.fillStyle = "#344054";
@@ -1159,20 +1204,56 @@
         return "arPLS";
       }
 
+      function preprocessPrefix(kind) {
+        if (kind === "raman") return "raman";
+        if (kind === "hplc") return "chrom";
+        return "chrom";
+      }
+
+      function toggleHplcOptions() {
+        const checked = $("chromHplcMode").checked;
+        $("chromHplcOptions").classList.toggle("hidden", !checked);
+      }
+
+      function updatePreprocessRangeMode(kind) {
+        const prefix = preprocessPrefix(kind);
+        const mode = $(`${prefix}RangeMode`).value;
+        $(`${prefix}RowRange`).classList.toggle("hidden", mode !== "row");
+        $(`${prefix}ValueRange`).classList.toggle("hidden", mode !== "x_value");
+      }
+
       async function preprocessEnhanced(kind) {
-        const filesInput = kind === "raman" ? $("ramanFiles") : $("chromFiles");
-        const start = kind === "raman" ? $("ramanStart").value : $("chromStart").value;
-        const end = kind === "raman" ? $("ramanEnd").value : $("chromEnd").value;
+        // HPLC mode override: if chromatography button clicked but HPLC checkbox is on
+        const isChrom = kind === "chromatography";
+        const hplcMode = isChrom && $("chromHplcMode")?.checked;
+        const effectiveKind = hplcMode ? "hplc" : kind;
+        const prefix = preprocessPrefix(kind);
+        const filesInput = $(`${prefix}Files`);
+        const rangeMode = $(`${prefix}RangeMode`).value;
         if (!filesInput.files.length) throw new Error("请选择文件");
         const form = new FormData();
         [...filesInput.files].forEach((file) => form.append("files", file));
-        form.append("start_row", start);
-        form.append("end_row", end);
-        if (kind === "raman") {
+        form.append("range_mode", rangeMode);
+        if (rangeMode === "row") {
+          form.append("start_row", $(`${prefix}Start`).value);
+          form.append("end_row", $(`${prefix}End`).value);
+        } else {
+          const xMin = $(`${prefix}XMin`).value.trim();
+          const xMax = $(`${prefix}XMax`).value.trim();
+          if (!xMin && !xMax) throw new Error("按 X 轴数值取范围时，请至少填写下限或上限");
+          if (xMin) form.append("x_min", xMin);
+          if (xMax) form.append("x_max", xMax);
+        }
+        if (effectiveKind === "raman") {
           form.append("baseline_order", $("ramanBaselineOrder").value);
           form.append("baseline_method", selectedRamanBaselineMethod());
         }
-        const result = await api(`/api/preprocess/${kind}`, { method: "POST", body: form });
+        if (effectiveKind === "hplc") {
+          form.append("hplc_interpolate", String($("chromHplcInterp").checked));
+          form.append("hplc_subtract_min", String($("chromHplcSubMin").checked));
+          form.append("hplc_normalize_area", String($("chromHplcNormArea").checked));
+        }
+        const result = await api(`/api/preprocess/${effectiveKind}`, { method: "POST", body: form });
         const hasCurves = result.curves && result.curves.length;
         const curveOptions = hasCurves
           ? result.curves.map((curve, index) => `<option value="${index}">${curve.name}</option>`).join("")
@@ -1181,13 +1262,21 @@
         const resultTarget = kind === "raman" ? $("preprocessResult") : $("chromPreprocessResult");
         const selectId = `${kind}PreprocessCurveSelect`;
         const canvasId = `${kind}PreprocessCurveCanvas`;
-        const title = kind === "chromatography" ? "原始色谱曲线" : "原始拉曼光谱与基线校正后光谱";
+        const title = effectiveKind === "hplc"
+          ? "HPLC 处理后曲线（灰=插值后/消负前，蓝=归一化后）"
+          : kind === "chromatography"
+            ? "原始色谱曲线"
+            : "原始拉曼光谱与基线校正后光谱";
+        const infoLines = effectiveKind === "hplc" && result.common_time
+          ? `<p style="color:#667085;font-size:12px">统一时间轴: ${result.common_time.length} 点, 步长 ${((result.common_time[1]-result.common_time[0])*60).toFixed(3)} 秒</p>`
+          : "";
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
             <div class="metric">结果文件<strong style="font-size:14px">已生成</strong></div>
           </div>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
+          ${infoLines}
           ${
             hasCurves
               ? `<h3>${title}</h3>
@@ -1202,8 +1291,8 @@
           const renderSelected = () => {
             lastPreprocessCurve = result.curves[Number(select.value || 0)];
             lastPreprocessCanvasId = canvasId;
-            lastPreprocessKind = kind;
-            drawPreprocessComparison(lastPreprocessCurve, canvasId, kind);
+            lastPreprocessKind = effectiveKind;
+            drawPreprocessComparison(lastPreprocessCurve, canvasId, effectiveKind);
           };
           select.addEventListener("change", renderSelected);
           renderSelected();
@@ -1349,6 +1438,8 @@
       $("ramanBaselineMethodMode").addEventListener("change", () => {
         $("ramanCustomMethodBox").classList.toggle("hidden", $("ramanBaselineMethodMode").value !== "custom");
       });
+      $("ramanRangeMode").addEventListener("change", () => updatePreprocessRangeMode("raman"));
+      $("chromRangeMode").addEventListener("change", () => updatePreprocessRangeMode("chromatography"));
       document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
         button.addEventListener("click", () => showView(button.dataset.viewShortcut));
       });
@@ -1363,6 +1454,8 @@
       loadHealth();
       updateModelOptionVisibility();
       updateSplitOptionVisibility();
+      updatePreprocessRangeMode("raman");
+      updatePreprocessRangeMode("chromatography");
       populateCurveSelect();
     </script>
   </body>
