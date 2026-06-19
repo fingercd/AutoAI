@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -26,7 +28,8 @@ class UNet1D(nn.Module):
     def __init__(self, input_length: int, class_count: int, dropout: float | None = None, hidden_size: int = 16, depth: int = 3) -> None:
         super().__init__()
         dropout = 0.15 if dropout is None else dropout
-        depth = max(2, min(int(depth), 5))
+        max_depth_for_length = max(1, int(math.floor(math.log2(max(1, input_length)))) + 1)
+        depth = max(1, min(int(depth), 5, max_depth_for_length))
         base_channels = max(8, int(hidden_size))
         channels = [base_channels * (2**idx) for idx in range(depth)]
 
