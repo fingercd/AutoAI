@@ -10,3 +10,6 @@ autoai_deploy.zip
 
 ~$*.docx
 *.log
+
+# OMC (oh-my-claudecode) 工作区,2026-07-05 切到 superpowers 后启用
+.omc/
