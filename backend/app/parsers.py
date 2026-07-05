@@ -163,10 +163,10 @@ def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
 
 def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarray]:
     path = Path(path)
-    frame = _read_csv_flexible(path)
+    frame = _read_csv_no_header_flexible(path)
     numeric = frame.apply(pd.to_numeric, errors="coerce")
     if numeric.shape[1] < 2 or numeric.iloc[:, :2].dropna().empty:
-        frame = _read_csv_no_header_flexible(path)
+        frame = _read_csv_flexible(path)
         numeric = frame.apply(pd.to_numeric, errors="coerce")
     numeric = numeric.iloc[:, :2].dropna()
     if numeric.empty:

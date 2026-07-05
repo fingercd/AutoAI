@@ -49,6 +49,171 @@ def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int 
     path.write_text("\n".join(rows), encoding="utf-8")
 
 
+def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
+    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    x_axis = list(range(40))
+    index = 1
+    for group in range(1, group_count + 1):
+        label = "A" if group <= group_count // 2 else "B"
+        for repeat in range(repeats):
+            y = np.zeros(40, dtype=float)
+            y += group * 0.01 + repeat * 0.001
+            if label == "B":
+                y[25] += 3.0
+            rows.append(
+                f'{index},signal_{group}_{repeat},"{x_axis}",'
+                f'"{y.round(6).tolist()}",{label},{group}'
+            )
+            index += 1
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+
+def test_build_feature_windows_uses_configured_window_count():
+    from backend.app.feature_selection import build_feature_windows
+    from backend.app.training import TrainConfig
+
+    windows = build_feature_windows(10, window_count=4)
+
+    assert windows == [
+        {"window_index": 0, "start_index": 0, "end_index": 2},
+        {"window_index": 1, "start_index": 3, "end_index": 5},
+        {"window_index": 2, "start_index": 6, "end_index": 7},
+        {"window_index": 3, "start_index": 8, "end_index": 9},
+    ]
+    assert build_feature_windows(5, window_count=100) == [
+        {"window_index": 0, "start_index": 0, "end_index": 0},
+        {"window_index": 1, "start_index": 1, "end_index": 1},
+        {"window_index": 2, "start_index": 2, "end_index": 2},
+        {"window_index": 3, "start_index": 3, "end_index": 3},
+        {"window_index": 4, "start_index": 4, "end_index": 4},
+    ]
+    assert build_feature_windows(0, window_count=50) == []
+    assert TrainConfig().feature_window_count == 100
+
+
+def test_interval_permutation_importance_finds_signal_window():
+    from backend.app.feature_selection import interval_permutation_importance
+
+    rng = np.random.default_rng(42)
+    x = rng.normal(0, 0.01, size=(24, 60)).astype(np.float32)
+    y = np.asarray([0] * 12 + [1] * 12, dtype=np.int64)
+    x[y == 1, 20:30] += 2.0
+
+    def predict(values):
+        return (values[:, 25] > 1.0).astype(np.int64)
+
+    result = interval_permutation_importance(
+        x,
+        y,
+        x_axis=np.arange(60, dtype=np.float32),
+        eval_indices=list(range(24)),
+        mean_indices=list(range(24)),
+        predict_fn=predict,
+        window_count=6,
+        top_k=2,
+        n_repeats=3,
+        seed=7,
+    )
+
+    assert result["status"] == "ready"
+    assert len(result["windows"]) == 6
+    assert result["top_segments"]
+    assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in result["top_segments"])
+
+
+def test_interval_permutation_importance_unavailable_for_one_class():
+    from backend.app.feature_selection import interval_permutation_importance
+
+    x = np.zeros((4, 20), dtype=np.float32)
+    y = np.zeros(4, dtype=np.int64)
+
+    result = interval_permutation_importance(
+        x,
+        y,
+        x_axis=np.arange(20, dtype=np.float32),
+        eval_indices=[0, 1, 2, 3],
+        mean_indices=[0, 1, 2, 3],
+        predict_fn=lambda values: np.zeros(values.shape[0], dtype=np.int64),
+        window_count=5,
+    )
+
+    assert result["status"] == "unavailable"
+    assert "一个类别" in result["reason"]
+
+
+def test_sample_occlusion_importance_finds_true_label_signal_window():
+    from backend.app.feature_selection import sample_occlusion_importance
+
+    x = np.zeros((2, 40), dtype=np.float32)
+    x[1, 20:30] = 2.0
+    y = np.asarray([0, 1], dtype=np.int64)
+
+    def score(values):
+        logits = np.column_stack([np.zeros(values.shape[0]), values[:, 20:30].mean(axis=1)])
+        exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
+
+    result = sample_occlusion_importance(
+        x,
+        y,
+        x_axis=np.arange(40, dtype=np.float32),
+        splits={"train": [0], "valid": [0], "test": [1]},
+        label_names=["A", "B"],
+        score_fn=score,
+        mean_indices=[0],
+        metadata=[
+            {"index": 1, "name": "sample_a", "repeat_index": "1"},
+            {"index": 2, "name": "sample_b", "repeat_index": "2"},
+        ],
+        window_count=4,
+        top_k=2,
+    )
+
+    assert result["status"] == "ready"
+    assert [sample["dataset"] for sample in result["samples"]] == ["test"]
+    sample_b = next(sample for sample in result["samples"] if sample["true_label"] == "B")
+    assert sample_b["correct"] is True
+    assert len(sample_b["windows"]) == 4
+    assert sample_b["top_segments"]
+    top_window = min(sample_b["windows"], key=lambda item: item["rank"])
+    assert "original_loss" in top_window
+    assert "masked_loss" in top_window
+    assert "normalized_importance" in top_window
+    assert top_window["importance"] == pytest.approx(top_window["masked_loss"] - top_window["original_loss"])
+    normalized_values = [window["normalized_importance"] for window in sample_b["windows"]]
+    assert min(normalized_values) == pytest.approx(0.0)
+    assert max(normalized_values) == pytest.approx(1.0)
+    assert top_window["normalized_importance"] == pytest.approx(1.0)
+    assert sample_b["top_segments"][0]["normalized_importance"] == pytest.approx(1.0)
+    assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in sample_b["top_segments"])
+
+
+def test_sample_occlusion_importance_allows_no_positive_segments():
+    from backend.app.feature_selection import sample_occlusion_importance
+
+    x = np.ones((1, 12), dtype=np.float32)
+    y = np.asarray([0], dtype=np.int64)
+
+    result = sample_occlusion_importance(
+        x,
+        y,
+        x_axis=np.arange(12, dtype=np.float32),
+        splits={"test": [0]},
+        label_names=["A"],
+        score_fn=lambda values: np.ones((values.shape[0], 1), dtype=np.float32),
+        mean_indices=[0],
+        metadata=[{"index": 1, "name": "flat", "repeat_index": "1"}],
+        window_count=3,
+        top_k=2,
+    )
+
+    assert result["status"] == "ready"
+    assert result["samples"][0]["top_segments"] == []
+    assert all("original_loss" in window and "masked_loss" in window for window in result["samples"][0]["windows"])
+    assert all(window["importance"] == 0 for window in result["samples"][0]["windows"])
+    assert all(window["normalized_importance"] == 0 for window in result["samples"][0]["windows"])
+
+
 def test_repeat_index_summary_and_incomplete_group_error(tmp_path):
     source = tmp_path / "bad_repeat.csv"
     _write_grouped_modeling_csv(source, group_count=4, repeats=2)
@@ -141,6 +306,76 @@ def test_train_smoke(tmp_path, monkeypatch):
     run_dir = tmp_path / result["run_id"]
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "predictions.csv").exists()
+    assert (run_dir / "feature_importance.json").exists()
+    assert (run_dir / "feature_importance.csv").exists()
+    assert (run_dir / "sample_feature_importance.json").exists()
+    assert (run_dir / "sample_feature_importance.csv").exists()
+    assert result["feature_importance"]["artifact"] == "feature_importance.json"
+    assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
+
+
+def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, monkeypatch):
+    import backend.app.main as main
+    import backend.app.training as training
+    from fastapi.testclient import TestClient
+
+    source = tmp_path / "feature_signal.csv"
+    _write_feature_signal_csv(source)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(main, "RUNS_DIR", tmp_path / "runs")
+
+    result = train_model(
+        source,
+        {
+            "model_type": "knn",
+            "normalization": "none",
+            "split_train": 6,
+            "split_valid": 2,
+            "split_test": 2,
+            "feature_window_count": 4,
+            "feature_top_k": 2,
+            "feature_n_repeats": 2,
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+    sample_feature_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+
+    assert result["feature_importance"]["status"] == "ready"
+    assert result["sample_feature_importance"]["status"] == "ready"
+    assert (run_dir / "feature_importance.csv").exists()
+    assert (run_dir / "sample_feature_importance.csv").exists()
+    assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in feature_payload["top_segments"])
+    assert len(feature_payload["windows"]) == 4
+    assert sample_feature_payload["samples"]
+    assert {sample["dataset"] for sample in sample_feature_payload["samples"]} == {"test"}
+    assert all("true_label" in sample and "curve" in sample for sample in sample_feature_payload["samples"])
+    assert all(
+        len(sample["windows"]) == 4
+        for sample in sample_feature_payload["samples"]
+    )
+    assert all(
+        "original_loss" in window and "masked_loss" in window and "normalized_importance" in window
+        for sample in sample_feature_payload["samples"]
+        for window in sample["windows"]
+    )
+    assert all(
+        0.0 <= window["normalized_importance"] <= 1.0
+        for sample in sample_feature_payload["samples"]
+        for window in sample["windows"]
+    )
+    assert any(
+        segment["start_index"] <= 29 and segment["end_index"] >= 20
+        for sample in sample_feature_payload["samples"]
+        if sample["true_label"] == "B"
+        for segment in sample["top_segments"]
+    )
+
+    client = TestClient(main.app)
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.csv").status_code == 200
 
 
 @pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "transformer", "unet1d", "dscarnet", "knn", "random_forest", "svm", "xgboost"])
@@ -157,6 +392,9 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
             "early_stopping_patience": 5,
             "hidden_size": 32,
             "transformer_heads": 4,
+            "feature_window_count": 4,
+            "feature_top_k": 2,
+            "feature_n_repeats": 1,
         },
     )
 
@@ -244,6 +482,33 @@ def test_preprocess_x_value_range_selects_by_axis(tmp_path):
     assert result["curves"][0]["x"] == [1.0, 1.5, 2.0]
     assert result["curves"][0]["raw_y"] == [20.0, 30.0, 40.0]
     assert ast.literal_eval(result["frame"].iloc[0]["XXX"]) == [1.0, 1.5, 2.0]
+
+
+def test_read_raw_spectrum_no_header_preserves_first_row(tmp_path):
+    from backend.app.parsers import read_raw_spectrum
+
+    source = tmp_path / "no_header.csv"
+    source.write_text("\n".join(f"{idx},{idx * 10}" for idx in range(5)), encoding="utf-8")
+
+    x, y = read_raw_spectrum(source, kind="hplc")
+
+    np.testing.assert_allclose(x, [0, 1, 2, 3, 4])
+    np.testing.assert_allclose(y, [0, 10, 20, 30, 40])
+
+
+def test_read_raw_spectrum_header_csv_still_reads_values(tmp_path):
+    from backend.app.parsers import read_raw_spectrum
+
+    source = tmp_path / "with_header.csv"
+    source.write_text(
+        "Time,Intensity\n" + "\n".join(f"{idx},{idx * 10}" for idx in range(5)),
+        encoding="utf-8",
+    )
+
+    x, y = read_raw_spectrum(source, kind="hplc")
+
+    np.testing.assert_allclose(x, [0, 1, 2, 3, 4])
+    np.testing.assert_allclose(y, [0, 10, 20, 30, 40])
 
 
 def test_raman_preprocess_api_returns_curve_preview(tmp_path, monkeypatch):
@@ -365,6 +630,42 @@ def test_ui_variant_assets_are_served():
     assert "initAutoAIVariant" in script_response.text
 
 
+def test_main_ui_prefers_sample_feature_importance_panel():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "sample_feature_importance" in content
+    assert "featureSampleSelect" in content
+    assert "renderGlobalFeatureImportance" in content
+    assert "function visibleFeatureSegments" in content
+    assert "visibleFeatureSegments(data.top_segments).forEach" in content
+    assert "const segments = visibleFeatureSegments(data.top_segments)" in content
+    assert "visibleFeatureSegments(sample.top_segments).forEach" in content
+    assert "const segments = visibleFeatureSegments(sample.top_segments)" in content
+    assert "function drawSampleFeatureHeatmap" in content
+    assert "sample.windows" in content
+    assert "normalized_importance" in content
+    assert "featureWindowCount" in content
+    assert 'value="100"' in content
+    assert 'max="5000"' in content
+    assert 'feature_window_count: Number($("featureWindowCount").value)' in content
+    assert 'height="460"' in content
+    assert "boundaryX" in content
+    assert "legendHeight = 72" in content
+    assert "重要性高（关键特征）" in content
+    assert "重要性低（贡献小）" in content
+    assert "归一化重要性" in content
+    assert "loss 增加" in content
+
+
+def test_main_ui_manual_explains_repeat_index_group_split():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "Repeat_index 整组划分" in content
+    assert "不是按单条曲线随机划分" in content
+    assert "train : valid : test = 8 : 1 : 1" in content
+    assert "6/2/2" in content
+
+
 # ---------------------------------------------------------------------------
 # HPLC preprocessing tests
 # ---------------------------------------------------------------------------
@@ -476,6 +777,19 @@ def test_hplc_normalize_area_basic():
     np.testing.assert_allclose(area, 1.0, atol=1e-5)
 
 
+def test_hplc_normalize_area_uses_real_time_axis():
+    from backend.app.hplc import hplc_normalize_area
+
+    x_axis = np.linspace(0, 10, 101, dtype=np.float32)
+    m = np.ones((1, 101), dtype=np.float32)
+    result = hplc_normalize_area(m, x_axis=x_axis)
+
+    index_area = float(np.trapezoid(result[0]))
+    time_area = float(np.trapezoid(result[0], x=x_axis))
+    np.testing.assert_allclose(time_area, 1.0, atol=1e-5)
+    assert abs(index_area - 1.0) > 1.0
+
+
 def test_hplc_normalize_area_zero_protection():
     from backend.app.hplc import hplc_normalize_area
 
@@ -498,9 +812,10 @@ def test_hplc_pipeline_default(tmp_path):
     # After full pipeline, all values >= 0
     for curve in result["curves"]:
         assert np.min(curve["processed_y"]) >= 0.0
-    # Area normalization: each curve area ≈ 1.0
+    # Area normalization: each curve area ≈ 1.0 on the real common time axis.
+    common_time = np.asarray(result["common_time"], dtype=np.float32)
     for curve in result["curves"]:
-        area = float(np.trapezoid(curve["processed_y"]))
+        area = float(np.trapezoid(curve["processed_y"], x=common_time))
         assert abs(area - 1.0) < 0.1  # loose tolerance for random noise
 
 
@@ -511,6 +826,21 @@ def test_hplc_pipeline_interpolate_off(tmp_path):
     result = preprocess_hplc_files_with_preview(files, interpolate=False)
     # With same offsets, X should be unchanged
     np.testing.assert_allclose(result["curves"][0]["x"], result["curves"][1]["x"], atol=1e-4)
+
+
+def test_hplc_pipeline_interpolate_off_rejects_shifted_time_axes(tmp_path):
+    from backend.app.hplc import preprocess_hplc_files_with_preview
+
+    files = []
+    for idx, offset in enumerate([0.0, 0.1]):
+        x = np.linspace(offset, 10 + offset, 50, dtype=np.float64)
+        y = np.linspace(1, 50, 50, dtype=np.float64)
+        path = tmp_path / f"shifted_{idx}.csv"
+        pd.DataFrame({0: x, 1: y}).to_csv(path, index=False, header=False)
+        files.append(path)
+
+    with pytest.raises(ValueError, match="时间轴一致"):
+        preprocess_hplc_files_with_preview(files, interpolate=False)
 
 
 def test_hplc_pipeline_subtract_min_off(tmp_path):

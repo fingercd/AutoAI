@@ -15,6 +15,13 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precisio
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .feature_selection import (
+    interval_permutation_importance,
+    sample_occlusion_importance,
+    unavailable_feature_importance,
+    write_feature_importance_artifacts,
+    write_sample_feature_importance_artifacts,
+)
 from .models import build_deep_model, build_traditional_model, model_family
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
@@ -54,6 +61,11 @@ class TrainConfig:
     xgboost_subsample: float = 0.9
     xgboost_colsample_bytree: float = 0.9
     xgboost_reg_lambda: float = 2.0
+    feature_selection_enabled: bool = True
+    feature_window_count: int = 100
+    feature_top_k: int = 5
+    feature_n_repeats: int = 5
+    feature_eval_split: str = "valid"
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -178,16 +190,20 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     }
 
 
+def _traditional_probabilities(model: Any, values: np.ndarray) -> np.ndarray:
+    if hasattr(model, "predict_proba"):
+        return np.asarray(model.predict_proba(values), dtype=float)
+    decision = model.decision_function(values)
+    if decision.ndim == 1:
+        decision = np.column_stack([-decision, decision])
+    shifted = decision - decision.max(axis=1, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / exp.sum(axis=1, keepdims=True)
+
+
 def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     pred = model.predict(x[indices])
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(x[indices])
-    else:
-        decision = model.decision_function(x[indices])
-        if decision.ndim == 1:
-            decision = np.column_stack([-decision, decision])
-        shifted = decision - decision.max(axis=1, keepdims=True)
-        probs = np.exp(shifted) / np.exp(shifted).sum(axis=1, keepdims=True)
+    probs = _traditional_probabilities(model, x[indices])
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
@@ -200,6 +216,121 @@ def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indice
         "pred": np.asarray(pred, dtype=int).tolist(),
         "true": true.tolist(),
     }
+
+
+def _compute_feature_importance(
+    *,
+    run_dir: Path,
+    config: TrainConfig,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    x_axis: list[float],
+    predict_fn: Any,
+) -> dict[str, Any]:
+    eval_split = config.feature_eval_split if config.feature_eval_split in splits else "valid"
+    mean_indices = splits.get("train", [])
+    if not config.feature_selection_enabled:
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        result = unavailable_feature_importance(
+            "特征区间识别已关闭",
+            x_axis=x_axis,
+            mean_curve=mean_curve,
+        )
+        result["status"] = "disabled"
+        result["eval_split"] = eval_split
+        return write_feature_importance_artifacts(run_dir, result)
+    try:
+        result = interval_permutation_importance(
+            x,
+            y,
+            x_axis=x_axis,
+            eval_indices=splits.get(eval_split, []),
+            mean_indices=mean_indices,
+            predict_fn=predict_fn,
+            window_count=config.feature_window_count,
+            top_k=config.feature_top_k,
+            n_repeats=config.feature_n_repeats,
+            seed=config.seed,
+            eval_split=eval_split,
+        )
+    except Exception as exc:
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        result = unavailable_feature_importance(
+            f"重要区间计算失败: {exc}",
+            x_axis=x_axis,
+            mean_curve=mean_curve,
+        )
+        result["status"] = "failed"
+        result["eval_split"] = eval_split
+    return write_feature_importance_artifacts(run_dir, result)
+
+
+def _compute_sample_feature_importance(
+    *,
+    run_dir: Path,
+    config: TrainConfig,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    x_axis: list[float],
+    label_names: list[str],
+    metadata: list[dict[str, Any]],
+    score_fn: Any,
+) -> dict[str, Any]:
+    mean_indices = splits.get("train", [])
+    if not config.feature_selection_enabled:
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        result = {
+            "status": "disabled",
+            "reason": "特征区间识别已关闭",
+            "method": "sample_occlusion_importance",
+            "baseline": "train_mean_curve",
+            "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
+            "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "samples": [],
+        }
+        return write_sample_feature_importance_artifacts(run_dir, result)
+    try:
+        result = sample_occlusion_importance(
+            x,
+            y,
+            x_axis=x_axis,
+            splits=splits,
+            label_names=label_names,
+            score_fn=score_fn,
+            mean_indices=mean_indices,
+            metadata=metadata,
+            window_count=config.feature_window_count,
+            top_k=config.feature_top_k,
+        )
+    except Exception as exc:
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        result = {
+            "status": "failed",
+            "reason": f"单样品重要区间计算失败: {exc}",
+            "method": "sample_occlusion_importance",
+            "baseline": "train_mean_curve",
+            "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
+            "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "samples": [],
+        }
+    return write_sample_feature_importance_artifacts(run_dir, result)
+
+
+def _sample_metadata(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    rows = []
+    for _, row in frame.iterrows():
+        raw_index = row.get("Index", "")
+        index_value = int(raw_index) if str(raw_index).isdigit() else str(raw_index)
+        rows.append(
+            {
+                "index": index_value,
+                "name": str(row.get("Name", "")),
+                "repeat_index": str(row.get("Repeat_index", "")),
+            }
+        )
+    return rows
 
 
 def _now_iso() -> str:
@@ -225,6 +356,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     np.random.seed(config.seed)
 
     dataset = load_modeling_csv(data_path)
+    combined_x_axis = list(dataset.x_axis)
     sample_count = int(len(dataset.labels))
     x, norm_config = _normalize(dataset.intensity, config.normalization)
     label_names = sorted(set(dataset.labels))
@@ -243,11 +375,14 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         x = np.concatenate([x, test_x], axis=0)
         y = np.concatenate([y, test_y], axis=0)
         combined_frame = pd.concat([dataset.frame, test_dataset.frame], ignore_index=True)
+        combined_x_axis = list(dataset.x_axis) + list(test_dataset.x_axis)
         splits["test"] = list(range(test_offset, test_offset + len(test_y)))
     else:
         combined_frame = dataset.frame
         splits = _split_indices(y, repeat_index, config)
     _validate_splits(splits, y, label_names)
+    feature_x_axis = combined_x_axis[0] if combined_x_axis else list(range(x.shape[1]))
+    metadata = _sample_metadata(combined_frame)
 
     if model_family(config.model_type) == "traditional_ml":
         model = build_traditional_model(config, y[splits["train"]], len(label_names))
@@ -284,6 +419,27 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                     row[f"prob_{label}"] = float(prob)
                 prediction_rows.append(row)
 
+        feature_summary = _compute_feature_importance(
+            run_dir=run_dir,
+            config=config,
+            x=x,
+            y=y,
+            splits=splits,
+            x_axis=feature_x_axis,
+            predict_fn=lambda values: np.asarray(model.predict(values), dtype=np.int64),
+        )
+        sample_feature_summary = _compute_sample_feature_importance(
+            run_dir=run_dir,
+            config=config,
+            x=x,
+            y=y,
+            splits=splits,
+            x_axis=feature_x_axis,
+            label_names=label_names,
+            metadata=metadata,
+            score_fn=lambda values: _traditional_probabilities(model, values),
+        )
+
         config_out = {
             **config.__dict__,
             "data_path": str(Path(data_path).resolve()),
@@ -308,6 +464,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             "model_type": config.model_type,
             "model_family": "traditional_ml",
             "model_artifact": "model.pkl",
+            "feature_importance": feature_summary,
+            "sample_feature_importance": sample_feature_summary,
             "sample_count": sample_count,
             "test_sample_count": test_sample_count,
             "label_names": label_names,
@@ -328,6 +486,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             "model_type": config.model_type,
             "model_family": "traditional_ml",
             "model_artifact": "model.pkl",
+            "feature_importance": feature_summary,
+            "sample_feature_importance": sample_feature_summary,
             "sample_count": sample_count,
             "test_sample_count": test_sample_count,
             "label_names": label_names,
@@ -405,6 +565,37 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
 
+    def score_deep(values: np.ndarray) -> np.ndarray:
+        model.eval()
+        with torch.no_grad():
+            logits = model(torch.tensor(values, dtype=torch.float32).unsqueeze(1))
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+        return probs
+
+    def predict_deep(values: np.ndarray) -> np.ndarray:
+        return score_deep(values).argmax(axis=1)
+
+    feature_summary = _compute_feature_importance(
+        run_dir=run_dir,
+        config=config,
+        x=x,
+        y=y,
+        splits=splits,
+        x_axis=feature_x_axis,
+        predict_fn=predict_deep,
+    )
+    sample_feature_summary = _compute_sample_feature_importance(
+        run_dir=run_dir,
+        config=config,
+        x=x,
+        y=y,
+        splits=splits,
+        x_axis=feature_x_axis,
+        label_names=label_names,
+        metadata=metadata,
+        score_fn=score_deep,
+    )
+
     config_out = {
         **config.__dict__,
         "data_path": str(Path(data_path).resolve()),
@@ -427,6 +618,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "model_type": config.model_type,
         "model_family": "deep_learning",
         "model_artifact": "model.pt",
+        "feature_importance": feature_summary,
+        "sample_feature_importance": sample_feature_summary,
         "sample_count": sample_count,
         "test_sample_count": test_sample_count,
         "label_names": label_names,
@@ -454,6 +647,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "model_type": config.model_type,
         "model_family": "deep_learning",
         "model_artifact": "model.pt",
+        "feature_importance": feature_summary,
+        "sample_feature_importance": sample_feature_summary,
         "sample_count": sample_count,
         "test_sample_count": test_sample_count,
         "label_names": label_names,

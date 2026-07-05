@@ -218,6 +218,62 @@
       .chart-card canvas {
         height: 260px;
       }
+      .feature-card {
+        margin-top: 14px;
+      }
+      .feature-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .feature-toolbar select {
+        max-width: 520px;
+      }
+      .feature-meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 8px;
+        margin: 8px 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .feature-meta strong {
+        display: block;
+        color: var(--ink);
+        font-size: 16px;
+      }
+      .feature-card canvas {
+        height: 300px;
+      }
+      .feature-card canvas.sample-feature-canvas {
+        height: 460px;
+      }
+      .feature-note {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0 0 10px;
+      }
+      .feature-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
+        margin: 10px 0;
+      }
+      .feature-chip {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #fbfcfe;
+        font-size: 12px;
+      }
+      .feature-chip strong {
+        display: block;
+        color: var(--ink);
+        font-size: 13px;
+        margin-bottom: 2px;
+      }
       .matrix-card {
         margin-top: 14px;
       }
@@ -390,6 +446,8 @@
                   <option value="deep">深入：100 epoch</option>
                 </select>
               </div>
+              <label>重要性分段数</label>
+              <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
@@ -505,6 +563,7 @@
               <div id="trainingProgress"></div>
               <div id="metrics" style="margin-top:14px"></div>
               <div id="trainingCharts"></div>
+              <div id="featureImportance"></div>
               <div id="confusionMatrix"></div>
               <div id="downloads" class="actions"></div>
             </div>
@@ -639,6 +698,9 @@
             <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
             <h3>三、AI 建模</h3>
             <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 的统一格式 CSV。设置 epoch、batch size、学习率、标准化和划分方式后点击开始训练。</p>
+            <p><strong>Repeat_index 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Repeat_index 整组划分。同一个 Repeat_index 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
+            <p>建模 CSV 中同一个 Repeat_index 只能对应一个 Label，且每组重复测量次数应保持一致。默认比例为 train : valid : test = 8 : 1 : 1。例如 10 个 Repeat_index、每组 5 条时，会划分为 train 8 组、valid 1 组、test 1 组。</p>
+            <p>如果样品组数较少，默认 8/1/1 可能让 valid 或 test 只有一个类别，指标会更容易波动。遇到这种情况，建议改成 6/2/2 或 7/2/1，让验证集和测试集包含更多 Repeat_index 分组。</p>
             <h3>四、结果下载</h3>
             <p>训练成功后，可下载 predictions.csv、metrics.json 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
             <div class="actions">
@@ -664,6 +726,12 @@
       let lastPreprocessKind = "raman";
 
       const $ = (id) => document.getElementById(id);
+      const escapeHtml = (value) => String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
 
       async function api(url, options = {}) {
         const response = await fetch(url, options);
@@ -945,6 +1013,7 @@
           split_test: splitTest,
           class_balance: $("classBalance").value,
           model_type: $("modelType").value,
+          feature_window_count: Number($("featureWindowCount").value),
           early_stopping_patience: Number($("earlyStoppingPatience").value),
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
@@ -992,6 +1061,7 @@
         `;
         $("metrics").innerHTML = "";
         $("trainingCharts").innerHTML = "";
+        $("featureImportance").innerHTML = "";
         $("confusionMatrix").innerHTML = "";
         $("downloads").innerHTML = "";
       }
@@ -1123,6 +1193,368 @@
         `;
       }
 
+      function formatFeatureX(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return "-";
+        return Math.abs(num) >= 100 ? num.toFixed(1) : num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+      }
+
+      function visibleFeatureSegments(segments) {
+        return (segments || []).slice(0, 1);
+      }
+
+      function mixColor(a, b, t) {
+        const ratio = Math.max(0, Math.min(1, t));
+        const values = [0, 1, 2].map((idx) => Math.round(a[idx] + (b[idx] - a[idx]) * ratio));
+        return `rgb(${values[0]}, ${values[1]}, ${values[2]})`;
+      }
+
+      function clamp01(value) {
+        return Math.max(0, Math.min(1, Number(value)));
+      }
+
+      function importanceHeatmapColor(value) {
+        const ratio = Number.isFinite(Number(value)) ? clamp01(value) : 0;
+        const stops = [
+          { at: 0, color: [30, 64, 175] },
+          { at: 0.42, color: [6, 182, 212] },
+          { at: 0.72, color: [250, 204, 21] },
+          { at: 1, color: [185, 28, 28] },
+        ];
+        for (let idx = 1; idx < stops.length; idx += 1) {
+          if (ratio <= stops[idx].at) {
+            const prev = stops[idx - 1];
+            const span = Math.max(stops[idx].at - prev.at, 1e-9);
+            return mixColor(prev.color, stops[idx].color, (ratio - prev.at) / span);
+          }
+        }
+        return mixColor(stops[stops.length - 1].color, stops[stops.length - 1].color, 1);
+      }
+
+      function sampleImportanceDomain(sample) {
+        const values = (sample.windows || [])
+          .map((window) => Number(window.importance))
+          .filter((value) => Number.isFinite(value));
+        if (!values.length) return { min: 0, max: 0 };
+        return { min: Math.min(...values), max: Math.max(...values) };
+      }
+
+      function normalizedImportanceValue(item, domain) {
+        const normalized = Number(item?.normalized_importance);
+        if (Number.isFinite(normalized)) return clamp01(normalized);
+        const raw = Number(item?.importance);
+        const span = Number(domain?.max) - Number(domain?.min);
+        if (!Number.isFinite(raw) || !Number.isFinite(span) || span <= 1e-12) return 0;
+        return clamp01((raw - Number(domain.min)) / span);
+      }
+
+      function drawSampleFeatureHeatmap(ctx, sample, indexToX, curveLength, plotBottom, height) {
+        const windows = sample.windows || [];
+        const importanceDomain = sampleImportanceDomain(sample);
+        const heatmapY = plotBottom + 34;
+        const heatmapHeight = 22;
+        const stripLeft = indexToX(0);
+        const stripRight = indexToX(curveLength - 1);
+        const stripWidth = Math.max(1, stripRight - stripLeft);
+        const pointStep = stripWidth / Math.max(curveLength - 1, 1);
+        const boundaryX = (index, side) => {
+          const clamped = Math.max(0, Math.min(curveLength - 1, Number(index)));
+          if (side === "start") return clamped <= 0 ? stripLeft : indexToX(clamped) - pointStep / 2;
+          return clamped >= curveLength - 1 ? stripRight : indexToX(clamped) + pointStep / 2;
+        };
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = "#f2f4f7";
+        ctx.fillRect(stripLeft, heatmapY, stripWidth, heatmapHeight);
+        windows.forEach((window) => {
+          const start = Math.max(0, Number(window.start_index));
+          const end = Math.min(curveLength - 1, Number(window.end_index));
+          const x0 = Math.floor(boundaryX(start, "start"));
+          const x1 = Math.ceil(boundaryX(end, "end"));
+          ctx.fillStyle = importanceHeatmapColor(normalizedImportanceValue(window, importanceDomain));
+          ctx.fillRect(x0, heatmapY, Math.max(1, x1 - x0), heatmapHeight);
+        });
+        ctx.strokeStyle = "#d8dee8";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(stripLeft, heatmapY, stripWidth, heatmapHeight);
+
+        const legendWidth = 18;
+        const legendHeight = 72;
+        const legendX = stripLeft;
+        const legendY = Math.min(height - 94, heatmapY + 44);
+        const gradient = ctx.createLinearGradient(0, legendY, 0, legendY + legendHeight);
+        gradient.addColorStop(0, importanceHeatmapColor(1));
+        gradient.addColorStop(0.28, importanceHeatmapColor(0.72));
+        gradient.addColorStop(0.58, importanceHeatmapColor(0.42));
+        gradient.addColorStop(1, importanceHeatmapColor(0));
+        ctx.fillStyle = gradient;
+        ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
+        ctx.strokeStyle = "#d8dee8";
+        ctx.strokeRect(legendX, legendY, legendWidth, legendHeight);
+        ctx.fillStyle = "#475467";
+        ctx.font = '13px "Segoe UI", Arial, sans-serif';
+        ctx.fillText("重要性高（关键特征）", legendX + legendWidth + 12, legendY + 13);
+        ctx.fillText("重要性低（贡献小）", legendX + legendWidth + 12, legendY + legendHeight - 2);
+        ctx.restore();
+      }
+
+      function drawFeatureImportanceCanvas(data) {
+        const canvas = $("featureImportanceCanvas");
+        if (!canvas) return;
+        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        const curve = (data.mean_curve || []).map(Number);
+        const xAxis = (data.x_axis || []).map(Number);
+        if (!curve.length) {
+          ctx.fillStyle = "#667085";
+          ctx.fillText("暂无平均谱线数据", 44, 44);
+          return;
+        }
+        const pad = { left: 50, right: 18, top: 24, bottom: 36 };
+        const plotWidth = width - pad.left - pad.right;
+        const plotHeight = height - pad.top - pad.bottom;
+        const values = curve.filter((value) => Number.isFinite(value));
+        const minY = Math.min(...values);
+        const maxY = Math.max(...values);
+        const ySpan = Math.max(maxY - minY, 1e-9);
+        const indexToX = (index) => pad.left + (index / Math.max(curve.length - 1, 1)) * plotWidth;
+        ctx.strokeStyle = "#d8dee8";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
+        visibleFeatureSegments(data.top_segments).forEach((segment, idx) => {
+          const x0 = indexToX(Math.max(0, Number(segment.start_index)));
+          const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
+          ctx.fillStyle = idx === 0 ? "rgba(180, 83, 9, 0.22)" : "rgba(37, 99, 235, 0.14)";
+          ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
+          ctx.fillStyle = "#344054";
+          ctx.fillText(`#${segment.rank}`, x0 + 4, pad.top + 14);
+        });
+        ctx.beginPath();
+        ctx.strokeStyle = "#0f766e";
+        ctx.lineWidth = 2;
+        curve.forEach((value, index) => {
+          if (!Number.isFinite(value)) return;
+          const x = indexToX(index);
+          const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = "#667085";
+        ctx.fillText(formatFeatureX(xAxis[0] ?? 0), pad.left, height - 10);
+        ctx.fillText(formatFeatureX(xAxis[xAxis.length - 1] ?? curve.length - 1), width - pad.right - 68, height - 10);
+      }
+
+      function drawSampleFeatureImportanceCanvas(data, sample) {
+        const canvas = $("sampleFeatureImportanceCanvas");
+        if (!canvas) return;
+        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        const curve = (sample.curve || []).map(Number);
+        const xAxis = (data.x_axis || []).map(Number);
+        if (!curve.length) {
+          ctx.fillStyle = "#667085";
+          ctx.fillText("暂无样品曲线数据", 44, 44);
+          return;
+        }
+        const pad = { left: 50, right: 18, top: 24, bottom: 176 };
+        const plotWidth = width - pad.left - pad.right;
+        const plotHeight = height - pad.top - pad.bottom;
+        const values = curve.filter((value) => Number.isFinite(value));
+        const minY = Math.min(...values);
+        const maxY = Math.max(...values);
+        const ySpan = Math.max(maxY - minY, 1e-9);
+        const indexToX = (index) => pad.left + (index / Math.max(curve.length - 1, 1)) * plotWidth;
+        ctx.strokeStyle = "#d8dee8";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
+        visibleFeatureSegments(sample.top_segments).forEach((segment) => {
+          const x0 = indexToX(Math.max(0, Number(segment.start_index)));
+          const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
+          ctx.fillStyle = "rgba(220, 38, 38, 0.22)";
+          ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
+          ctx.fillStyle = "#991b1b";
+          ctx.fillText(`#${segment.rank}`, x0 + 4, pad.top + 14);
+        });
+        ctx.beginPath();
+        ctx.strokeStyle = "#0f766e";
+        ctx.lineWidth = 2;
+        curve.forEach((value, index) => {
+          if (!Number.isFinite(value)) return;
+          const x = indexToX(index);
+          const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = "#667085";
+        const plotBottom = pad.top + plotHeight;
+        ctx.fillText(formatFeatureX(xAxis[0] ?? 0), pad.left, plotBottom + 20);
+        ctx.fillText(formatFeatureX(xAxis[xAxis.length - 1] ?? curve.length - 1), width - pad.right - 68, plotBottom + 20);
+        drawSampleFeatureHeatmap(ctx, sample, indexToX, curve.length, plotBottom, height);
+      }
+
+      function featureSampleLabel(sample) {
+        const sampleName = sample.name || sample.index || sample.sample_id;
+        const state = sample.correct ? "预测正确" : "预测不一致";
+        return `${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
+      }
+
+      function renderSampleFeatureDetails(data, sample, jsonUrl, csvUrl) {
+        const target = $("featureSampleDetails");
+        if (!target || !sample) return;
+        const segments = visibleFeatureSegments(sample.top_segments);
+        const importanceDomain = sampleImportanceDomain(sample);
+        const chips = segments.length
+          ? segments.map((segment) => `
+              <div class="feature-chip">
+                <strong>第 ${segment.rank} 重要区间：${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}</strong>
+                <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
+                <div>loss 增加：${formatMetric(segment.importance)}</div>
+                <div>含义：遮挡该区间后，模型对真实类别的 loss 增加最多，因此该区间是当前样品最关键的特征区间。</div>
+              </div>
+            `).join("")
+          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>遮挡各窗口后，真实类别 loss 没有明显增加。</div>`;
+        target.innerHTML = `
+          <div class="feature-meta">
+            <div>真实标签<strong>${escapeHtml(sample.true_label)}</strong></div>
+            <div>预测标签<strong>${escapeHtml(sample.pred_label)}</strong></div>
+            <div>预测状态<strong style="color:${sample.correct ? "var(--ok)" : "var(--bad)"}">${sample.correct ? "正确" : "不一致"}</strong></div>
+            <div>真实类别概率<strong>${formatMetric(sample.true_probability)}</strong></div>
+          </div>
+          <p class="feature-note">红色区间为 loss 增加最大、归一化重要性最高的第一重要区间；下方热力条显示整条曲线各窗口的归一化重要性分布。</p>
+          <canvas id="sampleFeatureImportanceCanvas" class="sample-feature-canvas" width="1000" height="460"></canvas>
+          <div class="feature-list">${chips}</div>
+          <div class="actions">
+            <a class="secondary" href="${jsonUrl}">下载单样品特征 JSON</a>
+            <a class="secondary" href="${csvUrl}">下载单样品特征 CSV</a>
+          </div>
+        `;
+        requestAnimationFrame(() => drawSampleFeatureImportanceCanvas(data, sample));
+      }
+
+      async function renderSampleFeatureImportance(run, summary) {
+        const target = $("featureImportance");
+        const jsonArtifact = summary.artifact || "sample_feature_importance.json";
+        const csvArtifact = summary.csv_artifact || "sample_feature_importance.csv";
+        const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
+        const csvUrl = `/api/training/runs/${run.run_id}/artifact/${csvArtifact}`;
+        if (summary.status !== "ready") {
+          target.innerHTML = `
+            <div class="chart-card feature-card">
+              <h3>重要特征区间</h3>
+              <div class="training-state">
+                <div><strong>暂不可用</strong><span>${escapeHtml(summary.reason || "当前训练结果没有可展示的单样品重要区间。")}</span></div>
+              </div>
+              <div class="actions">
+                <a class="secondary" href="${jsonUrl}">下载单样品特征 JSON</a>
+                <a class="secondary" href="${csvUrl}">下载单样品特征 CSV</a>
+              </div>
+            </div>
+          `;
+          return;
+        }
+        const data = await api(jsonUrl);
+        const samples = data.samples || [];
+        if (!samples.length) {
+          target.innerHTML = `
+            <div class="chart-card feature-card">
+              <h3>重要特征区间</h3>
+              <div class="training-state">
+                <div><strong>暂不可用</strong><span>当前训练结果没有可切换的样品解释。</span></div>
+              </div>
+            </div>
+          `;
+          return;
+        }
+        const options = samples.map((sample, index) => `
+          <option value="${escapeHtml(sample.sample_id || String(index))}">${escapeHtml(featureSampleLabel(sample))}</option>
+        `).join("");
+        target.innerHTML = `
+          <div class="chart-card feature-card">
+            <h3>重要特征区间</h3>
+            <div class="feature-toolbar">
+              <label for="featureSampleSelect">样品</label>
+              <select id="featureSampleSelect">${options}</select>
+            </div>
+            <div id="featureSampleDetails"></div>
+          </div>
+        `;
+        const select = $("featureSampleSelect");
+        const renderSelected = () => {
+          const selected = samples.find((sample, index) => (sample.sample_id || String(index)) === select.value) || samples[0];
+          renderSampleFeatureDetails(data, selected, jsonUrl, csvUrl);
+        };
+        select.addEventListener("change", renderSelected);
+        renderSelected();
+      }
+
+      async function renderGlobalFeatureImportance(run) {
+        const target = $("featureImportance");
+        const summary = run.feature_importance;
+        if (!summary) {
+          target.innerHTML = "";
+          return;
+        }
+        const jsonArtifact = summary.artifact || "feature_importance.json";
+        const csvArtifact = summary.csv_artifact || "feature_importance.csv";
+        const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
+        const csvUrl = `/api/training/runs/${run.run_id}/artifact/${csvArtifact}`;
+        if (summary.status !== "ready") {
+          target.innerHTML = `
+            <div class="chart-card feature-card">
+              <h3>重要特征区间</h3>
+              <div class="training-state">
+                <div><strong>暂不可用</strong><span>${escapeHtml(summary.reason || "当前训练结果没有可展示的重要区间。")}</span></div>
+              </div>
+              <div class="actions">
+                <a class="secondary" href="${jsonUrl}">下载特征 JSON</a>
+                <a class="secondary" href="${csvUrl}">下载特征 CSV</a>
+              </div>
+            </div>
+          `;
+          return;
+        }
+        const data = await api(jsonUrl);
+        const segments = visibleFeatureSegments(data.top_segments);
+        const chips = segments.length
+          ? segments.map((segment) => `
+              <div class="feature-chip">
+                <strong>#${segment.rank} ${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}</strong>
+                重要性 ${formatMetric(segment.importance)}
+              </div>
+            `).join("")
+          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>当前窗口置换没有造成验证指标下降。</div>`;
+        target.innerHTML = `
+          <div class="chart-card feature-card">
+            <h3>重要特征区间</h3>
+            <canvas id="featureImportanceCanvas" width="1000" height="320"></canvas>
+            <div class="feature-list">${chips}</div>
+            <div class="actions">
+              <a class="secondary" href="${jsonUrl}">下载特征 JSON</a>
+              <a class="secondary" href="${csvUrl}">下载特征 CSV</a>
+            </div>
+          </div>
+        `;
+        requestAnimationFrame(() => drawFeatureImportanceCanvas(data));
+      }
+
+      async function renderFeatureImportance(run) {
+        if (run.sample_feature_importance?.artifact) {
+          try {
+            await renderSampleFeatureImportance(run, run.sample_feature_importance);
+            return;
+          } catch (err) {
+            if (!run.feature_importance) throw err;
+          }
+        }
+        await renderGlobalFeatureImportance(run);
+      }
+
       function renderRun(run) {
         const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "running" ? "训练中" : "等待训练";
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
@@ -1145,6 +1577,7 @@
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
           `;
+          $("featureImportance").innerHTML = "";
           return;
         }
         if (run.status === "success") {
@@ -1171,6 +1604,16 @@
             renderTrainingCharts(run.history || []);
           }
           renderConfusionMatrix(run);
+          renderFeatureImportance(run).catch((err) => {
+            $("featureImportance").innerHTML = `
+              <div class="chart-card feature-card">
+                <h3>重要特征区间</h3>
+                <div class="training-state">
+                  <div><strong style="color:var(--bad)">加载失败</strong><span>${escapeHtml(err.message)}</span></div>
+                </div>
+              </div>
+            `;
+          });
           const modelArtifact = run.model_artifact || (run.model_family === "traditional_ml" ? "model.pkl" : "model.pt");
           const modelLabel = modelArtifact.endsWith(".pkl") ? "下载模型 PKL" : "下载模型";
           $("downloads").innerHTML = `
@@ -1185,6 +1628,7 @@
           clearInterval(poller);
           $("trainingProgress").innerHTML = "";
           $("trainingCharts").innerHTML = "";
+          $("featureImportance").innerHTML = "";
           $("confusionMatrix").innerHTML = "";
           $("downloads").innerHTML = "";
           $("metrics").innerHTML = `<div class="training-state"><div><strong style="color:var(--bad)">训练失败</strong><span>${run.error || "请查看后台日志"}</span></div></div>`;
