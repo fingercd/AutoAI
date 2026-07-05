@@ -75,13 +75,19 @@ def hplc_subtract_min(matrix: np.ndarray) -> np.ndarray:
     return (matrix - mins).astype(np.float32)
 
 
-def hplc_normalize_area(matrix: np.ndarray) -> np.ndarray:
+def hplc_normalize_area(
+    matrix: np.ndarray,
+    x_axis: np.ndarray | None = None,
+) -> np.ndarray:
     """Step 3: 逐行除以总面积（梯形积分法）。
 
-    每行 matrix[i] /= np.trapz(matrix[i])，每条总面积 = 1.0。
+    默认按点序号积分；传入 x_axis 时按真实时间轴积分。
     零面积保护: 除以 max(trapz_result, 1e-12)。
     """
-    areas = np.trapezoid(matrix, axis=1)
+    if x_axis is not None:
+        areas = np.trapezoid(matrix, x=x_axis, axis=1)
+    else:
+        areas = np.trapezoid(matrix, axis=1)
     areas = np.maximum(areas, 1e-12)
     return (matrix / areas[:, np.newaxis]).astype(np.float32)
 
@@ -150,12 +156,16 @@ def preprocess_hplc_files_with_preview(
     if interpolate:
         matrix, common_x = hplc_interpolate(raw_pairs)
     else:
-        # 验证所有 x 长度一致
+        # 验证所有 x 长度一致且时间轴一致，否则同一 common_x 会错配强度。
         lengths = {len(x) for x, _ in raw_pairs}
         if len(lengths) != 1:
             raise ValueError(
                 f"关闭插值时要求所有文件曲线长度一致，当前长度: {sorted(lengths)}"
             )
+        reference_x = raw_pairs[0][0]
+        for x_i, _ in raw_pairs[1:]:
+            if not np.allclose(x_i, reference_x, rtol=1e-5, atol=1e-8):
+                raise ValueError("关闭插值时要求所有文件时间轴一致，请开启线性插值")
         common_x = raw_pairs[0][0].astype(np.float32)
         matrix = np.stack([y for _, y in raw_pairs], axis=0).astype(np.float32)
 
@@ -166,7 +176,7 @@ def preprocess_hplc_files_with_preview(
         matrix = hplc_subtract_min(matrix)
 
     if normalize_area:
-        matrix = hplc_normalize_area(matrix)
+        matrix = hplc_normalize_area(matrix, common_x)
 
     # ---- 阶段 3: 组装输出 ----
     n_files = len(files)
