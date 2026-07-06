@@ -11,18 +11,24 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
+    aggregate_sample_feature_importance,
+    build_feature_windows,
     interval_permutation_importance,
+    merge_ranked_windows,
+    sample_deep_attribution_importance,
+    sample_dscarnet_dual_2d_gradcam_importance,
     sample_occlusion_importance,
     unavailable_feature_importance,
     write_feature_importance_artifacts,
     write_sample_feature_importance_artifacts,
 )
-from .models import build_deep_model, build_traditional_model, model_family
+from .models import build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
 
@@ -46,6 +52,8 @@ class TrainConfig:
     transformer_heads: int = 4
     unet_depth: int = 3
     dscarnet_inception_blocks: int = 1
+    dscarnet_pca_components: int = 30
+    dscarnet_cluster_channels: int = 9
     knn_n_neighbors: int = 5
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
@@ -61,6 +69,11 @@ class TrainConfig:
     xgboost_subsample: float = 0.9
     xgboost_colsample_bytree: float = 0.9
     xgboost_reg_lambda: float = 2.0
+    pls_components: int | None = None
+    svm_kernel: str = "rbf"
+    random_forest_max_features: str | float = "sqrt"
+    xgboost_min_child_weight: float = 1.0
+    xgboost_gamma: float = 0.0
     feature_selection_enabled: bool = True
     feature_window_count: int = 100
     feature_top_k: int = 5
@@ -154,6 +167,48 @@ def _validate_external_test_dataset(train_labels: list[str], train_curve_length:
         raise ValueError(f"测试集曲线长度必须与训练数据一致，训练长度 {train_curve_length}，测试集长度 {sorted(test_lengths)}")
 
 
+def _axis_to_float_list(axis: Any, n_features: int) -> list[float]:
+    try:
+        values = np.asarray(axis, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        values = np.asarray([], dtype=np.float64)
+    if values.size != n_features:
+        values = np.arange(n_features, dtype=np.float64)
+    return [float(item) for item in values]
+
+
+def _x_axis_warning(sample_axes: list[Any], n_features: int) -> dict[str, Any]:
+    if not sample_axes:
+        return {"status": "unavailable", "message": "没有可检查的 x 轴坐标"}
+    reference = np.asarray(_axis_to_float_list(sample_axes[0], n_features), dtype=np.float64)
+    mismatch_count = 0
+    max_abs_delta = 0.0
+    for axis in sample_axes:
+        values = np.asarray(_axis_to_float_list(axis, n_features), dtype=np.float64)
+        if values.shape != reference.shape or not np.allclose(values, reference, rtol=1e-6, atol=1e-8):
+            mismatch_count += 1
+            if values.shape == reference.shape:
+                max_abs_delta = max(max_abs_delta, float(np.max(np.abs(values - reference))))
+    if mismatch_count:
+        return {
+            "status": "inconsistent",
+            "message": (
+                f"检测到 {mismatch_count}/{len(sample_axes)} 条样品的 XXX 坐标与首条样品不一致；"
+                "聚合特征图使用首条样品坐标，单样品图使用各自坐标。"
+            ),
+            "sample_count": int(len(sample_axes)),
+            "mismatch_count": int(mismatch_count),
+            "max_abs_delta": max_abs_delta,
+        }
+    return {
+        "status": "consistent",
+        "message": "所有样品的 XXX 坐标一致",
+        "sample_count": int(len(sample_axes)),
+        "mismatch_count": 0,
+        "max_abs_delta": 0.0,
+    }
+
+
 def _validate_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str]) -> None:
     for split_name, indices in splits.items():
         if not indices:
@@ -170,10 +225,53 @@ def _loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, s
     return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
 
 
+def _dual_loader(
+    x1: np.ndarray,
+    x2: np.ndarray,
+    y: np.ndarray,
+    indices: list[int],
+    batch_size: int,
+    shuffle: bool,
+) -> DataLoader:
+    tx1 = torch.tensor(x1[indices], dtype=torch.float32)
+    tx2 = torch.tensor(x2[indices], dtype=torch.float32)
+    ty = torch.tensor(y[indices], dtype=torch.long)
+    return DataLoader(TensorDataset(tx1, tx2, ty), batch_size=batch_size, shuffle=shuffle)
+
+
 def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     model.eval()
     with torch.no_grad():
         logits = model(torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1))
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+    pred = probs.argmax(axis=1)
+    true = y[indices]
+    return {
+        "accuracy": float(accuracy_score(true, pred)),
+        "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
+        "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
+        "recall": float(recall_score(true, pred, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(true, pred, labels=list(range(len(labels)))).tolist(),
+        "probabilities": probs.tolist(),
+        "pred": pred.tolist(),
+        "true": true.tolist(),
+    }
+
+
+def _evaluate_dual(
+    model: nn.Module,
+    x1: np.ndarray,
+    x2: np.ndarray,
+    y: np.ndarray,
+    indices: list[int],
+    labels: list[str],
+) -> dict[str, Any]:
+    model.eval()
+    with torch.no_grad():
+        tx1 = torch.tensor(x1[indices], dtype=torch.float32)
+        tx2 = torch.tensor(x2[indices], dtype=torch.float32)
+        logits = model(tx1, tx2)
         probs = torch.softmax(logits, dim=1).cpu().numpy()
     pred = probs.argmax(axis=1)
     true = y[indices]
@@ -226,6 +324,7 @@ def _compute_feature_importance(
     y: np.ndarray,
     splits: dict[str, list[int]],
     x_axis: list[float],
+    x_axis_warning: dict[str, Any],
     predict_fn: Any,
 ) -> dict[str, Any]:
     eval_split = config.feature_eval_split if config.feature_eval_split in splits else "valid"
@@ -239,6 +338,7 @@ def _compute_feature_importance(
         )
         result["status"] = "disabled"
         result["eval_split"] = eval_split
+        result["x_axis_warning"] = x_axis_warning
         return write_feature_importance_artifacts(run_dir, result)
     try:
         result = interval_permutation_importance(
@@ -263,6 +363,7 @@ def _compute_feature_importance(
         )
         result["status"] = "failed"
         result["eval_split"] = eval_split
+    result["x_axis_warning"] = x_axis_warning
     return write_feature_importance_artifacts(run_dir, result)
 
 
@@ -274,6 +375,7 @@ def _compute_sample_feature_importance(
     y: np.ndarray,
     splits: dict[str, list[int]],
     x_axis: list[float],
+    x_axis_warning: dict[str, Any],
     label_names: list[str],
     metadata: list[dict[str, Any]],
     score_fn: Any,
@@ -288,6 +390,7 @@ def _compute_sample_feature_importance(
             "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "x_axis_warning": x_axis_warning,
             "samples": [],
         }
         return write_sample_feature_importance_artifacts(run_dir, result)
@@ -304,6 +407,7 @@ def _compute_sample_feature_importance(
             window_count=config.feature_window_count,
             top_k=config.feature_top_k,
         )
+        result["x_axis_warning"] = x_axis_warning
     except Exception as exc:
         mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
         result = {
@@ -313,21 +417,154 @@ def _compute_sample_feature_importance(
             "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "x_axis_warning": x_axis_warning,
             "samples": [],
         }
     return write_sample_feature_importance_artifacts(run_dir, result)
 
 
-def _sample_metadata(frame: pd.DataFrame) -> list[dict[str, Any]]:
+def _unsupported_explainability_summary(reason: str, *, method: str = "unsupported") -> dict[str, Any]:
+    return {
+        "status": "unsupported",
+        "reason": reason,
+        "method": method,
+        "artifact": None,
+        "csv_artifact": None,
+        "top_segments": [],
+        "sample_count": 0,
+        "window_count": None,
+        "top_k": None,
+    }
+
+
+def _compute_deep_explainability(
+    *,
+    run_dir: Path,
+    config: TrainConfig,
+    model: nn.Module,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    x_axis: list[float],
+    x_axis_warning: dict[str, Any],
+    label_names: list[str],
+    metadata: list[dict[str, Any]],
+    dscarnet_mapped: DSCARNetMappedInputs | None = None,
+    dscarnet_mapping_metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    model_type = canonical_model_type(config.model_type)
+    if model_type == "mlp":
+        summary = _unsupported_explainability_summary(
+            "MLP 当前不支持可解释性分析",
+            method="mlp_explainability_unsupported",
+        )
+        return summary.copy(), summary.copy()
+
+    if not config.feature_selection_enabled:
+        mean_indices = splits.get("train", [])
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        feature_result = unavailable_feature_importance(
+            "特征区间识别已关闭",
+            x_axis=x_axis,
+            mean_curve=mean_curve,
+            method="deep_attribution",
+        )
+        feature_result["status"] = "disabled"
+        feature_result["eval_split"] = "test"
+        feature_result["x_axis_warning"] = x_axis_warning
+        sample_result = {
+            "status": "disabled",
+            "reason": "特征区间识别已关闭",
+            "method": "deep_attribution",
+            "baseline": "deep_attribution",
+            "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
+            "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "x_axis_warning": x_axis_warning,
+            "samples": [],
+        }
+        return (
+            write_feature_importance_artifacts(run_dir, feature_result),
+            write_sample_feature_importance_artifacts(run_dir, sample_result),
+        )
+
+    try:
+        if model_type == "dscarnet":
+            if dscarnet_mapped is None or dscarnet_mapping_metadata is None:
+                raise ValueError("DSCARNet 缺少 SAR/CAR 二维映射结果，无法计算双通路解释性")
+            sample_result = sample_dscarnet_dual_2d_gradcam_importance(
+                model,
+                x,
+                y,
+                x_sar=dscarnet_mapped.x_sar,
+                x_car=dscarnet_mapped.x_car,
+                pca=dscarnet_mapped.pca,
+                sar_mapper=dscarnet_mapped.sar_mapper,
+                car_mapper=dscarnet_mapped.car_mapper,
+                mapping_metadata=dscarnet_mapping_metadata,
+                x_axis=x_axis,
+                splits=splits,
+                label_names=label_names,
+                metadata=metadata,
+                top_k=config.feature_top_k,
+            )
+        else:
+            sample_result = sample_deep_attribution_importance(
+                model,
+                x,
+                y,
+                x_axis=x_axis,
+                splits=splits,
+                label_names=label_names,
+                metadata=metadata,
+                model_type=model_type,
+                top_k=config.feature_top_k,
+            )
+        sample_result["x_axis_warning"] = x_axis_warning
+        sample_summary = write_sample_feature_importance_artifacts(run_dir, sample_result)
+        feature_result = aggregate_sample_feature_importance(sample_result)
+        feature_result["x_axis_warning"] = x_axis_warning
+        feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
+        return feature_summary, sample_summary
+    except Exception as exc:
+        mean_indices = splits.get("train", [])
+        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
+        feature_result = unavailable_feature_importance(
+            f"深度模型可解释性计算失败: {exc}",
+            x_axis=x_axis,
+            mean_curve=mean_curve,
+            method="deep_attribution",
+        )
+        feature_result["status"] = "failed"
+        feature_result["eval_split"] = "test"
+        feature_result["x_axis_warning"] = x_axis_warning
+        sample_result = {
+            "status": "failed",
+            "reason": f"单样品可解释性计算失败: {exc}",
+            "method": "deep_attribution",
+            "baseline": "deep_attribution",
+            "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
+            "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
+            "x_axis_warning": x_axis_warning,
+            "samples": [],
+        }
+        return (
+            write_feature_importance_artifacts(run_dir, feature_result),
+            write_sample_feature_importance_artifacts(run_dir, sample_result),
+        )
+
+
+def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: int) -> list[dict[str, Any]]:
     rows = []
-    for _, row in frame.iterrows():
+    for position, (_, row) in enumerate(frame.iterrows()):
         raw_index = row.get("Index", "")
         index_value = int(raw_index) if str(raw_index).isdigit() else str(raw_index)
+        axis = sample_axes[position] if position < len(sample_axes) else []
         rows.append(
             {
                 "index": index_value,
                 "name": str(row.get("Name", "")),
                 "repeat_index": str(row.get("Repeat_index", "")),
+                "sample_x_axis": _axis_to_float_list(axis, n_features),
             }
         )
     return rows
@@ -337,189 +574,282 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
-    test_data_path = (config_data or {}).get("test_data_path")
-    config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
-    config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
-    run_id = run_id or uuid.uuid4().hex[:12]
-    run_dir = RUNS_DIR / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    status_file = run_dir / "status.json"
-    previous_status: dict[str, Any] = {}
-    if status_file.exists():
-        try:
-            previous_status = json.loads(status_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            previous_status = {}
+def _clone_config(config: TrainConfig, **overrides: Any) -> TrainConfig:
+    return TrainConfig(**{**config.__dict__, **overrides})
 
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
 
-    dataset = load_modeling_csv(data_path)
-    combined_x_axis = list(dataset.x_axis)
-    sample_count = int(len(dataset.labels))
-    x, norm_config = _normalize(dataset.intensity, config.normalization)
-    label_names = sorted(set(dataset.labels))
-    label_to_id = {label: idx for idx, label in enumerate(label_names)}
-    y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
-    repeat_index = dataset.frame["Repeat_index"].astype(str).to_numpy()
-    test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
-    test_sample_count = int(len(test_dataset.labels)) if test_dataset is not None else 0
-    if test_dataset is not None:
-        _validate_external_test_dataset(label_names, x.shape[1], test_dataset)
-        split_config = TrainConfig(**{**config.__dict__, "split_valid": config.split_valid + config.split_test, "split_test": 0})
-        splits = _split_indices(y, repeat_index, split_config)
-        test_x, _test_norm_config = _normalize(test_dataset.intensity, config.normalization)
-        test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
-        test_offset = len(y)
-        x = np.concatenate([x, test_x], axis=0)
-        y = np.concatenate([y, test_y], axis=0)
-        combined_frame = pd.concat([dataset.frame, test_dataset.frame], ignore_index=True)
-        combined_x_axis = list(dataset.x_axis) + list(test_dataset.x_axis)
-        splits["test"] = list(range(test_offset, test_offset + len(test_y)))
-    else:
-        combined_frame = dataset.frame
-        splits = _split_indices(y, repeat_index, config)
-    _validate_splits(splits, y, label_names)
-    feature_x_axis = combined_x_axis[0] if combined_x_axis else list(range(x.shape[1]))
-    metadata = _sample_metadata(combined_frame)
+def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
+    mode = str(mode or "zscore").lower()
+    if mode == "none":
+        return {"mode": "none"}
+    if mode == "minmax":
+        mins = x_train.min(axis=0)
+        maxs = x_train.max(axis=0)
+        return {"mode": "minmax", "min": mins, "scale": np.maximum(maxs - mins, 1e-8)}
+    if mode == "area":
+        return {"mode": "area"}
+    means = x_train.mean(axis=0)
+    stds = x_train.std(axis=0)
+    return {"mode": "zscore", "mean": means, "scale": np.maximum(stds, 1e-8)}
 
-    if model_family(config.model_type) == "traditional_ml":
-        model = build_traditional_model(config, y[splits["train"]], len(label_names))
-        model.fit(x[splits["train"]], y[splits["train"]])
-        evaluations = {name: _evaluate_traditional_model(model, x, y, idx, label_names) for name, idx in splits.items()}
-        metrics = {
-            split: {key: value for key, value in result.items() if key not in {"probabilities", "pred", "true"}}
-            for split, result in evaluations.items()
-        }
-        history = [
+
+def _transform_x_with_normalizer(x: np.ndarray, normalizer: dict[str, Any]) -> np.ndarray:
+    mode = normalizer.get("mode", "zscore")
+    values = np.asarray(x, dtype=np.float32)
+    if mode == "none":
+        return values.astype(np.float32)
+    if mode == "minmax":
+        return ((values - normalizer["min"]) / normalizer["scale"]).astype(np.float32)
+    if mode == "area":
+        area = np.trapz(np.abs(values), axis=1, keepdims=True)
+        return (values / np.maximum(area, 1e-8)).astype(np.float32)
+    return ((values - normalizer["mean"]) / normalizer["scale"]).astype(np.float32)
+
+
+def _json_normalizer(normalizer: dict[str, Any]) -> dict[str, Any]:
+    return {key: (np.asarray(value).astype(float).tolist() if isinstance(value, np.ndarray) else value) for key, value in normalizer.items()}
+
+
+def _dimension_band(n_features: int) -> str:
+    if n_features <= 3000:
+        return "1000-3000"
+    if n_features <= 6000:
+        return "3000-6000"
+    return "6000-10000"
+
+
+def _group_label_map(y: np.ndarray, repeat_index: np.ndarray) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for group in sorted(np.unique(repeat_index).tolist()):
+        labels = np.unique(y[repeat_index == group])
+        if len(labels) != 1:
+            raise ValueError(f"Repeat_index={group} 内存在多个 Label，无法按组划分")
+        mapping[str(group)] = int(labels[0])
+    return mapping
+
+
+def _choose_valid_groups(
+    *,
+    train_valid_groups: list[str],
+    group_to_label: dict[str, int],
+    label_count: int,
+    seed: int,
+) -> list[str]:
+    valid_count = max(1, int(round(len(train_valid_groups) * 0.2)))
+    rng = np.random.default_rng(seed)
+    candidates = list(train_valid_groups)
+    rng.shuffle(candidates)
+    selected: list[str] = []
+    for group in candidates:
+        remaining = [item for item in train_valid_groups if item not in {*selected, group}]
+        if len(set(group_to_label[item] for item in remaining)) < label_count:
+            continue
+        selected.append(group)
+        if len(selected) >= valid_count:
+            break
+    if not selected:
+        raise ValueError("Repeat_index 分组数量太少，无法在每个外层折中保留包含全部类别的训练集")
+    return sorted(selected, key=lambda item: train_valid_groups.index(item))
+
+
+def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> list[dict[str, Any]]:
+    groups = [str(item) for item in sorted(np.unique(repeat_index).tolist())]
+    if len(groups) < 3:
+        raise ValueError("外层留一交叉验证至少需要 3 个 Repeat_index 分组")
+    group_to_label = _group_label_map(y, repeat_index)
+    label_count = int(np.unique(y).size)
+    folds: list[dict[str, Any]] = []
+    for fold_index, test_group in enumerate(groups, start=1):
+        train_valid_groups = [group for group in groups if group != test_group]
+        if len(set(group_to_label[group] for group in train_valid_groups)) < label_count:
+            raise ValueError(f"Repeat_index={test_group} 留作测试后训练集缺少类别，无法完成分类评估")
+        valid_groups = _choose_valid_groups(
+            train_valid_groups=train_valid_groups,
+            group_to_label=group_to_label,
+            label_count=label_count,
+            seed=int(config.seed) + fold_index,
+        )
+        train_groups = [group for group in train_valid_groups if group not in set(valid_groups)]
+        folds.append(
             {
-                "epoch": 1,
-                "train_loss": None,
-                "train_accuracy": metrics["train"]["accuracy"],
-                "valid_accuracy": metrics["valid"]["accuracy"],
-                "valid_macro_f1": metrics["valid"]["macro_f1"],
-                "best_valid_macro_f1": metrics["valid"]["macro_f1"],
-                "bad_epochs": 0,
+                "fold_index": fold_index,
+                "test_repeat_index": test_group,
+                "train_repeat_indices": train_groups,
+                "valid_repeat_indices": valid_groups,
+                "splits": {
+                    "train": np.where(np.isin(repeat_index, train_groups))[0].tolist(),
+                    "valid": np.where(np.isin(repeat_index, valid_groups))[0].tolist(),
+                    "test": np.where(repeat_index == test_group)[0].tolist(),
+                },
             }
+        )
+    return folds
+
+
+def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, label_names: list[str]) -> dict[str, Any]:
+    labels = list(range(len(label_names)))
+    report = classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=label_names,
+        zero_division=0,
+        output_dict=True,
+    )
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)),
+        "macro_precision": float(precision_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
+        "macro_recall": float(recall_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).astype(int).tolist(),
+        "classification_report": report,
+    }
+
+
+def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
+    band = _dimension_band(n_features)
+    if model_type == "pls_da":
+        raw = [1, 2, 3, 5] if band == "1000-3000" else ([1, 2, 3, 5, 8] if band == "3000-6000" else [1, 2, 3, 5, 8, 10])
+        cap = max(1, min(max(raw), len(y_train) - 2, n_features))
+        return [_clone_config(config, pls_components=value) for value in raw if value <= cap]
+    if model_type == "svm":
+        scale_gamma = max(1e-6, 1.0 / max(1, n_features))
+        if band == "6000-10000":
+            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("rbf", scale_gamma, 1.0)]
+        elif band == "3000-6000":
+            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0)]
+        else:
+            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0), ("rbf", scale_gamma * 10, 1.0)]
+        return [_clone_config(config, svm_kernel=kernel, svm_gamma=gamma, svm_c=c) for kernel, gamma, c in candidates]
+    if model_type == "random_forest":
+        if band == "1000-3000":
+            candidates = [(300, 3, "sqrt"), (300, 5, "log2"), (300, None, 0.2)]
+        elif band == "3000-6000":
+            candidates = [(500, 3, "sqrt"), (500, 5, "log2"), (500, 8, 0.1)]
+        else:
+            candidates = [(600, 3, "sqrt"), (600, 5, "log2"), (600, 5, 0.05)]
+        return [
+            _clone_config(config, random_forest_n_estimators=n, random_forest_max_depth=depth, random_forest_max_features=max_features)
+            for n, depth, max_features in candidates
         ]
+    if model_type == "xgboost":
+        if band == "1000-3000":
+            candidates = [(2, 0.6, 1, 1), (3, 1.0, 1, 5)]
+        elif band == "3000-6000":
+            candidates = [(2, 0.3, 3, 5), (3, 0.6, 5, 5)]
+        else:
+            candidates = [(2, 0.2, 5, 10), (2, 0.3, 10, 10)]
+        return [
+            _clone_config(config, xgboost_max_depth=depth, xgboost_colsample_bytree=colsample, xgboost_min_child_weight=child, xgboost_reg_lambda=reg_lambda)
+            for depth, colsample, child, reg_lambda in candidates
+        ]
+    return [config]
 
-        prediction_rows = []
-        for split, idxs in splits.items():
-            result = evaluations[split]
-            for local_idx, source_idx in enumerate(idxs):
-                row = {
-                    "dataset": split,
-                    "index": combined_frame.iloc[source_idx]["Index"],
-                    "Repeat_index": combined_frame.iloc[source_idx]["Repeat_index"],
-                    "true_label": label_names[result["true"][local_idx]],
-                    "pred_label": label_names[result["pred"][local_idx]],
-                }
-                for label, prob in zip(label_names, result["probabilities"][local_idx]):
-                    row[f"prob_{label}"] = float(prob)
-                prediction_rows.append(row)
 
-        feature_summary = _compute_feature_importance(
-            run_dir=run_dir,
-            config=config,
-            x=x,
-            y=y,
-            splits=splits,
-            x_axis=feature_x_axis,
-            predict_fn=lambda values: np.asarray(model.predict(values), dtype=np.int64),
-        )
-        sample_feature_summary = _compute_sample_feature_importance(
-            run_dir=run_dir,
-            config=config,
-            x=x,
-            y=y,
-            splits=splits,
-            x_axis=feature_x_axis,
-            label_names=label_names,
-            metadata=metadata,
-            score_fn=lambda values: _traditional_probabilities(model, values),
-        )
-
-        config_out = {
-            **config.__dict__,
-            "data_path": str(Path(data_path).resolve()),
-            "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
-            "preprocess": norm_config,
+def _fit_traditional_fold(
+    config: TrainConfig,
+    model_type: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    label_names: list[str],
+) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
+    best_model: Any | None = None
+    best_config = config
+    best_eval: dict[str, Any] | None = None
+    search_rows: list[dict[str, Any]] = []
+    for candidate in _traditional_candidate_configs(config, model_type, x.shape[1], y[splits["train"]]):
+        model = build_traditional_model(candidate, y[splits["train"]], len(label_names))
+        model.fit(x[splits["train"]], y[splits["train"]])
+        valid_eval = _evaluate_traditional_model(model, x, y, splits["valid"], label_names)
+        row = {
+            "model_type": model_type,
+            "valid_macro_f1": valid_eval["macro_f1"],
+            "valid_accuracy": valid_eval["accuracy"],
+            "params": {
+                "pls_components": candidate.pls_components,
+                "svm_kernel": candidate.svm_kernel,
+                "svm_c": candidate.svm_c,
+                "svm_gamma": candidate.svm_gamma,
+                "random_forest_n_estimators": candidate.random_forest_n_estimators,
+                "random_forest_max_depth": candidate.random_forest_max_depth,
+                "random_forest_max_features": candidate.random_forest_max_features,
+                "xgboost_max_depth": candidate.xgboost_max_depth,
+                "xgboost_colsample_bytree": candidate.xgboost_colsample_bytree,
+                "xgboost_min_child_weight": candidate.xgboost_min_child_weight,
+                "xgboost_reg_lambda": candidate.xgboost_reg_lambda,
+            },
         }
-        (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "split.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-        pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
-        pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
-        with (run_dir / "model.pkl").open("wb") as fh:
-            pickle.dump(model, fh)
+        search_rows.append(row)
+        if best_eval is None or valid_eval["macro_f1"] > best_eval["macro_f1"] + 1e-12:
+            best_model = model
+            best_config = candidate
+            best_eval = valid_eval
+    if best_model is None or best_eval is None:
+        raise ValueError("传统模型验证集搜索未产生可用模型")
+    return best_model, best_config, best_eval, search_rows
 
-        status_payload = {
-            **previous_status,
-            "run_id": run_id,
-            "status": "success",
-            "metrics": metrics,
-            "history": history,
-            "model_type": config.model_type,
-            "model_family": "traditional_ml",
-            "model_artifact": "model.pkl",
-            "feature_importance": feature_summary,
-            "sample_feature_importance": sample_feature_summary,
-            "sample_count": sample_count,
-            "test_sample_count": test_sample_count,
-            "label_names": label_names,
-            "target_epochs": 1,
-            "actual_epochs": 1,
-            "best_valid_macro_f1": metrics["valid"]["macro_f1"],
-            "config": config_out,
-            "data_path": str(Path(data_path).resolve()),
-            "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
-            "completed_at": _now_iso(),
-        }
-        (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {
-            "run_id": run_id,
-            "status": "success",
-            "metrics": metrics,
-            "history": history,
-            "model_type": config.model_type,
-            "model_family": "traditional_ml",
-            "model_artifact": "model.pkl",
-            "feature_importance": feature_summary,
-            "sample_feature_importance": sample_feature_summary,
-            "sample_count": sample_count,
-            "test_sample_count": test_sample_count,
-            "label_names": label_names,
-            "target_epochs": 1,
-            "actual_epochs": 1,
-            "best_valid_macro_f1": metrics["valid"]["macro_f1"],
-            "run_dir": str(run_dir.resolve()),
-        }
 
+def _fit_deep_fold(
+    *,
+    config: TrainConfig,
+    model_type: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    label_names: list[str],
+    run_dir: Path,
+    sample_count: int,
+) -> tuple[nn.Module, list[dict[str, Any]], DSCARNetMappedInputs | None, dict[str, Any] | None]:
+    counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
     class_weights = None
     if config.class_balance == "class_weight":
-        counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
         class_weights = torch.tensor((counts.sum() / np.maximum(counts, 1.0)) / len(label_names), dtype=torch.float32)
-
-    model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
+    dscarnet_mapped: DSCARNetMappedInputs | None = None
+    dscarnet_mapping_metadata: dict[str, Any] | None = None
+    if model_type == "dscarnet":
+        dscarnet_mapped = fit_dscarnet_2d_mapping(
+            x,
+            splits["train"],
+            pca_components=config.dscarnet_pca_components,
+            cluster_channels=config.dscarnet_cluster_channels,
+            seed=config.seed,
+        )
+        dscarnet_mapping_metadata = save_dscarnet_mapping_artifacts(run_dir, dscarnet_mapped)
+        model = build_dscarnet_model(
+            config,
+            dscarnet_mapped.model_input_shape_sar,
+            dscarnet_mapped.model_input_shape_car,
+            len(label_names),
+        )
+    else:
+        model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-
-    history = []
+    history: list[dict[str, Any]] = []
     best_score = -1.0
     best_state = None
     bad_epochs = 0
     for epoch in range(1, config.epochs + 1):
         model.train()
         losses = []
-        for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
-            optimizer.zero_grad()
-            loss = criterion(model(bx), by)
-            loss.backward()
-            optimizer.step()
-            losses.append(float(loss.item()))
-        valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
+        if dscarnet_mapped is not None:
+            for bx1, bx2, by in _dual_loader(dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["train"], config.batch_size, True):
+                optimizer.zero_grad()
+                loss = criterion(model(bx1, bx2), by)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.item()))
+            valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], label_names)
+        else:
+            for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
+                optimizer.zero_grad()
+                loss = criterion(model(bx), by)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.item()))
+            valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
         improved = valid_eval["macro_f1"] > best_score + 1e-8
         if improved:
             best_score = valid_eval["macro_f1"]
@@ -540,123 +870,434 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         if config.early_stopping_patience > 0 and bad_epochs >= config.early_stopping_patience:
             history[-1]["early_stopped"] = True
             break
-
     if best_state is not None:
         model.load_state_dict(best_state)
+    return model, history, dscarnet_mapped, dscarnet_mapping_metadata
 
-    evaluations = {name: _evaluate(model, x, y, idx, label_names) for name, idx in splits.items()}
-    metrics = {
-        split: {key: value for key, value in result.items() if key not in {"probabilities", "pred", "true"}}
-        for split, result in evaluations.items()
+
+def _cv_f1_window_importance(
+    *,
+    fold_artifacts: list[dict[str, Any]],
+    x_raw: np.ndarray,
+    y: np.ndarray,
+    x_axis: list[float],
+    label_names: list[str],
+    window_count: int,
+    top_k: int,
+    x_axis_warning: dict[str, Any],
+) -> dict[str, Any]:
+    x_axis_array = np.asarray(x_axis, dtype=np.float32).reshape(-1)
+    if x_axis_array.size != x_raw.shape[1]:
+        x_axis_array = np.arange(x_raw.shape[1], dtype=np.float32)
+    baseline_true: list[int] = []
+    baseline_pred: list[int] = []
+    for artifact in fold_artifacts:
+        baseline_true.extend(int(item) for item in artifact["test_true"])
+        baseline_pred.extend(int(item) for item in artifact["test_pred"])
+    baseline_score = float(f1_score(baseline_true, baseline_pred, average="macro", zero_division=0))
+    windows = build_feature_windows(x_raw.shape[1], window_count)
+    rows: list[dict[str, Any]] = []
+    for window in windows:
+        start = int(window["start_index"])
+        end = int(window["end_index"])
+        perturbed_true: list[int] = []
+        perturbed_pred: list[int] = []
+        for artifact in fold_artifacts:
+            idxs = artifact["splits"]["test"]
+            x_test = x_raw[idxs].copy()
+            baseline_curve = artifact["train_mean_curve"]
+            x_test[:, start : end + 1] = baseline_curve[start : end + 1]
+            x_test_norm = _transform_x_with_normalizer(x_test, artifact["normalizer"])
+            pred = np.asarray(artifact["model"].predict(x_test_norm), dtype=np.int64)
+            perturbed_true.extend(int(item) for item in y[idxs])
+            perturbed_pred.extend(int(item) for item in pred)
+        perturbed_score = float(f1_score(perturbed_true, perturbed_pred, average="macro", zero_division=0))
+        importance = baseline_score - perturbed_score
+        rows.append(
+            {
+                "window_index": int(window["window_index"]),
+                "start_index": start,
+                "end_index": end,
+                "start_x": float(x_axis_array[start]),
+                "end_x": float(x_axis_array[end]),
+                "importance": float(importance),
+                "importance_std": 0.0,
+                "baseline_macro_f1": baseline_score,
+                "permuted_macro_f1": perturbed_score,
+            }
+        )
+    ranked = sorted(rows, key=lambda item: (-item["importance"], item["start_index"]))
+    values = np.asarray([row["importance"] for row in ranked], dtype=np.float64)
+    min_value = float(values.min()) if values.size else 0.0
+    max_value = float(values.max()) if values.size else 0.0
+    span = max_value - min_value
+    for rank, row in enumerate(ranked, start=1):
+        row["rank"] = int(rank)
+        row["normalized_importance"] = float((row["importance"] - min_value) / span) if span > 1e-12 else 0.0
+    top_windows = [row for row in ranked if row["importance"] > 0][: max(1, int(top_k))]
+    return {
+        "status": "ready",
+        "method": "interval_permutation_importance",
+        "importance_metric": "baseline_macro_f1_minus_perturbed_macro_f1",
+        "eval_split": "outer_cv_test",
+        "baseline_macro_f1": baseline_score,
+        "window_count": len(windows),
+        "top_k": int(top_k),
+        "n_repeats": 1,
+        "x_axis": [float(item) for item in x_axis_array],
+        "mean_curve": [float(item) for item in np.mean(x_raw, axis=0)],
+        "windows": sorted(ranked, key=lambda item: item["window_index"]),
+        "top_segments": merge_ranked_windows(top_windows),
+        "x_axis_warning": x_axis_warning,
     }
 
-    prediction_rows = []
-    for split, idxs in splits.items():
-        result = evaluations[split]
-        for local_idx, source_idx in enumerate(idxs):
-            row = {
-                "dataset": split,
-                "index": combined_frame.iloc[source_idx]["Index"],
-                "Repeat_index": combined_frame.iloc[source_idx]["Repeat_index"],
-                "true_label": label_names[result["true"][local_idx]],
-                "pred_label": label_names[result["pred"][local_idx]],
+
+def _canonical_evaluation_strategy(config: TrainConfig, has_external_test: bool) -> str:
+    if has_external_test:
+        return "external_test_holdout"
+    mode = str(config.split_mode or "stratified_holdout").strip().lower()
+    if mode in {"leave_one_repeat_index_cv", "outer_leave_one_repeat_index_cv", "loocv", "loo"}:
+        return "leave_one_repeat_index_cv"
+    if mode in {"stratified", "stratified_holdout", "holdout"}:
+        return "stratified_holdout"
+    raise ValueError("split_mode 必须是 stratified_holdout、leave_one_repeat_index_cv 或 outer_leave_one_repeat_index_cv")
+
+
+def _validate_required_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str], required: tuple[str, ...]) -> None:
+    for split_name in required:
+        if not splits.get(split_name):
+            raise ValueError(f"{split_name} 集为空，请增加样品种类或调整划分比例")
+    train_labels = set(np.unique(y[splits["train"]]).tolist())
+    missing = [label for idx, label in enumerate(label_names) if idx not in train_labels]
+    if missing:
+        raise ValueError(f"训练集中缺少类别: {', '.join(missing)}。请增加样品种类或调整划分比例")
+
+
+def _repeat_indices_for_split(repeat_index: np.ndarray, indices: list[int]) -> list[str]:
+    if not indices:
+        return []
+    return [str(item) for item in sorted(np.unique(repeat_index[indices]).tolist())]
+
+
+def _holdout_fold(splits: dict[str, list[int]], repeat_index: np.ndarray, *, strategy: str) -> dict[str, Any]:
+    return {
+        "fold_index": 1,
+        "test_repeat_index": "holdout",
+        "train_repeat_indices": _repeat_indices_for_split(repeat_index, splits["train"]),
+        "valid_repeat_indices": _repeat_indices_for_split(repeat_index, splits["valid"]),
+        "test_repeat_indices": _repeat_indices_for_split(repeat_index, splits.get("test", [])),
+        "splits": splits,
+        "strategy": strategy,
+    }
+
+
+def _external_test_fold(
+    *,
+    splits: dict[str, list[int]],
+    repeat_index: np.ndarray,
+    external_test_indices: list[int],
+    external_repeat_index: np.ndarray,
+) -> dict[str, Any]:
+    return {
+        "fold_index": 1,
+        "test_repeat_index": "external_test",
+        "train_repeat_indices": _repeat_indices_for_split(repeat_index, splits["train"]),
+        "valid_repeat_indices": _repeat_indices_for_split(repeat_index, splits["valid"]),
+        "test_repeat_indices": _repeat_indices_for_split(external_repeat_index, list(range(len(external_repeat_index)))),
+        "internal_splits": {**splits, "test": []},
+        "external_test_indices": external_test_indices,
+        "splits": {**splits, "test": external_test_indices},
+        "strategy": "external_test_holdout",
+    }
+
+
+def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
+    test_data_path = (config_data or {}).get("test_data_path")
+    config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
+    config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
+    if test_data_path:
+        raw_config = config_data or {}
+        split_train = int(raw_config.get("split_train", config.split_train))
+        split_valid = int(raw_config.get("split_valid", 10 - split_train))
+        if "split_train" not in raw_config and "split_valid" not in raw_config:
+            split_train, split_valid = 8, 2
+        elif "split_valid" not in raw_config:
+            split_valid = 10 - split_train
+        elif "split_train" not in raw_config:
+            split_train = 10 - split_valid
+        config = _clone_config(config, split_train=split_train, split_valid=split_valid, split_test=0)
+    model_type = canonical_model_type(config.model_type)
+    evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
+    run_id = run_id or uuid.uuid4().hex[:12]
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    status_file = run_dir / "status.json"
+    previous_status: dict[str, Any] = {}
+    if status_file.exists():
+        try:
+            previous_status = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            previous_status = {}
+
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    dataset = load_modeling_csv(data_path)
+    sample_count = int(len(dataset.labels))
+    x_raw = np.asarray(dataset.intensity, dtype=np.float32)
+    label_names = sorted(set(dataset.labels))
+    label_to_id = {label: idx for idx, label in enumerate(label_names)}
+    y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
+    repeat_index = dataset.frame["Repeat_index"].astype(str).to_numpy()
+    test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
+    test_sample_count = 0
+    if test_dataset is not None:
+        _validate_external_test_dataset(label_names, x_raw.shape[1], test_dataset)
+        test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
+        test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
+        test_repeat_index = test_dataset.frame["Repeat_index"].astype(str).to_numpy()
+        test_sample_count = int(len(test_y))
+        x_model_raw = np.vstack([x_raw, test_x_raw])
+        y_model = np.concatenate([y, test_y])
+        internal_splits = _split_indices(y, repeat_index, config)
+        _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
+        external_indices = list(range(len(y), len(y_model)))
+        folds = [
+            _external_test_fold(
+                splits=internal_splits,
+                repeat_index=repeat_index,
+                external_test_indices=external_indices,
+                external_repeat_index=test_repeat_index,
+            )
+        ]
+        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
+    else:
+        x_model_raw = x_raw
+        y_model = y
+        if evaluation_strategy == "leave_one_repeat_index_cv":
+            folds = _leave_one_repeat_index_folds(y, repeat_index, config)
+        else:
+            splits = _split_indices(y, repeat_index, config)
+            _validate_required_splits(splits, y, label_names, ("train", "valid", "test"))
+            folds = [_holdout_fold(splits, repeat_index, strategy=evaluation_strategy)]
+        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
+    feature_x_axis = dataset.x_axis[0] if dataset.x_axis else list(range(x_raw.shape[1]))
+    combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
+    x_axis_warning = _x_axis_warning(combined_axes, x_raw.shape[1])
+
+    prediction_rows: list[dict[str, Any]] = []
+    fold_metric_rows: list[dict[str, Any]] = []
+    cv_fold_payloads: list[dict[str, Any]] = []
+    history_rows: list[dict[str, Any]] = []
+    fold_artifacts: list[dict[str, Any]] = []
+    all_true: list[int] = []
+    all_pred: list[int] = []
+    last_model: Any | None = None
+    last_model_family = model_family(model_type)
+    last_model_artifact = "model.pkl" if last_model_family == "traditional_ml" else "model.pt"
+    final_deep_context: dict[str, Any] | None = None
+    best_search_rows: list[dict[str, Any]] = []
+
+    for fold in folds:
+        splits = fold["splits"]
+        normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
+        x = _transform_x_with_normalizer(x_model_raw, normalizer)
+        fold_index = int(fold["fold_index"])
+        if model_family(model_type) == "traditional_ml":
+            model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
+            best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
+            test_eval = _evaluate_traditional_model(model, x, y_model, splits["test"], label_names)
+            history_rows.append(
+                {
+                    "fold_index": fold_index,
+                    "epoch": 1,
+                    "train_loss": None,
+                    "valid_accuracy": valid_eval["accuracy"],
+                    "valid_macro_f1": valid_eval["macro_f1"],
+                    "best_valid_macro_f1": valid_eval["macro_f1"],
+                    "bad_epochs": 0,
+                }
+            )
+            fold_artifacts.append(
+                {
+                    "model": model,
+                    "normalizer": normalizer,
+                    "splits": splits,
+                    "test_true": test_eval["true"],
+                    "test_pred": test_eval["pred"],
+                    "train_mean_curve": np.mean(x_model_raw[splits["train"]], axis=0),
+                    "selected_config": selected_config.__dict__,
+                }
+            )
+            dscarnet_mapping_metadata = None
+        else:
+            model, history, dscarnet_mapped, dscarnet_mapping_metadata = _fit_deep_fold(
+                config=config,
+                model_type=model_type,
+                x=x,
+                y=y_model,
+                splits=splits,
+                label_names=label_names,
+                run_dir=run_dir,
+                sample_count=int(len(y_model)),
+            )
+            for row in history:
+                history_rows.append({**row, "fold_index": fold_index})
+            if dscarnet_mapped is not None:
+                test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
+            else:
+                test_eval = _evaluate(model, x, y_model, splits["test"], label_names)
+            final_deep_context = {
+                "model": model,
+                "x": x,
+                "splits": splits,
+                "dscarnet_mapped": dscarnet_mapped,
+                "dscarnet_mapping_metadata": dscarnet_mapping_metadata,
             }
-            for label, prob in zip(label_names, result["probabilities"][local_idx]):
+        last_model = model
+        all_true.extend(int(item) for item in test_eval["true"])
+        all_pred.extend(int(item) for item in test_eval["pred"])
+        fold_metrics = _classification_metrics_payload(np.asarray(test_eval["true"], dtype=np.int64), np.asarray(test_eval["pred"], dtype=np.int64), label_names)
+        fold_metric_rows.append(
+            {
+                "fold_index": fold_index,
+                "test_repeat_index": fold["test_repeat_index"],
+                "accuracy": fold_metrics["accuracy"],
+                "macro_f1": fold_metrics["macro_f1"],
+                "weighted_f1": fold_metrics["weighted_f1"],
+            }
+        )
+        cv_fold_payloads.append(
+            {
+                "fold_index": fold_index,
+                "test_repeat_index": fold["test_repeat_index"],
+                "train_repeat_indices": fold["train_repeat_indices"],
+                "valid_repeat_indices": fold["valid_repeat_indices"],
+                "test_repeat_indices": fold.get("test_repeat_indices", []),
+                "metrics": fold_metrics,
+                "preprocess": _json_normalizer(normalizer),
+                "dscarnet_mapping": dscarnet_mapping_metadata,
+                "splits": fold.get("internal_splits", splits),
+                "external_test_indices": fold.get("external_test_indices", []),
+            }
+        )
+        for local_idx, source_idx in enumerate(splits["test"]):
+            source_metadata = metadata[source_idx]
+            row = {
+                "dataset": "external_test" if evaluation_strategy == "external_test_holdout" else "test",
+                "fold_index": fold_index,
+                "index": source_metadata["index"],
+                "Repeat_index": source_metadata["repeat_index"],
+                "true_label": label_names[test_eval["true"][local_idx]],
+                "pred_label": label_names[test_eval["pred"][local_idx]],
+            }
+            for label, prob in zip(label_names, test_eval["probabilities"][local_idx]):
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
 
-    def score_deep(values: np.ndarray) -> np.ndarray:
-        model.eval()
-        with torch.no_grad():
-            logits = model(torch.tensor(values, dtype=torch.float32).unsqueeze(1))
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-        return probs
+    metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
+    cv_metrics = {
+        "strategy": evaluation_strategy,
+        "fold_count": len(folds),
+        "metrics": metrics,
+        "folds": cv_fold_payloads,
+    }
 
-    def predict_deep(values: np.ndarray) -> np.ndarray:
-        return score_deep(values).argmax(axis=1)
-
-    feature_summary = _compute_feature_importance(
-        run_dir=run_dir,
-        config=config,
-        x=x,
-        y=y,
-        splits=splits,
-        x_axis=feature_x_axis,
-        predict_fn=predict_deep,
-    )
-    sample_feature_summary = _compute_sample_feature_importance(
-        run_dir=run_dir,
-        config=config,
-        x=x,
-        y=y,
-        splits=splits,
-        x_axis=feature_x_axis,
-        label_names=label_names,
-        metadata=metadata,
-        score_fn=score_deep,
-    )
+    if model_family(model_type) == "traditional_ml":
+        if config.feature_selection_enabled:
+            feature_result = _cv_f1_window_importance(
+                fold_artifacts=fold_artifacts,
+                x_raw=x_model_raw,
+                y=y_model,
+                x_axis=feature_x_axis,
+                label_names=label_names,
+                window_count=config.feature_window_count,
+                top_k=config.feature_top_k,
+                x_axis_warning=x_axis_warning,
+            )
+            feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
+        else:
+            feature_summary = _unsupported_explainability_summary("特征区间识别已关闭", method="interval_permutation_importance")
+        sample_feature_summary = _unsupported_explainability_summary(
+            "无卷积模型和机器学习模型使用外层 CV 的全局 macro-F1 下降解释，不生成单样本 F1 重要性",
+            method="cv_macro_f1_drop_global_importance",
+        )
+    else:
+        if final_deep_context is None:
+            raise ValueError("深度模型训练未产生可解释性上下文")
+        feature_summary, sample_feature_summary = _compute_deep_explainability(
+            run_dir=run_dir,
+            config=config,
+            model=final_deep_context["model"],
+            x=final_deep_context["x"],
+            y=y_model,
+            splits=final_deep_context["splits"],
+            x_axis=feature_x_axis,
+            x_axis_warning=x_axis_warning,
+            label_names=label_names,
+            metadata=metadata,
+            dscarnet_mapped=final_deep_context["dscarnet_mapped"],
+            dscarnet_mapping_metadata=final_deep_context["dscarnet_mapping_metadata"],
+        )
 
     config_out = {
         **config.__dict__,
+        "model_type": model_type,
         "data_path": str(Path(data_path).resolve()),
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
-        "preprocess": norm_config,
+        "preprocess": {"mode": config.normalization, "fit_scope": "train_fold"},
+        "evaluation_strategy": evaluation_strategy,
+        "dimension_band": _dimension_band(x_raw.shape[1]),
+        "fold_count": len(folds),
     }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (run_dir / "split.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "split.json").write_text(json.dumps(cv_fold_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-    pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
+    (run_dir / "cv_metrics.json").write_text(json.dumps(cv_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    pd.DataFrame(fold_metric_rows).to_csv(run_dir / "fold_metrics.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
-    torch.save(model.state_dict(), run_dir / "model.pt")
+    pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(best_search_rows).to_csv(run_dir / "hyperparameter_search.csv", index=False, encoding="utf-8-sig")
+    if last_model is not None and last_model_family == "traditional_ml":
+        with (run_dir / "model.pkl").open("wb") as fh:
+            pickle.dump(last_model, fh)
+    elif last_model is not None:
+        torch.save(last_model.state_dict(), run_dir / "model.pt")
+
     status_payload = {
         **previous_status,
         "run_id": run_id,
         "status": "success",
         "metrics": metrics,
-        "history": history,
-        "model_type": config.model_type,
-        "model_family": "deep_learning",
-        "model_artifact": "model.pt",
+        "history": history_rows,
+        "model_type": model_type,
+        "model_family": last_model_family,
+        "model_artifact": last_model_artifact,
+        "model_artifact_note": (
+            "最后一个外层折模型，仅作下载参考，不用于汇报的留一 CV 指标"
+            if evaluation_strategy == "leave_one_repeat_index_cv"
+            else "本次 holdout 训练得到的模型，用于对应测试指标"
+        ),
+        "not_used_for_reported_cv_metrics": evaluation_strategy == "leave_one_repeat_index_cv",
         "feature_importance": feature_summary,
         "sample_feature_importance": sample_feature_summary,
+        "x_axis_warning": x_axis_warning,
         "sample_count": sample_count,
-        "test_sample_count": test_sample_count,
+        "test_sample_count": int(len(all_true)),
         "label_names": label_names,
         "target_epochs": config.epochs,
-        "actual_epochs": len(history),
-        "best_valid_macro_f1": best_score,
+        "actual_epochs": len(history_rows),
+        "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
+        "evaluation_strategy": evaluation_strategy,
+        "fold_count": len(folds),
         "config": config_out,
         "data_path": str(Path(data_path).resolve()),
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "completed_at": _now_iso(),
     }
-    (run_dir / "status.json").write_text(
-        json.dumps(
-            status_payload,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return {
-        "run_id": run_id,
-        "status": "success",
-        "metrics": metrics,
-        "history": history,
-        "model_type": config.model_type,
-        "model_family": "deep_learning",
-        "model_artifact": "model.pt",
-        "feature_importance": feature_summary,
-        "sample_feature_importance": sample_feature_summary,
-        "sample_count": sample_count,
-        "test_sample_count": test_sample_count,
-        "label_names": label_names,
-        "target_epochs": config.epochs,
-        "actual_epochs": len(history),
-        "best_valid_macro_f1": best_score,
-        "run_dir": str(run_dir.resolve()),
-    }
+    (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {**status_payload, "run_dir": str(run_dir.resolve())}
 
 
 def list_runs() -> list[dict[str, Any]]:

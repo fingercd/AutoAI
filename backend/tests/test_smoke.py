@@ -38,13 +38,17 @@ def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     assert summary["columns"][0] == "Index"
 
 
-def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int = 2) -> None:
+def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int = 2, curve_length: int = 4) -> None:
     rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
     index = 1
+    x_axis = list(range(curve_length))
     for group in range(1, group_count + 1):
         label = "A" if group <= (group_count + 1) // 2 else "B"
         for repeat in range(repeats):
-            rows.append(f'{index},s{group}_{repeat},"[1, 2, 3, 4]","[{group}, {group + 1}, {group + 2}, {group + 3}]",{label},{group}')
+            y = [float(group + point + repeat * 0.01) for point in range(curve_length)]
+            if label == "B" and curve_length:
+                y[curve_length // 2] += 5.0
+            rows.append(f'{index},s{group}_{repeat},"{x_axis}","{y}",{label},{group}')
             index += 1
     path.write_text("\n".join(rows), encoding="utf-8")
 
@@ -66,6 +70,57 @@ def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 
             )
             index += 1
     path.write_text("\n".join(rows), encoding="utf-8")
+
+
+def _write_inconsistent_axis_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
+    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    index = 1
+    for group in range(1, group_count + 1):
+        label = "A" if group <= group_count // 2 else "B"
+        for repeat in range(repeats):
+            x_axis = [0.0, 1.0, 2.0, 3.0, 10.0 + index]
+            y = [0.0, 0.1 * group, 0.2 * group, 0.3 * group, 0.4 * group]
+            if label == "B":
+                y[2] += 4.0
+            rows.append(
+                f'{index},axis_{group}_{repeat},"{x_axis}",'
+                f'"{y}",{label},{group}'
+            )
+            index += 1
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+
+class _FakeAggMap:
+    instances: list["_FakeAggMap"] = []
+
+    def __init__(self, dfx, metric="correlation"):
+        self.metric = metric
+        self.alist = list(dfx.columns)
+        self.fit_input_shape = dfx.shape
+        self.fit_kwargs = {}
+        self.isfit = False
+        _FakeAggMap.instances.append(self)
+
+    def fit(self, **kwargs):
+        self.fit_kwargs = kwargs
+        self.isfit = True
+        feature_count = len(self.alist)
+        side = max(5, int(np.ceil(np.sqrt(max(1, feature_count)))))
+        rows = []
+        for idx, name in enumerate(self.alist):
+            rows.append({"x": idx % side, "y": idx // side, "v": name})
+        self.fmap_shape = (side, side)
+        self.feature_names_reshape = [row["v"] for row in rows]
+        self.df_grid = pd.DataFrame(rows)
+        return self
+
+    def batch_transform(self, array_2d, scale=True, scale_method="minmax", n_jobs=4, fillnan=0):
+        values = np.asarray(array_2d, dtype=np.float32)
+        side_h, side_w = self.fmap_shape
+        output = np.zeros((values.shape[0], side_h, side_w, 1), dtype=np.float32)
+        for feature_idx in range(min(values.shape[1], len(self.alist))):
+            output[:, feature_idx // side_w, feature_idx % side_w, 0] = values[:, feature_idx]
+        return output
 
 
 def test_build_feature_windows_uses_configured_window_count():
@@ -214,6 +269,234 @@ def test_sample_occlusion_importance_allows_no_positive_segments():
     assert all(window["normalized_importance"] == 0 for window in result["samples"][0]["windows"])
 
 
+def test_deep_gradcam_records_sample_axis_and_auxiliary_sanity():
+    import torch
+    from torch import nn
+    from backend.app.feature_selection import sample_deep_attribution_importance
+
+    class TinyConvClassifier(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv = nn.Conv1d(1, 2, kernel_size=1, bias=False)
+            self.pool = nn.AdaptiveAvgPool1d(1)
+            self.classifier = nn.Linear(2, 2, bias=False)
+            with torch.no_grad():
+                self.conv.weight.copy_(torch.tensor([[[1.0]], [[-1.0]]]))
+                self.classifier.weight.copy_(torch.tensor([[1.0, -1.0], [-1.0, 1.0]]))
+
+        def forward(self, x):
+            x = self.pool(torch.relu(self.conv(x))).squeeze(-1)
+            return self.classifier(x)
+
+    x = np.asarray(
+        [
+            [0.0, 0.1, 0.2, 0.3, 0.4],
+            [0.2, 0.1, 0.0, -0.1, -0.2],
+            [0.5, 0.4, 0.3, 0.2, 0.1],
+        ],
+        dtype=np.float32,
+    )
+    y = np.asarray([0, 1, 0], dtype=np.int64)
+    metadata = [
+        {"index": 1, "name": "train", "repeat_index": "1", "sample_x_axis": [0, 1, 2, 3, 4]},
+        {"index": 2, "name": "sample_a", "repeat_index": "2", "sample_x_axis": [10, 11, 12, 13, 99]},
+        {"index": 3, "name": "sample_b", "repeat_index": "3", "sample_x_axis": [20, 21, 22, 23, 199]},
+    ]
+
+    result = sample_deep_attribution_importance(
+        TinyConvClassifier(),
+        x,
+        y,
+        x_axis=[0, 1, 2, 3, 4],
+        splits={"train": [0], "test": [1, 2]},
+        label_names=["A", "B"],
+        metadata=metadata,
+        model_type="cnn1d",
+        top_k=2,
+    )
+
+    assert result["status"] == "ready"
+    assert result["method"] == "gradcam_1d"
+    assert result["sanity_checks"]["auxiliary_method"] == "input_gradient_attribution"
+    assert result["sanity_checks"]["sample_count"] == 2
+    assert "disagreement_sample_count" in result["sanity_checks"]
+    sample = next(item for item in result["samples"] if item["name"] == "sample_a")
+    assert sample["sample_x_axis"] == [10, 11, 12, 13, 99]
+    assert sample["windows"][0]["start_x"] == pytest.approx(10)
+    assert sample["windows"][-1]["end_x"] == pytest.approx(99)
+    assert sample["sanity_checks"]["auxiliary_method"] == "input_gradient_attribution"
+    assert sample["auxiliary_top_segments"]
+
+
+def test_dscarnet_registry_uses_dual_2d_builder():
+    import torch
+    from backend.app.models.dscarnet import DSCARNet1D, DualDSCARNet2D
+    from backend.app.models.registry import build_deep_model, build_dscarnet_model
+    from backend.app.training import TrainConfig
+
+    config = TrainConfig(model_type="dscarnet", dscarnet_inception_blocks=1)
+
+    with pytest.raises(ValueError, match="2D"):
+        build_deep_model(config, input_length=40, class_count=2, sample_count=8)
+
+    model = build_dscarnet_model(
+        config,
+        input_shape1=(5, 5, 1),
+        input_shape2=(5, 5, 1),
+        class_count=2,
+    )
+
+    assert isinstance(model, DualDSCARNet2D)
+    assert not isinstance(model, DSCARNet1D)
+    assert model.last_avf is None
+    logits = model(torch.ones(2, 1, 5, 5), torch.ones(2, 1, 5, 5))
+    assert logits.shape == (2, 2)
+
+
+def test_registry_allows_only_current_ten_classification_models():
+    from backend.app.models.registry import DEEP_MODEL_TYPES, TRADITIONAL_MODEL_TYPES, canonical_model_type
+
+    assert TRADITIONAL_MODEL_TYPES == {"pls_da", "svm", "random_forest", "xgboost"}
+    assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+    assert canonical_model_type("PLS-DA") == "pls_da"
+    assert canonical_model_type("1D-Transformer") == "transformer1d"
+    assert canonical_model_type("1D-ResNet") == "resnet1d"
+    assert canonical_model_type("1D-Inception") == "inception1d"
+    assert canonical_model_type("1D-TCN") == "tcn1d"
+    for retired in ["knn", "mlp", "unet1d", "plsr", "svr"]:
+        with pytest.raises(ValueError, match="当前仅支持分类任务的 10 类模型"):
+            canonical_model_type(retired)
+
+
+@pytest.mark.parametrize("input_length", [1500, 5000, 9000])
+@pytest.mark.parametrize("model_type", ["cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d"])
+def test_deep_model_architectures_accept_dimension_bands(input_length, model_type):
+    import torch
+    from backend.app.models.registry import build_deep_model
+    from backend.app.training import TrainConfig
+
+    model = build_deep_model(
+        TrainConfig(model_type=model_type, hidden_size=32, transformer_heads=4),
+        input_length=input_length,
+        class_count=3,
+        sample_count=12,
+    )
+
+    logits = model(torch.randn(2, 1, input_length))
+
+    assert logits.shape == (2, 3)
+
+
+def test_dscarnet_aggmap_mapping_fits_train_only_and_saves(tmp_path):
+    from backend.app.dscarnet_mapping import fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
+
+    _FakeAggMap.instances = []
+    x = np.arange(6 * 8, dtype=np.float32).reshape(6, 8)
+
+    mapped = fit_dscarnet_2d_mapping(
+        x,
+        train_indices=[0, 1, 2, 3],
+        pca_components=3,
+        cluster_channels=9,
+        seed=7,
+        aggmap_factory=_FakeAggMap,
+    )
+
+    assert len(_FakeAggMap.instances) == 2
+    assert _FakeAggMap.instances[0].fit_input_shape == (4, 8)
+    assert _FakeAggMap.instances[1].fit_input_shape == (4, 3)
+    assert _FakeAggMap.instances[0].fit_kwargs["cluster_channels"] == 9
+    assert mapped.x_sar.shape[0] == 6
+    assert mapped.x_car.shape[0] == 6
+    assert mapped.x_sar.shape[1:] == (1, 5, 5)
+    assert mapped.x_car.shape[1:] == (1, 5, 5)
+    assert mapped.metadata["fit_scope"] == "train"
+    assert mapped.metadata["pca_components"] == 3
+    assert "github.com/songlinlu/DSCAR" in mapped.metadata["source_url"]
+
+    save_dscarnet_mapping_artifacts(tmp_path, mapped)
+
+    payload = json.loads((tmp_path / "dscarnet_mapping.json").read_text(encoding="utf-8"))
+    assert payload["fit_scope"] == "train"
+    assert payload["input_shape_sar"] == [1, 5, 5]
+    assert payload["input_shape_car"] == [1, 5, 5]
+    assert (tmp_path / "dscarnet_pca.joblib").exists()
+    assert (tmp_path / "dscarnet_sar_aggmap.joblib").exists()
+    assert (tmp_path / "dscarnet_car_aggmap.joblib").exists()
+
+
+def test_dscarnet_lapjv_compat_uses_linear_assignment():
+    from backend.app.dscarnet_mapping import scipy_lapjv_compat
+
+    row_assign, col_assign, total_cost = scipy_lapjv_compat(
+        np.asarray(
+            [
+                [4.0, 1.0, 3.0],
+                [2.0, 0.0, 5.0],
+                [3.0, 2.0, 2.0],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    assert row_assign.tolist() == [1, 0, 2]
+    assert col_assign.tolist() == [1, 0, 2]
+    assert total_cost == pytest.approx(5.0)
+
+
+def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, monkeypatch):
+    import backend.app.dscarnet_mapping as dscarnet_mapping
+    import backend.app.training as training
+
+    source = tmp_path / "feature_signal.csv"
+    _write_feature_signal_csv(source, group_count=12, repeats=2)
+    _FakeAggMap.instances = []
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
+
+    result = train_model(
+        source,
+        {
+            "model_type": "dscarnet",
+            "normalization": "none",
+            "epochs": 1,
+            "batch_size": 8,
+            "split_train": 6,
+            "split_valid": 2,
+            "split_test": 2,
+            "feature_top_k": 2,
+            "dscarnet_inception_blocks": 1,
+        },
+    )
+
+    run_dir = Path(result["run_dir"])
+    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+    mapping_payload = json.loads((run_dir / "dscarnet_mapping.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "success"
+    assert result["sample_feature_importance"]["method"] == "dscarnet_dual_2d_gradcam"
+    assert result["sample_feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert result["feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert sample_payload["method"] == "dscarnet_dual_2d_gradcam"
+    assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert feature_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert sample_payload["window_count"] == 40
+    assert sample_payload["samples"]
+    assert sample_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
+    assert feature_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
+    assert all(len(sample["windows"]) == 40 for sample in sample_payload["samples"])
+    assert all("sar_top_segments" in sample and "car_top_segments" in sample for sample in sample_payload["samples"])
+    assert all(
+        0.0 <= window["normalized_importance"] <= 1.0
+        for sample in sample_payload["samples"]
+        for window in sample["windows"]
+    )
+    assert (run_dir / "dscarnet_pca.joblib").exists()
+    assert (run_dir / "dscarnet_sar_aggmap.joblib").exists()
+    assert (run_dir / "dscarnet_car_aggmap.joblib").exists()
+
+
 def test_repeat_index_summary_and_incomplete_group_error(tmp_path):
     source = tmp_path / "bad_repeat.csv"
     _write_grouped_modeling_csv(source, group_count=4, repeats=2)
@@ -224,47 +507,65 @@ def test_repeat_index_summary_and_incomplete_group_error(tmp_path):
         load_modeling_csv(source)
 
 
-def test_custom_split_uses_repeat_index_groups(tmp_path, monkeypatch):
+def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
     import backend.app.training as training
 
     source = tmp_path / "grouped.csv"
-    _write_grouped_modeling_csv(source, group_count=11, repeats=2)
+    _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=12)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
     result = train_model(
         source,
         {
-            "model_type": "knn",
-            "split_mode": "custom",
-            "split_train": 7,
-            "split_valid": 1,
-            "split_test": 2,
+            "model_type": "pls_da",
+            "split_mode": "leave_one_repeat_index_cv",
+            "normalization": "zscore",
+            "feature_selection_enabled": False,
         },
     )
-    split = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+    cv_payload = json.loads((Path(result["run_dir"]) / "cv_metrics.json").read_text(encoding="utf-8"))
+    predictions = pd.read_csv(Path(result["run_dir"]) / "cv_predictions.csv")
     frame = load_modeling_csv(source).frame
 
-    split_group_counts = {
-        name: frame.iloc[idxs]["Repeat_index"].nunique()
-        for name, idxs in split.items()
-    }
-    assert split_group_counts == {"train": 8, "valid": 1, "test": 2}
-    assert set(frame.iloc[split["train"]]["Repeat_index"]).isdisjoint(set(frame.iloc[split["valid"]]["Repeat_index"]))
-    assert set(frame.iloc[split["train"]]["Repeat_index"]).isdisjoint(set(frame.iloc[split["test"]]["Repeat_index"]))
+    assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
+    assert cv_payload["fold_count"] == frame["Repeat_index"].nunique()
+    assert sorted(item["test_repeat_index"] for item in cv_payload["folds"]) == sorted(frame["Repeat_index"].astype(str).unique())
+    assert predictions["Repeat_index"].astype(str).nunique() == frame["Repeat_index"].nunique()
+    assert set(predictions["dataset"]) == {"test"}
+    for fold in cv_payload["folds"]:
+        assert fold["test_repeat_index"] not in fold["train_repeat_indices"]
+        assert fold["test_repeat_index"] not in fold["valid_repeat_indices"]
+        assert set(fold["train_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
 
 
-def test_custom_split_ratio_must_sum_to_ten(tmp_path, monkeypatch):
+def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
     import backend.app.training as training
 
     source = tmp_path / "grouped.csv"
-    _write_grouped_modeling_csv(source, group_count=5, repeats=2)
+    _write_grouped_modeling_csv(source, group_count=10, repeats=2)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
-    with pytest.raises(ValueError, match="相加必须等于 10"):
-        train_model(source, {"model_type": "knn", "split_train": 7, "split_valid": 1, "split_test": 1})
+    result = train_model(
+        source,
+        {
+            "model_type": "pls_da",
+            "split_mode": "stratified_holdout",
+            "split_train": 8,
+            "split_valid": 1,
+            "split_test": 1,
+            "feature_selection_enabled": False,
+        },
+    )
+    split_payload = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+
+    assert result["evaluation_strategy"] == "stratified_holdout"
+    assert result["fold_count"] == 1
+    assert len(split_payload[0]["splits"]["train"]) == 16
+    assert len(split_payload[0]["splits"]["valid"]) == 2
+    assert len(split_payload[0]["splits"]["test"]) == 2
 
 
-def test_external_test_dataset_uses_train_valid_split(tmp_path, monkeypatch):
+def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     import backend.app.training as training
 
     train_source = tmp_path / "train.csv"
@@ -273,14 +574,26 @@ def test_external_test_dataset_uses_train_valid_split(tmp_path, monkeypatch):
     _write_grouped_modeling_csv(test_source, group_count=4, repeats=2)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
-    result = train_model(train_source, {"model_type": "knn", "test_data_path": str(test_source)})
-    split = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+    result = train_model(
+        train_source,
+        {
+            "model_type": "pls_da",
+            "test_data_path": str(test_source),
+            "split_train": 8,
+            "split_valid": 2,
+            "split_test": 0,
+            "feature_selection_enabled": False,
+        },
+    )
+    split_payload = json.loads((Path(result["run_dir"]) / "split.json").read_text(encoding="utf-8"))
+    predictions = pd.read_csv(Path(result["run_dir"]) / "predictions.csv")
 
-    assert len(split["train"]) == 16
-    assert len(split["valid"]) == 4
-    assert len(split["test"]) == 8
-    assert result["sample_count"] == 20
+    assert result["evaluation_strategy"] == "external_test_holdout"
     assert result["test_sample_count"] == 8
+    assert result["fold_count"] == 1
+    assert not split_payload[0]["splits"]["test"]
+    assert len(split_payload[0]["external_test_indices"]) == 8
+    assert set(predictions["dataset"]) == {"external_test"}
 
 
 def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
@@ -295,7 +608,7 @@ def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
     with pytest.raises(ValueError, match="测试集包含训练集中不存在的 Label"):
-        train_model(train_source, {"model_type": "knn", "test_data_path": str(test_source)})
+        train_model(train_source, {"model_type": "pls_da", "test_data_path": str(test_source)})
 
 
 def test_train_smoke(tmp_path, monkeypatch):
@@ -306,12 +619,17 @@ def test_train_smoke(tmp_path, monkeypatch):
     run_dir = tmp_path / result["run_id"]
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "predictions.csv").exists()
+    assert (run_dir / "cv_metrics.json").exists()
+    assert (run_dir / "fold_metrics.csv").exists()
+    assert (run_dir / "cv_predictions.csv").exists()
     assert (run_dir / "feature_importance.json").exists()
     assert (run_dir / "feature_importance.csv").exists()
     assert (run_dir / "sample_feature_importance.json").exists()
     assert (run_dir / "sample_feature_importance.csv").exists()
     assert result["feature_importance"]["artifact"] == "feature_importance.json"
     assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
+    assert result["evaluation_strategy"] == "stratified_holdout"
+    assert "classification_report" in result["metrics"]
 
 
 def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, monkeypatch):
@@ -326,12 +644,13 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
 
     result = train_model(
         source,
-        {
-            "model_type": "knn",
-            "normalization": "none",
-            "split_train": 6,
-            "split_valid": 2,
-            "split_test": 2,
+            {
+                "model_type": "svm",
+                "normalization": "none",
+                "split_mode": "leave_one_repeat_index_cv",
+                "split_train": 6,
+                "split_valid": 2,
+                "split_test": 2,
             "feature_window_count": 4,
             "feature_top_k": 2,
             "feature_n_repeats": 2,
@@ -339,56 +658,78 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
     )
     run_dir = Path(result["run_dir"])
     feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
-    sample_feature_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
 
     assert result["feature_importance"]["status"] == "ready"
-    assert result["sample_feature_importance"]["status"] == "ready"
+    assert result["sample_feature_importance"]["status"] == "unsupported"
     assert (run_dir / "feature_importance.csv").exists()
-    assert (run_dir / "sample_feature_importance.csv").exists()
     assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in feature_payload["top_segments"])
     assert len(feature_payload["windows"]) == 4
-    assert sample_feature_payload["samples"]
-    assert {sample["dataset"] for sample in sample_feature_payload["samples"]} == {"test"}
-    assert all("true_label" in sample and "curve" in sample for sample in sample_feature_payload["samples"])
-    assert all(
-        len(sample["windows"]) == 4
-        for sample in sample_feature_payload["samples"]
-    )
-    assert all(
-        "original_loss" in window and "masked_loss" in window and "normalized_importance" in window
-        for sample in sample_feature_payload["samples"]
-        for window in sample["windows"]
-    )
-    assert all(
-        0.0 <= window["normalized_importance"] <= 1.0
-        for sample in sample_feature_payload["samples"]
-        for window in sample["windows"]
-    )
-    assert any(
-        segment["start_index"] <= 29 and segment["end_index"] >= 20
-        for sample in sample_feature_payload["samples"]
-        if sample["true_label"] == "B"
-        for segment in sample["top_segments"]
-    )
+    assert feature_payload["method"] == "interval_permutation_importance"
+    assert feature_payload["importance_metric"] == "baseline_macro_f1_minus_perturbed_macro_f1"
+    assert not (run_dir / "sample_feature_importance.json").exists()
+    assert not (run_dir / "sample_feature_importance.csv").exists()
 
     client = TestClient(main.app)
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 200
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 200
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.csv").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 404
 
 
-@pytest.mark.parametrize("model_type", ["cnn1d", "mlp", "transformer", "unet1d", "dscarnet", "knn", "random_forest", "svm", "xgboost"])
-def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
+def test_training_warns_when_sample_x_axes_are_inconsistent(tmp_path, monkeypatch):
     import backend.app.training as training
 
-    monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
+    source = tmp_path / "inconsistent_axis.csv"
+    _write_inconsistent_axis_csv(source)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
     result = train_model(
-        ROOT / "data.csv",
+        source,
+        {
+            "model_type": "cnn1d",
+            "normalization": "none",
+            "epochs": 1,
+            "batch_size": 8,
+            "split_train": 6,
+            "split_valid": 2,
+            "split_test": 2,
+            "feature_window_count": 3,
+            "feature_top_k": 2,
+            "feature_n_repeats": 1,
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+
+    assert result["x_axis_warning"]["status"] == "inconsistent"
+    assert feature_payload["x_axis_warning"]["status"] == "inconsistent"
+    assert sample_payload["x_axis_warning"]["status"] == "inconsistent"
+    assert sample_payload["samples"]
+    assert all("sample_x_axis" in sample for sample in sample_payload["samples"])
+    assert any(
+        sample["sample_x_axis"][-1] != sample_payload["x_axis"][-1]
+        for sample in sample_payload["samples"]
+    )
+
+
+@pytest.mark.parametrize("model_type", ["pls_da", "svm", "random_forest", "xgboost", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"])
+def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
+    import backend.app.dscarnet_mapping as dscarnet_mapping
+    import backend.app.training as training
+
+    source = tmp_path / f"{model_type}_grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=40)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
+    if model_type == "dscarnet":
+        _FakeAggMap.instances = []
+        monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
+    result = train_model(
+        source,
         {
             "epochs": 1,
-            "batch_size": 32,
+            "batch_size": 8,
             "model_type": model_type,
+            "split_mode": "leave_one_repeat_index_cv",
             "early_stopping_patience": 5,
             "hidden_size": 32,
             "transformer_heads": 4,
@@ -400,19 +741,59 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
 
     assert result["status"] == "success"
     assert result["model_type"] == model_type
-    assert result["actual_epochs"] == 1
+    assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
+    assert result["fold_count"] == 6
+    run_dir = tmp_path / result["run_id"]
     if result.get("model_family") == "traditional_ml":
-        assert (tmp_path / result["run_id"] / "model.pkl").exists()
+        assert (run_dir / "model.pkl").exists()
+        assert result["sample_feature_importance"]["status"] == "unsupported"
+        assert not (run_dir / "sample_feature_importance.json").exists()
+        assert not (run_dir / "sample_feature_importance.csv").exists()
+        feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+        assert feature_payload["importance_metric"] == "baseline_macro_f1_minus_perturbed_macro_f1"
     else:
-        assert (tmp_path / result["run_id"] / "model.pt").exists()
+        assert (run_dir / "model.pt").exists()
+        assert result["sample_feature_importance"]["status"] == "ready"
+        assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
+        sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+        assert sample_payload["status"] == "ready"
+        assert sample_payload["method"] in {"gradcam_1d", "input_gradient_attribution", "dscarnet_dual_2d_gradcam"}
+        assert sample_payload["window_count"] == 40
+        assert sample_payload["window_count"] != 4
+        assert sample_payload["x_axis_warning"]["status"] in {"consistent", "inconsistent"}
+        assert sample_payload["samples"]
+        assert all(
+            len(sample["windows"]) == sample_payload["window_count"]
+            for sample in sample_payload["samples"]
+        )
+        assert all("sample_x_axis" in sample for sample in sample_payload["samples"])
+        if sample_payload["method"] == "gradcam_1d":
+            assert sample_payload["sanity_checks"]["auxiliary_method"] == "input_gradient_attribution"
+            assert all(
+                "sanity_checks" in sample and "auxiliary_top_segments" in sample
+                for sample in sample_payload["samples"]
+            )
+        if sample_payload["method"] == "dscarnet_dual_2d_gradcam":
+            assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+            assert "dscarnet_mapping" in sample_payload
+            assert (run_dir / "dscarnet_mapping.json").exists()
+        assert all(
+            0.0 <= window["normalized_importance"] <= 1.0
+            for sample in sample_payload["samples"]
+            for window in sample["windows"]
+        )
 
 
 @pytest.mark.skipif(not USER_RAMAN_CSV.exists(), reason="local user Raman CSV fixture is not available")
-@pytest.mark.parametrize("model_type", ["KNN", "UNet1D", "DSCARNet"])
+@pytest.mark.parametrize("model_type", ["PLS-DA", "1D-ResNet", "DSCARNet"])
 def test_user_raman_csv_trains_new_model_choices(tmp_path, monkeypatch, model_type):
+    import backend.app.dscarnet_mapping as dscarnet_mapping
     import backend.app.training as training
 
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
+    if str(model_type).lower() == "dscarnet":
+        _FakeAggMap.instances = []
+        monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
     result = train_model(
         USER_RAMAN_CSV,
         {
@@ -421,14 +802,13 @@ def test_user_raman_csv_trains_new_model_choices(tmp_path, monkeypatch, model_ty
             "model_type": model_type,
             "early_stopping_patience": 5,
             "hidden_size": 32,
-            "unet_depth": 3,
             "dscarnet_inception_blocks": 1,
-            "knn_n_neighbors": 5,
+            "feature_selection_enabled": False,
         },
     )
 
     assert result["status"] == "success"
-    assert result["actual_epochs"] == 1
+    assert result["evaluation_strategy"] == "stratified_holdout"
     assert result["sample_count"] == 50
 
 
@@ -644,26 +1024,70 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert "function drawSampleFeatureHeatmap" in content
     assert "sample.windows" in content
     assert "normalized_importance" in content
+    assert 'id="featureWindowOptions"' in content
     assert "featureWindowCount" in content
     assert 'value="100"' in content
     assert 'max="5000"' in content
-    assert 'feature_window_count: Number($("featureWindowCount").value)' in content
+    assert "function usesFeatureWindowCount" in content
+    assert '$("featureWindowOptions").classList.toggle("hidden", !usesFeatureWindowCount(modelType));' in content
+    assert 'if (usesFeatureWindowCount(payload.model_type)) {' in content
+    assert 'payload.feature_window_count = Number($("featureWindowCount").value);' in content
+    assert 'feature_window_count: Number($("featureWindowCount").value)' not in content
     assert 'height="460"' in content
     assert "boundaryX" in content
     assert "legendHeight = 72" in content
     assert "重要性高（关键特征）" in content
     assert "重要性低（贡献小）" in content
     assert "归一化重要性" in content
-    assert "loss 增加" in content
+    assert "importanceDetailLabel" in content
+    assert "macro-F1 下降" in content
+    assert "梯度归因" in content
+    assert "DSCARNet 二维双通路梯度归因" in content
+    assert "SAR 原始谱图通路" in content
+    assert "CAR PCA 成分通路" in content
+    assert "sample.sample_x_axis" in content
+    assert "x_axis_warning" in content
+    assert "featureSegmentKind" in content
+    assert "特征点" in content
+    assert "Grad-CAM 与输入梯度归因差异较大" in content
 
 
 def test_main_ui_manual_explains_repeat_index_group_split():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert "Repeat_index 整组划分" in content
+    assert "分层划分 8:1:1" in content
+    assert "外层留一交叉验证" in content
+    assert "独立测试集" in content
+    assert "external_test_holdout" in content
+    assert "加载独立测试集" in content
+    assert "已停用" not in content
     assert "不是按单条曲线随机划分" in content
-    assert "train : valid : test = 8 : 1 : 1" in content
-    assert "6/2/2" in content
+    assert "训练集拟合标准化" in content
+    assert "PLSR/SVR 为回归变体暂不启用" in content
+
+
+def test_main_ui_manual_explains_hplc_advanced_preprocessing():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "HPLC 高级预处理" in content
+    assert "共同时间轴" in content
+    assert "重叠时间范围" in content
+    assert "逐条曲线减去自身最小值" in content
+    assert "梯形积分" in content
+    assert "总面积归一化为 1" in content
+    assert "绝对峰面积本身就是判别信息" in content
+
+
+def test_chromatography_ui_uses_hplc_by_default():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="chromHplcMode"' not in content
+    assert "启用 HPLC 高级预处理" not in content
+    assert 'id="hplcOptionsToggle"' in content
+    assert "HPLC 标准流程" in content
+    assert "默认启用" in content
+    assert 'const effectiveKind = isChrom ? "hplc" : kind;' in content
+    assert 'hplcOptionsToggle").textContent' in content
 
 
 # ---------------------------------------------------------------------------
