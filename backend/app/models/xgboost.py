@@ -16,6 +16,8 @@ def build_xgboost(
     subsample: float = 0.9,
     colsample_bytree: float = 0.9,
     reg_lambda: float = 2.0,
+    min_child_weight: float = 1.0,
+    gamma: float = 0.0,
 ) -> Any:
     try:
         from xgboost import XGBClassifier
@@ -29,6 +31,8 @@ def build_xgboost(
         "subsample": subsample,
         "colsample_bytree": colsample_bytree,
         "reg_lambda": reg_lambda,
+        "min_child_weight": min_child_weight,
+        "gamma": gamma,
         "eval_metric": "logloss" if class_count == 2 else "mlogloss",
         "random_state": seed,
         "n_jobs": 1,

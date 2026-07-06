@@ -146,6 +146,78 @@
         gap: 10px;
         margin-top: 14px;
       }
+      .hplc-default-card {
+        margin-top: 14px;
+        border: 1px solid #b8ded8;
+        border-radius: 8px;
+        padding: 14px;
+        background: #f1fbf9;
+      }
+      .hplc-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .hplc-title {
+        display: grid;
+        gap: 4px;
+      }
+      .hplc-title strong {
+        color: var(--brand-dark);
+        font-size: 14px;
+      }
+      .hplc-title span {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .hplc-badge {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        border-radius: 999px;
+        padding: 3px 9px;
+        background: #d9f4ec;
+        color: var(--brand-dark);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .hplc-options-panel {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #c8e8e1;
+      }
+      .hplc-option {
+        min-height: 76px;
+        border: 1px solid #d8eee9;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+      }
+      .hplc-option label {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 0;
+        color: var(--ink);
+        font-weight: 650;
+      }
+      .hplc-option input {
+        width: auto;
+        min-height: auto;
+        margin-top: 2px;
+      }
+      .hplc-option span {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
       .panel-title {
         display: flex;
         align-items: center;
@@ -368,7 +440,8 @@
         }
         .grid,
         .metrics,
-        .chart-grid {
+        .chart-grid,
+        .hplc-options-panel {
           grid-template-columns: 1fr;
         }
       }
@@ -405,7 +478,7 @@
                   <input id="datasetFile" type="file" accept=".csv" class="hidden" />
                 </label>
                 <label class="secondary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0">
-                  加载测试集
+                  加载独立测试集
                   <input id="testDatasetFile" type="file" accept=".csv" class="hidden" />
                 </label>
               </div>
@@ -416,23 +489,27 @@
               <h2>训练配置</h2>
               <label>模型架构</label>
               <select id="modelType">
-                <option value="cnn1d">1D-CNN</option>
-                <option value="mlp">MLP Baseline</option>
-                <option value="transformer">Transformer</option>
-                <option value="unet1d">UNet1D</option>
-                <option value="dscarnet">DSCARNet</option>
-                <option value="knn">KNN</option>
-                <option value="random_forest">Random Forest</option>
+                <option value="pls_da">PLS-DA</option>
                 <option value="svm">SVM</option>
+                <option value="random_forest">Random Forest</option>
                 <option value="xgboost">XGBoost</option>
+                <option value="cnn1d">1D-CNN</option>
+                <option value="transformer1d">1D-Transformer</option>
+                <option value="resnet1d">1D-ResNet</option>
+                <option value="inception1d">1D-Inception</option>
+                <option value="tcn1d">1D-TCN</option>
+                <option value="dscarnet">DSCARNet</option>
               </select>
               <label>划分方式</label>
               <select id="splitMode">
-                <option value="default">默认 8:1:1</option>
-                <option value="custom">自定义比例</option>
+                <option value="stratified_holdout">分层划分 8:1:1</option>
+                <option value="leave_one_repeat_index_cv">外层留一交叉验证</option>
               </select>
-              <div id="customSplitOptions" class="hidden">
-                <label id="customSplitLabel">自定义比例（训练 / 验证 / 测试，相加必须为 10）</label>
+              <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                无独立测试集时可选分层 8:1:1 或留一交叉验证；留一模式内部按 8:2 生成训练/验证。
+              </p>
+              <div id="customSplitOptions" class="hidden" aria-hidden="true">
+                <label id="customSplitLabel">外层留一 CV 内部训练 / 验证比例（兼容字段）</label>
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
                   <input id="splitTrain" type="number" value="8" min="0" max="10" />
                   <input id="splitValid" type="number" value="1" min="0" max="10" />
@@ -446,8 +523,10 @@
                   <option value="deep">深入：100 epoch</option>
                 </select>
               </div>
-              <label>重要性分段数</label>
-              <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
+              <div id="featureWindowOptions">
+                <label>重要性分段数</label>
+                <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
+              </div>
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
@@ -479,30 +558,10 @@
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
                   <label>Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
-                  <label>UNet1D depth</label>
-                  <input id="unetDepth" type="number" value="3" min="2" max="5" />
                   <label>DSCARNet inception blocks</label>
                   <input id="dscarnetInceptionBlocks" type="number" value="1" min="1" max="3" />
                 </div>
                 <div id="traditionalOptions" class="hidden">
-                  <div id="knnOptions">
-                    <label>KNN neighbors</label>
-                    <input id="knnNeighbors" type="number" value="5" min="1" max="99" step="1" />
-                    <label>KNN weights</label>
-                    <select id="knnWeights">
-                      <option value="distance">distance</option>
-                      <option value="uniform">uniform</option>
-                    </select>
-                    <label>KNN metric</label>
-                    <select id="knnMetric">
-                      <option value="minkowski">minkowski</option>
-                      <option value="euclidean">euclidean</option>
-                      <option value="manhattan">manhattan</option>
-                      <option value="cosine">cosine</option>
-                    </select>
-                    <label>KNN p</label>
-                    <input id="knnP" type="number" value="2" min="1" max="9" step="1" />
-                  </div>
                   <div id="randomForestOptions" class="hidden">
                     <label>随机森林树数量</label>
                     <input id="rfEstimators" type="number" value="100" min="10" max="1000" step="10" />
@@ -641,15 +700,28 @@
                 <label>时间上限（留空不限制）</label>
                 <input id="chromXMax" type="number" step="any" placeholder="例如 12" />
               </div>
-              <div>
-                <label style="font-weight:600">
-                  <input type="checkbox" id="chromHplcMode" onchange="toggleHplcOptions()" />
-                  启用 HPLC 高级预处理（插值对齐 + 消负 + 面积归一化）
-                </label>
-                <div id="chromHplcOptions" class="hidden" style="margin-left:1.5em">
-                  <label><input type="checkbox" id="chromHplcInterp" checked /> 线性插值到统一时间轴</label>
-                  <label><input type="checkbox" id="chromHplcSubMin" checked /> 减最小值消除负值</label>
-                  <label><input type="checkbox" id="chromHplcNormArea" checked /> 面积归一化 (总面积=1)</label>
+              <div class="hplc-default-card">
+                <div class="hplc-card-head">
+                  <div class="hplc-title">
+                    <span class="hplc-badge">默认启用</span>
+                    <strong>HPLC 标准流程</strong>
+                    <span>生成整理 CSV 时默认执行插值对齐、消负和面积归一化；需要调整细项时展开参数。</span>
+                  </div>
+                  <button class="secondary" id="hplcOptionsToggle" type="button" aria-expanded="false">参数</button>
+                </div>
+                <div id="chromHplcOptions" class="hplc-options-panel hidden">
+                  <div class="hplc-option">
+                    <label><input type="checkbox" id="chromHplcInterp" checked /> 线性插值</label>
+                    <span>把多条曲线对齐到共同时间轴。</span>
+                  </div>
+                  <div class="hplc-option">
+                    <label><input type="checkbox" id="chromHplcSubMin" checked /> 消除负值</label>
+                    <span>逐条曲线减最小值，降低负基线影响。</span>
+                  </div>
+                  <div class="hplc-option">
+                    <label><input type="checkbox" id="chromHplcNormArea" checked /> 面积归一化</label>
+                    <span>总面积归一化为 1，突出峰形比例。</span>
+                  </div>
                 </div>
               </div>
               <div class="actions">
@@ -696,13 +768,37 @@
             </table>
             <h3>二、色谱数据预处理</h3>
             <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
+            <p><strong>HPLC 高级预处理：</strong>适合多份 HPLC 文件一起建模前使用，主要解决时间轴轻微错位、负强度和总响应量不同这三类问题。开启后系统按固定顺序处理：先把各文件插值到共同时间轴，再逐条曲线减去自身最小值让强度非负，最后按真实时间轴做梯形积分，把每条曲线总面积归一化为 1。</p>
+            <table>
+              <thead><tr><th>选项</th><th>处理含义</th><th>建议</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>线性插值到统一时间轴</td>
+                  <td>取所有文件的重叠时间范围，按曲线长度中位数生成共同时间轴，并把每条曲线插值过去。</td>
+                  <td>多文件 Time 采样点或起止时间不完全一致时建议开启；关闭时要求所有文件时间轴一致。</td>
+                </tr>
+                <tr>
+                  <td>减最小值消除负值</td>
+                  <td>每条曲线减去自己的最小强度，抬高到非负区间，避免负基线影响后续面积计算。</td>
+                  <td>存在基线漂移、噪声负值或检测器扣背景后出现负数时建议开启。</td>
+                </tr>
+                <tr>
+                  <td>面积归一化</td>
+                  <td>用梯形积分计算每条曲线总面积，再用整条曲线除以该面积，使总面积为 1。</td>
+                  <td>希望模型比较峰形和相对峰面积时开启；如果绝对峰面积本身就是判别信息，可以关闭。</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>不勾选 HPLC 高级预处理时，色谱页面只按选择范围读取曲线并导出统一建模 CSV，不执行插值、消负和面积归一化。</p>
             <h3>三、AI 建模</h3>
-            <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 的统一格式 CSV。设置 epoch、batch size、学习率、标准化和划分方式后点击开始训练。</p>
+            <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 和 Repeat_index 的统一格式 CSV。当前版本只支持分类任务，模型列表固定为 PLS-DA、SVM、Random Forest、XGBoost、1D-CNN、1D-Transformer、1D-ResNet、1D-Inception、1D-TCN、DSCARNet；PLSR/SVR 为回归变体暂不启用。</p>
+            <p><strong>没有独立测试集：</strong>可以选择分层划分 8:1:1，按标签比例生成训练集、验证集和测试集；也可以选择外层留一交叉验证，每一折留 1 个独立样品组作为最终测试集，其余样品组再按 8:2 划分训练集和验证集。</p>
+            <p><strong>有独立测试集：</strong>加载独立测试集后，主数据只按 8:2 划分训练集和验证集，独立测试集作为最终测试集；后端状态中会标记为 external_test_holdout。</p>
             <p><strong>Repeat_index 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Repeat_index 整组划分。同一个 Repeat_index 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
-            <p>建模 CSV 中同一个 Repeat_index 只能对应一个 Label，且每组重复测量次数应保持一致。默认比例为 train : valid : test = 8 : 1 : 1。例如 10 个 Repeat_index、每组 5 条时，会划分为 train 8 组、valid 1 组、test 1 组。</p>
-            <p>如果样品组数较少，默认 8/1/1 可能让 valid 或 test 只有一个类别，指标会更容易波动。遇到这种情况，建议改成 6/2/2 或 7/2/1，让验证集和测试集包含更多 Repeat_index 分组。</p>
+            <p>所有标准化参数均只由当前折的训练集拟合标准化，并应用到同折验证集和测试集；Label 即使是数字也会按类别名编码，不作为连续回归值处理。</p>
+            <p>无卷积的传统模型使用遮挡/置乱窗口后的 macro-F1 变化做重要性分析，计算方式为 baseline_macro_f1 - perturbed_macro_f1；正值越大表示遮挡该区间后 F1 下降越多，该区间越重要。卷积模型和 Transformer 继续使用原有的梯度、Grad-CAM 或 DSCARNet 双通路归因。</p>
             <h3>四、结果下载</h3>
-            <p>训练成功后，可下载 predictions.csv、metrics.json 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl。predictions.csv 包含 train、valid、test 的真实标签、预测标签和各类别概率。</p>
+            <p>训练成功后，可下载 predictions.csv、cv_predictions.csv、metrics.json、cv_metrics.json、fold_metrics.csv 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl；留一交叉验证时模型文件只对应最后一折，最终报告指标以外层 CV 汇总为准。</p>
             <div class="actions">
               <button class="primary" data-view-shortcut="raman">开始预处理</button>
               <button class="secondary" data-view-shortcut="modeling">去建模</button>
@@ -980,7 +1076,11 @@
       }
 
       function isTraditionalModel(modelType = $("modelType").value) {
-        return ["knn", "random_forest", "svm", "xgboost"].includes(modelType);
+        return ["pls_da", "random_forest", "svm", "xgboost"].includes(modelType);
+      }
+
+      function usesFeatureWindowCount(modelType = $("modelType").value) {
+        return isTraditionalModel(modelType);
       }
 
       function numberOrNull(id) {
@@ -996,34 +1096,28 @@
 
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
-        const splitTrain = $("splitMode").value === "custom" ? Number($("splitTrain").value) : 8;
-        const splitValid = $("splitMode").value === "custom" ? Number($("splitValid").value) : (testDatasetPath ? 2 : 1);
-        const splitTest = testDatasetPath ? 0 : ($("splitMode").value === "custom" ? Number($("splitTest").value) : 1);
-        if (splitTrain + splitValid + splitTest !== 10) {
-          throw new Error(testDatasetPath ? "自定义训练/验证比例必须相加等于 10，例如 8:2" : "自定义划分比例必须相加等于 10，例如 7:1:2");
-        }
-        return {
+        const hasExternalTest = Boolean(testDatasetPath);
+        const selectedSplitMode = $("splitMode").value;
+        const splitMode = hasExternalTest ? "external_test_holdout" : selectedSplitMode;
+        const splitTrain = 8;
+        const splitValid = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1;
+        const splitTest = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : 1;
+        const payload = {
           epochs: Number($("epochs").value),
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: $("splitMode").value,
+          split_mode: splitMode,
           split_train: splitTrain,
           split_valid: splitValid,
           split_test: splitTest,
           class_balance: $("classBalance").value,
           model_type: $("modelType").value,
-          feature_window_count: Number($("featureWindowCount").value),
           early_stopping_patience: Number($("earlyStoppingPatience").value),
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
-          unet_depth: Number($("unetDepth").value),
           dscarnet_inception_blocks: Number($("dscarnetInceptionBlocks").value),
-          knn_n_neighbors: Number($("knnNeighbors").value),
-          knn_weights: $("knnWeights").value,
-          knn_metric: $("knnMetric").value,
-          knn_p: Number($("knnP").value),
           random_forest_n_estimators: Number($("rfEstimators").value),
           random_forest_max_depth: numberOrNull("rfMaxDepth"),
           random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
@@ -1037,6 +1131,10 @@
           xgboost_reg_lambda: Number($("xgbRegLambda").value),
           seed: Number($("seed").value),
         };
+        if (usesFeatureWindowCount(payload.model_type)) {
+          payload.feature_window_count = Number($("featureWindowCount").value);
+        }
+        return payload;
       }
 
       function formatMetric(value) {
@@ -1069,10 +1167,12 @@
       async function startTrain() {
         if (!datasetPath) throw new Error("请先加载数据集");
         resetTrainingPanel();
+        const body = { data_path: datasetPath, config: configPayload() };
+        if (testDatasetPath) body.test_data_path = testDatasetPath;
         const result = await api("/api/training/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ data_path: datasetPath, test_data_path: testDatasetPath, config: configPayload() }),
+          body: JSON.stringify(body),
         });
         currentRunId = result.run_id;
         pollRun();
@@ -1203,6 +1303,38 @@
         return (segments || []).slice(0, 1);
       }
 
+      function featureSegmentKind(segment) {
+        const start = Number(segment?.start_index);
+        const end = Number(segment?.end_index);
+        return Number.isFinite(start) && Number.isFinite(end) && start === end ? "特征点" : "重要区间";
+      }
+
+      function featureSegmentRange(segment) {
+        if (featureSegmentKind(segment) === "特征点") return formatFeatureX(segment.start_x);
+        return `${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}`;
+      }
+
+      function sampleXAxis(data, sample, curveLength) {
+        const sampleAxis = (sample.sample_x_axis || []).map(Number);
+        if (sampleAxis.length === curveLength && sampleAxis.every((value) => Number.isFinite(value))) return sampleAxis;
+        return (data.x_axis || []).map(Number);
+      }
+
+      function makeFeatureIndexToX(xAxis, curveLength, left, width) {
+        const axisValid = xAxis.length === curveLength
+          && xAxis.every((value) => Number.isFinite(value))
+          && Math.abs(xAxis[curveLength - 1] - xAxis[0]) > 1e-12;
+        if (!axisValid) {
+          return (index) => left + (index / Math.max(curveLength - 1, 1)) * width;
+        }
+        const start = xAxis[0];
+        const span = xAxis[curveLength - 1] - start;
+        return (index) => {
+          const clamped = Math.max(0, Math.min(curveLength - 1, Number(index)));
+          return left + ((xAxis[clamped] - start) / span) * width;
+        };
+      }
+
       function mixColor(a, b, t) {
         const ratio = Math.max(0, Math.min(1, t));
         const values = [0, 1, 2].map((idx) => Math.round(a[idx] + (b[idx] - a[idx]) * ratio));
@@ -1256,11 +1388,12 @@
         const stripLeft = indexToX(0);
         const stripRight = indexToX(curveLength - 1);
         const stripWidth = Math.max(1, stripRight - stripLeft);
-        const pointStep = stripWidth / Math.max(curveLength - 1, 1);
         const boundaryX = (index, side) => {
           const clamped = Math.max(0, Math.min(curveLength - 1, Number(index)));
-          if (side === "start") return clamped <= 0 ? stripLeft : indexToX(clamped) - pointStep / 2;
-          return clamped >= curveLength - 1 ? stripRight : indexToX(clamped) + pointStep / 2;
+          if (side === "start") {
+            return clamped <= 0 ? stripLeft : (indexToX(clamped - 1) + indexToX(clamped)) / 2;
+          }
+          return clamped >= curveLength - 1 ? stripRight : (indexToX(clamped) + indexToX(clamped + 1)) / 2;
         };
         ctx.save();
         ctx.imageSmoothingEnabled = false;
@@ -1319,7 +1452,7 @@
         const minY = Math.min(...values);
         const maxY = Math.max(...values);
         const ySpan = Math.max(maxY - minY, 1e-9);
-        const indexToX = (index) => pad.left + (index / Math.max(curve.length - 1, 1)) * plotWidth;
+        const indexToX = makeFeatureIndexToX(xAxis, curve.length, pad.left, plotWidth);
         ctx.strokeStyle = "#d8dee8";
         ctx.lineWidth = 1;
         ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
@@ -1355,7 +1488,7 @@
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
         const curve = (sample.curve || []).map(Number);
-        const xAxis = (data.x_axis || []).map(Number);
+        const xAxis = sampleXAxis(data, sample, curve.length);
         if (!curve.length) {
           ctx.fillStyle = "#667085";
           ctx.fillText("暂无样品曲线数据", 44, 44);
@@ -1368,7 +1501,7 @@
         const minY = Math.min(...values);
         const maxY = Math.max(...values);
         const ySpan = Math.max(maxY - minY, 1e-9);
-        const indexToX = (index) => pad.left + (index / Math.max(curve.length - 1, 1)) * plotWidth;
+        const indexToX = makeFeatureIndexToX(xAxis, curve.length, pad.left, plotWidth);
         ctx.strokeStyle = "#d8dee8";
         ctx.lineWidth = 1;
         ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
@@ -1404,29 +1537,96 @@
         return `${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
       }
 
+      function isLossOcclusionImportance(data) {
+        return data?.method === "sample_occlusion_importance";
+      }
+
+      function isF1WindowImportance(data) {
+        return data?.method === "cv_macro_f1_window_importance"
+          || data?.importance_metric === "baseline_macro_f1_minus_perturbed_macro_f1";
+      }
+
+      function isDscarnetDualAttribution(data) {
+        return data?.method === "dscarnet_dual_2d_gradcam";
+      }
+
+      function importanceDetailLabel(data) {
+        if (isLossOcclusionImportance(data) || isF1WindowImportance(data)) return "macro-F1 下降";
+        if (isDscarnetDualAttribution(data)) return "DSCARNet 二维双通路梯度归因";
+        return "梯度归因";
+      }
+
+      function importanceDetailMeaning(data) {
+        if (isDscarnetDualAttribution(data)) {
+          return "SAR 原始谱图通路的二维 Grad-CAM 与 CAR PCA 成分通路的二维 Grad-CAM 反投影后融合，分数最高的位置是当前样品最关键的特征。";
+        }
+        return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
+          ? "遮挡或置乱该位置/区间后，外层 CV macro-F1 下降越多，说明该区间对分类结果越重要。"
+          : "该位置/区间对真实类别输出的梯度归因最高，因此是当前样品最关键的特征。";
+      }
+
+      function importanceEmptyMessage(data) {
+        if (isDscarnetDualAttribution(data)) {
+          return "SAR/CAR 双通路归因值没有明显高于其他位置。";
+        }
+        return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
+          ? "遮挡或置乱各窗口后，macro-F1 没有明显下降。"
+          : "各位置的梯度归因值没有明显高于其他位置。";
+      }
+
+      function xAxisWarningHtml(data) {
+        const warning = data?.x_axis_warning;
+        if (!warning || warning.status !== "inconsistent") return "";
+        return `<p class="feature-note"><strong>坐标提示：</strong>${escapeHtml(warning.message || "样品 x 轴不一致，聚合坐标仅供参考。")}</p>`;
+      }
+
+      function attributionSanityWarningHtml(data, sample) {
+        const sampleCheck = sample?.sanity_checks;
+        const globalWarnings = data?.sanity_checks?.warnings || [];
+        if (sampleCheck?.method_disagreement) {
+          return `<p class="feature-note"><strong>归因提示：</strong>Grad-CAM 与输入梯度归因差异较大，建议结合热力条和辅助归因查看。</p>`;
+        }
+        if (globalWarnings.length) {
+          return `<p class="feature-note"><strong>归因提示：</strong>${escapeHtml(globalWarnings[0])}</p>`;
+        }
+        return "";
+      }
+
+      function featureMethodMetaHtml(data) {
+        return `
+          <div>解释方法<strong>${escapeHtml(data.method || "-")}</strong></div>
+          <div>重要性指标<strong>${escapeHtml(data.importance_metric || "-")}</strong></div>
+          <div>窗口/点数<strong>${escapeHtml(String(data.window_count ?? "-"))}</strong></div>
+        `;
+      }
+
       function renderSampleFeatureDetails(data, sample, jsonUrl, csvUrl) {
         const target = $("featureSampleDetails");
         if (!target || !sample) return;
         const segments = visibleFeatureSegments(sample.top_segments);
         const importanceDomain = sampleImportanceDomain(sample);
+        const firstKind = segments.length ? featureSegmentKind(segments[0]) : "重要区间";
         const chips = segments.length
           ? segments.map((segment) => `
               <div class="feature-chip">
-                <strong>第 ${segment.rank} 重要区间：${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}</strong>
+                <strong>第 ${segment.rank} 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
                 <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
-                <div>loss 增加：${formatMetric(segment.importance)}</div>
-                <div>含义：遮挡该区间后，模型对真实类别的 loss 增加最多，因此该区间是当前样品最关键的特征区间。</div>
+                <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
+                <div>含义：${importanceDetailMeaning(data)}</div>
               </div>
             `).join("")
-          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>遮挡各窗口后，真实类别 loss 没有明显增加。</div>`;
+          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
         target.innerHTML = `
           <div class="feature-meta">
             <div>真实标签<strong>${escapeHtml(sample.true_label)}</strong></div>
             <div>预测标签<strong>${escapeHtml(sample.pred_label)}</strong></div>
             <div>预测状态<strong style="color:${sample.correct ? "var(--ok)" : "var(--bad)"}">${sample.correct ? "正确" : "不一致"}</strong></div>
             <div>真实类别概率<strong>${formatMetric(sample.true_probability)}</strong></div>
+            ${featureMethodMetaHtml(data)}
           </div>
-          <p class="feature-note">红色区间为 loss 增加最大、归一化重要性最高的第一重要区间；下方热力条显示整条曲线各窗口的归一化重要性分布。</p>
+          ${xAxisWarningHtml(data)}
+          ${attributionSanityWarningHtml(data, sample)}
+          <p class="feature-note">红色标记为${importanceDetailLabel(data)}最大、归一化重要性最高的第一重要${firstKind}；下方热力条显示整条曲线各窗口的归一化重要性分布。</p>
           <canvas id="sampleFeatureImportanceCanvas" class="sample-feature-canvas" width="1000" height="460"></canvas>
           <div class="feature-list">${chips}</div>
           <div class="actions">
@@ -1500,6 +1700,14 @@
           target.innerHTML = "";
           return;
         }
+        if (!summary.artifact && summary.status === "unsupported") {
+          target.innerHTML = `
+            <div class="training-state">
+              <div><strong>当前模型没有可展示的重要性分析</strong><span>${escapeHtml(summary.reason || "当前模型没有可展示的重要区间。")}</span></div>
+            </div>
+          `;
+          return;
+        }
         const jsonArtifact = summary.artifact || "feature_importance.json";
         const csvArtifact = summary.csv_artifact || "feature_importance.csv";
         const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
@@ -1521,17 +1729,22 @@
         }
         const data = await api(jsonUrl);
         const segments = visibleFeatureSegments(data.top_segments);
+        const importanceDomain = sampleImportanceDomain(data);
         const chips = segments.length
           ? segments.map((segment) => `
               <div class="feature-chip">
-                <strong>#${segment.rank} ${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}</strong>
-                重要性 ${formatMetric(segment.importance)}
+                <strong>#${segment.rank} ${featureSegmentKind(segment)} ${featureSegmentRange(segment)}</strong>
+                <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
+                <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
               </div>
             `).join("")
-          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>当前窗口置换没有造成验证指标下降。</div>`;
+          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
         target.innerHTML = `
           <div class="chart-card feature-card">
             <h3>重要特征区间</h3>
+            <div class="feature-meta">${featureMethodMetaHtml(data)}</div>
+            ${xAxisWarningHtml(data)}
+            ${attributionSanityWarningHtml(data, null)}
             <canvas id="featureImportanceCanvas" width="1000" height="320"></canvas>
             <div class="feature-list">${chips}</div>
             <div class="actions">
@@ -1551,6 +1764,14 @@
           } catch (err) {
             if (!run.feature_importance) throw err;
           }
+        }
+        if (run.sample_feature_importance?.status === "unsupported" && !run.sample_feature_importance?.artifact && !run.feature_importance) {
+          $("featureImportance").innerHTML = `
+            <div class="training-state">
+              <div><strong>当前模型没有可展示的单样品解释</strong><span>${escapeHtml(run.sample_feature_importance.reason || "当前模型没有可展示的单样品重要区间。")}</span></div>
+            </div>
+          `;
+          return;
         }
         await renderGlobalFeatureImportance(run);
       }
@@ -1654,9 +1875,11 @@
         return "chrom";
       }
 
-      function toggleHplcOptions() {
-        const checked = $("chromHplcMode").checked;
-        $("chromHplcOptions").classList.toggle("hidden", !checked);
+      function toggleHplcOptionDetails() {
+        const panel = $("chromHplcOptions");
+        const collapsed = panel.classList.toggle("hidden");
+        $("hplcOptionsToggle").textContent = collapsed ? "参数" : "收起";
+        $("hplcOptionsToggle").setAttribute("aria-expanded", String(!collapsed));
       }
 
       function updatePreprocessRangeMode(kind) {
@@ -1667,10 +1890,8 @@
       }
 
       async function preprocessEnhanced(kind) {
-        // HPLC mode override: if chromatography button clicked but HPLC checkbox is on
         const isChrom = kind === "chromatography";
-        const hplcMode = isChrom && $("chromHplcMode")?.checked;
-        const effectiveKind = hplcMode ? "hplc" : kind;
+        const effectiveKind = isChrom ? "hplc" : kind;
         const prefix = preprocessPrefix(kind);
         const filesInput = $(`${prefix}Files`);
         const rangeMode = $(`${prefix}RangeMode`).value;
@@ -1786,41 +2007,25 @@
         const modelType = $("modelType").value;
         const traditional = isTraditionalModel(modelType);
         $("trainTimeBlock").classList.toggle("hidden", traditional);
+        $("featureWindowOptions").classList.toggle("hidden", !usesFeatureWindowCount(modelType));
         $("deepOptions").classList.toggle("hidden", traditional);
         $("traditionalOptions").classList.toggle("hidden", !traditional);
-        $("knnOptions").classList.toggle("hidden", modelType !== "knn");
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
         $("svmOptions").classList.toggle("hidden", modelType !== "svm");
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
       }
 
       function updateSplitOptionVisibility() {
-        const hasTest = Boolean(testDatasetPath);
-        const defaultOption = $("splitMode").querySelector('option[value="default"]');
-        defaultOption.textContent = hasTest ? "默认 8:2" : "默认 8:1:1";
-        $("customSplitLabel").textContent = hasTest ? "自定义比例（训练 / 验证，相加必须为 10）" : "自定义比例（训练 / 验证 / 测试，相加必须为 10）";
-        $("splitTest").classList.toggle("hidden", hasTest);
-        if (hasTest && $("splitTest").value !== "0") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-        }
-        if (!hasTest && $("splitTest").value === "0") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "1";
-          $("splitTest").value = "1";
-        }
-        if (hasTest && $("splitMode").value !== "custom") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-        }
-        if (!hasTest && $("splitMode").value !== "custom") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "1";
-          $("splitTest").value = "1";
-        }
-        $("customSplitOptions").classList.toggle("hidden", $("splitMode").value !== "custom");
+        const hasExternalTest = Boolean(testDatasetPath);
+        const selectedSplitMode = $("splitMode").value;
+        $("splitMode").disabled = hasExternalTest;
+        $("splitTrain").value = "8";
+        $("splitValid").value = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? "2" : "1";
+        $("splitTest").value = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? "0" : "1";
+        $("splitModeHint").textContent = hasExternalTest
+          ? "已加载独立测试集：主数据按 8:2 划分训练/验证，独立测试集作为最终测试集。"
+          : "无独立测试集时可选分层 8:1:1 或留一交叉验证；留一模式内部按 8:2 生成训练/验证。";
+        $("customSplitOptions").classList.add("hidden");
       }
 
       function showView(viewName) {
@@ -1884,6 +2089,7 @@
       });
       $("ramanRangeMode").addEventListener("change", () => updatePreprocessRangeMode("raman"));
       $("chromRangeMode").addEventListener("change", () => updatePreprocessRangeMode("chromatography"));
+      $("hplcOptionsToggle").addEventListener("click", toggleHplcOptionDetails);
       document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
         button.addEventListener("click", () => showView(button.dataset.viewShortcut));
       });

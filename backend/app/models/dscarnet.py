@@ -236,9 +236,22 @@ class DSCARStem2D(nn.Module):
         x = MaxPool2D(3, 2, 'same')
     """
 
-    def __init__(self, input_height: int, batchnorm: bool = False):
+    def __init__(
+        self,
+        input_height: int,
+        input_channels: int = 1,
+        conv1_kernel_size: int = 19,
+        batchnorm: bool = False,
+    ):
         super().__init__()
-        self.conv1 = _conv2d_bn_stem(1, 64, kernel_size=19, padding=9, batchnorm=batchnorm)
+        padding = int(conv1_kernel_size) // 2
+        self.conv1 = _conv2d_bn_stem(
+            input_channels,
+            64,
+            kernel_size=conv1_kernel_size,
+            padding=padding,
+            batchnorm=batchnorm,
+        )
 
         if input_height > 25:
             self.conv2 = _conv2d_bn_stem(64, 96, kernel_size=5, stride=2, padding=0, batchnorm=batchnorm)
@@ -298,14 +311,24 @@ class DSCARStem1D(nn.Module):
 # SingleDSCARNet2D  —  1:1 PyTorch mirror of TF single_dscarnet
 # ============================================================================
 
+def _parse_2d_input_shape(input_shape: tuple[int, ...]) -> tuple[int, int, int]:
+    if len(input_shape) == 2:
+        h, w = input_shape
+        return int(h), int(w), 1
+    if len(input_shape) == 3:
+        h, w, c = input_shape
+        return int(h), int(w), int(c)
+    raise ValueError("input_shape must be (height, width) or (height, width, channels)")
+
+
 class SingleDSCARNet2D(nn.Module):
     """
     Exact PyTorch equivalent of TF ``single_dscarnet``.
 
     Parameters
     ----------
-    input_shape : tuple[int, int]
-        (height, width) of a single-channel 2D input  (expects ``(B, 1, H, W)``).
+    input_shape : tuple[int, int] | tuple[int, int, int]
+        (height, width) or (height, width, channels), expects PyTorch NCHW.
     n_outputs : int
         Number of classes.
     conv1_kernel_size : int
@@ -324,7 +347,7 @@ class SingleDSCARNet2D(nn.Module):
 
     def __init__(
         self,
-        input_shape: tuple[int, int],
+        input_shape: tuple[int, ...],
         n_outputs: int = 2,
         conv1_kernel_size: int = 19,
         n_inception: int = 1,
@@ -334,11 +357,14 @@ class SingleDSCARNet2D(nn.Module):
         last_avf: str | None = "softmax",
     ):
         super().__init__()
-        if len(input_shape) != 2:
-            raise ValueError("input_shape must be (height, width) for single-channel 2D input")
-        h, _w = input_shape
+        h, _w, input_channels = _parse_2d_input_shape(input_shape)
 
-        self.stem = DSCARStem2D(input_height=h, batchnorm=batchnorm)
+        self.stem = DSCARStem2D(
+            input_height=h,
+            input_channels=input_channels,
+            conv1_kernel_size=conv1_kernel_size,
+            batchnorm=batchnorm,
+        )
 
         in_channels = 128
         blocks: list[InceptionBlock2D] = []
@@ -479,8 +505,8 @@ class DualDSCARNet2D(nn.Module):
 
     def __init__(
         self,
-        input_shape1: tuple[int, int],
-        input_shape2: tuple[int, int],
+        input_shape1: tuple[int, ...],
+        input_shape2: tuple[int, ...],
         n_outputs: int = 2,
         conv1_kernel_size: int = 19,
         n_inception: int = 1,
@@ -491,8 +517,13 @@ class DualDSCARNet2D(nn.Module):
     ):
         super().__init__()
 
-        h1, _w1 = input_shape1
-        self.stem1 = DSCARStem2D(input_height=h1, batchnorm=batchnorm)
+        h1, _w1, input_channels1 = _parse_2d_input_shape(input_shape1)
+        self.stem1 = DSCARStem2D(
+            input_height=h1,
+            input_channels=input_channels1,
+            conv1_kernel_size=conv1_kernel_size,
+            batchnorm=batchnorm,
+        )
         ch1 = 128
         blocks1: list[InceptionBlock2D] = []
         for i in range(n_inception):
@@ -503,8 +534,13 @@ class DualDSCARNet2D(nn.Module):
         self.inception1 = nn.Sequential(*blocks1)
         self.pool1 = nn.AdaptiveMaxPool2d((1, 1))
 
-        h2, _w2 = input_shape2
-        self.stem2 = DSCARStem2D(input_height=h2, batchnorm=batchnorm)
+        h2, _w2, input_channels2 = _parse_2d_input_shape(input_shape2)
+        self.stem2 = DSCARStem2D(
+            input_height=h2,
+            input_channels=input_channels2,
+            conv1_kernel_size=conv1_kernel_size,
+            batchnorm=batchnorm,
+        )
         ch2 = 128
         blocks2: list[InceptionBlock2D] = []
         for i in range(n_inception):
@@ -556,7 +592,7 @@ def _get_activation(name: str) -> nn.Module:
 # ============================================================================
 
 def single_dscarnet(
-    input_shape: tuple[int, int],
+    input_shape: tuple[int, ...],
     n_outputs: int = 2,
     conv1_kernel_size: int = 19,
     n_inception: int = 1,
@@ -579,8 +615,8 @@ def single_dscarnet(
 
 
 def dual_dscarnet(
-    input_shape1: tuple[int, int],
-    input_shape2: tuple[int, int],
+    input_shape1: tuple[int, ...],
+    input_shape2: tuple[int, ...],
     n_outputs: int = 2,
     conv1_kernel_size: int = 19,
     n_inception: int = 1,
