@@ -118,6 +118,35 @@ def merge_ranked_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(segments, key=lambda item: item["rank"])
 
 
+def primary_feature_segment(
+    top_segments: list[dict[str, Any]] | None,
+    windows: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Return the single segment used by the UI highlight."""
+    segments = list(top_segments or [])
+    if segments:
+        return dict(sorted(segments, key=lambda item: int(item.get("rank", 10**9)))[0])
+
+    ranked_windows = [window for window in (windows or []) if "start_index" in window and "end_index" in window]
+    if not ranked_windows:
+        return None
+    window = dict(sorted(ranked_windows, key=lambda item: int(item.get("rank", 10**9)))[0])
+    rank = int(window.get("rank", 1))
+    segment = {
+        "rank": rank,
+        "start_index": int(window["start_index"]),
+        "end_index": int(window["end_index"]),
+        "start_x": float(window.get("start_x", window["start_index"])),
+        "end_x": float(window.get("end_x", window["end_index"])),
+        "importance": float(window.get("importance", 0.0)),
+        "window_count": 1,
+        "window_ranks": [rank],
+    }
+    if "normalized_importance" in window:
+        segment["normalized_importance"] = float(window["normalized_importance"])
+    return segment
+
+
 def unavailable_feature_importance(
     reason: str,
     *,
@@ -235,6 +264,7 @@ def interval_permutation_importance(
         "mean_curve": _float_list(mean_curve),
         "windows": ranked_by_index,
         "top_segments": top_segments,
+        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
     }
 
 
@@ -339,6 +369,8 @@ def sample_occlusion_importance(
         for rank, row in enumerate(ranked, start=1):
             row["rank"] = int(rank)
         top_windows = [row for row in ranked if row["importance"] > 0][:top_limit]
+        ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
+        top_segments = merge_ranked_windows(top_windows)
         samples.append(
             {
                 "sample_id": f"{split_name}:{source_idx}",
@@ -356,8 +388,9 @@ def sample_occlusion_importance(
                 "pred_probability": float(base_scores[local_idx, pred_class_id]),
                 "curve": _float_list(x[source_idx]),
                 "sample_x_axis": _float_list(sample_x_axis_array),
-                "windows": sorted(ranked, key=lambda item: item["window_index"]),
-                "top_segments": merge_ranked_windows(top_windows),
+                "windows": ranked_by_index,
+                "top_segments": top_segments,
+                "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
             }
         )
 
@@ -463,6 +496,7 @@ def sample_deep_attribution_importance(
             "sample_x_axis": _float_list(sample_x_axis_array),
             "windows": rows,
             "top_segments": top_segments,
+            "primary_segment": primary_feature_segment(top_segments, rows),
         }
         if auxiliary_attributions is not None:
             _auxiliary_rows, auxiliary_top_segments = _attribution_windows(
@@ -606,6 +640,7 @@ def sample_dscarnet_dual_2d_gradcam_importance(
                 "sample_x_axis": _float_list(sample_x_axis_array),
                 "windows": rows,
                 "top_segments": top_segments,
+                "primary_segment": primary_feature_segment(top_segments, rows),
                 "sar_top_segments": sar_top_segments,
                 "car_top_segments": car_top_segments,
                 "sanity_checks": _dscarnet_branch_sanity(top_segments, sar_top_segments, car_top_segments),
@@ -674,6 +709,8 @@ def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any
         row["rank"] = rank
     top_limit = max(1, int(result.get("top_k") or 5))
     top_windows = [row for row in ranked if row["importance"] > 0][:top_limit]
+    ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
+    top_segments = merge_ranked_windows(top_windows)
     payload = {
         "status": "ready",
         "method": f"mean_{result.get('method') or 'sample_feature_importance'}",
@@ -684,8 +721,9 @@ def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any
         "n_repeats": None,
         "x_axis": result.get("x_axis", []),
         "mean_curve": result.get("baseline_curve", []),
-        "windows": sorted(ranked, key=lambda item: item["window_index"]),
-        "top_segments": merge_ranked_windows(top_windows),
+        "windows": ranked_by_index,
+        "top_segments": top_segments,
+        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
     }
     if result.get("x_axis_warning"):
         payload["x_axis_warning"] = result.get("x_axis_warning")
@@ -720,6 +758,7 @@ def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, An
         "artifact": "feature_importance.json",
         "csv_artifact": "feature_importance.csv",
         "top_segments": result.get("top_segments", []),
+        "primary_segment": result.get("primary_segment"),
         "x_axis_warning": result.get("x_axis_warning"),
         "sanity_checks": result.get("sanity_checks"),
         "dscarnet_mapping": result.get("dscarnet_mapping"),

@@ -1420,8 +1420,13 @@
         return Math.abs(num) >= 100 ? num.toFixed(1) : num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
       }
 
-      function visibleFeatureSegments(segments) {
-        return (segments || []);
+      function primaryFeatureSegment(source) {
+        if (source?.primary_segment) return source.primary_segment;
+        const segments = source?.top_segments || [];
+        if (segments.length) return [...segments].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
+        const windows = source?.windows || [];
+        if (windows.length) return [...windows].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
+        return null;
       }
 
       function featureSegmentKind(segment) {
@@ -1577,14 +1582,15 @@
         ctx.strokeStyle = "#d8dee8";
         ctx.lineWidth = 1;
         ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
-        visibleFeatureSegments(data.top_segments).forEach((segment, idx) => {
+        const segment = primaryFeatureSegment(data);
+        if (segment) {
           const x0 = indexToX(Math.max(0, Number(segment.start_index)));
           const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
-          ctx.fillStyle = idx === 0 ? "rgba(180, 83, 9, 0.22)" : "rgba(37, 99, 235, 0.14)";
+          ctx.fillStyle = "rgba(180, 83, 9, 0.22)";
           ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
           ctx.fillStyle = "#344054";
-          ctx.fillText(`#${segment.rank}`, x0 + 4, pad.top + 14);
-        });
+          ctx.fillText("#1", x0 + 4, pad.top + 14);
+        }
         ctx.beginPath();
         ctx.strokeStyle = "#0f766e";
         ctx.lineWidth = 2;
@@ -1626,14 +1632,15 @@
         ctx.strokeStyle = "#d8dee8";
         ctx.lineWidth = 1;
         ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
-        visibleFeatureSegments(sample.top_segments).forEach((segment) => {
+        const segment = primaryFeatureSegment(sample);
+        if (segment) {
           const x0 = indexToX(Math.max(0, Number(segment.start_index)));
           const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
           ctx.fillStyle = "rgba(220, 38, 38, 0.22)";
           ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
           ctx.fillStyle = "#991b1b";
-          ctx.fillText(`#${segment.rank}`, x0 + 4, pad.top + 14);
-        });
+          ctx.fillText("#1", x0 + 4, pad.top + 14);
+        }
         ctx.beginPath();
         ctx.strokeStyle = "#0f766e";
         ctx.lineWidth = 2;
@@ -1672,19 +1679,46 @@
         return data?.method === "dscarnet_dual_2d_gradcam";
       }
 
+      function featureMethodLabel(method) {
+        const labels = {
+          gradcam_1d: "Grad-CAM",
+          input_gradient_attribution: "输入梯度",
+          dscarnet_dual_2d_gradcam: "DSCARNet 双通路",
+          sample_occlusion_importance: "窗口遮挡",
+          interval_permutation_importance: "窗口置乱",
+          cv_macro_f1_window_importance: "窗口置乱",
+          mean_gradcam_1d: "平均 Grad-CAM",
+          mean_input_gradient_attribution: "平均输入梯度",
+          mean_dscarnet_dual_2d_gradcam: "平均 DSCARNet 双通路",
+          mean_interval_permutation_importance: "平均窗口置乱",
+          mean_sample_occlusion_importance: "平均窗口遮挡",
+          mean_sample_feature_importance: "平均样品归因",
+        };
+        return labels[method] || method || "-";
+      }
+
+      function featureMetricLabel(metric) {
+        const labels = {
+          gradcam_activation: "Grad-CAM",
+          absolute_gradient_x_input: "梯度×强度",
+          sar_gradcam_plus_car_pca_backprojection: "双通路回投",
+          baseline_macro_f1_minus_perturbed_macro_f1: "F1 下降",
+          masked_loss_minus_original_loss: "Loss 增量",
+        };
+        return labels[metric] || metric || "-";
+      }
+
       function importanceDetailLabel(data) {
-        if (isLossOcclusionImportance(data) || isF1WindowImportance(data)) return "macro-F1 下降";
-        if (isDscarnetDualAttribution(data)) return "DSCARNet 二维双通路梯度归因";
-        return "梯度归因";
+        if (isLossOcclusionImportance(data)) return "Loss 增量";
+        if (isF1WindowImportance(data)) return "F1 下降";
+        if (isDscarnetDualAttribution(data)) return "DSCARNet 双通路";
+        return featureMethodLabel(data?.method);
       }
 
       function importanceDetailMeaning(data) {
-        if (isDscarnetDualAttribution(data)) {
-          return "SAR 原始谱图通路的二维 Grad-CAM 与 CAR PCA 成分通路的二维 Grad-CAM 反投影后融合，分数最高的位置是当前样品最关键的特征。";
-        }
         return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
-          ? "遮挡或置乱该位置/区间后，交叉验证 macro-F1 下降越多，说明该区间对分类结果越重要。"
-          : "该位置/区间对真实类别输出的梯度归因最高，因此是当前样品最关键的特征。";
+          ? "扰动后指标变化越大，说明该区间越关键。"
+          : "归因值最高的位置作为当前样品的关键特征。";
       }
 
       function importanceEmptyMessage(data) {
@@ -1698,8 +1732,8 @@
 
       function featureMethodMetaHtml(data) {
         return `
-          <div>解释方法<strong>${escapeHtml(data.method || "-")}</strong></div>
-          <div>重要性指标<strong>${escapeHtml(data.importance_metric || "-")}</strong></div>
+          <div>解释方法<strong>${escapeHtml(featureMethodLabel(data.method))}</strong></div>
+          <div>重要性指标<strong>${escapeHtml(featureMetricLabel(data.importance_metric))}</strong></div>
           <div>窗口/点数<strong>${escapeHtml(String(data.window_count ?? "-"))}</strong></div>
         `;
       }
@@ -1707,16 +1741,16 @@
       function renderSampleFeatureDetails(data, sample, jsonUrl, csvUrl) {
         const target = $("featureSampleDetails");
         if (!target || !sample) return;
-        const segments = visibleFeatureSegments(sample.top_segments);
+        const segment = primaryFeatureSegment(sample);
         const importanceDomain = sampleImportanceDomain(sample);
-        const chips = segments.length
-          ? segments.map((segment) => `
+        const chips = segment
+          ? `
               <div class="feature-chip">
-                <strong>第 ${segment.rank} 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
+                <strong>第 1 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
                 <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
                 <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
               </div>
-            `).join("")
+            `
           : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
         target.innerHTML = `
           <div class="feature-meta">
@@ -1827,16 +1861,16 @@
           return;
         }
         const data = await api(jsonUrl);
-        const segments = visibleFeatureSegments(data.top_segments);
+        const segment = primaryFeatureSegment(data);
         const importanceDomain = sampleImportanceDomain(data);
-        const chips = segments.length
-          ? segments.map((segment) => `
+        const chips = segment
+          ? `
               <div class="feature-chip">
-                <strong>#${segment.rank} ${featureSegmentKind(segment)} ${featureSegmentRange(segment)}</strong>
+                <strong>#1 ${featureSegmentKind(segment)} ${featureSegmentRange(segment)}</strong>
                 <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
                 <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
               </div>
-            `).join("")
+            `
           : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
         target.innerHTML = `
           <div class="chart-card feature-card">

@@ -23,6 +23,7 @@ from .feature_selection import (
     build_feature_windows,
     interval_permutation_importance,
     merge_ranked_windows,
+    primary_feature_segment,
     sample_deep_attribution_importance,
     sample_dscarnet_dual_2d_gradcam_importance,
     sample_occlusion_importance,
@@ -1105,6 +1106,8 @@ def _cv_f1_window_importance(
         row["rank"] = int(rank)
         row["normalized_importance"] = float((row["importance"] - min_value) / span) if span > 1e-12 else 0.0
     top_windows = [row for row in ranked if row["importance"] > 0][: max(1, int(top_k))]
+    ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
+    top_segments = merge_ranked_windows(top_windows)
     return {
         "status": "ready",
         "method": "interval_permutation_importance",
@@ -1116,8 +1119,9 @@ def _cv_f1_window_importance(
         "n_repeats": 1,
         "x_axis": [float(item) for item in x_axis_array],
         "mean_curve": [float(item) for item in np.mean(x_raw, axis=0)],
-        "windows": sorted(ranked, key=lambda item: item["window_index"]),
-        "top_segments": merge_ranked_windows(top_windows),
+        "windows": ranked_by_index,
+        "top_segments": top_segments,
+        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
         "x_axis_warning": x_axis_warning,
     }
 
