@@ -98,8 +98,13 @@ def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
 
 def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> dict[str, list[int]]:
     ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
-    if any(value < 0 for value in ratios) or sum(ratios) != 10:
+    if any(value < 0 for value in ratios):
+        raise ValueError("划分比例必须是非负整数")
+    ratio_total = sum(ratios)
+    if ratios[2] > 0 and ratio_total != 10:
         raise ValueError("划分比例必须是非负整数，且训练、验证、测试三项相加必须等于 10")
+    if ratios[2] == 0 and ratios[0] + ratios[1] <= 0:
+        raise ValueError("训练/验证比例必须大于 0")
     if ratios[0] <= 0:
         raise ValueError("训练集比例必须大于 0")
 
@@ -115,8 +120,9 @@ def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainCo
             raise ValueError(f"Repeat_index={group} 内存在多个 Label，无法按组划分")
         group_to_label[str(group)] = int(group_labels[0])
 
-    valid_count = max(1, int(np.floor(len(group_values) * ratios[1] / 10))) if ratios[1] > 0 else 0
-    test_count = max(1, int(np.floor(len(group_values) * ratios[2] / 10))) if ratios[2] > 0 else 0
+    ratio_denominator = ratios[0] + ratios[1] if ratios[2] == 0 else 10
+    valid_count = max(1, int(np.floor(len(group_values) * ratios[1] / ratio_denominator))) if ratios[1] > 0 else 0
+    test_count = max(1, int(np.floor(len(group_values) * ratios[2] / ratio_denominator))) if ratios[2] > 0 else 0
     if valid_count + test_count >= len(group_values):
         train_count = 1
         overflow = valid_count + test_count + train_count - len(group_values)
@@ -649,14 +655,14 @@ def _choose_valid_groups(
         if len(selected) >= valid_count:
             break
     if not selected:
-        raise ValueError("Repeat_index 分组数量太少，无法在每个外层折中保留包含全部类别的训练集")
+        raise ValueError("Repeat_index 分组数量太少，无法在每个交叉验证折中保留包含全部类别的训练集")
     return sorted(selected, key=lambda item: train_valid_groups.index(item))
 
 
 def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> list[dict[str, Any]]:
     groups = [str(item) for item in sorted(np.unique(repeat_index).tolist())]
     if len(groups) < 3:
-        raise ValueError("外层留一交叉验证至少需要 3 个 Repeat_index 分组")
+        raise ValueError("交叉验证至少需要 3 个 Repeat_index 分组")
     group_to_label = _group_label_map(y, repeat_index)
     label_count = int(np.unique(y).size)
     train_valid_total = max(1, int(config.split_train) + int(config.split_valid))
@@ -1067,13 +1073,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     if test_data_path:
         raw_config = config_data or {}
         split_train = int(raw_config.get("split_train", config.split_train))
-        split_valid = int(raw_config.get("split_valid", 10 - split_train))
-        if "split_train" not in raw_config and "split_valid" not in raw_config:
-            split_train, split_valid = 8, 2
-        elif "split_valid" not in raw_config:
-            split_valid = 10 - split_train
-        elif "split_train" not in raw_config:
-            split_train = 10 - split_valid
+        split_valid = int(raw_config.get("split_valid", config.split_valid))
         config = _clone_config(config, split_train=split_train, split_valid=split_valid, split_test=0)
     model_type = canonical_model_type(config.model_type)
     evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
@@ -1146,12 +1146,43 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     last_model_artifact = "model.pkl" if last_model_family == "traditional_ml" else "model.pt"
     final_deep_context: dict[str, Any] | None = None
     best_search_rows: list[dict[str, Any]] = []
+    fold_count = len(folds)
+    started_at = previous_status.get("started_at") or _now_iso()
+
+    def write_progress(fold_index: int, completed_folds: int, fold: dict[str, Any]) -> None:
+        status_file.write_text(
+            json.dumps(
+                {
+                    **previous_status,
+                    "run_id": run_id,
+                    "status": "running",
+                    "data_path": str(Path(data_path).resolve()),
+                    "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
+                    "config": {**config.__dict__, "model_type": model_type},
+                    "model_type": model_type,
+                    "sample_count": sample_count,
+                    "target_epochs": config.epochs,
+                    "fold_count": fold_count,
+                    "current_fold": fold_index,
+                    "completed_folds": completed_folds,
+                    "fold_progress_text": f"{fold_index}/{fold_count}",
+                    "current_fold_repeat_index": fold.get("test_repeat_index"),
+                    "total_target_epochs": int(fold_count * config.epochs),
+                    "evaluation_strategy": evaluation_strategy,
+                    "started_at": started_at,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     for fold in folds:
         splits = fold["splits"]
         normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
         x = _transform_x_with_normalizer(x_model_raw, normalizer)
         fold_index = int(fold["fold_index"])
+        write_progress(fold_index, max(0, fold_index - 1), fold)
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
@@ -1256,6 +1287,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             for label, prob in zip(label_names, test_eval["probabilities"][local_idx]):
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
+        write_progress(fold_index, fold_index, fold)
 
     pooled_test_metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
     split_metrics_payload: dict[str, dict[str, Any]] = {}
@@ -1300,7 +1332,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         else:
             feature_summary = _unsupported_explainability_summary("特征区间识别已关闭", method="interval_permutation_importance")
         sample_feature_summary = _unsupported_explainability_summary(
-            "无卷积模型和机器学习模型使用外层 CV 的全局 macro-F1 下降解释，不生成单样本 F1 重要性",
+            "无卷积模型和机器学习模型使用交叉验证的全局 macro-F1 下降解释，不生成单样本 F1 重要性",
             method="cv_macro_f1_drop_global_importance",
         )
     else:
@@ -1358,7 +1390,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "model_family": last_model_family,
         "model_artifact": last_model_artifact,
         "model_artifact_note": (
-            "最后一个外层折模型，仅作下载参考，不用于汇报的留一 CV 指标"
+            "最后一个交叉验证折模型，仅作下载参考，不用于汇报的交叉验证指标"
             if evaluation_strategy == "leave_one_repeat_index_cv"
             else "本次 holdout 训练得到的模型，用于对应测试指标"
         ),
@@ -1372,6 +1404,10 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "target_epochs": config.epochs,
         "actual_epochs": len(history_rows),
         "total_target_epochs": int(len(folds) * config.epochs),
+        "current_fold": len(folds),
+        "completed_folds": len(folds),
+        "fold_progress_text": f"{len(folds)}/{len(folds)}",
+        "current_fold_repeat_index": folds[-1].get("test_repeat_index") if folds else None,
         "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
         "fold_count": len(folds),

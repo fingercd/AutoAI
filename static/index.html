@@ -146,6 +146,31 @@
         gap: 10px;
         margin-top: 14px;
       }
+      .checkbox-line {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: auto;
+        margin-top: 12px;
+        font-weight: 650;
+      }
+      .checkbox-line input {
+        width: auto;
+        min-height: 0;
+      }
+      .chart-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .chart-toolbar label {
+        margin: 0;
+      }
+      .chart-toolbar select {
+        width: auto;
+        min-width: 140px;
+      }
       .hplc-default-card {
         margin-top: 14px;
         border: 1px solid #b8ded8;
@@ -500,14 +525,7 @@
                 <option value="tcn1d">1D-TCN</option>
                 <option value="dscarnet">DSCARNet</option>
               </select>
-              <label>划分方式</label>
-              <select id="splitMode">
-                <option value="stratified_holdout">分层划分 8:1:1</option>
-                <option value="leave_one_repeat_index_cv">外层留一交叉验证</option>
-              </select>
-              <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                无独立测试集时默认分层 8:1:1 单次划分；留一 CV 会按 Repeat_index 样品组数跑 N 折。
-              </p>
+              <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
                 <label id="customSplitLabel">训练 / 验证 / 测试比例（总和为 10）</label>
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
@@ -516,6 +534,16 @@
                   <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
                 </div>
               </div>
+              <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                默认 8:1:1；加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
+              </p>
+              <label class="checkbox-line">
+                <input id="cvEnabled" type="checkbox" />
+                开启交叉验证
+              </label>
+              <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                几个 Repeat_index 就跑几折，折数不可调。
+              </p>
               <div id="featureWindowOptions">
                 <label>重要性分段数</label>
                 <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
@@ -792,13 +820,13 @@
             <p>不勾选 HPLC 高级预处理时，色谱页面只按选择范围读取曲线并导出统一建模 CSV，不执行插值、消负和面积归一化。</p>
             <h3>三、AI 建模</h3>
             <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 和 Repeat_index 的统一格式 CSV。当前版本只支持分类任务，模型列表固定为 PLS-DA、SVM、Random Forest、XGBoost、1D-CNN、1D-Transformer、1D-ResNet、1D-Inception、1D-TCN、DSCARNet；PLSR/SVR 为回归变体暂不启用。</p>
-            <p><strong>没有独立测试集：</strong>可以选择分层划分 8:1:1，按标签比例生成训练集、验证集和测试集；也可以选择外层留一交叉验证，每一折留 1 个独立样品组作为最终测试集，其余样品组再按 8:2 划分训练集和验证集。</p>
-            <p><strong>有独立测试集：</strong>加载独立测试集后，主数据只按 8:2 划分训练集和验证集，独立测试集作为最终测试集；后端状态中会标记为 external_test_holdout。</p>
+            <p><strong>数据划分比例：</strong>默认 8:1:1，用户可以直接修改训练、验证、测试比例；加载独立测试集时，主数据使用训练/验证比例，独立测试集作为最终测试集，后端状态中会标记为 external_test_holdout。</p>
+            <p><strong>开启交叉验证：</strong>交叉验证作为单独开关，几个 Repeat_index 就跑几折，每折留 1 个独立样品组作为测试集，其余样品组按用户填写的训练/验证比例划分。</p>
             <p><strong>Repeat_index 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Repeat_index 整组划分。同一个 Repeat_index 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
             <p>所有标准化参数均只由当前折的训练集拟合标准化，并应用到同折验证集和测试集；Label 即使是数字也会按类别名编码，不作为连续回归值处理。</p>
             <p>无卷积的传统模型使用遮挡/置乱窗口后的 macro-F1 变化做重要性分析，计算方式为 baseline_macro_f1 - perturbed_macro_f1；正值越大表示遮挡该区间后 F1 下降越多，该区间越重要。卷积模型和 Transformer 继续使用原有的梯度、Grad-CAM 或 DSCARNet 双通路归因。</p>
             <h3>四、结果下载</h3>
-            <p>训练成功后，可下载 predictions.csv、cv_predictions.csv、metrics.json、cv_metrics.json、fold_metrics.csv 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl；留一交叉验证时模型文件只对应最后一折，最终报告指标以外层 CV 汇总为准。</p>
+            <p>训练成功后，可下载 predictions.csv、cv_predictions.csv、metrics.json、cv_metrics.json、fold_metrics.csv 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl；开启交叉验证时模型文件只对应最后一折，最终报告指标以交叉验证汇总为准。</p>
             <div class="actions">
               <button class="primary" data-view-shortcut="raman">开始预处理</button>
               <button class="secondary" data-view-shortcut="modeling">去建模</button>
@@ -1102,29 +1130,29 @@
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetPath);
-        const selectedSplitMode = $("splitMode").value;
-        const splitMode = hasExternalTest ? "external_test_holdout" : selectedSplitMode;
+        const cvEnabled = $("cvEnabled").checked;
+        const splitMode = hasExternalTest ? "external_test_holdout" : "stratified_holdout";
         const splitTrain = readSplitNumber("splitTrain", 8);
-        const splitValid = readSplitNumber("splitValid", selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1);
-        const splitTest = selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : readSplitNumber("splitTest", 1);
-        const effectiveSplitTrain = hasExternalTest ? 8 : splitTrain;
-        const effectiveSplitValid = hasExternalTest ? 2 : splitValid;
-        const effectiveSplitTest = hasExternalTest ? 0 : splitTest;
-        if (!hasExternalTest && effectiveSplitTrain + effectiveSplitValid + effectiveSplitTest !== 10) {
+        const splitValid = readSplitNumber("splitValid", 1);
+        const splitTest = readSplitNumber("splitTest", 1);
+        if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10) {
           throw new Error("训练、验证、测试比例相加必须等于 10");
         }
-        if (effectiveSplitTrain <= 0) {
+        if (splitTrain <= 0) {
           throw new Error("训练集比例必须大于 0");
+        }
+        if ((hasExternalTest || cvEnabled) && splitValid <= 0) {
+          throw new Error("验证集比例必须大于 0");
         }
         const payload = {
           epochs: Number($("epochs").value),
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: splitMode,
-          split_train: effectiveSplitTrain,
-          split_valid: effectiveSplitValid,
-          split_test: effectiveSplitTest,
+          split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,
+          split_train: splitTrain,
+          split_valid: splitValid,
+          split_test: splitTest,
           class_balance: $("classBalance").value,
           model_type: $("modelType").value,
           early_stopping_patience: Number($("earlyStoppingPatience").value),
@@ -1153,6 +1181,40 @@
 
       function formatMetric(value) {
         return Number.isFinite(Number(value)) ? Number(value).toFixed(3) : "-";
+      }
+
+      function runTotalTargetEpochs(run) {
+        if (Number.isFinite(Number(run.total_target_epochs))) return Number(run.total_target_epochs);
+        const foldCount = Number(run.fold_count || 1);
+        const targetEpochs = Number(run.target_epochs || run.config?.epochs);
+        if (Number.isFinite(foldCount) && Number.isFinite(targetEpochs)) return foldCount * targetEpochs;
+        return "-";
+      }
+
+      function runFoldProgressText(run) {
+        if (run.fold_progress_text) return run.fold_progress_text;
+        const currentFold = Number(run.current_fold || run.completed_folds);
+        const foldCount = Number(run.fold_count);
+        if (Number.isFinite(currentFold) && Number.isFinite(foldCount) && foldCount > 1) {
+          return `${currentFold}/${foldCount}`;
+        }
+        return "-";
+      }
+
+      function inferValidMetricsFromHistory(history) {
+        const latestByFold = new Map();
+        (history || []).forEach((row) => {
+          const fold = Number(row.fold_index || 1);
+          const epoch = Number(row.epoch || 0);
+          const previous = latestByFold.get(fold);
+          if (!previous || epoch >= Number(previous.epoch || 0)) latestByFold.set(fold, row);
+        });
+        const rows = Array.from(latestByFold.values());
+        const average = (field) => {
+          const values = rows.map((row) => Number(row[field])).filter((value) => Number.isFinite(value));
+          return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
+        };
+        return { accuracy: average("valid_accuracy"), macro_f1: average("valid_macro_f1") };
       }
 
       function formatTime(value) {
@@ -1252,30 +1314,45 @@
         });
       }
 
-      function historyEpochAverages(history, field) {
-        const buckets = new Map();
-        history.forEach((row) => {
-          const epoch = Number(row.epoch);
-          const raw = row[field];
-          if (!Number.isFinite(epoch) || raw === null || raw === undefined) return;
-          const value = Number(raw);
-          if (!Number.isFinite(value)) return;
-          if (!buckets.has(epoch)) buckets.set(epoch, []);
-          buckets.get(epoch).push(value);
-        });
-        const maxEpoch = Math.max(0, ...buckets.keys());
-        return Array.from({ length: maxEpoch }, (_, index) => {
-          const values = buckets.get(index + 1) || [];
-          return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : NaN;
+      function historyFoldOptions(history) {
+        return Array.from(
+          new Set((history || []).map((row) => Number(row.fold_index || 1)).filter((value) => Number.isFinite(value))),
+        ).sort((a, b) => a - b);
+      }
+
+      function selectedFoldHistory(history, foldIndex) {
+        return (history || [])
+          .filter((row) => Number(row.fold_index || 1) === Number(foldIndex))
+          .sort((a, b) => Number(a.epoch || 0) - Number(b.epoch || 0));
+      }
+
+      function historySeriesValues(rows, field) {
+        return rows.map((row) => {
+          const value = Number(row[field]);
+          return Number.isFinite(value) ? value : NaN;
         });
       }
 
-      function renderTrainingCharts(history) {
+      function renderTrainingCharts(history, preferredFold = null) {
         if (!history || !history.length) {
           $("trainingCharts").innerHTML = "";
           return;
         }
+        const folds = historyFoldOptions(history);
+        const selectedFold = folds.includes(Number(preferredFold)) ? Number(preferredFold) : folds[0];
+        const foldRows = selectedFoldHistory(history, selectedFold);
+        const foldPicker = folds.length > 1
+          ? `
+            <div class="chart-toolbar">
+              <label for="historyFoldSelect">查看折数</label>
+              <select id="historyFoldSelect">
+                ${folds.map((fold) => `<option value="${fold}" ${fold === selectedFold ? "selected" : ""}>${fold}/${folds.length}</option>`).join("")}
+              </select>
+            </div>
+          `
+          : "";
         $("trainingCharts").innerHTML = `
+          ${foldPicker}
           <div class="chart-grid">
             <div class="chart-card">
               <h3>Loss 曲线</h3>
@@ -1288,13 +1365,15 @@
           </div>
         `;
         requestAnimationFrame(() => {
-          drawLineChart("lossCanvas", [{ label: "train loss", values: historyEpochAverages(history, "train_loss"), color: "#b45309" }]);
+          const select = $("historyFoldSelect");
+          if (select) select.addEventListener("change", () => renderTrainingCharts(history, Number(select.value)));
+          drawLineChart("lossCanvas", [{ label: "train loss", values: historySeriesValues(foldRows, "train_loss"), color: "#b45309" }]);
           drawLineChart(
             "metricCanvas",
             [
-              { label: "valid acc", values: historyEpochAverages(history, "valid_accuracy"), color: "#0f766e" },
-              { label: "valid macro F1", values: historyEpochAverages(history, "valid_macro_f1"), color: "#475467" },
-              { label: "best F1", values: historyEpochAverages(history, "best_valid_macro_f1"), color: "#b42318" },
+              { label: "valid acc", values: historySeriesValues(foldRows, "valid_accuracy"), color: "#0f766e" },
+              { label: "valid macro F1", values: historySeriesValues(foldRows, "valid_macro_f1"), color: "#475467" },
+              { label: "best F1", values: historySeriesValues(foldRows, "best_valid_macro_f1"), color: "#b42318" },
             ],
             { minY: 0, maxY: 1 },
           );
@@ -1593,7 +1672,7 @@
           return "SAR 原始谱图通路的二维 Grad-CAM 与 CAR PCA 成分通路的二维 Grad-CAM 反投影后融合，分数最高的位置是当前样品最关键的特征。";
         }
         return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
-          ? "遮挡或置乱该位置/区间后，外层 CV macro-F1 下降越多，说明该区间对分类结果越重要。"
+          ? "遮挡或置乱该位置/区间后，交叉验证 macro-F1 下降越多，说明该区间对分类结果越重要。"
           : "该位置/区间对真实类别输出的梯度归因最高，因此是当前样品最关键的特征。";
       }
 
@@ -1604,24 +1683,6 @@
         return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
           ? "遮挡或置乱各窗口后，macro-F1 没有明显下降。"
           : "各位置的梯度归因值没有明显高于其他位置。";
-      }
-
-      function xAxisWarningHtml(data) {
-        const warning = data?.x_axis_warning;
-        if (!warning || warning.status !== "inconsistent") return "";
-        return `<p class="feature-note"><strong>坐标提示：</strong>${escapeHtml(warning.message || "样品 x 轴不一致，聚合坐标仅供参考。")}</p>`;
-      }
-
-      function attributionSanityWarningHtml(data, sample) {
-        const sampleCheck = sample?.sanity_checks;
-        const globalWarnings = data?.sanity_checks?.warnings || [];
-        if (sampleCheck?.method_disagreement) {
-          return `<p class="feature-note"><strong>归因提示：</strong>Grad-CAM 与输入梯度归因差异较大，建议结合热力条和辅助归因查看。</p>`;
-        }
-        if (globalWarnings.length) {
-          return `<p class="feature-note"><strong>归因提示：</strong>${escapeHtml(globalWarnings[0])}</p>`;
-        }
-        return "";
       }
 
       function featureMethodMetaHtml(data) {
@@ -1637,14 +1698,12 @@
         if (!target || !sample) return;
         const segments = visibleFeatureSegments(sample.top_segments);
         const importanceDomain = sampleImportanceDomain(sample);
-        const firstKind = segments.length ? featureSegmentKind(segments[0]) : "重要区间";
         const chips = segments.length
           ? segments.map((segment) => `
               <div class="feature-chip">
                 <strong>第 ${segment.rank} 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
                 <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
                 <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
-                <div>含义：${importanceDetailMeaning(data)}</div>
               </div>
             `).join("")
           : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
@@ -1656,9 +1715,6 @@
             <div>真实类别概率<strong>${formatMetric(sample.true_probability)}</strong></div>
             ${featureMethodMetaHtml(data)}
           </div>
-          ${xAxisWarningHtml(data)}
-          ${attributionSanityWarningHtml(data, sample)}
-          <p class="feature-note">红色标记为${importanceDetailLabel(data)}最大、归一化重要性最高的第一重要${firstKind}；下方热力条显示整条曲线各窗口的归一化重要性分布。</p>
           <canvas id="sampleFeatureImportanceCanvas" class="sample-feature-canvas" width="1000" height="460"></canvas>
           <div class="feature-list">${chips}</div>
           <div class="actions">
@@ -1775,8 +1831,6 @@
           <div class="chart-card feature-card">
             <h3>重要特征区间</h3>
             <div class="feature-meta">${featureMethodMetaHtml(data)}</div>
-            ${xAxisWarningHtml(data)}
-            ${attributionSanityWarningHtml(data, null)}
             <canvas id="featureImportanceCanvas" width="1000" height="320"></canvas>
             <div class="feature-list">${chips}</div>
             <div class="actions">
@@ -1813,19 +1867,23 @@
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
         $("runStatus").className = `status ${run.status || ""}`;
         if (run.status === "pending" || run.status === "running") {
+          const totalTargetEpochs = runTotalTargetEpochs(run);
+          const foldProgress = runFoldProgressText(run);
           $("trainingProgress").innerHTML = `
             <div class="training-state">
               <div class="spinner"></div>
               <div>
                 <strong>模型正在训练</strong>
-                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${run.total_target_epochs || run.config?.epochs || run.target_epochs || "-"} epoch · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · 折进度 ${foldProgress} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
               </div>
             </div>
           `;
           $("metrics").innerHTML = `
             <div class="metrics">
               <div class="metric">当前状态<strong>${statusText}</strong></div>
-              <div class="metric">目标 Epoch<strong>${run.total_target_epochs || run.config?.epochs || run.target_epochs || "-"}</strong></div>
+              <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
+              <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
+              <div class="metric">目标 Epoch<strong>${totalTargetEpochs}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
@@ -1836,9 +1894,10 @@
         if (run.status === "success") {
           clearInterval(poller);
           const test = run.metrics?.test || run.metrics || {};
-          const valid = run.metrics?.valid || {};
+          const valid = run.metrics?.valid || inferValidMetricsFromHistory(run.history);
           const train = run.metrics?.train || {};
-          const totalTargetEpochs = run.total_target_epochs || run.target_epochs || run.config?.epochs || "-";
+          const totalTargetEpochs = runTotalTargetEpochs(run);
+          const preferredFold = null;
           $("trainingProgress").innerHTML = "";
           $("metrics").innerHTML = `
             <div class="metrics">
@@ -1855,7 +1914,7 @@
           if (run.model_family === "traditional_ml") {
             $("trainingCharts").innerHTML = "";
           } else {
-            renderTrainingCharts(run.history || []);
+            renderTrainingCharts(run.history || [], preferredFold);
           }
           renderConfusionMatrix(run);
           renderFeatureImportance(run).catch((err) => {
@@ -2065,28 +2124,16 @@
 
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetPath);
-        const selectedSplitMode = $("splitMode").value;
-        $("splitMode").disabled = hasExternalTest;
-        $("customSplitOptions").classList.toggle("hidden", hasExternalTest);
-        $("customSplitOptions").setAttribute("aria-hidden", String(hasExternalTest));
+        const cvEnabled = $("cvEnabled").checked;
+        $("splitTest").disabled = hasExternalTest || cvEnabled;
+        $("customSplitOptions").setAttribute("aria-hidden", "false");
         if (hasExternalTest) {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-        } else if (selectedSplitMode === "leave_one_repeat_index_cv") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-        } else if ($("splitTest").value === "0") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "1";
-          $("splitTest").value = "1";
+          $("splitModeHint").textContent = "已加载独立测试集：主数据使用训练/验证比例，独立测试集作为最终测试集。";
+        } else if (cvEnabled) {
+          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余按训练/验证比例划分。";
+        } else {
+          $("splitModeHint").textContent = "默认 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
         }
-        $("splitModeHint").textContent = hasExternalTest
-          ? "已加载独立测试集：主数据按 8:2 划分训练/验证，独立测试集作为最终测试集。"
-          : selectedSplitMode === "leave_one_repeat_index_cv"
-            ? "留一 CV 会按 Repeat_index 样品组数跑 N 折；每折留 1 个样品组作测试，其余按训练/验证比例划分。"
-            : "默认分层 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
       }
 
       function showView(viewName) {
@@ -2132,7 +2179,7 @@
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => showView("manual"));
       $("modelType").addEventListener("change", updateModelOptionVisibility);
-      $("splitMode").addEventListener("change", updateSplitOptionVisibility);
+      $("cvEnabled").addEventListener("change", updateSplitOptionVisibility);
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");
       });
