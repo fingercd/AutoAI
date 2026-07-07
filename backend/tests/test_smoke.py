@@ -14,8 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 USER_RAMAN_CSV = Path.home() / "Desktop" / "课件" / "raman_b2084be144.csv"
 
 
-def test_data_csv_summary():
-    summary = summarize_modeling_csv(ROOT / "data.csv")
+def test_data_csv_summary(tmp_path):
+    source = tmp_path / "sample_data.csv"
+    _write_grouped_modeling_csv(source, group_count=30, repeats=3, curve_length=160)
+
+    summary = summarize_modeling_csv(source)
     assert summary["samples"] == 90
     assert summary["classes"] == 2
     assert summary["curve_length"] == 160
@@ -614,8 +617,10 @@ def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
 def test_train_smoke(tmp_path, monkeypatch):
     import backend.app.training as training
 
+    source = tmp_path / "sample_data.csv"
+    _write_grouped_modeling_csv(source, group_count=30, repeats=3, curve_length=160)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
-    result = train_model(ROOT / "data.csv", {"epochs": 1, "batch_size": 16})
+    result = train_model(source, {"epochs": 1, "batch_size": 16})
     run_dir = tmp_path / result["run_id"]
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "predictions.csv").exists()
