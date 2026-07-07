@@ -177,6 +177,7 @@ def test_interval_permutation_importance_finds_signal_window():
     assert result["status"] == "ready"
     assert len(result["windows"]) == 6
     assert result["top_segments"]
+    assert result["primary_segment"] == result["top_segments"][0]
     assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in result["top_segments"])
 
 
@@ -244,6 +245,7 @@ def test_sample_occlusion_importance_finds_true_label_signal_window():
     assert max(normalized_values) == pytest.approx(1.0)
     assert top_window["normalized_importance"] == pytest.approx(1.0)
     assert sample_b["top_segments"][0]["normalized_importance"] == pytest.approx(1.0)
+    assert sample_b["primary_segment"] == sample_b["top_segments"][0]
     assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in sample_b["top_segments"])
 
 
@@ -268,6 +270,8 @@ def test_sample_occlusion_importance_allows_no_positive_segments():
 
     assert result["status"] == "ready"
     assert result["samples"][0]["top_segments"] == []
+    assert result["samples"][0]["primary_segment"]["rank"] == 1
+    assert result["samples"][0]["primary_segment"]["importance"] == pytest.approx(0.0)
     assert all("original_loss" in window and "masked_loss" in window for window in result["samples"][0]["windows"])
     assert all(window["importance"] == 0 for window in result["samples"][0]["windows"])
     assert all(window["normalized_importance"] == 0 for window in result["samples"][0]["windows"])
@@ -391,6 +395,7 @@ def test_deep_gradcam_records_sample_axis_and_auxiliary_sanity():
     assert sample["windows"][-1]["end_x"] == pytest.approx(99)
     assert sample["sanity_checks"]["auxiliary_method"] == "input_gradient_attribution"
     assert sample["auxiliary_top_segments"]
+    assert sample["primary_segment"] == sample["top_segments"][0]
 
 
 def test_dscarnet_registry_uses_dual_2d_builder():
@@ -548,6 +553,8 @@ def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, 
     assert feature_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
     assert sample_payload["window_count"] == 40
     assert sample_payload["samples"]
+    assert feature_payload["primary_segment"]
+    assert all(sample["primary_segment"] for sample in sample_payload["samples"])
     assert sample_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
     assert feature_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
     assert all(len(sample["windows"]) == 40 for sample in sample_payload["samples"])
@@ -872,6 +879,11 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
         assert not (run_dir / "sample_feature_importance.csv").exists()
         feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
         assert feature_payload["importance_metric"] == "baseline_macro_f1_minus_perturbed_macro_f1"
+        assert feature_payload["primary_segment"]
+        if feature_payload["top_segments"]:
+            assert feature_payload["primary_segment"] == feature_payload["top_segments"][0]
+        else:
+            assert feature_payload["primary_segment"]["rank"] == 1
     else:
         assert (run_dir / "model.pt").exists()
         assert result["sample_feature_importance"]["status"] == "ready"
@@ -883,6 +895,7 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
         assert sample_payload["window_count"] != 4
         assert sample_payload["x_axis_warning"]["status"] in {"consistent", "inconsistent"}
         assert sample_payload["samples"]
+        assert all(sample["primary_segment"] for sample in sample_payload["samples"])
         assert all(
             len(sample["windows"]) == sample_payload["window_count"]
             for sample in sample_payload["samples"]
@@ -1289,11 +1302,11 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert "sample_feature_importance" in content
     assert "featureSampleSelect" in content
     assert "renderGlobalFeatureImportance" in content
-    assert "function visibleFeatureSegments" in content
-    assert "visibleFeatureSegments(data.top_segments).forEach" in content
-    assert "const segments = visibleFeatureSegments(data.top_segments)" in content
-    assert "visibleFeatureSegments(sample.top_segments).forEach" in content
-    assert "const segments = visibleFeatureSegments(sample.top_segments)" in content
+    assert "function primaryFeatureSegment" in content
+    assert "visibleFeatureSegments(data.top_segments).forEach" not in content
+    assert "visibleFeatureSegments(sample.top_segments).forEach" not in content
+    assert "const segment = primaryFeatureSegment(data)" in content
+    assert "const segment = primaryFeatureSegment(sample)" in content
     assert "function drawSampleFeatureHeatmap" in content
     assert "sample.windows" in content
     assert "normalized_importance" in content
@@ -1322,7 +1335,7 @@ def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     assert "startButton.disabled = false" in content
 
 
-def test_main_ui_renders_paused_runs_and_all_sample_top_segments():
+def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
     assert 'run.status === "paused"' in content
@@ -1330,19 +1343,22 @@ def test_main_ui_renders_paused_runs_and_all_sample_top_segments():
     assert "replaced_by" in content
     assert "fold_index" in content
     assert "第 ${sample.fold_index} 折" in content
-    assert "return (segments || []).slice(0, 1);" not in content
-    assert "return (segments || []);" in content
+    assert "primary_segment" in content
+    assert "primaryFeatureSegment" in content
+    assert "segments.map((segment)" not in content
     assert "boundaryX" in content
     assert "legendHeight = 72" in content
     assert "重要性高（关键特征）" in content
     assert "重要性低（贡献小）" in content
     assert "归一化重要性" in content
     assert "importanceDetailLabel" in content
-    assert "macro-F1 下降" in content
-    assert "梯度归因" in content
-    assert "DSCARNet 二维双通路梯度归因" in content
-    assert "SAR 原始谱图通路" in content
-    assert "CAR PCA 成分通路" in content
+    assert "F1 下降" in content
+    assert "Grad-CAM" in content
+    assert "输入梯度" in content
+    assert "梯度×强度" in content
+    assert "DSCARNet 双通路" in content
+    assert "SAR 原始谱图通路" not in content
+    assert "CAR PCA 成分通路" not in content
     assert "sample.sample_x_axis" in content
     assert "featureSegmentKind" in content
     assert "特征点" in content
