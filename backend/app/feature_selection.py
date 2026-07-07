@@ -18,6 +18,7 @@ ScoreFn = Callable[[np.ndarray], np.ndarray]
 
 
 FEATURE_COLUMNS = [
+    "importance_metric",
     "rank",
     "window_index",
     "start_index",
@@ -31,7 +32,9 @@ FEATURE_COLUMNS = [
 ]
 
 SAMPLE_FEATURE_COLUMNS = [
+    "importance_metric",
     "sample_id",
+    "fold_index",
     "dataset",
     "source_index",
     "index",
@@ -53,6 +56,8 @@ SAMPLE_FEATURE_COLUMNS = [
     "original_loss",
     "masked_loss",
 ]
+
+SAMPLE_FEATURE_LOSS_COLUMNS = ["original_loss", "masked_loss"]
 
 
 def build_feature_windows(n_features: int, window_count: int) -> list[dict[str, int]]:
@@ -696,7 +701,11 @@ def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, An
     json_path = run_path / "feature_importance.json"
     csv_path = run_path / "feature_importance.csv"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    pd.DataFrame(result.get("windows", []), columns=FEATURE_COLUMNS).to_csv(
+    rows = [
+        {"importance_metric": result.get("importance_metric"), **window}
+        for window in result.get("windows", [])
+    ]
+    pd.DataFrame(rows, columns=FEATURE_COLUMNS).to_csv(
         csv_path,
         index=False,
         encoding="utf-8-sig",
@@ -721,11 +730,15 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
     run_path = Path(run_dir)
     json_path = run_path / "sample_feature_importance.json"
     csv_path = run_path / "sample_feature_importance.csv"
+    result["sample_count"] = len(result.get("samples", []))
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     rows: list[dict[str, Any]] = []
+    importance_metric = result.get("importance_metric")
     for sample in result.get("samples", []):
         base = {
+            "importance_metric": importance_metric,
             "sample_id": sample.get("sample_id"),
+            "fold_index": sample.get("fold_index"),
             "dataset": sample.get("dataset"),
             "source_index": sample.get("source_index"),
             "index": sample.get("index"),
@@ -739,7 +752,10 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
         }
         for window in sample.get("windows", []):
             rows.append({**base, **window})
-    pd.DataFrame(rows, columns=SAMPLE_FEATURE_COLUMNS).to_csv(
+    columns = list(SAMPLE_FEATURE_COLUMNS)
+    if result.get("method") != "sample_occlusion_importance":
+        columns = [column for column in columns if column not in SAMPLE_FEATURE_LOSS_COLUMNS]
+    pd.DataFrame(rows, columns=columns).to_csv(
         csv_path,
         index=False,
         encoding="utf-8-sig",

@@ -17,6 +17,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
+    _aggregate_attribution_sanity,
+    _aggregate_dscarnet_branch_sanity,
     aggregate_sample_feature_importance,
     build_feature_windows,
     interval_permutation_importance,
@@ -31,6 +33,13 @@ from .feature_selection import (
 from .models import build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
+
+
+ACTIVE_RUN_STATUSES = {"pending", "running"}
+
+
+class TrainingRunReplaced(RuntimeError):
+    """Raised when a training run has been paused because a newer run replaced it."""
 
 
 @dataclass
@@ -79,6 +88,66 @@ class TrainConfig:
     feature_top_k: int = 5
     feature_n_repeats: int = 5
     feature_eval_split: str = "valid"
+
+
+def _read_status_file(status_file: Path) -> dict[str, Any]:
+    if not status_file.exists():
+        return {}
+    try:
+        return json.loads(status_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _write_status_file(status_file: Path, payload: dict[str, Any]) -> None:
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    status_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def pause_active_runs(new_run_id: str, *, runs_dir: Path | None = None, reason: str = "replaced_by_new_run") -> list[str]:
+    root = runs_dir or RUNS_DIR
+    paused_ids: list[str] = []
+    paused_at = _now_iso()
+    for status_file in root.glob("*/status.json"):
+        payload = _read_status_file(status_file)
+        run_id = str(payload.get("run_id") or status_file.parent.name)
+        if run_id == new_run_id or payload.get("status") not in ACTIVE_RUN_STATUSES:
+            continue
+        payload.update(
+            {
+                "run_id": run_id,
+                "status": "paused",
+                "paused_at": paused_at,
+                "replaced_by": new_run_id,
+                "pause_reason": reason,
+            }
+        )
+        _write_status_file(status_file, payload)
+        paused_ids.append(run_id)
+    return paused_ids
+
+
+def run_is_replaced(run_id: str, *, runs_dir: Path | None = None) -> bool:
+    status = _read_status_file((runs_dir or RUNS_DIR) / run_id / "status.json")
+    return status.get("status") == "paused" and bool(status.get("replaced_by"))
+
+
+def _raise_if_run_replaced(status_file: Path) -> None:
+    status = _read_status_file(status_file)
+    if status.get("status") != "paused":
+        return
+    replaced_by = status.get("replaced_by") or "newer_run"
+    raise TrainingRunReplaced(f"训练任务 {status.get('run_id') or status_file.parent.name} 已被新任务 {replaced_by} 替换")
+
+
+def _validate_split_ratio_config(config: TrainConfig) -> None:
+    ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
+    if any(value < 0 for value in ratios):
+        raise ValueError("划分比例必须是非负整数")
+    if sum(ratios) != 10:
+        raise ValueError("训练、验证、测试比例相加必须等于 10")
+    if ratios[0] <= 0:
+        raise ValueError("训练集比例必须大于 0")
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -443,9 +512,8 @@ def _unsupported_explainability_summary(reason: str, *, method: str = "unsupport
     }
 
 
-def _compute_deep_explainability(
+def _deep_sample_feature_result(
     *,
-    run_dir: Path,
     config: TrainConfig,
     model: nn.Module,
     x: np.ndarray,
@@ -457,28 +525,12 @@ def _compute_deep_explainability(
     metadata: list[dict[str, Any]],
     dscarnet_mapped: DSCARNetMappedInputs | None = None,
     dscarnet_mapping_metadata: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> dict[str, Any]:
     model_type = canonical_model_type(config.model_type)
-    if model_type == "mlp":
-        summary = _unsupported_explainability_summary(
-            "MLP 当前不支持可解释性分析",
-            method="mlp_explainability_unsupported",
-        )
-        return summary.copy(), summary.copy()
-
     if not config.feature_selection_enabled:
         mean_indices = splits.get("train", [])
         mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
-        feature_result = unavailable_feature_importance(
-            "特征区间识别已关闭",
-            x_axis=x_axis,
-            mean_curve=mean_curve,
-            method="deep_attribution",
-        )
-        feature_result["status"] = "disabled"
-        feature_result["eval_split"] = "test"
-        feature_result["x_axis_warning"] = x_axis_warning
-        sample_result = {
+        return {
             "status": "disabled",
             "reason": "特征区间识别已关闭",
             "method": "deep_attribution",
@@ -488,10 +540,6 @@ def _compute_deep_explainability(
             "x_axis_warning": x_axis_warning,
             "samples": [],
         }
-        return (
-            write_feature_importance_artifacts(run_dir, feature_result),
-            write_sample_feature_importance_artifacts(run_dir, sample_result),
-        )
 
     try:
         if model_type == "dscarnet":
@@ -526,24 +574,11 @@ def _compute_deep_explainability(
                 top_k=config.feature_top_k,
             )
         sample_result["x_axis_warning"] = x_axis_warning
-        sample_summary = write_sample_feature_importance_artifacts(run_dir, sample_result)
-        feature_result = aggregate_sample_feature_importance(sample_result)
-        feature_result["x_axis_warning"] = x_axis_warning
-        feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
-        return feature_summary, sample_summary
+        return sample_result
     except Exception as exc:
         mean_indices = splits.get("train", [])
         mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
-        feature_result = unavailable_feature_importance(
-            f"深度模型可解释性计算失败: {exc}",
-            x_axis=x_axis,
-            mean_curve=mean_curve,
-            method="deep_attribution",
-        )
-        feature_result["status"] = "failed"
-        feature_result["eval_split"] = "test"
-        feature_result["x_axis_warning"] = x_axis_warning
-        sample_result = {
+        return {
             "status": "failed",
             "reason": f"单样品可解释性计算失败: {exc}",
             "method": "deep_attribution",
@@ -553,10 +588,87 @@ def _compute_deep_explainability(
             "x_axis_warning": x_axis_warning,
             "samples": [],
         }
-        return (
-            write_feature_importance_artifacts(run_dir, feature_result),
-            write_sample_feature_importance_artifacts(run_dir, sample_result),
-        )
+
+
+def _tag_fold_sample_result(result: dict[str, Any], fold_index: int) -> dict[str, Any]:
+    for sample in result.get("samples", []):
+        sample["fold_index"] = int(fold_index)
+    result["sample_count"] = len(result.get("samples", []))
+    return result
+
+
+def _merge_deep_sample_results(results: list[dict[str, Any]], x_axis_warning: dict[str, Any]) -> dict[str, Any]:
+    ready_results = [result for result in results if result.get("status") == "ready"]
+    if not ready_results:
+        result = dict(results[-1]) if results else {"status": "unavailable", "reason": "没有可解释的测试集样品", "samples": []}
+        result["x_axis_warning"] = x_axis_warning
+        result["sample_count"] = len(result.get("samples", []))
+        return result
+    combined = dict(ready_results[0])
+    samples = [sample for result in ready_results for sample in result.get("samples", [])]
+    combined["samples"] = samples
+    combined["sample_count"] = len(samples)
+    combined["x_axis_warning"] = x_axis_warning
+    if combined.get("method") == "gradcam_1d":
+        combined["sanity_checks"] = _aggregate_attribution_sanity(samples)
+    elif combined.get("method") == "dscarnet_dual_2d_gradcam":
+        combined["sanity_checks"] = _aggregate_dscarnet_branch_sanity(samples)
+    return combined
+
+
+def _write_deep_explainability_artifacts(
+    *,
+    run_dir: Path,
+    sample_result: dict[str, Any],
+    x_axis_warning: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sample_result["sample_count"] = len(sample_result.get("samples", []))
+    sample_summary = write_sample_feature_importance_artifacts(run_dir, sample_result)
+    feature_result = aggregate_sample_feature_importance(sample_result)
+    feature_result["x_axis_warning"] = x_axis_warning
+    if sample_result.get("status") in {"disabled", "failed"}:
+        feature_result["status"] = sample_result.get("status")
+        feature_result["reason"] = sample_result.get("reason")
+    feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
+    return feature_summary, sample_summary
+
+
+def _compute_deep_explainability(
+    *,
+    run_dir: Path,
+    config: TrainConfig,
+    model: nn.Module,
+    x: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    x_axis: list[float],
+    x_axis_warning: dict[str, Any],
+    label_names: list[str],
+    metadata: list[dict[str, Any]],
+    dscarnet_mapped: DSCARNetMappedInputs | None = None,
+    dscarnet_mapping_metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sample_result = _tag_fold_sample_result(
+        _deep_sample_feature_result(
+            config=config,
+            model=model,
+            x=x,
+            y=y,
+            splits=splits,
+            x_axis=x_axis,
+            x_axis_warning=x_axis_warning,
+            label_names=label_names,
+            metadata=metadata,
+            dscarnet_mapped=dscarnet_mapped,
+            dscarnet_mapping_metadata=dscarnet_mapping_metadata,
+        ),
+        int(1),
+    )
+    return _write_deep_explainability_artifacts(
+        run_dir=run_dir,
+        sample_result=sample_result,
+        x_axis_warning=x_axis_warning,
+    )
 
 
 def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: int) -> list[dict[str, Any]]:
@@ -856,6 +968,7 @@ def _fit_deep_fold(
     label_names: list[str],
     run_dir: Path,
     sample_count: int,
+    cancel_check: Any | None = None,
 ) -> tuple[nn.Module, list[dict[str, Any]], DSCARNetMappedInputs | None, dict[str, Any] | None]:
     counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
     class_weights = None
@@ -922,6 +1035,8 @@ def _fit_deep_fold(
                 "bad_epochs": bad_epochs,
             }
         )
+        if cancel_check is not None:
+            cancel_check()
         if config.early_stopping_patience > 0 and bad_epochs >= config.early_stopping_patience:
             history[-1]["early_stopped"] = True
             break
@@ -1070,11 +1185,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     test_data_path = (config_data or {}).get("test_data_path")
     config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
     config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
-    if test_data_path:
-        raw_config = config_data or {}
-        split_train = int(raw_config.get("split_train", config.split_train))
-        split_valid = int(raw_config.get("split_valid", config.split_valid))
-        config = _clone_config(config, split_train=split_train, split_valid=split_valid, split_test=0)
+    _validate_split_ratio_config(config)
     model_type = canonical_model_type(config.model_type)
     evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
     run_id = run_id or uuid.uuid4().hex[:12]
@@ -1087,6 +1198,10 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             previous_status = json.loads(status_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             previous_status = {}
+    _raise_if_run_replaced(status_file)
+
+    def check_run_active() -> None:
+        _raise_if_run_replaced(status_file)
 
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
@@ -1107,7 +1222,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         test_sample_count = int(len(test_y))
         x_model_raw = np.vstack([x_raw, test_x_raw])
         y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, repeat_index, config)
+        internal_splits = _split_indices(y, repeat_index, _clone_config(config, split_test=0))
         _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
         external_indices = list(range(len(y), len(y_model)))
         folds = [
@@ -1145,39 +1260,40 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     last_model_family = model_family(model_type)
     last_model_artifact = "model.pkl" if last_model_family == "traditional_ml" else "model.pt"
     final_deep_context: dict[str, Any] | None = None
+    deep_sample_results: list[dict[str, Any]] = []
     best_search_rows: list[dict[str, Any]] = []
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
 
     def write_progress(fold_index: int, completed_folds: int, fold: dict[str, Any]) -> None:
-        status_file.write_text(
-            json.dumps(
-                {
-                    **previous_status,
-                    "run_id": run_id,
-                    "status": "running",
-                    "data_path": str(Path(data_path).resolve()),
-                    "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
-                    "config": {**config.__dict__, "model_type": model_type},
-                    "model_type": model_type,
-                    "sample_count": sample_count,
-                    "target_epochs": config.epochs,
-                    "fold_count": fold_count,
-                    "current_fold": fold_index,
-                    "completed_folds": completed_folds,
-                    "fold_progress_text": f"{fold_index}/{fold_count}",
-                    "current_fold_repeat_index": fold.get("test_repeat_index"),
-                    "total_target_epochs": int(fold_count * config.epochs),
-                    "evaluation_strategy": evaluation_strategy,
-                    "started_at": started_at,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        check_run_active()
+        current_status = _read_status_file(status_file)
+        _write_status_file(
+            status_file,
+            {
+                **previous_status,
+                **current_status,
+                "run_id": run_id,
+                "status": "running",
+                "data_path": str(Path(data_path).resolve()),
+                "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
+                "config": {**config.__dict__, "model_type": model_type},
+                "model_type": model_type,
+                "sample_count": sample_count,
+                "target_epochs": config.epochs,
+                "fold_count": fold_count,
+                "current_fold": fold_index,
+                "completed_folds": completed_folds,
+                "fold_progress_text": f"{fold_index}/{fold_count}",
+                "current_fold_repeat_index": fold.get("test_repeat_index"),
+                "total_target_epochs": int(fold_count * config.epochs),
+                "evaluation_strategy": evaluation_strategy,
+                "started_at": started_at,
+            },
         )
 
     for fold in folds:
+        check_run_active()
         splits = fold["splits"]
         normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
         x = _transform_x_with_normalizer(x_model_raw, normalizer)
@@ -1185,6 +1301,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         write_progress(fold_index, max(0, fold_index - 1), fold)
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
+            check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
             valid_eval = _evaluate_traditional_model(model, x, y_model, splits["valid"], label_names)
@@ -1222,7 +1339,9 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 label_names=label_names,
                 run_dir=run_dir,
                 sample_count=int(len(y_model)),
+                cancel_check=check_run_active,
             )
+            check_run_active()
             for row in history:
                 history_rows.append({**row, "fold_index": fold_index})
             if dscarnet_mapped is not None:
@@ -1240,6 +1359,25 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 "dscarnet_mapped": dscarnet_mapped,
                 "dscarnet_mapping_metadata": dscarnet_mapping_metadata,
             }
+            check_run_active()
+            deep_sample_results.append(
+                _tag_fold_sample_result(
+                    _deep_sample_feature_result(
+                        config=config,
+                        model=model,
+                        x=x,
+                        y=y_model,
+                        splits=splits,
+                        x_axis=feature_x_axis,
+                        x_axis_warning=x_axis_warning,
+                        label_names=label_names,
+                        metadata=metadata,
+                        dscarnet_mapped=dscarnet_mapped,
+                        dscarnet_mapping_metadata=dscarnet_mapping_metadata,
+                    ),
+                    fold_index,
+                )
+            )
         last_model = model
         split_evals = {"train": train_eval, "valid": valid_eval, "test": test_eval}
         split_metrics = {name: _metrics_from_eval(eval_payload, label_names) for name, eval_payload in split_evals.items()}
@@ -1287,6 +1425,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             for label, prob in zip(label_names, test_eval["probabilities"][local_idx]):
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
+        check_run_active()
         write_progress(fold_index, fold_index, fold)
 
     pooled_test_metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
@@ -1338,19 +1477,12 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     else:
         if final_deep_context is None:
             raise ValueError("深度模型训练未产生可解释性上下文")
-        feature_summary, sample_feature_summary = _compute_deep_explainability(
+        check_run_active()
+        sample_result = _merge_deep_sample_results(deep_sample_results, x_axis_warning)
+        feature_summary, sample_feature_summary = _write_deep_explainability_artifacts(
             run_dir=run_dir,
-            config=config,
-            model=final_deep_context["model"],
-            x=final_deep_context["x"],
-            y=y_model,
-            splits=final_deep_context["splits"],
-            x_axis=feature_x_axis,
+            sample_result=sample_result,
             x_axis_warning=x_axis_warning,
-            label_names=label_names,
-            metadata=metadata,
-            dscarnet_mapped=final_deep_context["dscarnet_mapped"],
-            dscarnet_mapping_metadata=final_deep_context["dscarnet_mapping_metadata"],
         )
 
     config_out = {

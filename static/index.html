@@ -840,6 +840,7 @@
       let datasetPath = null;
       let testDatasetPath = null;
       let currentRunId = null;
+      let trainingRequestInFlight = false;
       let poller = null;
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
@@ -1135,7 +1136,7 @@
         const splitTrain = readSplitNumber("splitTrain", 8);
         const splitValid = readSplitNumber("splitValid", 1);
         const splitTest = readSplitNumber("splitTest", 1);
-        if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10) {
+        if (splitTrain + splitValid + splitTest !== 10) {
           throw new Error("训练、验证、测试比例相加必须等于 10");
         }
         if (splitTrain <= 0) {
@@ -1241,19 +1242,28 @@
       }
 
       async function startTrain() {
+        if (trainingRequestInFlight) return;
         if (!datasetPath) throw new Error("请先加载数据集");
-        resetTrainingPanel();
-        const body = { data_path: datasetPath, config: configPayload() };
-        if (testDatasetPath) body.test_data_path = testDatasetPath;
-        const result = await api("/api/training/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        currentRunId = result.run_id;
-        pollRun();
-        clearInterval(poller);
-        poller = setInterval(pollRun, 1200);
+        const startButton = $("startTrain");
+        trainingRequestInFlight = true;
+        startButton.disabled = true;
+        try {
+          resetTrainingPanel();
+          const body = { data_path: datasetPath, config: configPayload() };
+          if (testDatasetPath) body.test_data_path = testDatasetPath;
+          const result = await api("/api/training/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          currentRunId = result.run_id;
+          pollRun();
+          clearInterval(poller);
+          poller = setInterval(pollRun, 1200);
+        } finally {
+          trainingRequestInFlight = false;
+          startButton.disabled = false;
+        }
       }
 
       function drawLineChart(canvasId, series, options = {}) {
@@ -1411,7 +1421,7 @@
       }
 
       function visibleFeatureSegments(segments) {
-        return (segments || []).slice(0, 1);
+        return (segments || []);
       }
 
       function featureSegmentKind(segment) {
@@ -1645,7 +1655,8 @@
       function featureSampleLabel(sample) {
         const sampleName = sample.name || sample.index || sample.sample_id;
         const state = sample.correct ? "预测正确" : "预测不一致";
-        return `${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
+        const fold = sample.fold_index ? `第 ${sample.fold_index} 折 · ` : "";
+        return `${fold}${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
       }
 
       function isLossOcclusionImportance(data) {
@@ -1863,9 +1874,34 @@
       }
 
       function renderRun(run) {
-        const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "running" ? "训练中" : "等待训练";
+        const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "paused" ? "训练已暂停" : run.status === "running" ? "训练中" : "等待训练";
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
         $("runStatus").className = `status ${run.status || ""}`;
+        if (run.status === "paused") {
+          clearInterval(poller);
+          $("trainingProgress").innerHTML = `
+            <div class="training-state">
+              <div>
+                <strong>训练已暂停</strong>
+                <span>此任务已被新任务 ${escapeHtml(run.replaced_by || "-")} 替换，不再继续训练。</span>
+              </div>
+            </div>
+          `;
+          $("metrics").innerHTML = `
+            <div class="metrics">
+              <div class="metric">当前状态<strong>paused</strong></div>
+              <div class="metric">替换任务<strong>${escapeHtml(run.replaced_by || "-")}</strong></div>
+              <div class="metric">暂停原因<strong>${escapeHtml(run.pause_reason || "-")}</strong></div>
+              <div class="metric">暂停时间<strong>${formatTime(run.paused_at)}</strong></div>
+            </div>
+          `;
+          $("trainingCharts").innerHTML = "";
+          $("featureImportance").innerHTML = "";
+          $("confusionMatrix").innerHTML = "";
+          $("downloads").innerHTML = "";
+          loadRuns().catch(() => {});
+          return;
+        }
         if (run.status === "pending" || run.status === "running") {
           const totalTargetEpochs = runTotalTargetEpochs(run);
           const foldProgress = runFoldProgressText(run);
