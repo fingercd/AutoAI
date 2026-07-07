@@ -506,22 +506,15 @@
                 <option value="leave_one_repeat_index_cv">外层留一交叉验证</option>
               </select>
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                无独立测试集时可选分层 8:1:1 或留一交叉验证；留一模式内部按 8:2 生成训练/验证。
+                无独立测试集时默认分层 8:1:1 单次划分；留一 CV 会按 Repeat_index 样品组数跑 N 折。
               </p>
-              <div id="customSplitOptions" class="hidden" aria-hidden="true">
-                <label id="customSplitLabel">外层留一 CV 内部训练 / 验证比例（兼容字段）</label>
+              <div id="customSplitOptions" aria-hidden="false">
+                <label id="customSplitLabel">训练 / 验证 / 测试比例（总和为 10）</label>
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
-                  <input id="splitTrain" type="number" value="8" min="0" max="10" />
-                  <input id="splitValid" type="number" value="1" min="0" max="10" />
-                  <input id="splitTest" type="number" value="1" min="0" max="10" />
+                  <input id="splitTrain" type="number" value="8" min="0" max="10" aria-label="训练比例" />
+                  <input id="splitValid" type="number" value="1" min="0" max="10" aria-label="验证比例" />
+                  <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
                 </div>
-              </div>
-              <div id="trainTimeBlock">
-                <label>训练时间</label>
-                <select id="trainTime">
-                  <option value="normal">正常：50 epoch</option>
-                  <option value="deep">深入：100 epoch</option>
-                </select>
               </div>
               <div id="featureWindowOptions">
                 <label>重要性分段数</label>
@@ -531,6 +524,13 @@
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
               <div id="advancedOptions" class="hidden">
+                <div id="trainTimeBlock">
+                  <label>训练时间</label>
+                  <select id="trainTime">
+                    <option value="normal">正常：50 epoch</option>
+                    <option value="deep">深入：100 epoch</option>
+                  </select>
+                </div>
                 <label>标准化</label>
                 <select id="normalization">
                   <option value="zscore">zscore</option>
@@ -1033,9 +1033,9 @@
         target.innerHTML = `
           <h3>${isTest ? "测试集摘要" : "数据摘要"}</h3>
           <div class="metrics summary-metrics">
-            <div class="metric">样本数<strong>${summary.samples}</strong></div>
+            <div class="metric">总数据<strong>${summary.samples}</strong></div>
             <div class="metric">类别数<strong>${summary.classes}</strong></div>
-            <div class="metric">样品种类<strong>${repeat.group_count ?? "-"}</strong></div>
+            <div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>
             <div class="metric">每组测量数<strong>${repeat.expected_repeats_per_group ?? "-"}</strong></div>
             <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
           </div>
@@ -1094,23 +1094,37 @@
         return Number(value);
       }
 
+      function readSplitNumber(id, fallback) {
+        const value = Number($(id).value);
+        return Number.isFinite(value) ? value : fallback;
+      }
+
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetPath);
         const selectedSplitMode = $("splitMode").value;
         const splitMode = hasExternalTest ? "external_test_holdout" : selectedSplitMode;
-        const splitTrain = 8;
-        const splitValid = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1;
-        const splitTest = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : 1;
+        const splitTrain = readSplitNumber("splitTrain", 8);
+        const splitValid = readSplitNumber("splitValid", selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1);
+        const splitTest = selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : readSplitNumber("splitTest", 1);
+        const effectiveSplitTrain = hasExternalTest ? 8 : splitTrain;
+        const effectiveSplitValid = hasExternalTest ? 2 : splitValid;
+        const effectiveSplitTest = hasExternalTest ? 0 : splitTest;
+        if (!hasExternalTest && effectiveSplitTrain + effectiveSplitValid + effectiveSplitTest !== 10) {
+          throw new Error("训练、验证、测试比例相加必须等于 10");
+        }
+        if (effectiveSplitTrain <= 0) {
+          throw new Error("训练集比例必须大于 0");
+        }
         const payload = {
           epochs: Number($("epochs").value),
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
           split_mode: splitMode,
-          split_train: splitTrain,
-          split_valid: splitValid,
-          split_test: splitTest,
+          split_train: effectiveSplitTrain,
+          split_valid: effectiveSplitValid,
+          split_test: effectiveSplitTest,
           class_balance: $("classBalance").value,
           model_type: $("modelType").value,
           early_stopping_patience: Number($("earlyStoppingPatience").value),
@@ -1238,6 +1252,24 @@
         });
       }
 
+      function historyEpochAverages(history, field) {
+        const buckets = new Map();
+        history.forEach((row) => {
+          const epoch = Number(row.epoch);
+          const raw = row[field];
+          if (!Number.isFinite(epoch) || raw === null || raw === undefined) return;
+          const value = Number(raw);
+          if (!Number.isFinite(value)) return;
+          if (!buckets.has(epoch)) buckets.set(epoch, []);
+          buckets.get(epoch).push(value);
+        });
+        const maxEpoch = Math.max(0, ...buckets.keys());
+        return Array.from({ length: maxEpoch }, (_, index) => {
+          const values = buckets.get(index + 1) || [];
+          return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : NaN;
+        });
+      }
+
       function renderTrainingCharts(history) {
         if (!history || !history.length) {
           $("trainingCharts").innerHTML = "";
@@ -1256,13 +1288,13 @@
           </div>
         `;
         requestAnimationFrame(() => {
-          drawLineChart("lossCanvas", [{ label: "train loss", values: history.map((row) => Number(row.train_loss)), color: "#b45309" }]);
+          drawLineChart("lossCanvas", [{ label: "train loss", values: historyEpochAverages(history, "train_loss"), color: "#b45309" }]);
           drawLineChart(
             "metricCanvas",
             [
-              { label: "valid acc", values: history.map((row) => Number(row.valid_accuracy)), color: "#0f766e" },
-              { label: "valid macro F1", values: history.map((row) => Number(row.valid_macro_f1)), color: "#475467" },
-              { label: "best F1", values: history.map((row) => Number(row.best_valid_macro_f1)), color: "#b42318" },
+              { label: "valid acc", values: historyEpochAverages(history, "valid_accuracy"), color: "#0f766e" },
+              { label: "valid macro F1", values: historyEpochAverages(history, "valid_macro_f1"), color: "#475467" },
+              { label: "best F1", values: historyEpochAverages(history, "best_valid_macro_f1"), color: "#b42318" },
             ],
             { minY: 0, maxY: 1 },
           );
@@ -1786,14 +1818,14 @@
               <div class="spinner"></div>
               <div>
                 <strong>模型正在训练</strong>
-                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${run.config?.epochs || run.target_epochs || "-"} epoch · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${run.total_target_epochs || run.config?.epochs || run.target_epochs || "-"} epoch · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
               </div>
             </div>
           `;
           $("metrics").innerHTML = `
             <div class="metrics">
               <div class="metric">当前状态<strong>${statusText}</strong></div>
-              <div class="metric">目标 Epoch<strong>${run.config?.epochs || run.target_epochs || "-"}</strong></div>
+              <div class="metric">目标 Epoch<strong>${run.total_target_epochs || run.config?.epochs || run.target_epochs || "-"}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
@@ -1803,9 +1835,10 @@
         }
         if (run.status === "success") {
           clearInterval(poller);
-          const test = run.metrics.test || {};
-          const valid = run.metrics.valid || {};
-          const train = run.metrics.train || {};
+          const test = run.metrics?.test || run.metrics || {};
+          const valid = run.metrics?.valid || {};
+          const train = run.metrics?.train || {};
+          const totalTargetEpochs = run.total_target_epochs || run.target_epochs || run.config?.epochs || "-";
           $("trainingProgress").innerHTML = "";
           $("metrics").innerHTML = `
             <div class="metrics">
@@ -1813,7 +1846,7 @@
               <div class="metric">Valid accuracy<strong>${formatMetric(valid.accuracy)}</strong></div>
               <div class="metric">Test accuracy<strong>${formatMetric(test.accuracy)}</strong></div>
               <div class="metric">Test macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
-              <div class="metric">训练 Epoch<strong>${run.actual_epochs || "-"}/${run.target_epochs || run.config?.epochs || "-"}</strong></div>
+              <div class="metric">训练 Epoch<strong>${run.actual_epochs || "-"}/${totalTargetEpochs}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.model_type || run.config?.model_type || "-"}</strong></div>
               <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
@@ -1882,6 +1915,19 @@
         $("hplcOptionsToggle").setAttribute("aria-expanded", String(!collapsed));
       }
 
+      function renderIntensitySummary(summary = []) {
+        if (!summary.length) return "";
+        const items = summary.map((item) => `
+          <div class="feature-chip">
+            <strong>${escapeHtml(item.name || "样本")}</strong>
+            <div>强度点数：${escapeHtml(item.point_count ?? "-")}</div>
+            <div>最小/最大：${formatMetric(item.min)} / ${formatMetric(item.max)}</div>
+            <div>${item.all_zero ? "强度全为 0" : "强度已生成"}</div>
+          </div>
+        `).join("");
+        return `<div id="intensitySummary" class="feature-list">${items}</div>`;
+      }
+
       function updatePreprocessRangeMode(kind) {
         const prefix = preprocessPrefix(kind);
         const mode = $(`${prefix}RangeMode`).value;
@@ -1935,6 +1981,7 @@
         const infoLines = effectiveKind === "hplc" && result.common_time
           ? `<p style="color:#667085;font-size:12px">统一时间轴: ${result.common_time.length} 点, 步长 ${((result.common_time[1]-result.common_time[0])*60).toFixed(3)} 秒</p>`
           : "";
+        const intensitySummaryHtml = renderIntensitySummary(result.intensity_summary || []);
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
@@ -1942,6 +1989,7 @@
           </div>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
           ${infoLines}
+          ${intensitySummaryHtml}
           ${
             hasCurves
               ? `<h3>${title}</h3>
@@ -1969,7 +2017,7 @@
         const rows = runs
           .map((run) => {
             const trainAcc = run.metrics?.train?.accuracy;
-            const testAcc = run.metrics?.test?.accuracy;
+            const testAcc = run.metrics?.test?.accuracy ?? run.metrics?.accuracy;
             return `
               <tr>
                 <td>${formatTime(run.completed_at || run.started_at || run.created_at)}</td>
@@ -2019,13 +2067,26 @@
         const hasExternalTest = Boolean(testDatasetPath);
         const selectedSplitMode = $("splitMode").value;
         $("splitMode").disabled = hasExternalTest;
-        $("splitTrain").value = "8";
-        $("splitValid").value = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? "2" : "1";
-        $("splitTest").value = hasExternalTest || selectedSplitMode === "leave_one_repeat_index_cv" ? "0" : "1";
+        $("customSplitOptions").classList.toggle("hidden", hasExternalTest);
+        $("customSplitOptions").setAttribute("aria-hidden", String(hasExternalTest));
+        if (hasExternalTest) {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+        } else if (selectedSplitMode === "leave_one_repeat_index_cv") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+        } else if ($("splitTest").value === "0") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "1";
+          $("splitTest").value = "1";
+        }
         $("splitModeHint").textContent = hasExternalTest
           ? "已加载独立测试集：主数据按 8:2 划分训练/验证，独立测试集作为最终测试集。"
-          : "无独立测试集时可选分层 8:1:1 或留一交叉验证；留一模式内部按 8:2 生成训练/验证。";
-        $("customSplitOptions").classList.add("hidden");
+          : selectedSplitMode === "leave_one_repeat_index_cv"
+            ? "留一 CV 会按 Repeat_index 样品组数跑 N 折；每折留 1 个样品组作测试，其余按训练/验证比例划分。"
+            : "默认分层 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
       }
 
       function showView(viewName) {

@@ -1,9 +1,12 @@
 """HPLC 色谱预处理管线。
 
-处理顺序（与 hplc-preprocess.md 规范一致）：
-    Step 1: 线性插值到统一时间轴 (解决时间偏移)
+处理顺序：
+    Step 1: 线性插值到统一时间轴 (解决文件间轻微时间偏移)
     Step 2: 减最小值消负 (逐条曲线)
-    Step 3: 除以总面积归一化 (保留峰形比例)
+    Step 3: 按真实时间轴梯形积分面积归一化 (保留峰形比例)
+
+主前端的色谱页面默认调用 `/api/preprocess/hplc` 并开启三步处理。
+旧 `/api/preprocess/chromatography` 仍保留为简单范围截取兼容接口。
 """
 
 from __future__ import annotations
@@ -82,7 +85,7 @@ def hplc_normalize_area(
     """Step 3: 逐行除以总面积（梯形积分法）。
 
     默认按点序号积分；传入 x_axis 时按真实时间轴积分。
-    零面积保护: 除以 max(trapz_result, 1e-12)。
+    零面积保护: 除以 max(area, 1e-12)。
     """
     if x_axis is not None:
         areas = np.trapezoid(matrix, x=x_axis, axis=1)
@@ -110,7 +113,7 @@ def preprocess_hplc_files_with_preview(
       1. 读取原始 CSV + 范围选择
       2. [可选] 线性插值到统一时间轴
       3. [可选] 减最小值消负
-      4. [可选] 面积归一化
+      4. [可选] 按 common_x 面积归一化
 
     Args:
         files: 原始 CSV 文件路径列表

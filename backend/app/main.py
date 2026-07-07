@@ -72,6 +72,34 @@ def _write_status(run_id: str, payload: dict[str, Any]) -> None:
     status_file.write_text(json.dumps({"run_id": run_id, **previous, **payload}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _curve_intensity_summary(curves: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary = []
+    for curve in curves:
+        values = curve.get("processed_y") or curve.get("corrected_y") or curve.get("raw_y") or []
+        arr = np.asarray(values, dtype=float)
+        finite = arr[np.isfinite(arr)]
+        if finite.size:
+            min_value = float(np.min(finite))
+            max_value = float(np.max(finite))
+            mean_value = float(np.mean(finite))
+            all_zero = bool(np.all(np.abs(finite) <= 1e-12))
+        else:
+            min_value = max_value = mean_value = None
+            all_zero = True
+        summary.append(
+            {
+                "name": str(curve.get("name", "")),
+                "point_count": int(arr.size),
+                "finite_count": int(finite.size),
+                "min": min_value,
+                "max": max_value,
+                "mean": mean_value,
+                "all_zero": all_zero,
+            }
+        )
+    return summary
+
+
 def _background_train(run_id: str, data_path: str, config: dict[str, Any]) -> None:
     try:
         _write_status(run_id, {"status": "running", "data_path": data_path, "test_data_path": config.get("test_data_path"), "started_at": _now_iso()})
@@ -179,6 +207,7 @@ def preprocess(
             "x_max": x_max,
             "curves": result["curves"],
             "preview": frame.head(5).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
+            "intensity_summary": _curve_intensity_summary(result["curves"]),
         }
         if kind == "hplc":
             response.update({

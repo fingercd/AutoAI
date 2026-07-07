@@ -633,9 +633,10 @@ def _choose_valid_groups(
     train_valid_groups: list[str],
     group_to_label: dict[str, int],
     label_count: int,
+    valid_ratio: float,
     seed: int,
 ) -> list[str]:
-    valid_count = max(1, int(round(len(train_valid_groups) * 0.2)))
+    valid_count = max(1, int(round(len(train_valid_groups) * valid_ratio)))
     rng = np.random.default_rng(seed)
     candidates = list(train_valid_groups)
     rng.shuffle(candidates)
@@ -658,6 +659,8 @@ def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, confi
         raise ValueError("外层留一交叉验证至少需要 3 个 Repeat_index 分组")
     group_to_label = _group_label_map(y, repeat_index)
     label_count = int(np.unique(y).size)
+    train_valid_total = max(1, int(config.split_train) + int(config.split_valid))
+    valid_ratio = max(0.0, min(1.0, float(config.split_valid) / train_valid_total))
     folds: list[dict[str, Any]] = []
     for fold_index, test_group in enumerate(groups, start=1):
         train_valid_groups = [group for group in groups if group != test_group]
@@ -667,6 +670,7 @@ def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, confi
             train_valid_groups=train_valid_groups,
             group_to_label=group_to_label,
             label_count=label_count,
+            valid_ratio=valid_ratio,
             seed=int(config.seed) + fold_index,
         )
         train_groups = [group for group in train_valid_groups if group not in set(valid_groups)]
@@ -705,6 +709,51 @@ def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, labe
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).astype(int).tolist(),
         "classification_report": report,
     }
+
+
+METRIC_SCALAR_KEYS = ("accuracy", "macro_f1", "weighted_f1", "macro_precision", "macro_recall")
+
+
+def _metrics_from_eval(eval_payload: dict[str, Any], label_names: list[str]) -> dict[str, Any]:
+    return _classification_metrics_payload(
+        np.asarray(eval_payload["true"], dtype=np.int64),
+        np.asarray(eval_payload["pred"], dtype=np.int64),
+        label_names,
+    )
+
+
+def _scalar_metric_summary(metric_rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    summary: dict[str, float | None] = {}
+    for key in METRIC_SCALAR_KEYS:
+        values = [float(row[key]) for row in metric_rows if row.get(key) is not None]
+        summary[key] = float(np.mean(values)) if values else None
+    return summary
+
+
+def _scalar_metric_std(metric_rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    summary: dict[str, float | None] = {}
+    for key in METRIC_SCALAR_KEYS:
+        values = [float(row[key]) for row in metric_rows if row.get(key) is not None]
+        summary[key] = float(np.std(values)) if values else None
+    return summary
+
+
+def _aggregate_split_metrics(
+    split_evals: list[dict[str, Any]],
+    label_names: list[str],
+) -> tuple[dict[str, Any], dict[str, float | None]]:
+    metric_rows = [_metrics_from_eval(item, label_names) for item in split_evals]
+    all_true = [int(value) for item in split_evals for value in item["true"]]
+    all_pred = [int(value) for item in split_evals for value in item["pred"]]
+    pooled = _classification_metrics_payload(
+        np.asarray(all_true, dtype=np.int64),
+        np.asarray(all_pred, dtype=np.int64),
+        label_names,
+    )
+    payload = {**pooled, **_scalar_metric_summary(metric_rows)}
+    for key in METRIC_SCALAR_KEYS:
+        payload[f"pooled_{key}"] = pooled[key]
+    return payload, _scalar_metric_std(metric_rows)
 
 
 def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
@@ -1089,6 +1138,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
     cv_fold_payloads: list[dict[str, Any]] = []
     history_rows: list[dict[str, Any]] = []
     fold_artifacts: list[dict[str, Any]] = []
+    fold_split_evals: list[dict[str, dict[str, Any]]] = []
     all_true: list[int] = []
     all_pred: list[int] = []
     last_model: Any | None = None
@@ -1105,6 +1155,8 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
+            train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
+            valid_eval = _evaluate_traditional_model(model, x, y_model, splits["valid"], label_names)
             test_eval = _evaluate_traditional_model(model, x, y_model, splits["test"], label_names)
             history_rows.append(
                 {
@@ -1143,8 +1195,12 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             for row in history:
                 history_rows.append({**row, "fold_index": fold_index})
             if dscarnet_mapped is not None:
+                train_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["train"], label_names)
+                valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["valid"], label_names)
                 test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
             else:
+                train_eval = _evaluate(model, x, y_model, splits["train"], label_names)
+                valid_eval = _evaluate(model, x, y_model, splits["valid"], label_names)
                 test_eval = _evaluate(model, x, y_model, splits["test"], label_names)
             final_deep_context = {
                 "model": model,
@@ -1154,9 +1210,12 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 "dscarnet_mapping_metadata": dscarnet_mapping_metadata,
             }
         last_model = model
+        split_evals = {"train": train_eval, "valid": valid_eval, "test": test_eval}
+        split_metrics = {name: _metrics_from_eval(eval_payload, label_names) for name, eval_payload in split_evals.items()}
+        fold_split_evals.append(split_evals)
         all_true.extend(int(item) for item in test_eval["true"])
         all_pred.extend(int(item) for item in test_eval["pred"])
-        fold_metrics = _classification_metrics_payload(np.asarray(test_eval["true"], dtype=np.int64), np.asarray(test_eval["pred"], dtype=np.int64), label_names)
+        fold_metrics = split_metrics["test"]
         fold_metric_rows.append(
             {
                 "fold_index": fold_index,
@@ -1164,6 +1223,9 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 "accuracy": fold_metrics["accuracy"],
                 "macro_f1": fold_metrics["macro_f1"],
                 "weighted_f1": fold_metrics["weighted_f1"],
+                "train_accuracy": split_metrics["train"]["accuracy"],
+                "valid_accuracy": split_metrics["valid"]["accuracy"],
+                "test_accuracy": fold_metrics["accuracy"],
             }
         )
         cv_fold_payloads.append(
@@ -1174,6 +1236,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 "valid_repeat_indices": fold["valid_repeat_indices"],
                 "test_repeat_indices": fold.get("test_repeat_indices", []),
                 "metrics": fold_metrics,
+                "split_metrics": split_metrics,
                 "preprocess": _json_normalizer(normalizer),
                 "dscarnet_mapping": dscarnet_mapping_metadata,
                 "splits": fold.get("internal_splits", splits),
@@ -1194,11 +1257,30 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
                 row[f"prob_{label}"] = float(prob)
             prediction_rows.append(row)
 
-    metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
+    pooled_test_metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
+    split_metrics_payload: dict[str, dict[str, Any]] = {}
+    split_metric_std: dict[str, dict[str, float | None]] = {}
+    for split_name in ("train", "valid", "test"):
+        split_metrics_payload[split_name], split_metric_std[split_name] = _aggregate_split_metrics(
+            [fold_eval[split_name] for fold_eval in fold_split_evals],
+            label_names,
+        )
+    metrics = {**pooled_test_metrics, **split_metrics_payload}
+    cv_summary = {
+        "strategy": evaluation_strategy,
+        "fold_count": len(folds),
+        "pooled_test": pooled_test_metrics,
+        "fold_mean": {
+            split_name: _scalar_metric_summary([fold["split_metrics"][split_name] for fold in cv_fold_payloads])
+            for split_name in ("train", "valid", "test")
+        },
+        "fold_std": split_metric_std,
+    }
     cv_metrics = {
         "strategy": evaluation_strategy,
         "fold_count": len(folds),
         "metrics": metrics,
+        "cv_summary": cv_summary,
         "folds": cv_fold_payloads,
     }
 
@@ -1270,6 +1352,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "run_id": run_id,
         "status": "success",
         "metrics": metrics,
+        "cv_summary": cv_summary,
         "history": history_rows,
         "model_type": model_type,
         "model_family": last_model_family,
@@ -1288,6 +1371,7 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "label_names": label_names,
         "target_epochs": config.epochs,
         "actual_epochs": len(history_rows),
+        "total_target_epochs": int(len(folds) * config.epochs),
         "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
         "fold_count": len(folds),
