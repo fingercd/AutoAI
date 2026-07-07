@@ -1,8 +1,18 @@
 # AutoAI 谱学数据预处理与自动建模平台开发计划
 
+> 状态提示（2026-07-06）：本文件是早期开发计划和需求来源参考，部分技术路线已经过时。当前项目已经采用 FastAPI + `static/index.html` 静态前端闭环，而不是 React/Vite 主链路；当前模型已包含 CNN1D、MLP、Transformer、UNet1D、DSCARNet、KNN、RandomForest、SVM、XGBoost；色谱主流程默认使用 `/api/preprocess/hplc` 的 HPLC 三步预处理；可解释性逻辑也已分为传统 ML loss 遮挡法、CNN/UNet Grad-CAM-like、Transformer 输入梯度归因、DSCARNet SAR/CAR 双通路 2D Grad-CAM 回投。接手当前任务时优先阅读 `AGENTS.md`、`CONTEXT.md`、`README.md` 和 `docs/frontend_backend_handoff.md`，本文件仅作为历史需求与路线参考。
+
+## 当前实现快照（以代码和上下文文档为准）
+
+- 当前没有独立 `frontend/` 主链路，正式页面是 `static/index.html`，由 FastAPI 同源托管；`static/ui-*.html` 是候选或历史 UI。
+- 训练任务目前使用 FastAPI `BackgroundTasks` 写入 `storage/runs/{run_id}/status.json`，尚未切到 Redis/RQ/Celery 或独立 worker 队列。
+- 数据划分按 `Repeat_index` 整组划分 train/valid/test；目前不是完整多轮留一法交叉验证。
+- 训练产物包含常规配置、指标、预测结果、模型文件和解释性 JSON/CSV；DSCARNet 额外写入 AggMap/PCA 映射元数据与 joblib 文件。
+- 下面 1-9 步保留原始规划语境，出现 React/Vite、SQLite、Redis/RQ、worker、完整留一法等内容时，均按历史计划理解。
+
 本文档根据 `AutoAI要求.docx`、示例建模数据 `data.csv`、原始拉曼数据目录 `拉曼/`、原始色谱数据目录 `色谱/` 整理。目标是在服务器内网部署一个网页系统，让用户通过浏览器完成数据上传、预处理、自动划分、模型训练、结果查看和结果下载。
 
-本计划覆盖 1-9 步开发，不包含 Docker 安装与 Docker 化部署。当前阶段优先采用 Miniconda + FastAPI + React/Vite + 后台任务队列的方式跑通完整功能。
+本计划覆盖 1-9 步开发，不包含 Docker 安装与 Docker 化部署。原计划曾优先采用 Miniconda + FastAPI + React/Vite + 后台任务队列的方式跑通完整功能；当前实现已调整为 FastAPI 同源托管静态前端。
 
 ## 一、已确认需求与样例数据
 

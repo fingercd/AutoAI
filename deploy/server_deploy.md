@@ -2,6 +2,8 @@
 
 目标：把本地项目部署到校园集群，使用服务器 Miniconda/Anaconda 环境，在 `node3` 常驻运行 Web 服务；本地用户通过 SSH 隧道访问网页并提交训练。
 
+> 当前状态（2026-07-06）：主服务仍是 FastAPI + `static/index.html` 同源托管。训练任务使用 FastAPI `BackgroundTasks` 和 `storage/runs/{run_id}/status.json` 记录状态，尚未切换为独立队列 worker。色谱主页面默认调用 HPLC 三步预处理；Transformer 已注册；预处理页已有曲线预览和 HPLC 原始/处理后对比。
+
 ## 1. 服务器约定
 
 ```text
@@ -30,7 +32,7 @@ http://127.0.0.1:8000/
 从本地项目根目录打包，建议排除训练输出：
 
 ```powershell
-Compress-Archive -Path backend,static,deploy,data.csv,README.md,AutoAI_开发计划.md -DestinationPath autoai_deploy.zip -Force
+Compress-Archive -Path backend,static,deploy,docs,data.csv,README.md,CONTEXT.md,AGENTS.md,AutoAI_开发计划.md -DestinationPath autoai_deploy.zip -Force
 scp autoai_deploy.zip ibmnode:~/autoai_deploy.zip
 ```
 
@@ -64,7 +66,10 @@ scikit-learn
 torch
 matplotlib
 rampy
+aggmap 及 DSCARNet 所需兼容依赖
 ```
+
+DSCARNet 依赖 `aggmap==1.2.1`，当前建议按 `backend/requirements.txt` 中说明使用 `--no-deps` 安装 aggmap，再安装兼容依赖，避免旧版 PyPI 元数据拉取不合适的包。
 
 ## 4. 在 node3 选择空闲 GPU
 
@@ -152,16 +157,16 @@ http://127.0.0.1:8000/
 3. 点击“开始训练”后状态从 `pending/running` 变为 `success`。
 4. 页面显示 test accuracy / macro F1。
 5. 能下载 `predictions.csv`、`metrics.json`、`model.pt`。
-6. 拉曼/色谱预处理上传后能下载统一格式 CSV。
+6. 能下载 `feature_importance.json/csv` 和 `sample_feature_importance.json/csv`；如果模型是 MLP，页面应显示不支持解释性分析而不是报错。
+7. 拉曼/色谱预处理上传后能下载统一格式 CSV；色谱默认 HPLC 流程应显示原始/处理后曲线和共同时间轴信息。
 
 ## 8. 当前还需要继续补齐的生产功能
 
 当前版本已经能完成本地/服务器训练闭环，但还需要继续加强：
 
 - 训练任务改为真正的队列 Worker，避免 Web 进程重启丢状态。
-- Repeat_index 留一法升级为完整多轮交叉验证，而不是首轮留一。
-- 前端预处理页增加原始曲线和校正曲线对比预览。
+- 如确实需要交叉验证，再把 Repeat_index 整组划分扩展为完整多轮留一法；当前默认是 8/1/1 或外部测试集模式。
 - 增加 focal loss。
-- 增加 Transformer 模型注册。
 - 增加用户级权限、任务隔离和上传配额。
 - 增加服务器端 systemd 或 SGE 长期运行策略的最终确认。
+- 若要通过接口下载 DSCARNet joblib 映射文件，需要扩展 artifact 白名单并补路径安全测试。

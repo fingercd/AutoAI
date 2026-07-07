@@ -1,5 +1,6 @@
 from pathlib import Path
 import ast
+import io
 import json
 
 import numpy as np
@@ -532,6 +533,12 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
 
     assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
     assert cv_payload["fold_count"] == frame["Repeat_index"].nunique()
+    assert result["total_target_epochs"] == result["fold_count"] * result["target_epochs"]
+    assert result["metrics"]["test"]["accuracy"] == pytest.approx(
+        float(pd.read_csv(Path(result["run_dir"]) / "fold_metrics.csv")["accuracy"].mean())
+    )
+    assert result["cv_summary"]["fold_mean"]["test"]["accuracy"] == result["metrics"]["test"]["accuracy"]
+    assert "accuracy" in result["metrics"]
     assert sorted(item["test_repeat_index"] for item in cv_payload["folds"]) == sorted(frame["Repeat_index"].astype(str).unique())
     assert predictions["Repeat_index"].astype(str).nunique() == frame["Repeat_index"].nunique()
     assert set(predictions["dataset"]) == {"test"}
@@ -563,6 +570,10 @@ def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
 
     assert result["evaluation_strategy"] == "stratified_holdout"
     assert result["fold_count"] == 1
+    assert result["total_target_epochs"] == result["target_epochs"]
+    assert set(result["metrics"]).issuperset({"accuracy", "train", "valid", "test"})
+    assert result["metrics"]["test"]["accuracy"] == result["metrics"]["accuracy"]
+    assert all("accuracy" in result["metrics"][split] for split in ("train", "valid", "test"))
     assert len(split_payload[0]["splits"]["train"]) == 16
     assert len(split_payload[0]["splits"]["valid"]) == 2
     assert len(split_payload[0]["splits"]["test"]) == 2
@@ -635,6 +646,8 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
     assert result["evaluation_strategy"] == "stratified_holdout"
     assert "classification_report" in result["metrics"]
+    assert result["metrics"]["test"]["accuracy"] == result["metrics"]["accuracy"]
+    assert result["total_target_epochs"] == result["target_epochs"]
 
 
 def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, monkeypatch):
@@ -1055,6 +1068,27 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert "featureSegmentKind" in content
     assert "特征点" in content
     assert "Grad-CAM 与输入梯度归因差异较大" in content
+    assert 'id="intensitySummary"' in content
+    assert "强度点数" in content
+
+
+def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert '<div class="metric">总数据<strong>${summary.samples}</strong></div>' in content
+    assert '<div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>' in content
+    assert '<div class="metric">样品种类<strong>' not in content
+    assert 'const splitTrain = readSplitNumber("splitTrain", 8);' in content
+    assert 'const splitValid = readSplitNumber("splitValid", selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1);' in content
+    assert 'const splitTest = selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : readSplitNumber("splitTest", 1);' in content
+    assert '$("customSplitOptions").classList.toggle("hidden", hasExternalTest);' in content
+    assert "按 Repeat_index 样品组数跑 N 折" in content
+    assert content.index('id="advancedOptions"') < content.index('id="trainTimeBlock"') < content.index('id="deepOptions"')
+    assert "function historyEpochAverages" in content
+    assert 'historyEpochAverages(history, "train_loss")' in content
+    assert 'historyEpochAverages(history, "valid_accuracy")' in content
+    assert "total_target_epochs" in content
+    assert "run.metrics?.test || run.metrics || {}" in content
 
 
 def test_main_ui_manual_explains_repeat_index_group_split():
@@ -1357,6 +1391,10 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     assert "common_time" in payload
     assert len(payload["common_time"]) >= 48  # overlap may trim 1–2 points with offset
     assert "common_time_path" in payload
+    assert payload["intensity_summary"]
+    assert payload["intensity_summary"][0]["point_count"] >= 48
+    assert payload["intensity_summary"][0]["all_zero"] is False
+    assert payload["intensity_summary"][0]["max"] > payload["intensity_summary"][0]["min"]
     assert payload["baseline_method"] is None
 
 
@@ -1421,3 +1459,9 @@ def test_hplc_csv_downloadable(tmp_path):
     dl_resp = client.get(download_url)
     assert dl_resp.status_code == 200
     assert "Index,Name,XXX,Intensity,Label,Repeat_index" in dl_resp.text
+    downloaded = pd.read_csv(io.StringIO(dl_resp.text))
+    x_values = ast.literal_eval(downloaded.iloc[0]["XXX"])
+    intensity = ast.literal_eval(downloaded.iloc[0]["Intensity"])
+    assert len(intensity) == len(x_values) == 50
+    assert not any(pd.isna(value) for value in intensity)
+    assert any(abs(float(value)) > 1e-12 for value in intensity)
