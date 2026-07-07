@@ -5,8 +5,42 @@ __pycache__/
 venv/
 env/
 
+# Local data, generated outputs, and heavyweight artifacts must not enter Git.
+data.csv
+*.csv
+拉曼/
+色谱/
+四个模型/
+work/
+outputs/
 storage/
 autoai_deploy.zip
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
+*.mp3
+*.flac
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+*.pkl
+*.exe
+*.dll
+*.pyd
+*.node
+node_modules/
+.cache/
+.remotion/
 
 ~$*.docx
 *.log
