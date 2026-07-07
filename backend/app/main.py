@@ -18,7 +18,7 @@ import numpy as np
 from .hplc import preprocess_hplc_files_with_preview
 from .parsers import preprocess_raw_files_with_preview, summarize_modeling_csv
 from .paths import DEFAULT_DATA, PREPROCESSED_DIR, RUNS_DIR, STATIC_DIR, UPLOADS_DIR, ensure_storage
-from .training import list_runs, train_model
+from .training import TrainingRunReplaced, list_runs, pause_active_runs, run_is_replaced, train_model
 
 
 ensure_storage()
@@ -102,9 +102,15 @@ def _curve_intensity_summary(curves: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _background_train(run_id: str, data_path: str, config: dict[str, Any]) -> None:
     try:
+        if run_is_replaced(run_id, runs_dir=RUNS_DIR):
+            return
         _write_status(run_id, {"status": "running", "data_path": data_path, "test_data_path": config.get("test_data_path"), "started_at": _now_iso()})
         train_model(data_path, config, run_id=run_id)
+    except TrainingRunReplaced:
+        return
     except Exception as exc:
+        if run_is_replaced(run_id, runs_dir=RUNS_DIR):
+            return
         _write_status(run_id, {"status": "failed", "error": str(exc), "traceback": traceback.format_exc(), "completed_at": _now_iso()})
 
 
@@ -247,6 +253,7 @@ def create_run(background_tasks: BackgroundTasks, payload: dict[str, Any]) -> di
     config = payload.get("config") or {}
     if test_data_path:
         config = {**config, "test_data_path": test_data_path}
+    pause_active_runs(run_id, runs_dir=RUNS_DIR)
     _write_status(run_id, {"status": "pending", "data_path": data_path, "test_data_path": test_data_path, "config": config, "created_at": _now_iso()})
     background_tasks.add_task(_background_train, run_id, data_path, config)
     return {"run_id": run_id, "status": "pending"}

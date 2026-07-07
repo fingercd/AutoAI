@@ -273,6 +273,67 @@ def test_sample_occlusion_importance_allows_no_positive_segments():
     assert all(window["normalized_importance"] == 0 for window in result["samples"][0]["windows"])
 
 
+def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
+    import torch
+    from torch import nn
+    from backend.app.feature_selection import (
+        sample_deep_attribution_importance,
+        sample_occlusion_importance,
+        write_sample_feature_importance_artifacts,
+    )
+
+    x = np.asarray([[0.0, 0.1, 0.2, 0.3], [0.3, 0.2, 0.1, 0.0]], dtype=np.float32)
+    y = np.asarray([0, 1], dtype=np.int64)
+    metadata = [
+        {"index": 1, "name": "train", "repeat_index": "1"},
+        {"index": 2, "name": "test", "repeat_index": "2"},
+    ]
+
+    occlusion = sample_occlusion_importance(
+        x,
+        y,
+        x_axis=np.arange(4, dtype=np.float32),
+        splits={"train": [0], "test": [1]},
+        label_names=["A", "B"],
+        score_fn=lambda values: np.asarray([[0.8, 0.2], [0.2, 0.8]], dtype=np.float32)[: values.shape[0]],
+        mean_indices=[0],
+        metadata=metadata,
+        window_count=2,
+    )
+    occlusion_dir = tmp_path / "occlusion"
+    occlusion_dir.mkdir()
+    write_sample_feature_importance_artifacts(occlusion_dir, occlusion)
+    occlusion_csv = pd.read_csv(tmp_path / "occlusion" / "sample_feature_importance.csv")
+
+    class TinyGradientClassifier(nn.Module):
+        def forward(self, inputs):
+            signal = inputs.mean(dim=2)
+            return torch.cat([-signal, signal], dim=1)
+
+    deep = sample_deep_attribution_importance(
+        TinyGradientClassifier(),
+        x,
+        y,
+        x_axis=np.arange(4, dtype=np.float32),
+        splits={"train": [0], "test": [1]},
+        label_names=["A", "B"],
+        metadata=metadata,
+        model_type="transformer1d",
+        top_k=2,
+    )
+    deep_dir = tmp_path / "deep"
+    deep_dir.mkdir()
+    write_sample_feature_importance_artifacts(deep_dir, deep)
+    deep_csv = pd.read_csv(tmp_path / "deep" / "sample_feature_importance.csv")
+
+    assert "importance_metric" in occlusion_csv.columns
+    assert "original_loss" in occlusion_csv.columns
+    assert "masked_loss" in occlusion_csv.columns
+    assert "importance_metric" in deep_csv.columns
+    assert "original_loss" not in deep_csv.columns
+    assert "masked_loss" not in deep_csv.columns
+
+
 def test_deep_gradcam_records_sample_axis_and_auxiliary_sanity():
     import torch
     from torch import nn
@@ -616,6 +677,42 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert set(predictions["dataset"]) == {"external_test"}
 
 
+@pytest.mark.parametrize(
+    "strategy, with_external_test",
+    [
+        ("stratified_holdout", False),
+        ("leave_one_repeat_index_cv", False),
+        ("external_test_holdout", True),
+    ],
+)
+def test_training_rejects_split_ratios_that_do_not_sum_to_ten_for_every_strategy(
+    tmp_path,
+    monkeypatch,
+    strategy,
+    with_external_test,
+):
+    import backend.app.training as training
+
+    train_source = tmp_path / "train.csv"
+    _write_grouped_modeling_csv(train_source, group_count=10, repeats=2)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    config = {
+        "model_type": "pls_da",
+        "split_mode": strategy,
+        "split_train": 8,
+        "split_valid": 6,
+        "split_test": 1,
+        "feature_selection_enabled": False,
+    }
+    if with_external_test:
+        test_source = tmp_path / "test.csv"
+        _write_grouped_modeling_csv(test_source, group_count=4, repeats=2)
+        config["test_data_path"] = str(test_source)
+
+    with pytest.raises(ValueError, match="训练、验证、测试.*10|相加必须等于 10"):
+        train_model(train_source, config)
+
+
 def test_external_test_dataset_rejects_unknown_label(tmp_path, monkeypatch):
     import backend.app.training as training
 
@@ -806,6 +903,158 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
             for sample in sample_payload["samples"]
             for window in sample["windows"]
         )
+
+
+def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp_path, monkeypatch):
+    import torch
+    from torch import nn
+    import backend.app.training as training
+
+    class FastGradientModel(nn.Module):
+        def forward(self, inputs):
+            signal = inputs.mean(dim=2)
+            return torch.cat([-signal, signal], dim=1)
+
+    def fake_fit_deep_fold(**kwargs):
+        return (
+            FastGradientModel(),
+            [
+                {
+                    "epoch": 1,
+                    "train_loss": 0.0,
+                    "valid_accuracy": 1.0,
+                    "valid_macro_f1": 1.0,
+                    "best_valid_macro_f1": 1.0,
+                    "bad_epochs": 0,
+                }
+            ],
+            None,
+            None,
+        )
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=30, repeats=3, curve_length=160)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(training, "_fit_deep_fold", fake_fit_deep_fold)
+
+    result = train_model(
+        source,
+        {
+            "model_type": "transformer1d",
+            "split_mode": "leave_one_repeat_index_cv",
+            "epochs": 1,
+            "batch_size": 16,
+            "feature_top_k": 3,
+        },
+    )
+
+    run_dir = Path(result["run_dir"])
+    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+    sample_csv = pd.read_csv(run_dir / "sample_feature_importance.csv")
+
+    assert result["test_sample_count"] == 90
+    assert result["sample_feature_importance"]["sample_count"] == result["test_sample_count"]
+    assert sample_payload["sample_count"] == result["test_sample_count"]
+    assert len(sample_payload["samples"]) == result["test_sample_count"]
+    assert all("fold_index" in sample for sample in sample_payload["samples"])
+    assert len(sample_csv) == 90 * 160
+    assert "fold_index" in sample_csv.columns
+    assert sample_csv["fold_index"].notna().all()
+    assert "original_loss" not in sample_csv.columns
+    assert "masked_loss" not in sample_csv.columns
+
+
+def test_create_run_pauses_previous_active_run(tmp_path, monkeypatch):
+    import backend.app.main as main
+    import backend.app.training as training
+    from fastapi.testclient import TestClient
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=6, repeats=2)
+    runs_dir = tmp_path / "runs"
+    monkeypatch.setattr(main, "RUNS_DIR", runs_dir)
+    monkeypatch.setattr(training, "RUNS_DIR", runs_dir)
+    monkeypatch.setattr(main, "_background_train", lambda *args, **kwargs: None)
+
+    client = TestClient(main.app)
+    first = client.post(
+        "/api/training/runs",
+        json={"data_path": str(source), "config": {"model_type": "pls_da"}},
+    ).json()["run_id"]
+    second = client.post(
+        "/api/training/runs",
+        json={"data_path": str(source), "config": {"model_type": "svm"}},
+    ).json()["run_id"]
+
+    first_status = json.loads((runs_dir / first / "status.json").read_text(encoding="utf-8"))
+    second_status = json.loads((runs_dir / second / "status.json").read_text(encoding="utf-8"))
+    active_runs = []
+    for status_path in runs_dir.glob("*/status.json"):
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        if payload.get("status") in {"pending", "running"}:
+            active_runs.append(payload["run_id"])
+
+    assert first_status["status"] == "paused"
+    assert first_status["replaced_by"] == second
+    assert first_status["pause_reason"] == "replaced_by_new_run"
+    assert first_status["paused_at"]
+    assert second_status["status"] == "pending"
+    assert active_runs == [second]
+
+
+def test_train_model_stops_when_status_is_replaced_mid_loop(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    class FastTraditionalModel:
+        def predict(self, values):
+            return (np.asarray(values)[:, 0] > 0).astype(np.int64)
+
+        def predict_proba(self, values):
+            pred = self.predict(values)
+            probs = np.full((len(pred), 2), 0.1, dtype=float)
+            probs[np.arange(len(pred)), pred] = 0.9
+            return probs
+
+    def fake_fit_traditional_fold(*args, **kwargs):
+        status_file = runs_dir / run_id / "status.json"
+        status_file.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "status": "paused",
+                    "replaced_by": "newer_run",
+                    "pause_reason": "replaced_by_new_run",
+                    "paused_at": "2026-07-07T12:00:00",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return FastTraditionalModel(), training.TrainConfig(model_type="pls_da"), {"macro_f1": 1.0}, []
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=6, repeats=2)
+    runs_dir = tmp_path / "runs"
+    run_id = "replace_me"
+    monkeypatch.setattr(training, "RUNS_DIR", runs_dir)
+    monkeypatch.setattr(training, "_fit_traditional_fold", fake_fit_traditional_fold)
+
+    with pytest.raises(RuntimeError, match="替换|replaced"):
+        train_model(
+            source,
+            {
+                "model_type": "pls_da",
+                "split_mode": "leave_one_repeat_index_cv",
+                "feature_selection_enabled": False,
+            },
+            run_id=run_id,
+        )
+
+    status = json.loads((runs_dir / run_id / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "paused"
+    assert status["replaced_by"] == "newer_run"
+
 
 
 @pytest.mark.skipif(not USER_RAMAN_CSV.exists(), reason="local user Raman CSV fixture is not available")
@@ -1058,6 +1307,31 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert 'payload.feature_window_count = Number($("featureWindowCount").value);' in content
     assert 'feature_window_count: Number($("featureWindowCount").value)' not in content
     assert 'height="460"' in content
+
+
+def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'if (splitTrain + splitValid + splitTest !== 10)' in content
+    assert 'if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10)' not in content
+    assert "训练、验证、测试比例相加必须等于 10" in content
+    assert "trainingRequestInFlight" in content
+    assert "trainingRequestInFlight = true" in content
+    assert "trainingRequestInFlight = false" in content
+    assert "startButton.disabled = true" in content
+    assert "startButton.disabled = false" in content
+
+
+def test_main_ui_renders_paused_runs_and_all_sample_top_segments():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'run.status === "paused"' in content
+    assert "训练已暂停" in content
+    assert "replaced_by" in content
+    assert "fold_index" in content
+    assert "第 ${sample.fold_index} 折" in content
+    assert "return (segments || []).slice(0, 1);" not in content
+    assert "return (segments || []);" in content
     assert "boundaryX" in content
     assert "legendHeight = 72" in content
     assert "重要性高（关键特征）" in content
