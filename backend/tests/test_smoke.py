@@ -534,6 +534,10 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
     assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
     assert cv_payload["fold_count"] == frame["Repeat_index"].nunique()
     assert result["total_target_epochs"] == result["fold_count"] * result["target_epochs"]
+    assert result["current_fold"] == result["fold_count"]
+    assert result["completed_folds"] == result["fold_count"]
+    assert result["fold_progress_text"] == f'{result["fold_count"]}/{result["fold_count"]}'
+    assert result["current_fold_repeat_index"]
     assert result["metrics"]["test"]["accuracy"] == pytest.approx(
         float(pd.read_csv(Path(result["run_dir"]) / "fold_metrics.csv")["accuracy"].mean())
     )
@@ -594,8 +598,8 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
             "model_type": "pls_da",
             "test_data_path": str(test_source),
             "split_train": 8,
-            "split_valid": 2,
-            "split_test": 0,
+            "split_valid": 1,
+            "split_test": 1,
             "feature_selection_enabled": False,
         },
     )
@@ -606,6 +610,8 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert result["test_sample_count"] == 8
     assert result["fold_count"] == 1
     assert not split_payload[0]["splits"]["test"]
+    assert len(split_payload[0]["splits"]["train"]) == 18
+    assert len(split_payload[0]["splits"]["valid"]) == 2
     assert len(split_payload[0]["external_test_indices"]) == 8
     assert set(predictions["dataset"]) == {"external_test"}
 
@@ -1064,10 +1070,9 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert "SAR 原始谱图通路" in content
     assert "CAR PCA 成分通路" in content
     assert "sample.sample_x_axis" in content
-    assert "x_axis_warning" in content
     assert "featureSegmentKind" in content
     assert "特征点" in content
-    assert "Grad-CAM 与输入梯度归因差异较大" in content
+    assert "Grad-CAM 与输入梯度归因差异较大" not in content
     assert 'id="intensitySummary"' in content
     assert "强度点数" in content
 
@@ -1079,23 +1084,36 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert '<div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>' in content
     assert '<div class="metric">样品种类<strong>' not in content
     assert 'const splitTrain = readSplitNumber("splitTrain", 8);' in content
-    assert 'const splitValid = readSplitNumber("splitValid", selectedSplitMode === "leave_one_repeat_index_cv" ? 2 : 1);' in content
-    assert 'const splitTest = selectedSplitMode === "leave_one_repeat_index_cv" ? 0 : readSplitNumber("splitTest", 1);' in content
-    assert '$("customSplitOptions").classList.toggle("hidden", hasExternalTest);' in content
-    assert "按 Repeat_index 样品组数跑 N 折" in content
+    assert 'const splitValid = readSplitNumber("splitValid", 1);' in content
+    assert 'const splitTest = readSplitNumber("splitTest", 1);' in content
+    assert 'const cvEnabled = $("cvEnabled").checked;' in content
+    assert 'split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,' in content
+    assert '$("customSplitOptions").classList.toggle("hidden"' not in content
+    assert 'id="splitMode"' not in content
+    assert 'id="cvEnabled"' in content
+    assert "开启交叉验证" in content
+    assert "几个 Repeat_index 就跑几折" in content
     assert content.index('id="advancedOptions"') < content.index('id="trainTimeBlock"') < content.index('id="deepOptions"')
-    assert "function historyEpochAverages" in content
-    assert 'historyEpochAverages(history, "train_loss")' in content
-    assert 'historyEpochAverages(history, "valid_accuracy")' in content
+    assert "function historyFoldOptions" in content
+    assert "function selectedFoldHistory" in content
+    assert 'id="historyFoldSelect"' in content
+    assert 'renderTrainingCharts(run.history || [], preferredFold);' in content
+    assert "fold_progress_text" in content
+    assert "completed_folds" in content
     assert "total_target_epochs" in content
     assert "run.metrics?.test || run.metrics || {}" in content
+    assert "坐标提示" not in content
+    assert "归因提示" not in content
+    assert "红色标记为" not in content
+    assert "含义：" not in content
 
 
 def test_main_ui_manual_explains_repeat_index_group_split():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert "分层划分 8:1:1" in content
-    assert "外层留一交叉验证" in content
+    assert "数据划分比例" in content
+    assert "开启交叉验证" in content
+    assert "外层留一交叉验证" not in content
     assert "独立测试集" in content
     assert "external_test_holdout" in content
     assert "加载独立测试集" in content
