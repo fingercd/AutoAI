@@ -4,7 +4,7 @@
 
 本文只描述项目、接口契约和对接注意事项，不包含 UI 视觉或布局建议。
 
-> 当前状态（2026-07-06）：本文是当前接口契约。主前端为 `static/index.html`，不是 React/Vite 主链路；色谱主界面默认调用 `/api/preprocess/hplc` 并开启 HPLC 三步标准流程。当前建模仅支持分类任务，评估口径支持分层 holdout、`Repeat_index` 留一交叉验证和独立测试集 holdout。早期开发计划中的 React/Vite、Redis/RQ、SQLite 等内容仅作历史路线参考。
+> 当前稳定接口契约：主前端为 `static/index.html`，不是 React/Vite 主链路；色谱主界面默认调用 `/api/preprocess/hplc` 并开启 HPLC 三步标准流程。当前建模仅支持分类任务，评估口径支持分层 holdout、`Repeat_index` 留一交叉验证和独立测试集 holdout。训练 HTTP 请求只创建 SQLite 中的 `queued` Run，由独立本机 worker 执行；`status.json` 只是兼容投影。当前稳定模型和算法以 master 为准，模型数学改动必须使用独立模型计划。
 
 ## 1. 项目概况
 
@@ -39,7 +39,7 @@ static/
 ```text
 storage/uploads       上传的原始文件和建模 CSV
 storage/preprocessed  预处理生成的统一 CSV
-storage/runs          每次训练的状态、模型和结果
+storage/runs          每次训练的 Run 产物；状态命令以 SQLite RunRepository 为准
 ```
 
 ## 2. 运行与服务地址
@@ -140,7 +140,7 @@ Index, Name, XXX, Intensity, Label, Repeat_index
 GET /health
 ```
 
-返回：
+返回（稳定 ID 是长期引用；`dataset_path` 仅为受控本地兼容字段）：
 
 ```json
 {
@@ -179,6 +179,7 @@ Content-Type: multipart/form-data
 
 ```json
 {
+  "dataset_id": "ds_abc123",
   "dataset_path": "D:\\PythonProject\\AutoAI\\storage\\uploads\\xxxx.csv",
   "summary": {
     "path": "D:\\PythonProject\\AutoAI\\storage\\uploads\\xxxx.csv",
@@ -214,9 +215,9 @@ Content-Type: multipart/form-data
 
 重要规则：
 
-1. `dataset_path` 是服务器本地路径。前端不要试图在浏览器里直接打开这个路径。
-2. `dataset_path` 可以原样作为训练接口的 `data_path` 传回后端。
-3. 如果用户上传独立测试集，也调用同一个上传接口；训练时把返回路径作为顶层 `test_data_path` 传给 `/api/training/runs`。
+1. `dataset_id` 是训练接口的首选稳定引用；前端不要试图在浏览器里直接打开服务器路径。
+2. `dataset_path` 仅为受控本地兼容字段，可原样作为训练接口的 `data_path` 传回后端。
+3. 如果用户上传独立测试集，也调用同一个上传接口；训练时优先把返回的 `dataset_id` 作为顶层 `test_dataset_id` 传给 `/api/training/runs`。
 
 ### 5.4 拉曼/色谱/HPLC 预处理
 
@@ -357,6 +358,8 @@ HPLC 返回的 `curves` 使用 `processed_y` 表示三步处理后的强度，�
 5. `output_path` 是服务器本地路径，可以作为后续训练 `data_path`，但前提是用户已经补全 `Label` 和 `Repeat_index`。预处理刚生成时这两列为空，直接训练会报错。
 6. `common_time_path` 当前只是服务器端复用路径，不在训练 artifact 白名单内，前端不要把它当通用下载链接。
 
+## 5. 创建训练 Run
+
 ### 5.5 创建训练任务
 
 ```http
@@ -368,7 +371,9 @@ Content-Type: application/json
 
 ```json
 {
-  "data_path": "D:\\PythonProject\\AutoAI\\storage\\uploads\\train.csv",
+  "dataset_id": "ds_abc123",
+  "data_path": null,
+  "test_dataset_id": null,
   "test_data_path": null,
   "config": {
     "model_type": "cnn1d",
@@ -389,8 +394,10 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| data_path | string | 否 | 不传则使用项目根目录 `data.csv` |
-| test_data_path | string | 否 | 独立测试集路径；传入时后端使用 `external_test_holdout` |
+| dataset_id | string | 否 | 首选稳定数据集引用；与 `data_path` 不能同时传 |
+| data_path | string | 否 | 受控本地兼容路径；不传则使用项目根目录 `data.csv` |
+| test_dataset_id | string | 否 | 独立测试集的稳定数据集引用；与 `test_data_path` 不能同时传 |
+| test_data_path | string | 否 | 受控本地兼容路径；传入时后端使用 `external_test_holdout` |
 | config | object | 否 | 训练参数 |
 
 创建任务返回：
@@ -398,11 +405,12 @@ Content-Type: application/json
 ```json
 {
   "run_id": "abc123def456",
-  "status": "pending"
+  "status": "pending",
+  "state": "queued"
 }
 ```
 
-重要：训练在后台运行。前端不能认为创建任务返回后训练已经完成，必须轮询 `/api/training/runs/{run_id}`。
+重要：创建接口返回 HTTP 202，只表示 queued Run 已持久化；独立 worker 在请求生命周期之外执行训练。前端不能认为创建任务返回后训练已经完成，必须轮询 `/api/training/runs/{run_id}`。
 
 ### 5.6 获取训练记录列表
 
@@ -418,14 +426,14 @@ GET /api/training/runs
 GET /api/training/runs/{run_id}
 ```
 
-训练状态可能是：
+规范状态与兼容状态映射为：
 
 ```text
-pending
-running
-success
-failed
-unknown
+queued     -> pending
+running    -> running
+succeeded  -> success
+failed     -> failed
+cancelled  -> paused
 ```
 
 成功时返回示例：
