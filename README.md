@@ -44,6 +44,12 @@ http://127.0.0.1:8000/docs      → Swagger API 文档
 - **分类限定**：当前版本不实现回归任务；PLSR、SVR 是回归变体，文档中保留说明但前端训练选项不启用
 - **8 套 UI 方案**：Workbench / Wizard / Dashboard / Console / Minimal Lab / Swiss / Dark Instrument / Warm Paper
 
+## 稳定 Run 架构基线
+
+稳定架构版本固定保留 master 已有的 10 个分类模型及其数学行为。新增模型、网络结构、二分类输出形式、DSCARNet 映射策略或传统模型搜索空间，必须使用独立模型计划并在固定数据集上验收。
+
+训练请求只在 SQLite RunRepository 中创建 `queued` Run；独立本机 worker 通过 claim token 和 lease 执行训练，FastAPI 进程不以内置后台任务承担训练。`status.json` 是兼容投影，Run 成功前必须先原子提交 Manifest。请求不接受 `owner_id` 或 `tenant_id`，未来身份只由服务端 Principal 注入。
+
 ## 当前前端说明
 
 主工作台是 `static/index.html`。`/ui` 下的多套界面是候选或历史 UI 方案，用于比较设计，不一定代表当前正式交互。

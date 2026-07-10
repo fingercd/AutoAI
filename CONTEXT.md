@@ -13,6 +13,8 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 - 已有多个 UI 方案、模型相关改动和较多未跟踪文件，进入前必须先看 `git status --short`。
 - 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
+- HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
+- 本地模式不接受 owner_id 或 tenant_id；未来身份只经服务端 Principal 注入。
 
 ## 预处理与接口事实
 
@@ -20,11 +22,13 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 - 拉曼预处理支持 `range_mode=row/x_value`、`baseline_order=range_then_baseline/baseline_then_range` 和 `baseline_method`，默认 `arPLS`。
 - HPLC 预处理按固定顺序执行：线性插值到共同时间轴、逐条曲线减最小值消负、按真实时间轴梯形积分做面积归一化。
 - HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应包含 `processed_y`、`common_time`，可能包含 `common_time_path`。
-- `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed`、`storage/runs` 下的文件；不要让前端拼接任意本地路径。
+- `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
 
 ## 模型与可解释性
 
 - 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
+- 当前稳定可训练模型目录固定为 master 已有的 10 个分类模型；新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
+- 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
 - 传统机器学习模型：`pls_da`、`svm`、`random_forest`、`xgboost`。
 - 深度模型：`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
 - 三档输入维度按特征数区分：1000-3000、3000-6000、6000-10000；深度模型会按维度档选择轻量网络宽度、patch/stride、膨胀或映射尺寸。
