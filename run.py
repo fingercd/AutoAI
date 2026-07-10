@@ -14,6 +14,7 @@ PyCharm 使用:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -29,6 +30,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000, help="绑定端口 (默认 8000)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--reload", action="store_true", help="开启热重载（开发用）")
+    parser.add_argument("--no-worker", action="store_true", help="不启动本地训练 worker")
     args = parser.parse_args()
 
     import uvicorn
@@ -60,12 +62,20 @@ def main() -> None:
   ╚══════════════════════════════════════════════╝
 """)
 
-    uvicorn.run(
-        "backend.app.main:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-    )
+    worker = None
+    if not args.no_worker:
+        worker = subprocess.Popen([sys.executable, "-m", "backend.app.runs.worker"])
+    try:
+        uvicorn.run(
+            "backend.app.main:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+        )
+    finally:
+        if worker is not None and worker.poll() is None:
+            worker.terminate()
+            worker.wait(timeout=10)
 
 
 if __name__ == "__main__":
