@@ -3,6 +3,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STORAGE_DIR = PROJECT_ROOT / "storage"
+RUNS_DATABASE = STORAGE_DIR / "runs.sqlite3"
+DATASETS_DATABASE = STORAGE_DIR / "datasets.sqlite3"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 RUNS_DIR = STORAGE_DIR / "runs"
 PREPROCESSED_DIR = STORAGE_DIR / "preprocessed"
