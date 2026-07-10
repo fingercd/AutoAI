@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import io
 import sys
 import types
 import collections
@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA
+
+from .runs.artifacts import RunArtifactWriter
 
 
 DSCAR_SOURCE_URL = "https://github.com/songlinlu/DSCAR"
@@ -237,6 +239,7 @@ def fit_dscarnet_2d_mapping(
 
 def save_dscarnet_mapping_artifacts(run_dir: str | Path, mapped: DSCARNetMappedInputs) -> dict[str, Any]:
     run_path = Path(run_dir)
+    writer = RunArtifactWriter(run_path)
     metadata = dict(mapped.metadata)
     metadata.update(
         {
@@ -245,11 +248,13 @@ def save_dscarnet_mapping_artifacts(run_dir: str | Path, mapped: DSCARNetMappedI
             "car_mapper_artifact": "dscarnet_car_aggmap.joblib",
         }
     )
-    (run_path / "dscarnet_mapping.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    joblib.dump(mapped.pca, run_path / "dscarnet_pca.joblib")
-    joblib.dump(mapped.sar_mapper, run_path / "dscarnet_sar_aggmap.joblib")
-    joblib.dump(mapped.car_mapper, run_path / "dscarnet_car_aggmap.joblib")
+    writer.write_json("dscarnet_mapping.json", metadata)
+    for name, value in (
+        ("dscarnet_pca.joblib", mapped.pca),
+        ("dscarnet_sar_aggmap.joblib", mapped.sar_mapper),
+        ("dscarnet_car_aggmap.joblib", mapped.car_mapper),
+    ):
+        buffer = io.BytesIO()
+        joblib.dump(value, buffer)
+        writer.write_private_bytes(name, buffer.getvalue())
     return metadata

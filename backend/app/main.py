@@ -18,6 +18,7 @@ import numpy as np
 from .hplc import preprocess_hplc_files_with_preview
 from .parsers import preprocess_raw_files_with_preview, summarize_modeling_csv
 from .paths import DEFAULT_DATA, PREPROCESSED_DIR, RUNS_DIR, STATIC_DIR, UPLOADS_DIR, ensure_storage
+from .runs.artifacts import RunArtifactWriter
 from .training import TrainingRunReplaced, list_runs, pause_active_runs, run_is_replaced, train_model
 
 
@@ -274,38 +275,20 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 @app.get("/api/training/runs/{run_id}/artifact/{name}")
 def get_run_artifact(run_id: str, name: str) -> FileResponse:
-    allowed = {
-        "config.json",
-        "label_map.json",
-        "split.json",
-        "metrics.json",
-        "cv_metrics.json",
-        "fold_metrics.csv",
-        "history.csv",
-        "predictions.csv",
-        "cv_predictions.csv",
-        "hyperparameter_search.csv",
-        "feature_importance.json",
-        "feature_importance.csv",
-        "sample_feature_importance.json",
-        "sample_feature_importance.csv",
-        "model.pt",
-        "model.pkl",
-        "status.json",
-    }
-    if name not in allowed:
-        raise HTTPException(status_code=400, detail="不允许下载该文件")
-    path = RUNS_DIR / run_id / name
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        path = RunArtifactWriter(RUNS_DIR / run_id).resolve_download(name)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="不允许下载该文件") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="文件不存在") from exc
     return FileResponse(path, filename=name)
 
 
 @app.get("/api/files")
 def get_file(path: str) -> FileResponse:
     target = Path(path).resolve()
-    roots = [UPLOADS_DIR.resolve(), PREPROCESSED_DIR.resolve(), RUNS_DIR.resolve()]
-    if not any(str(target).startswith(str(root)) for root in roots):
+    roots = [UPLOADS_DIR.resolve(), PREPROCESSED_DIR.resolve()]
+    if not any(target == root or root in target.parents for root in roots):
         raise HTTPException(status_code=403, detail="不允许访问该路径")
     if not target.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
