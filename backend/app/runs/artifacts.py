@@ -101,6 +101,8 @@ class RunArtifactWriter:
             raise FileNotFoundError(manifest_path)
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         entry = (manifest.get('artifacts') or {}).get(name)
+        if entry is None:
+            raise FileNotFoundError(name)
         if not isinstance(entry, dict) or not entry.get('downloadable'):
             raise PermissionError(f'artifact is not downloadable: {name}')
         path = self._path(name).resolve()
