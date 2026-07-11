@@ -762,13 +762,14 @@ def test_train_smoke(tmp_path, monkeypatch):
 
 def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, monkeypatch):
     import backend.app.main as main
+    import backend.app.routers.deps as router_deps
     import backend.app.training as training
     from fastapi.testclient import TestClient
 
     source = tmp_path / "feature_signal.csv"
     _write_feature_signal_csv(source)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(main, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(router_deps, "RUNS_DIR", tmp_path / "runs")
 
     result = train_model(
         source,
@@ -977,42 +978,36 @@ def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp
     assert "masked_loss" not in sample_csv.columns
 
 
-def test_create_run_pauses_previous_active_run(tmp_path, monkeypatch):
+def test_create_run_persists_independent_queued_runs(tmp_path):
     import backend.app.main as main
-    import backend.app.training as training
     from fastapi.testclient import TestClient
 
     source = tmp_path / "grouped.csv"
     _write_grouped_modeling_csv(source, group_count=6, repeats=2)
-    runs_dir = tmp_path / "runs"
-    monkeypatch.setattr(main, "RUNS_DIR", runs_dir)
-    monkeypatch.setattr(training, "RUNS_DIR", runs_dir)
-    monkeypatch.setattr(main, "_background_train", lambda *args, **kwargs: None)
 
     client = TestClient(main.app)
-    first = client.post(
-        "/api/training/runs",
-        json={"data_path": str(source), "config": {"model_type": "pls_da"}},
-    ).json()["run_id"]
-    second = client.post(
-        "/api/training/runs",
-        json={"data_path": str(source), "config": {"model_type": "svm"}},
-    ).json()["run_id"]
+    uploaded = client.post(
+        "/api/datasets/upload",
+        files={"file": (source.name, source.read_bytes(), "text/csv")},
+    )
+    assert uploaded.status_code == 200
+    dataset_id = uploaded.json()["dataset_id"]
 
-    first_status = json.loads((runs_dir / first / "status.json").read_text(encoding="utf-8"))
-    second_status = json.loads((runs_dir / second / "status.json").read_text(encoding="utf-8"))
-    active_runs = []
-    for status_path in runs_dir.glob("*/status.json"):
-        payload = json.loads(status_path.read_text(encoding="utf-8"))
-        if payload.get("status") in {"pending", "running"}:
-            active_runs.append(payload["run_id"])
+    first_response = client.post(
+        "/api/training/runs",
+        json={"dataset_id": dataset_id, "config": {"model_type": "pls_da"}},
+    )
+    second_response = client.post(
+        "/api/training/runs",
+        json={"dataset_id": dataset_id, "config": {"model_type": "svm"}},
+    )
 
-    assert first_status["status"] == "paused"
-    assert first_status["replaced_by"] == second
-    assert first_status["pause_reason"] == "replaced_by_new_run"
-    assert first_status["paused_at"]
-    assert second_status["status"] == "pending"
-    assert active_runs == [second]
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert first_response.json()["status"] == "pending"
+    assert first_response.json()["state"] == "queued"
+    assert second_response.json()["status"] == "pending"
+    assert second_response.json()["state"] == "queued"
 
 
 def test_train_model_stops_when_status_is_replaced_mid_loop(tmp_path, monkeypatch):

@@ -15,6 +15,8 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
 - HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
 - 本地模式不接受 owner_id 或 tenant_id；未来身份只经服务端 Principal 注入。
+- Run 状态转换由 SQLite 事务、claim token 和 lease 控制；本机 worker 可用 `python -m backend.app.runs.worker` 独立启动。
+- Run 成功前必须先原子提交 `manifest.json`；Run 下载只允许 Manifest 声明的 downloadable artifact，`storage/runs` 不经 `/api/files` 暴露。
 
 ## 预处理与接口事实
 

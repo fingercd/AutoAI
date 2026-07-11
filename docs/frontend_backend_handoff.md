@@ -420,6 +420,8 @@ GET /api/training/runs
 
 返回一个数组，每项是一次训练的 `status.json` 内容。最新训练排在前面。
 
+列表和单个 Run 的状态以 SQLite RunRepository 为准；`status.json` 只作为兼容字段投影。
+
 ### 5.7 获取单个训练状态
 
 ```http
@@ -504,7 +506,7 @@ cancelled  -> paused
 GET /api/training/runs/{run_id}/artifact/{name}
 ```
 
-允许下载的 `name`：
+允许下载的 `name` 必须同时存在于该 Run 的 `manifest.json` 且标记为 `downloadable=true`：
 
 ```text
 config.json
@@ -526,9 +528,23 @@ model.pkl
 status.json
 ```
 
-如果文件不存在，返回 404。
+如果文件不存在，返回 404；Manifest 中声明为私有的文件（包括 DSCARNet `*.joblib`）返回 403。Run 只有在 Manifest 原子提交后才会进入规范状态 `succeeded`。
 
-### 5.9 下载预处理文件
+### 5.9 取消训练任务
+
+```http
+POST /api/training/runs/{run_id}/cancel
+```
+
+取消由 SQLite 事务执行；已取消 Run 的兼容状态为 `paused`。worker 使用 claim token 校验，不能用陈旧 claim 覆盖取消结果。
+
+本机启动独立 worker：
+
+```powershell
+C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m backend.app.runs.worker
+```
+
+### 5.10 下载预处理文件
 
 ```http
 GET /api/files?path={absolute_server_path}
@@ -539,10 +555,9 @@ GET /api/files?path={absolute_server_path}
 ```text
 storage/uploads
 storage/preprocessed
-storage/runs
 ```
 
-前端应直接使用预处理接口返回的 `download_url`，不要手动拼接任意本地路径。
+前端应直接使用预处理接口返回的 `download_url`，不要手动拼接任意本地路径；Run 产物必须使用上一节的 Manifest-backed 路由。
 
 ## 6. 训练参数契约
 
