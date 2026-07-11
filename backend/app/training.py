@@ -40,9 +40,6 @@ from .runs.repository import InvalidRunTransition, RunRepository
 from .runs.status_projection import project_status
 
 
-ACTIVE_RUN_STATUSES = {"pending", "running"}
-
-
 class TrainingRunReplaced(RuntimeError):
     """Raised when a training run has been paused because a newer run replaced it."""
 
@@ -107,29 +104,6 @@ def _read_status_file(status_file: Path) -> dict[str, Any]:
 def _write_status_file(status_file: Path, payload: dict[str, Any]) -> None:
     status_file.parent.mkdir(parents=True, exist_ok=True)
     status_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def pause_active_runs(new_run_id: str, *, runs_dir: Path | None = None, reason: str = "replaced_by_new_run") -> list[str]:
-    root = runs_dir or RUNS_DIR
-    paused_ids: list[str] = []
-    paused_at = _now_iso()
-    for status_file in root.glob("*/status.json"):
-        payload = _read_status_file(status_file)
-        run_id = str(payload.get("run_id") or status_file.parent.name)
-        if run_id == new_run_id or payload.get("status") not in ACTIVE_RUN_STATUSES:
-            continue
-        payload.update(
-            {
-                "run_id": run_id,
-                "status": "paused",
-                "paused_at": paused_at,
-                "replaced_by": new_run_id,
-                "pause_reason": reason,
-            }
-        )
-        _write_status_file(status_file, payload)
-        paused_ids.append(run_id)
-    return paused_ids
 
 
 def run_is_replaced(run_id: str, *, runs_dir: Path | None = None) -> bool:
