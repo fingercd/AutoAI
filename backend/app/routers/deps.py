@@ -90,4 +90,6 @@ def get_run_repository() -> RunRepository:
 
 
 def get_run_dir(run_id: str) -> Path:
+    if not run_id or Path(run_id).name != run_id or run_id in {'.', '..'}:
+        raise HTTPException(status_code=404, detail='run 不存在')
     return RUNS_DIR / run_id
