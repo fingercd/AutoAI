@@ -50,6 +50,12 @@ http://127.0.0.1:8000/docs      → Swagger API 文档
 
 训练请求只在 SQLite RunRepository 中创建 `queued` Run；独立本机 worker 通过 claim token 和 lease 执行训练，FastAPI 进程不以内置后台任务承担训练。`status.json` 是兼容投影，Run 成功前必须先原子提交 Manifest。请求不接受 `owner_id` 或 `tenant_id`，未来身份只由服务端 Principal 注入。
 
+本地 worker 可单独启动：
+
+```powershell
+C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m backend.app.runs.worker
+```
+
 ## 当前前端说明
 
 主工作台是 `static/index.html`。`/ui` 下的多套界面是候选或历史 UI 方案，用于比较设计，不一定代表当前正式交互。
