@@ -1110,6 +1110,14 @@ def _aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str
     }
 
 
+def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    return _aggregate_attribution_sanity(samples)
+
+
+def aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    return _aggregate_dscarnet_branch_sanity(samples)
+
+
 def _model_device(model: nn.Module) -> torch.device:
     try:
         return next(model.parameters()).device

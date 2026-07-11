@@ -4,7 +4,7 @@ import json
 import pickle
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +17,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
-    _aggregate_attribution_sanity,
-    _aggregate_dscarnet_branch_sanity,
+    aggregate_attribution_sanity,
+    aggregate_dscarnet_branch_sanity,
     aggregate_sample_feature_importance,
     build_feature_windows,
     interval_permutation_importance,
@@ -34,6 +34,10 @@ from .feature_selection import (
 from .models import build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
+from .runs.contracts import RunRecord
+from .runs.artifacts import RunArtifactWriter
+from .runs.repository import InvalidRunTransition, RunRepository
+from .runs.status_projection import project_status
 
 
 ACTIVE_RUN_STATUSES = {"pending", "running"}
@@ -611,9 +615,9 @@ def _merge_deep_sample_results(results: list[dict[str, Any]], x_axis_warning: di
     combined["sample_count"] = len(samples)
     combined["x_axis_warning"] = x_axis_warning
     if combined.get("method") == "gradcam_1d":
-        combined["sanity_checks"] = _aggregate_attribution_sanity(samples)
+        combined["sanity_checks"] = aggregate_attribution_sanity(samples)
     elif combined.get("method") == "dscarnet_dual_2d_gradcam":
-        combined["sanity_checks"] = _aggregate_dscarnet_branch_sanity(samples)
+        combined["sanity_checks"] = aggregate_dscarnet_branch_sanity(samples)
     return combined
 
 
@@ -1185,14 +1189,21 @@ def _external_test_fold(
     }
 
 
-def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
+def _run_legacy_training(
+    data_path: str | Path,
+    config_data: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    *,
+    repository: RunRepository | None = None,
+    record: RunRecord | None = None,
+) -> dict[str, Any]:
     test_data_path = (config_data or {}).get("test_data_path")
     config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
     config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
     _validate_split_ratio_config(config)
     model_type = canonical_model_type(config.model_type)
     evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
-    run_id = run_id or uuid.uuid4().hex[:12]
+    run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     status_file = run_dir / "status.json"
@@ -1202,9 +1213,17 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
             previous_status = json.loads(status_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             previous_status = {}
-    _raise_if_run_replaced(status_file)
+    if repository is None or record is None:
+        _raise_if_run_replaced(status_file)
 
     def check_run_active() -> None:
+        if repository is not None and record is not None:
+            repository.assert_active(
+                record.run_id,
+                claim_token=record.claim_token or "",
+                now=datetime.now(timezone.utc),
+            )
+            return
         _raise_if_run_replaced(status_file)
 
     torch.manual_seed(config.seed)
@@ -1271,6 +1290,28 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
 
     def write_progress(fold_index: int, completed_folds: int, fold: dict[str, Any]) -> None:
         check_run_active()
+        if repository is not None and record is not None:
+            progress = {
+                "current_fold": fold_index,
+                "completed_folds": completed_folds,
+                "fold_progress_text": f"{fold_index}/{fold_count}",
+                "target_epochs": config.epochs,
+            }
+            updated = repository.update_progress(
+                record.run_id,
+                claim_token=record.claim_token or "",
+                now=datetime.now(timezone.utc),
+                progress=progress,
+            )
+            project_status(
+                run_dir,
+                updated,
+                **progress,
+                current_fold_repeat_index=fold.get("test_repeat_index"),
+                model_type=model_type,
+                evaluation_strategy=evaluation_strategy,
+            )
+            return
         current_status = _read_status_file(status_file)
         _write_status_file(
             status_file,
@@ -1552,8 +1593,33 @@ def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "completed_at": _now_iso(),
     }
-    (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if repository is None or record is None:
+        (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {**status_payload, "run_dir": str(run_dir.resolve())}
+
+
+def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
+    return run_legacy_training_compatibility(data_path=data_path, config_data=config_data, run_id=run_id)
+
+
+def run_legacy_training_compatibility(
+    *,
+    data_path: str | Path,
+    config_data: dict[str, Any] | None,
+    run_id: str | None,
+) -> dict[str, Any]:
+    result = _run_legacy_training(data_path=Path(data_path), config_data=config_data or {}, run_id=run_id)
+    run_dir = Path(result["run_dir"])
+    if not (run_dir / "manifest.json").is_file():
+        RunArtifactWriter(run_dir).finalize(
+            run_id=str(result["run_id"]),
+            metadata={
+                key: result[key]
+                for key in ("model_type", "model_family", "evaluation_strategy", "fold_count")
+                if key in result
+            },
+        )
+    return result
 
 
 def list_runs() -> list[dict[str, Any]]:
