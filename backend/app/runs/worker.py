@@ -63,12 +63,14 @@ class RunWorker:
         execute: Callable[[Any], dict[str, Any]],
         now: Callable[[], datetime],
         heartbeat_seconds: float = 5.0,
+        project_status: Callable[[Any], None] | None = None,
     ) -> None:
         self.repository = repository
         self.worker_id = worker_id
         self.execute = execute
         self.now = now
         self.heartbeat_seconds = heartbeat_seconds
+        self.project_status = project_status
 
     def run_once(self) -> bool:
         self.repository.requeue_expired(now=self.now())
@@ -84,12 +86,14 @@ class RunWorker:
                 heartbeat_seconds=self.heartbeat_seconds,
             ):
                 result = self.execute(run)
-            self.repository.finish_success(
+            finished = self.repository.finish_success(
                 run.run_id,
                 claim_token=run.claim_token or '',
                 now=self.now(),
                 manifest_name=str(result['manifest_name']),
             )
+            if self.project_status is not None:
+                self.project_status(finished)
         except InvalidRunTransition:
             return True
         except Exception as exc:
@@ -115,7 +119,8 @@ def main() -> None:
     parser.add_argument('--poll-seconds', type=float, default=0.5)
     args = parser.parse_args()
 
-    from ..paths import RUNS_DATABASE
+    from ..paths import RUNS_DATABASE, RUNS_DIR
+    from .status_projection import project_status
 
     def execute_claimed(record: Any) -> dict[str, str]:
         from .execution import execute_claimed_run
@@ -129,6 +134,7 @@ def main() -> None:
         worker_id=f'{socket.gethostname()}-{uuid.uuid4().hex[:8]}',
         execute=execute_claimed,
         now=utc_now,
+        project_status=lambda record: project_status(RUNS_DIR / record.run_id, record),
     )
     while worker.run_once() or not args.once:
         if args.once:

@@ -27,6 +27,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
 class DatasetRepository:
     def __init__(self, database_path: Path, *, storage_root: Path) -> None:
         self.database_path = Path(database_path)
@@ -69,6 +73,8 @@ class DatasetRepository:
         target = Path(path).resolve()
         if not target.is_file():
             raise FileNotFoundError(target)
+        if not self._is_controlled_path(target):
+            raise PermissionError(f'dataset path is outside controlled storage: {target}')
         dataset_id = f'ds_{uuid.uuid4().hex}'
         record = DatasetRecord(
             dataset_id=dataset_id,
@@ -122,6 +128,8 @@ class DatasetRepository:
         target = Path(legacy_path).resolve()
         if not target.is_file():
             raise FileNotFoundError(target)
+        if not self._is_controlled_path(target):
+            raise PermissionError(f'dataset path is outside controlled storage: {target}')
         return DatasetRecord(
             dataset_id='',
             path=target,
@@ -130,3 +138,12 @@ class DatasetRepository:
             owner_id=None,
             tenant_id=None,
         )
+
+    def _is_controlled_path(self, path: Path) -> bool:
+        allowed_roots = (
+            self.storage_root,
+            self.storage_root / 'uploads',
+            self.storage_root / 'preprocessed',
+            self.storage_root.parent / 'data.csv',
+        )
+        return any(_is_within(path, root.resolve()) for root in allowed_roots)
