@@ -836,9 +836,12 @@
       </section>
     </main>
 
+    <script type="module" src="/static/js/training-store.js"></script>
     <script>
       let datasetPath = null;
       let testDatasetPath = null;
+      let datasetId = null;
+      let testDatasetId = null;
       let currentRunId = null;
       let trainingRequestInFlight = false;
       let poller = null;
@@ -858,17 +861,9 @@
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
 
-      async function api(url, options = {}) {
-        const response = await fetch(url, options);
-        if (!response.ok) {
-          let detail = await response.text();
-          try {
-            detail = JSON.parse(detail).detail || detail;
-          } catch (_) {}
-          throw new Error(detail);
-        }
-        return response.json();
-      }
+      const api = (url, options = {}) => window.AutoAIRequest(url, options);
+      const createRun = (...args) => window.AutoAITrainingStore.createRun(...args);
+      const fetchRun = (...args) => window.AutoAITrainingStore.pollRun(...args);
 
       function setupHiDpiCanvas(canvas) {
         const rect = canvas.getBoundingClientRect();
@@ -1094,6 +1089,8 @@
         const form = new FormData();
         form.append("file", file);
         const result = await api("/api/datasets/upload", { method: "POST", body: form });
+        datasetId = result.dataset_id || null;
+        datasetPath = result.dataset_path || null;
         renderSummary(result.summary);
       }
 
@@ -1101,6 +1098,8 @@
         const form = new FormData();
         form.append("file", file);
         const result = await api("/api/datasets/upload", { method: "POST", body: form });
+        testDatasetId = result.dataset_id || null;
+        testDatasetPath = result.dataset_path || null;
         renderSummary(result.summary, { kind: "test" });
       }
 
@@ -1249,17 +1248,16 @@
         startButton.disabled = true;
         try {
           resetTrainingPanel();
-          const body = { data_path: datasetPath, config: configPayload() };
-          if (testDatasetPath) body.test_data_path = testDatasetPath;
-          const result = await api("/api/training/runs", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
+          const body = { config: configPayload() };
+          if (datasetId) body.dataset_id = datasetId;
+          else body.data_path = datasetPath;
+          if (testDatasetId) body.test_dataset_id = testDatasetId;
+          else if (testDatasetPath) body.test_data_path = testDatasetPath;
+          const result = await createRun(body);
           currentRunId = result.run_id;
-          pollRun();
+          pollCurrentRun();
           clearInterval(poller);
-          poller = setInterval(pollRun, 1200);
+          poller = setInterval(pollCurrentRun, 1200);
         } finally {
           trainingRequestInFlight = false;
           startButton.disabled = false;
@@ -2018,11 +2016,17 @@
         }
       }
 
-      async function pollRun() {
+      async function pollCurrentRun() {
         if (!currentRunId) return;
-        const run = await api(`/api/training/runs/${currentRunId}`);
+        const run = await fetchRun(currentRunId);
         renderRun(run);
       }
+
+      window.openRun = (runId) => {
+        currentRunId = runId;
+        pollCurrentRun().catch((err) => alert(err.message));
+        document.querySelector('[data-view=modeling]').click();
+      };
 
       function selectedRamanBaselineMethod() {
         if ($("ramanBaselineMethodMode").value === "custom") {
@@ -2156,7 +2160,7 @@
                 <td>${formatMetric(trainAcc)}</td>
                 <td>${formatMetric(testAcc)}</td>
                 <td><span class="status ${run.status || ""}">${run.status || "unknown"}</span></td>
-                <td><button class="secondary" onclick="currentRunId='${run.run_id}'; pollRun(); document.querySelector('[data-view=modeling]').click()">查看</button></td>
+                <td><button class="secondary" onclick="window.openRun('${run.run_id}')">查看</button></td>
               </tr>
             `;
           })
@@ -2279,7 +2283,7 @@
         if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
       });
 
-      loadHealth();
+      window.addEventListener("load", () => loadHealth());
       updateModelOptionVisibility();
       updateSplitOptionVisibility();
       updatePreprocessRangeMode("raman");

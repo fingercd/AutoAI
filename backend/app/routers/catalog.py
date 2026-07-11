@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from ..parsers import summarize_modeling_csv
-from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, RUNS_DIR, STATIC_DIR, UPLOADS_DIR
-from ..runs.artifacts import RunArtifactWriter
+from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
 
 router = APIRouter()
 
@@ -81,14 +82,3 @@ def get_file(path: str) -> FileResponse:
     if not target.is_file():
         raise HTTPException(status_code=404, detail='文件不存在')
     return FileResponse(target, filename=target.name)
-
-
-@router.get('/api/training/runs/{run_id}/artifact/{name}')
-def get_run_artifact(run_id: str, name: str) -> FileResponse:
-    try:
-        path = RunArtifactWriter(RUNS_DIR / run_id).resolve_download(name)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail='不允许下载该文件') from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='文件不存在') from exc
-    return FileResponse(path, filename=name)
