@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from sklearn.decomposition import PCA
 from torch import nn
 
 from .cnn1d import CNN1D
@@ -11,6 +12,8 @@ from .inception1d import Inception1D
 from .pls_da import build_pls_da
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
+from .pca_mlp import PCAMLPClassifier
+from .profiles import build_model_profile
 from .random_forest import build_random_forest
 from .resnet1d import ResNet1D
 from .svm import build_svm
@@ -86,7 +89,7 @@ TARGET_TRADITIONAL_MODEL_TYPES = {
     "xgboost",
 }
 TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
-DEEP_MODEL_TYPES = {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+DEEP_MODEL_TYPES = {"pca_mlp", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
 TRADITIONAL_MODEL_TYPES = {
     "pls_da",
     "pca_lda",
@@ -121,8 +124,43 @@ def model_family(model_type: str) -> str:
     return "traditional_ml" if canonical_model_type(model_type) in TRADITIONAL_MODEL_TYPES else "deep_learning"
 
 
-def build_deep_model(config: Any, input_length: int, class_count: int, sample_count: int) -> nn.Module:
+def build_deep_model(
+    config: Any,
+    input_length: int,
+    class_count: int,
+    sample_count: int,
+    *,
+    x_train: np.ndarray | None = None,
+) -> nn.Module:
     model_type = canonical_model_type(config.model_type)
+    if model_type == "pca_mlp":
+        if x_train is None:
+            raise ValueError("PCA-MLP 必须提供当前折训练集用于拟合 PCA")
+        train_values = np.asarray(x_train, dtype=np.float32)
+        profile = build_model_profile(
+            "pca_mlp",
+            train_sample_count=len(train_values),
+            feature_count=train_values.shape[1],
+        )
+        pca = PCA(n_components=profile.values["pca_components"], random_state=int(config.seed))
+        pca.fit(train_values)
+        model = PCAMLPClassifier(
+            pca.mean_,
+            pca.components_,
+            profile.values["hidden_sizes"],
+            profile.dropout,
+            class_count,
+        )
+        model.pca_model = pca
+        model.pca_metadata = {
+            "components": int(profile.values["pca_components"]),
+            "fit_scope": "train",
+            "original_feature_count": int(train_values.shape[1]),
+            "train_sample_count": int(len(train_values)),
+            "hidden_sizes": list(profile.values["hidden_sizes"]),
+            "dropout": float(profile.dropout),
+        }
+        return model
     if model_type == "cnn1d":
         return CNN1D(input_length, class_count, sample_count, config.dropout, config.hidden_size)
     if model_type == "transformer1d":

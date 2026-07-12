@@ -56,9 +56,31 @@ def build_model_profile(
     model_key = str(model_type or "").strip().lower()
     if model_key not in PROFILE_MODEL_TYPES:
         raise ValueError(f"未知模型，无法构建 profile: {model_type}")
+    if int(train_sample_count) <= 1:
+        raise ValueError("PCA-MLP 至少需要 2 个训练样本才能拟合 profile")
+    if int(feature_count) <= 0:
+        raise ValueError("特征数 L 必须大于 0")
     resolved_sample_band = sample_band(train_sample_count)
     resolved_feature_band = feature_band(feature_count)
     dropout = default_dropout(train_sample_count)
+    values: dict[str, Any] = {
+        "dropout": dropout,
+        "sample_band": resolved_sample_band,
+        "feature_band": resolved_feature_band,
+    }
+    if model_key == "pca_mlp":
+        if int(train_sample_count) <= 100:
+            requested_components, hidden_sizes = 32, [32, 16]
+        elif int(train_sample_count) <= 300:
+            requested_components, hidden_sizes = 64, [64, 32]
+        else:
+            requested_components, hidden_sizes = 128, [128, 64]
+        values.update(
+            {
+                "pca_components": max(1, min(requested_components, int(train_sample_count) - 1, int(feature_count))),
+                "hidden_sizes": hidden_sizes,
+            }
+        )
     return ModelProfile(
         model_type=model_key,
         train_sample_count=int(train_sample_count),
@@ -66,11 +88,7 @@ def build_model_profile(
         sample_band=resolved_sample_band,
         feature_band=resolved_feature_band,
         dropout=dropout,
-        values={
-            "dropout": dropout,
-            "sample_band": resolved_sample_band,
-            "feature_band": resolved_feature_band,
-        },
+        values=values,
     )
 
 

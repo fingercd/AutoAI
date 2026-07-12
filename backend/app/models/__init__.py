@@ -14,6 +14,7 @@ from .registry import (
     canonical_model_type,
     model_family,
 )
+from .pca_mlp import PCAMLPClassifier
 
 __all__ = [
     "ARCHITECTURE_VERSION",
@@ -27,6 +28,7 @@ __all__ = [
     "build_dscarnet_model",
     "build_logistic_regression",
     "build_pca_lda",
+    "PCAMLPClassifier",
     "build_traditional_model",
     "canonical_model_type",
     "model_family",

@@ -434,7 +434,7 @@ def test_registry_allows_only_current_active_classification_models():
         "random_forest",
         "xgboost",
     }
-    assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+    assert DEEP_MODEL_TYPES == {"pca_mlp", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
     assert canonical_model_type("PLS-DA") == "pls_da"
     assert canonical_model_type("1D-Transformer") == "transformer1d"
     assert canonical_model_type("1D-ResNet") == "resnet1d"

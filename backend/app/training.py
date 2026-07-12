@@ -1121,7 +1121,20 @@ def _fit_deep_fold(
             len(label_names),
         )
     else:
-        model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
+        model = build_deep_model(
+            config,
+            input_length=x.shape[1],
+            class_count=len(label_names),
+            sample_count=sample_count,
+            x_train=x[splits["train"]] if model_type == "pca_mlp" else None,
+        )
+        if model_type == "pca_mlp" and getattr(model, "pca_model", None) is not None:
+            try:
+                import joblib
+
+                joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
+            except Exception:
+                pass
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1754,6 +1767,8 @@ def _run_legacy_training(
             "interval_permutation_importance" if last_model_family == "traditional_ml" else explainability
         ),
     }
+    if getattr(last_model, "pca_metadata", None) is not None:
+        model_metadata["pca"] = last_model.pca_metadata
     config_out = {
         **config.__dict__,
         "model_type": model_type,
