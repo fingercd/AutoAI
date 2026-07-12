@@ -123,3 +123,125 @@ def test_final_traditional_fit_uses_only_train_and_valid(monkeypatch):
     assert set(final_fit_indices.tolist()) == {0, 1, 2}
     assert set(final_fit_indices.tolist()).isdisjoint({3, 4})
     assert normalizer["mode"] == "none"
+
+
+def test_deep_training_defaults_are_exact():
+    from backend.app.classification_policy import DEEP_TRAINING_DEFAULTS
+    import backend.app.training as training
+
+    expected = {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 1e-3,
+        "weight_decay": 1e-4,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-6,
+        "early_stopping_patience": 20,
+        "seed": 42,
+    }
+    assert {key: getattr(DEEP_TRAINING_DEFAULTS, key) for key in expected} == expected
+    config = training.TrainConfig()
+    for key, value in expected.items():
+        assert getattr(config, key) == value
+
+
+def test_deep_training_uses_adamw_scheduler_and_lowest_validation_loss(monkeypatch, tmp_path):
+    import torch
+    from torch import nn
+    import backend.app.training as training
+
+    optimizer_kwargs = {}
+    scheduler_kwargs = {}
+    scheduler_step_values = []
+    validation_losses = [0.4, 0.2, 0.3]
+
+    class FakeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.tensor(0.0))
+            self.train_calls = 0
+            self.state_id = 0
+            self.loaded_state_id = None
+
+        def train(self, mode=True):
+            if mode:
+                self.state_id = self.train_calls
+                self.train_calls += 1
+            return super().train(mode)
+
+        def forward(self, values):
+            return self.anchor.expand(values.shape[0], 2)
+
+        def state_dict(self, *args, **kwargs):
+            return {"state_id": torch.tensor(self.state_id)}
+
+        def load_state_dict(self, state, *args, **kwargs):
+            self.loaded_state_id = int(state["state_id"])
+            return nn.modules.module._IncompatibleKeys([], [])
+
+    model = FakeModel()
+
+    class FakeOptimizer:
+        def __init__(self, parameters, **kwargs):
+            del parameters
+            optimizer_kwargs.update(kwargs)
+            self.param_groups = [{"lr": kwargs["lr"]}]
+
+        def zero_grad(self):
+            pass
+
+        def step(self):
+            pass
+
+    class FakeScheduler:
+        def __init__(self, optimizer, **kwargs):
+            del optimizer
+            scheduler_kwargs.update(kwargs)
+
+        def step(self, value):
+            scheduler_step_values.append(float(value))
+
+    monkeypatch.setattr(training, "build_deep_model", lambda *args, **kwargs: model)
+    monkeypatch.setattr(training.torch.optim, "AdamW", FakeOptimizer)
+    monkeypatch.setattr(training.torch.optim.lr_scheduler, "ReduceLROnPlateau", FakeScheduler)
+    monkeypatch.setattr(training, "_loader", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        training,
+        "_evaluate_deep_loss",
+        lambda *args, **kwargs: validation_losses.pop(0),
+    )
+    monkeypatch.setattr(
+        training,
+        "_evaluate",
+        lambda *args, **kwargs: {
+            "accuracy": 0.5,
+            "balanced_accuracy": 0.5,
+            "macro_f1": 0.5,
+        },
+    )
+
+    config = training.TrainConfig(epochs=3, early_stopping_patience=0, model_type="cnn1d")
+    _, history, _, _ = training._fit_deep_fold(
+        config=config,
+        model_type="cnn1d",
+        x=np.zeros((4, 6), dtype=np.float32),
+        y=np.asarray([0, 1, 0, 1]),
+        splits={"train": [0, 1], "valid": [2, 3], "test": []},
+        label_names=["A", "B"],
+        run_dir=tmp_path,
+        sample_count=4,
+    )
+
+    assert optimizer_kwargs == {"lr": 1e-3, "weight_decay": 1e-4}
+    assert scheduler_kwargs == {
+        "mode": "min",
+        "factor": 0.5,
+        "patience": 10,
+        "min_lr": 1e-6,
+    }
+    assert scheduler_step_values == [0.4, 0.2, 0.3]
+    assert model.loaded_state_id == 1
+    assert [row["valid_loss"] for row in history] == [0.4, 0.2, 0.3]
+    assert [row["best_valid_loss"] for row in history] == [0.4, 0.2, 0.2]
+    assert all(row["learning_rate"] == 1e-3 for row in history)
