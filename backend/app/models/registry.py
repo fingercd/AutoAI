@@ -9,6 +9,8 @@ from .cnn1d import CNN1D
 from .dscarnet import dual_dscarnet
 from .inception1d import Inception1D
 from .pls_da import build_pls_da
+from .logistic_regression import build_logistic_regression
+from .pca_lda import build_pca_lda
 from .random_forest import build_random_forest
 from .resnet1d import ResNet1D
 from .svm import build_svm
@@ -85,7 +87,14 @@ TARGET_TRADITIONAL_MODEL_TYPES = {
 }
 TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
 DEEP_MODEL_TYPES = {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
-TRADITIONAL_MODEL_TYPES = {"pls_da", "svm", "random_forest", "xgboost"}
+TRADITIONAL_MODEL_TYPES = {
+    "pls_da",
+    "pca_lda",
+    "logistic_regression",
+    "svm",
+    "random_forest",
+    "xgboost",
+}
 SUPPORTED_MODEL_TYPES = DEEP_MODEL_TYPES | TRADITIONAL_MODEL_TYPES
 
 
@@ -155,6 +164,10 @@ def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any
     class_weight = "balanced" if config.class_balance == "class_weight" else None
     if model_type == "pls_da":
         return build_pls_da(getattr(config, "pls_components", 2) or 2)
+    if model_type == "pca_lda":
+        return build_pca_lda(getattr(config, "pca_components", 2) or 2)
+    if model_type == "logistic_regression":
+        return build_logistic_regression(getattr(config, "logistic_c", 1.0), config.seed, class_weight)
     if model_type == "random_forest":
         return build_random_forest(
             config.random_forest_n_estimators,

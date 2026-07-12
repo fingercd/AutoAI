@@ -1,6 +1,5 @@
 import json
 
-import numpy as np
 import pytest
 
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
@@ -33,7 +32,14 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
         "cnn_mamba1d",
         "dscarnet",
     }
-    assert TRADITIONAL_MODEL_TYPES == {"pls_da", "svm", "random_forest", "xgboost"}
+    assert TRADITIONAL_MODEL_TYPES == {
+        "pls_da",
+        "pca_lda",
+        "logistic_regression",
+        "svm",
+        "random_forest",
+        "xgboost",
+    }
     assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
 
 
@@ -93,6 +99,63 @@ def test_unfinished_model_builder_raises_exact_error():
 
     with pytest.raises(ModelNotImplementedForVersion, match="pca_mlp"):
         build_deep_model(Config(), input_length=12, class_count=2, sample_count=10)
+
+
+def test_traditional_candidate_grids_are_exact():
+    import backend.app.training as training
+
+    config = training.TrainConfig()
+    y_train = [0, 1] * 50
+
+    pls = training._traditional_candidate_configs(config, "pls_da", 100, y_train)
+    assert {candidate.pls_components for candidate in pls} == {1, 2, 3, 4, 5, 6, 8, 10, 12, 15}
+    assert {candidate.pls_components for candidate in training._traditional_candidate_configs(config, "pls_da", 3, [0, 1, 0, 1])} == {1, 2, 3}
+
+    pca = training._traditional_candidate_configs(config, "pca_lda", 100, y_train)
+    assert {candidate.pca_components for candidate in pca} == {2, 3, 5, 8, 10, 15, 20, 30, 40, 50}
+    assert {candidate.pca_components for candidate in training._traditional_candidate_configs(config, "pca_lda", 3, [0, 1, 0, 1])} == {2, 3}
+
+    logistic = training._traditional_candidate_configs(config, "logistic_regression", 100, y_train)
+    assert {candidate.logistic_c for candidate in logistic} == {0.1, 1.0, 10.0}
+
+    svm = training._traditional_candidate_configs(config, "svm", 100, y_train)
+    assert {candidate.svm_c for candidate in svm} == {0.01, 0.1, 1.0, 10.0, 100.0}
+    assert {candidate.svm_kernel for candidate in svm} == {"linear"}
+
+    random_forest = training._traditional_candidate_configs(config, "random_forest", 100, y_train)
+    assert len(random_forest) == 18
+    assert {candidate.random_forest_n_estimators for candidate in random_forest} == {500}
+    assert {candidate.random_forest_max_depth for candidate in random_forest} == {3, 5, 8}
+    assert {candidate.random_forest_min_samples_leaf for candidate in random_forest} == {1, 2}
+    assert {candidate.random_forest_max_features for candidate in random_forest} == {"sqrt", "log2", 0.1}
+
+    xgboost = training._traditional_candidate_configs(config, "xgboost", 100, y_train)
+    assert len(xgboost) == 12
+    assert {candidate.xgboost_n_estimators for candidate in xgboost} == {100, 300}
+    assert {candidate.xgboost_max_depth for candidate in xgboost} == {2, 3, 5}
+    assert {candidate.xgboost_min_child_weight for candidate in xgboost} == {3, 5}
+    assert {candidate.xgboost_learning_rate for candidate in xgboost} == {0.1}
+    assert {candidate.xgboost_colsample_bytree for candidate in xgboost} == {0.3}
+    assert {candidate.xgboost_subsample for candidate in xgboost} == {0.8}
+    assert {candidate.xgboost_reg_lambda for candidate in xgboost} == {10.0}
+
+
+def test_new_traditional_builders_have_documented_types():
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+
+    from backend.app.models.logistic_regression import build_logistic_regression
+    from backend.app.models.pca_lda import build_pca_lda
+
+    pca_lda = build_pca_lda(5)
+    assert isinstance(pca_lda, Pipeline)
+    assert isinstance(pca_lda.named_steps["lda"], LinearDiscriminantAnalysis)
+    logistic = build_logistic_regression(10.0, 42, "balanced")
+    assert isinstance(logistic, LogisticRegression)
+    assert logistic.C == 10.0
+    assert logistic.random_state == 42
+    assert logistic.class_weight == "balanced"
 
 
 def test_training_writes_architecture_v2_metadata(tmp_path, monkeypatch):

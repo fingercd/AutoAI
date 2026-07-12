@@ -423,10 +423,17 @@ def test_dscarnet_registry_uses_dual_2d_builder():
     assert logits.shape == (2, 2)
 
 
-def test_registry_allows_only_current_ten_classification_models():
+def test_registry_allows_only_current_active_classification_models():
     from backend.app.models.registry import DEEP_MODEL_TYPES, TRADITIONAL_MODEL_TYPES, canonical_model_type
 
-    assert TRADITIONAL_MODEL_TYPES == {"pls_da", "svm", "random_forest", "xgboost"}
+    assert TRADITIONAL_MODEL_TYPES == {
+        "pls_da",
+        "pca_lda",
+        "logistic_regression",
+        "svm",
+        "random_forest",
+        "xgboost",
+    }
     assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
     assert canonical_model_type("PLS-DA") == "pls_da"
     assert canonical_model_type("1D-Transformer") == "transformer1d"
