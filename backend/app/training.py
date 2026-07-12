@@ -1583,7 +1583,7 @@ def _run_legacy_training(
                 splits=splits,
                 label_names=label_names,
                 run_dir=run_dir,
-                sample_count=int(len(y_model)),
+                sample_count=int(len(splits["train"])),
                 cancel_check=check_run_active,
             )
             check_run_active()

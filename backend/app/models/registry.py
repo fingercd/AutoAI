@@ -6,19 +6,20 @@ import numpy as np
 from sklearn.decomposition import PCA
 from torch import nn
 
-from .cnn1d import CNN1D
+from .cnn1d_v2 import CNN1DDocumentV2
+from .cnn_se1d import CNNSE1DDocumentV2
+from .cnn_transformer1d import CNNTransformer1D
 from .dscarnet import dual_dscarnet
-from .inception1d import Inception1D
+from .inception1d_v2 import Inception1DDocumentV2
 from .pls_da import build_pls_da
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
 from .pca_mlp import PCAMLPClassifier
 from .profiles import build_model_profile
 from .random_forest import build_random_forest
-from .resnet1d import ResNet1D
+from .resnet1d_v2 import ResNet1DDocumentV2
 from .svm import build_svm
-from .tcn1d import TCN1D
-from .transformer import Transformer1D
+from .tcn1d_v2 import TCN1DDocumentV2
 from .xgboost import build_xgboost
 
 
@@ -35,9 +36,9 @@ MODEL_ALIASES = {
     "cnn1d": "cnn1d",
     "cnn1d_se": "cnn1d_se",
     "cnn-se": "cnn1d_se",
-    "transformer": "transformer1d",
-    "transformer1d": "transformer1d",
-    "1d-transformer": "transformer1d",
+    "transformer": "cnn_transformer1d",
+    "transformer1d": "cnn_transformer1d",
+    "1d-transformer": "cnn_transformer1d",
     "resnet1d": "resnet1d",
     "1d-resnet": "resnet1d",
     "inception1d": "inception1d",
@@ -89,7 +90,16 @@ TARGET_TRADITIONAL_MODEL_TYPES = {
     "xgboost",
 }
 TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
-DEEP_MODEL_TYPES = {"pca_mlp", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+DEEP_MODEL_TYPES = {
+    "pca_mlp",
+    "cnn1d",
+    "cnn1d_se",
+    "resnet1d",
+    "inception1d",
+    "tcn1d",
+    "cnn_transformer1d",
+    "dscarnet",
+}
 TRADITIONAL_MODEL_TYPES = {
     "pls_da",
     "pca_lda",
@@ -161,16 +171,58 @@ def build_deep_model(
             "dropout": float(profile.dropout),
         }
         return model
+    profile = build_model_profile(
+        model_type,
+        train_sample_count=sample_count,
+        feature_count=input_length,
+    )
+    values = profile.values
     if model_type == "cnn1d":
-        return CNN1D(input_length, class_count, sample_count, config.dropout, config.hidden_size)
-    if model_type == "transformer1d":
-        return Transformer1D(input_length, class_count, config.dropout, max(config.hidden_size, 16), config.transformer_heads)
+        return CNN1DDocumentV2(
+            input_length=input_length,
+            class_count=class_count,
+            sample_count=sample_count,
+            profile=profile,
+        )
+    if model_type == "cnn1d_se":
+        return CNNSE1DDocumentV2(
+            input_length=input_length,
+            class_count=class_count,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "resnet1d":
-        return ResNet1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return ResNet1DDocumentV2(
+            input_length=input_length,
+            class_count=class_count,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "inception1d":
-        return Inception1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return Inception1DDocumentV2(
+            input_length=input_length,
+            class_count=class_count,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "tcn1d":
-        return TCN1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return TCN1DDocumentV2(
+            input_length=input_length,
+            class_count=class_count,
+            sample_count=sample_count,
+            profile=profile,
+        )
+    if model_type == "cnn_transformer1d":
+        return CNNTransformer1D(
+            input_length=input_length,
+            class_count=class_count,
+            dropout=profile.dropout,
+            hidden_size=int(values["d_model"]),
+            transformer_heads=int(values["heads"]),
+            transformer_layers=int(values["layers"]),
+            conv_channels=tuple(int(item) for item in values["conv_channels"]),
+            dim_feedforward=int(values["ffn"]),
+        )
     if model_type == "dscarnet":
         raise ValueError("DSCARNet requires 2D AggMap SAR/CAR inputs; use build_dscarnet_model instead")
     raise ValueError(f"Unsupported model_type: {config.model_type}")

@@ -434,9 +434,18 @@ def test_registry_allows_only_current_active_classification_models():
         "random_forest",
         "xgboost",
     }
-    assert DEEP_MODEL_TYPES == {"pca_mlp", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+    assert DEEP_MODEL_TYPES == {
+        "pca_mlp",
+        "cnn1d",
+        "cnn1d_se",
+        "resnet1d",
+        "inception1d",
+        "tcn1d",
+        "cnn_transformer1d",
+        "dscarnet",
+    }
     assert canonical_model_type("PLS-DA") == "pls_da"
-    assert canonical_model_type("1D-Transformer") == "transformer1d"
+    assert canonical_model_type("1D-Transformer") == "cnn_transformer1d"
     assert canonical_model_type("1D-ResNet") == "resnet1d"
     assert canonical_model_type("1D-Inception") == "inception1d"
     assert canonical_model_type("1D-TCN") == "tcn1d"
@@ -885,7 +894,8 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     )
 
     assert result["status"] == "success"
-    assert result["model_type"] == model_type
+    expected_model_type = "cnn_transformer1d" if model_type == "transformer1d" else model_type
+    assert result["model_type"] == expected_model_type
     assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
     assert result["fold_count"] == 6
     run_dir = tmp_path / result["run_id"]

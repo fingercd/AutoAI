@@ -44,10 +44,11 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
     assert DEEP_MODEL_TYPES == {
         "pca_mlp",
         "cnn1d",
-        "transformer1d",
+        "cnn1d_se",
         "resnet1d",
         "inception1d",
         "tcn1d",
+        "cnn_transformer1d",
         "dscarnet",
     }
 
@@ -104,10 +105,30 @@ def test_unfinished_model_builder_raises_exact_error():
     from backend.app.models.registry import ModelNotImplementedForVersion, build_deep_model
 
     class Config:
-        model_type = "pca_mlp"
+        model_type = "cnn_mamba1d"
 
-    with pytest.raises(ModelNotImplementedForVersion, match="pca_mlp"):
+    with pytest.raises(ModelNotImplementedForVersion, match="cnn_mamba1d"):
         build_deep_model(Config(), input_length=12, class_count=2, sample_count=10)
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    ["cnn1d", "cnn1d_se", "resnet1d", "inception1d", "tcn1d", "cnn_transformer1d"],
+)
+def test_registry_builds_promoted_document_deep_models(model_type):
+    import torch
+
+    from backend.app.models.registry import build_deep_model
+    from backend.app.training import TrainConfig
+
+    model = build_deep_model(
+        TrainConfig(model_type=model_type),
+        input_length=64,
+        class_count=2,
+        sample_count=16,
+    )
+    logits = model(torch.randn(2, 1, 64))
+    assert logits.shape == (2, 2)
 
 
 def test_traditional_candidate_grids_are_exact():

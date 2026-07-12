@@ -455,7 +455,21 @@ def sample_deep_attribution_importance(
     x_samples = x[sample_indices]
     y_samples = y[sample_indices]
     if method == "gradcam_1d":
-        attributions, scores, actual_method = _gradcam_1d_attributions(model, x_samples, y_samples, x.shape[1])
+        try:
+            attributions, scores, actual_method = _gradcam_1d_attributions(model, x_samples, y_samples, x.shape[1])
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "reason": f"Grad-CAM 计算失败: {exc}",
+                "method": "gradcam_1d",
+                "baseline": "deep_attribution",
+                "importance_metric": "gradcam_activation",
+                "window_count": int(x.shape[1]),
+                "top_k": max(1, int(top_k)),
+                "x_axis": _float_list(x_axis_array),
+                "baseline_curve": _float_list(baseline_curve),
+                "samples": [],
+            }
         method = actual_method
     else:
         attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
@@ -1152,8 +1166,11 @@ def _gradcam_1d_attributions(
     y_samples: np.ndarray,
     output_length: int,
 ) -> tuple[np.ndarray, np.ndarray, str]:
+    explicit_target = callable(getattr(model, "gradcam_target_layer", None))
     target = _find_gradcam_target(model)
     if target is None:
+        if explicit_target:
+            raise RuntimeError("模型已声明 gradcam_target_layer，但未返回可用目标层")
         attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
         return attributions, scores, "input_gradient_attribution"
 
@@ -1174,12 +1191,16 @@ def _gradcam_1d_attributions(
         logits = model(inputs)
         activation = captured.get("activation")
         if activation is None or activation.ndim != 3:
+            if explicit_target:
+                raise RuntimeError("Grad-CAM 目标层未产生 Batch×Channel×Length 激活")
             attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
             return attributions, scores, "input_gradient_attribution"
         selected = logits[torch.arange(labels.shape[0], device=device), labels].sum()
         selected.backward()
         gradients = activation.grad
         if gradients is None:
+            if explicit_target:
+                raise RuntimeError("Grad-CAM 目标层未捕获梯度")
             attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
             return attributions, scores, "input_gradient_attribution"
         weights = gradients.mean(dim=2, keepdim=True)
@@ -1192,6 +1213,14 @@ def _gradcam_1d_attributions(
 
 
 def _find_gradcam_target(model: nn.Module) -> nn.Module | None:
+    resolver = getattr(model, "gradcam_target_layer", None)
+    if callable(resolver):
+        target = resolver()
+        if target is None:
+            return None
+        if not isinstance(target, nn.Module):
+            raise TypeError("gradcam_target_layer() 必须返回 torch.nn.Module 或 None")
+        return target
     if hasattr(model, "inception") and isinstance(getattr(model, "inception"), nn.Module):
         return getattr(model, "inception")
     up_blocks = getattr(model, "up_blocks", None)

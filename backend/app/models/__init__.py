@@ -15,6 +15,13 @@ from .registry import (
     model_family,
 )
 from .pca_mlp import PCAMLPClassifier
+from .cnn1d_v2 import CNN1DDocumentV2
+from .cnn_se1d import CNNSE1DDocumentV2
+from .cnn_transformer1d import CNNTransformer1D
+from .cnn_mamba1d import ModelDependencyError, mamba_available
+from .inception1d_v2 import Inception1DDocumentV2
+from .resnet1d_v2 import ResNet1DDocumentV2
+from .tcn1d_v2 import TCN1DDocumentV2
 
 __all__ = [
     "ARCHITECTURE_VERSION",
@@ -29,6 +36,14 @@ __all__ = [
     "build_logistic_regression",
     "build_pca_lda",
     "PCAMLPClassifier",
+    "CNN1DDocumentV2",
+    "CNNSE1DDocumentV2",
+    "CNNTransformer1D",
+    "ModelDependencyError",
+    "mamba_available",
+    "Inception1DDocumentV2",
+    "ResNet1DDocumentV2",
+    "TCN1DDocumentV2",
     "build_traditional_model",
     "canonical_model_type",
     "model_family",
