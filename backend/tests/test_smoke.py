@@ -618,6 +618,11 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
         assert fold["test_repeat_index"] not in fold["train_repeat_indices"]
         assert fold["test_repeat_index"] not in fold["valid_repeat_indices"]
         assert set(fold["train_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
+        assert set(fold["test_repeat_indices"]).isdisjoint(fold["train_repeat_indices"])
+        assert set(fold["test_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
+        assert len(fold["splits"]["train"]) == 8
+        assert len(fold["splits"]["valid"]) == 2
+        assert len(fold["splits"]["test"]) == 2
 
 
 def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
@@ -666,8 +671,8 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
             "model_type": "pls_da",
             "test_data_path": str(test_source),
             "split_train": 8,
-            "split_valid": 1,
-            "split_test": 1,
+            "split_valid": 2,
+            "split_test": 0,
             "feature_selection_enabled": False,
         },
     )
@@ -678,9 +683,13 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert result["test_sample_count"] == 8
     assert result["fold_count"] == 1
     assert not split_payload[0]["splits"]["test"]
-    assert len(split_payload[0]["splits"]["train"]) == 18
-    assert len(split_payload[0]["splits"]["valid"]) == 2
+    assert len(split_payload[0]["splits"]["train"]) == 16
+    assert len(split_payload[0]["splits"]["valid"]) == 4
     assert len(split_payload[0]["external_test_indices"]) == 8
+    train_groups = set(split_payload[0]["train_repeat_indices"])
+    valid_groups = set(split_payload[0]["valid_repeat_indices"])
+    assert train_groups.isdisjoint(valid_groups)
+    assert set(split_payload[0]["test_repeat_indices"]) == {"1", "2", "3", "4"}
     assert set(predictions["dataset"]) == {"external_test"}
 
 
@@ -777,9 +786,9 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
                 "model_type": "svm",
                 "normalization": "none",
                 "split_mode": "leave_one_repeat_index_cv",
-                "split_train": 6,
+                "split_train": 8,
                 "split_valid": 2,
-                "split_test": 2,
+                "split_test": 0,
             "feature_window_count": 4,
             "feature_top_k": 2,
             "feature_n_repeats": 2,

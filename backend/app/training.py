@@ -15,6 +15,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .classification_policy import EvaluationPolicy, resolve_evaluation_policy
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
     aggregate_attribution_sanity,
@@ -119,14 +120,20 @@ def _raise_if_run_replaced(status_file: Path) -> None:
     raise TrainingRunReplaced(f"训练任务 {status.get('run_id') or status_file.parent.name} 已被新任务 {replaced_by} 替换")
 
 
-def _validate_split_ratio_config(config: TrainConfig) -> None:
-    ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
+def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
+    ratios = (int(policy.split_train), int(policy.split_valid), int(policy.split_test))
     if any(value < 0 for value in ratios):
         raise ValueError("划分比例必须是非负整数")
-    if sum(ratios) != 10:
-        raise ValueError("训练、验证、测试比例相加必须等于 10")
-    if ratios[0] <= 0:
-        raise ValueError("训练集比例必须大于 0")
+    if policy.strategy == "external_test_holdout":
+        if ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
+            raise ValueError("独立测试集模式要求主数据训练/验证比例相加必须等于 10，且内部测试比例为 0")
+        return
+    if policy.strategy == "leave_one_repeat_index_cv":
+        if not policy.cv_allowed or ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
+            raise ValueError("留一交叉验证要求训练/验证比例相加必须等于 10，且内部测试比例为 0")
+        return
+    if ratios[0] <= 0 or ratios[1] <= 0 or ratios[2] <= 0 or sum(ratios) != 10:
+        raise ValueError("训练、验证、测试比例相加必须等于 10，且三项均大于 0")
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -1171,12 +1178,23 @@ def _run_legacy_training(
     repository: RunRepository | None = None,
     record: RunRecord | None = None,
 ) -> dict[str, Any]:
-    test_data_path = (config_data or {}).get("test_data_path")
-    config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
-    config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
-    _validate_split_ratio_config(config)
+    raw_config = dict(config_data or {})
+    test_data_path = raw_config.get("test_data_path")
+    policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
+    config_input = {key: value for key, value in raw_config.items() if key in TrainConfig().__dict__}
+    config = TrainConfig(
+        **{
+            **TrainConfig().__dict__,
+            **config_input,
+            "split_mode": policy.strategy,
+            "split_train": policy.split_train,
+            "split_valid": policy.split_valid,
+            "split_test": policy.split_test,
+        }
+    )
+    _validate_split_ratio_config(policy)
     model_type = canonical_model_type(config.model_type)
-    evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
+    evaluation_strategy = policy.strategy
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1219,7 +1237,7 @@ def _run_legacy_training(
         test_sample_count = int(len(test_y))
         x_model_raw = np.vstack([x_raw, test_x_raw])
         y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, repeat_index, _clone_config(config, split_test=0))
+        internal_splits = _split_indices(y, repeat_index, config)
         _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
         external_indices = list(range(len(y), len(y_model)))
         folds = [
