@@ -34,6 +34,44 @@ PROFILE_MODEL_TYPES = {
     "dscarnet",
 }
 
+_CNN_CHANNELS_BY_SAMPLE_BAND = {
+    "small": [8, 16, 32],
+    "medium": [16, 32, 64],
+    "large": [32, 64, 128],
+}
+_CNN_KERNELS_BY_FEATURE_BAND = {
+    "short": [7, 5, 3],
+    "medium": [9, 5, 3],
+    "long": [9, 7, 5],
+}
+_CNN_POOLS_BY_FEATURE_BAND = {
+    "short": [2, 2, 2],
+    "medium": [4, 2, 2],
+    "long": [4, 2, 2],
+}
+_RESNET_L_VALUES = {
+    "short": {"stem_kernel": 7, "stem_pool": 2, "block_kernel": 3, "block_pools": [2, 2, 2]},
+    "medium": {"stem_kernel": 9, "stem_pool": 4, "block_kernel": 3, "block_pools": [2, 2, 2]},
+    "long": {"stem_kernel": 9, "stem_pool": 4, "block_kernel": 5, "block_pools": [2, 2, 2]},
+}
+_INCEPTION_BRANCH_CHANNELS_BY_SAMPLE_BAND = {"small": 8, "medium": 16, "large": 32}
+_INCEPTION_L_VALUES = {
+    "short": {"stem_kernel": 7, "stem_pool": 2, "branch_kernels": [1, 3, 5, 7]},
+    "medium": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": [3, 5, 7, 9]},
+    "long": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": [5, 7, 9, 11]},
+}
+_TCN_CHANNELS_BY_SAMPLE_BAND = {"small": 16, "medium": 32, "large": 64}
+_TCN_L_VALUES = {
+    "short": {"stem_kernel": 7, "stem_pool": 2, "dilations": [1, 2, 4]},
+    "medium": {"stem_kernel": 9, "stem_pool": 4, "dilations": [1, 2, 4, 8]},
+    "long": {"stem_kernel": 9, "stem_pool": 4, "dilations": [1, 2, 4, 8]},
+}
+_LONG_RANGE_VALUES = {
+    "small": {"d_model": 32, "heads": 4, "layers": 2, "ffn": 64, "conv_channels": [8, 16, 32], "d_state": 16},
+    "medium": {"d_model": 64, "heads": 4, "layers": 3, "ffn": 128, "conv_channels": [16, 32, 64], "d_state": 16},
+    "large": {"d_model": 128, "heads": 8, "layers": 4, "ffn": 256, "conv_channels": [32, 64, 128], "d_state": 16},
+}
+
 
 def sample_band(n: int) -> str:
     return "small" if int(n) <= 100 else ("medium" if int(n) <= 300 else "large")
@@ -54,6 +92,7 @@ def build_model_profile(
     feature_count: int,
 ) -> ModelProfile:
     model_key = str(model_type or "").strip().lower()
+    model_key = {"transformer": "cnn_transformer1d", "transformer1d": "cnn_transformer1d"}.get(model_key, model_key)
     if model_key not in PROFILE_MODEL_TYPES:
         raise ValueError(f"未知模型，无法构建 profile: {model_type}")
     if int(train_sample_count) <= 1:
@@ -79,6 +118,50 @@ def build_model_profile(
             {
                 "pca_components": max(1, min(requested_components, int(train_sample_count) - 1, int(feature_count))),
                 "hidden_sizes": hidden_sizes,
+            }
+        )
+    elif model_key in {"cnn1d", "cnn1d_se"}:
+        values.update(
+            {
+                "channels": list(_CNN_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band]),
+                "kernels": list(_CNN_KERNELS_BY_FEATURE_BAND[resolved_feature_band]),
+                "pools": list(_CNN_POOLS_BY_FEATURE_BAND[resolved_feature_band]),
+            }
+        )
+    elif model_key == "resnet1d":
+        values.update(
+            {
+                "channels": list(_CNN_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band]),
+                **_RESNET_L_VALUES[resolved_feature_band],
+            }
+        )
+    elif model_key == "inception1d":
+        values.update(
+            {
+                "branch_channels": _INCEPTION_BRANCH_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band],
+                **_INCEPTION_L_VALUES[resolved_feature_band],
+            }
+        )
+    elif model_key == "tcn1d":
+        values.update(
+            {
+                "channels": _TCN_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band],
+                "kernel": 3,
+                **_TCN_L_VALUES[resolved_feature_band],
+            }
+        )
+    elif model_key in {"cnn_transformer1d", "cnn_mamba1d"}:
+        long_range = _LONG_RANGE_VALUES[resolved_sample_band]
+        values.update(
+            {
+                "d_model": long_range["d_model"],
+                "heads": long_range["heads"],
+                "layers": long_range["layers"],
+                "ffn": long_range["ffn"],
+                "conv_channels": list(long_range["conv_channels"]),
+                "d_state": long_range["d_state"],
+                "d_conv": 4,
+                "expand": 2,
             }
         )
     return ModelProfile(

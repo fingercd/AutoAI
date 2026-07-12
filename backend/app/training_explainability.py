@@ -22,7 +22,7 @@ EXPLAINABILITY_METHOD_BY_MODEL = {
 
 def explainability_method(model_type: str, *, dscarnet_mode: str = "dual") -> str:
     model_key = str(model_type or "").strip().lower()
-    model_key = {"transformer": "transformer1d"}.get(model_key, model_key)
+    model_key = {"transformer": "cnn_transformer1d", "transformer1d": "cnn_transformer1d"}.get(model_key, model_key)
     if model_key == "dscarnet":
         mode = str(dscarnet_mode or "dual").strip().lower()
         methods = {

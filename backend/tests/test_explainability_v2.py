@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from torch import nn
 
 
 @pytest.mark.parametrize(
@@ -83,3 +84,61 @@ def test_pca_mlp_attribution_keeps_original_feature_axis():
     assert result["method"] == "input_gradient_attribution"
     assert result["importance_metric"] == "absolute_gradient_x_input"
     assert all(len(sample["windows"]) == 6 for sample in result["samples"])
+
+
+def test_document_cnn_uses_explicit_gradcam_target_and_original_axis():
+    import torch
+
+    from backend.app.feature_selection import sample_deep_attribution_importance
+    from backend.app.models.cnn1d_v2 import CNN1DDocumentV2
+
+    model = CNN1DDocumentV2(input_length=32, class_count=2, sample_count=16)
+    x = np.random.default_rng(42).normal(size=(4, 32)).astype(np.float32)
+    y = np.asarray([0, 1, 0, 1], dtype=np.int64)
+    result = sample_deep_attribution_importance(
+        model,
+        x,
+        y,
+        x_axis=np.arange(32, dtype=np.float32),
+        splits={"train": [0, 1], "valid": [], "test": [2, 3]},
+        label_names=["A", "B"],
+        model_type="cnn1d",
+        top_k=2,
+    )
+
+    assert result["status"] == "ready"
+    assert result["method"] == "gradcam_1d"
+    assert all(len(sample["windows"]) == 32 for sample in result["samples"])
+    assert all(sample["sanity_checks"] for sample in result["samples"])
+    assert torch.isfinite(torch.as_tensor(result["samples"][0]["curve"])).all()
+
+
+def test_document_cnn_gradcam_failure_is_explicit():
+    from backend.app.feature_selection import sample_deep_attribution_importance
+
+    class BrokenGradCAM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.target = nn.Linear(32, 2)
+
+        def forward(self, x):
+            return self.target(x.squeeze(1))
+
+        def gradcam_target_layer(self):
+            return self.target
+
+    x = np.zeros((3, 32), dtype=np.float32)
+    y = np.asarray([0, 1, 0], dtype=np.int64)
+    result = sample_deep_attribution_importance(
+        BrokenGradCAM(),
+        x,
+        y,
+        x_axis=np.arange(32, dtype=np.float32),
+        splits={"train": [0], "valid": [], "test": [1, 2]},
+        label_names=["A", "B"],
+        model_type="cnn1d",
+    )
+
+    assert result["status"] == "failed"
+    assert result["method"] == "gradcam_1d"
+    assert "Grad-CAM" in result["reason"]
