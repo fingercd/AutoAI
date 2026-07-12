@@ -644,6 +644,7 @@
               <div id="runStatus" class="status">尚未开始</div>
               <div id="trainingProgress"></div>
               <div id="metrics" style="margin-top:14px"></div>
+              <div id="trainingAudit"></div>
               <div id="trainingCharts"></div>
               <div id="featureImportance"></div>
               <div id="confusionMatrix"></div>
@@ -1322,6 +1323,112 @@
         return "-";
       }
 
+      function trainingAuditFor(run) {
+        const directAudit = run?.training_audit;
+        if (directAudit && typeof directAudit === "object") return directAudit;
+        const nestedStatus = run?.status;
+        return nestedStatus && typeof nestedStatus === "object" && nestedStatus.training_audit && typeof nestedStatus.training_audit === "object"
+          ? nestedStatus.training_audit
+          : {};
+      }
+
+      function isExternalTestHoldout(run) {
+        const audit = trainingAuditFor(run);
+        const strategy = audit.evaluation_strategy || run?.evaluation_strategy || run?.config?.split_mode;
+        return strategy === "external_test_holdout";
+      }
+
+      function formatAuditNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? String(number) : "-";
+      }
+
+      function formatAuditParams(params) {
+        if (!params || typeof params !== "object") return "-";
+        try {
+          return escapeHtml(JSON.stringify(params));
+        } catch (_) {
+          return "-";
+        }
+      }
+
+      function renderTrainingAudit(run) {
+        const target = $("trainingAudit");
+        const audit = trainingAuditFor(run);
+        if (!target || !audit || typeof audit !== "object") return;
+        const isExternal = isExternalTestHoldout(run);
+        const sections = [];
+        const traditional = audit.traditional;
+        const deep = audit.deep_training;
+        const explainability = audit.explainability;
+
+        if (traditional && typeof traditional === "object") {
+          const search = traditional.hyperparameter_search_csv || {};
+          const searchArtifact = String(search.artifact || "hyperparameter_search.csv");
+          const searchHint = search.available && run.run_id
+            ? `<a class="secondary" href="/api/training/runs/${encodeURIComponent(run.run_id)}/artifact/${encodeURIComponent(searchArtifact)}">下载参数搜索 CSV</a>`
+            : `<span>参数搜索 CSV：${escapeHtml(searchArtifact)}（当前 Run 未提供下载）</span>`;
+          if (isExternal) {
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>传统模型审计</h3>
+                <div class="metrics">
+                  <div class="metric">验证 Balanced Accuracy<strong>${formatAuditNumber(traditional.valid_balanced_accuracy)}</strong></div>
+                  <div class="metric wide">最佳参数<strong style="font-size:12px;word-break:break-all">${formatAuditParams(traditional.best_params)}</strong></div>
+                </div>
+                <div class="actions">${searchHint}</div>
+              </div>
+            `);
+          } else {
+            const selections = Array.isArray(traditional.best_params_by_fold) ? traditional.best_params_by_fold : [];
+            const rows = selections.map((entry) => `
+              <tr>
+                <td>${escapeHtml(String(entry.fold_index ?? "-"))}</td>
+                <td>${formatAuditNumber(entry.valid_balanced_accuracy)}</td>
+                <td><code>${formatAuditParams(entry.params)}</code></td>
+              </tr>
+            `).join("");
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>传统模型参数审计</h3>
+                ${rows ? `<table><thead><tr><th>折</th><th>验证 Balanced Accuracy</th><th>最佳参数</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty-state">未提供参数选择明细。</p>'}
+                <div class="actions">${searchHint}</div>
+              </div>
+            `);
+          }
+        }
+
+        if (deep && typeof deep === "object") {
+          sections.push(`
+            <div class="chart-card" style="margin-top:14px">
+              <h3>深度训练审计</h3>
+              <div class="metrics">
+                <div class="metric">Best valid loss<strong>${formatAuditNumber(deep.best_valid_loss)}</strong></div>
+                <div class="metric">实际 Epoch<strong>${formatAuditNumber(deep.actual_epochs)}</strong></div>
+                <div class="metric">最低学习率<strong>${formatAuditNumber(deep.min_learning_rate)}</strong></div>
+              </div>
+            </div>
+          `);
+        }
+
+        if (explainability && typeof explainability === "object") {
+          const hasExplainability = ["declared_method", "artifact_method", "importance_metric"].some((key) => explainability[key] != null);
+          if (hasExplainability) {
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>可解释性审计</h3>
+                <div class="metrics">
+                  <div class="metric">声明方法<strong>${escapeHtml(String(explainability.declared_method ?? "-"))}</strong></div>
+                  <div class="metric">产物方法<strong>${escapeHtml(String(explainability.artifact_method ?? "-"))}</strong></div>
+                  <div class="metric">重要性指标<strong>${escapeHtml(String(explainability.importance_metric ?? "-"))}</strong></div>
+                </div>
+              </div>
+            `);
+          }
+        }
+        target.innerHTML = sections.join("");
+      }
+
       function inferValidMetricsFromHistory(history) {
         const latestByFold = new Map();
         (history || []).forEach((row) => {
@@ -1355,6 +1462,7 @@
           </div>
         `;
         $("metrics").innerHTML = "";
+        $("trainingAudit").innerHTML = "";
         $("trainingCharts").innerHTML = "";
         $("featureImportance").innerHTML = "";
         $("confusionMatrix").innerHTML = "";
@@ -2049,6 +2157,7 @@
             </div>
           `;
           $("trainingCharts").innerHTML = "";
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           $("confusionMatrix").innerHTML = "";
           $("downloads").innerHTML = "";
@@ -2058,25 +2167,33 @@
         if (run.status === "pending" || run.status === "running") {
           const totalTargetEpochs = runTotalTargetEpochs(run);
           const foldProgress = runFoldProgressText(run);
+          const isExternal = isExternalTestHoldout(run);
+          const progressMarkup = isExternal
+            ? `<div class="metric">评估模式<strong>独立测试集最终评估</strong></div>`
+            : `
+                <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
+                <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
+              `;
+          const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
           $("trainingProgress").innerHTML = `
             <div class="training-state">
               <div class="spinner"></div>
               <div>
                 <strong>模型正在训练</strong>
-                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · 折进度 ${foldProgress} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · ${progressText} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
               </div>
             </div>
           `;
           $("metrics").innerHTML = `
             <div class="metrics">
               <div class="metric">当前状态<strong>${statusText}</strong></div>
-              <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
-              <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
+              ${progressMarkup}
               <div class="metric">目标 Epoch<strong>${totalTargetEpochs}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
           `;
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           return;
         }
@@ -2100,6 +2217,7 @@
               <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
             </div>
           `;
+          renderTrainingAudit(run);
           if (run.model_family === "traditional_ml") {
             $("trainingCharts").innerHTML = "";
           } else {
@@ -2130,6 +2248,7 @@
           clearInterval(poller);
           $("trainingProgress").innerHTML = "";
           $("trainingCharts").innerHTML = "";
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           $("confusionMatrix").innerHTML = "";
           $("downloads").innerHTML = "";
