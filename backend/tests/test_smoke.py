@@ -1268,27 +1268,24 @@ def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
 
 
 @pytest.mark.parametrize("path", ["/ui", "/ui/workbench", "/ui/wizard", "/ui/dashboard", "/ui/console"])
-def test_ui_variant_routes(path):
+def test_obsolete_ui_variant_routes_are_not_exposed(path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
     client = TestClient(app)
     response = client.get(path)
 
-    assert response.status_code == 200
-    assert "AutoAI" in response.text
+    assert response.status_code == 404
 
 
-def test_ui_variant_assets_are_served():
+def test_obsolete_ui_variant_assets_are_not_served():
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
     client = TestClient(app)
 
-    assert client.get("/static/autoai-variants.css").status_code == 200
-    script_response = client.get("/static/autoai-variants.js")
-    assert script_response.status_code == 200
-    assert "initAutoAIVariant" in script_response.text
+    assert client.get("/static/autoai-variants.css").status_code == 404
+    assert client.get("/static/autoai-variants.js").status_code == 404
 
 
 def test_main_ui_prefers_sample_feature_importance_panel():
