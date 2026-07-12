@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from backend.app.runs.status_projection import build_training_status_projection
+from backend.app.runs.contracts import RunRecord
+from backend.app.runs.status_projection import build_training_status_projection, project_status
 
 
 def _write_json(run_dir: Path, name: str, payload: dict) -> None:
@@ -152,3 +153,56 @@ def test_external_projection_never_exposes_cv_or_fold_fields_and_legacy_runs_are
     legacy_projection = build_training_status_projection(tmp_path / "missing")
     assert legacy_projection["model_type"] is None
     assert legacy_projection["explainability"] == {}
+
+
+def test_project_status_attaches_audit_without_reading_its_previous_status(tmp_path: Path) -> None:
+    config = {"evaluation_strategy": "external_test_holdout", "model_type": "svm"}
+    queued = RunRecord(
+        run_id="audit-run",
+        state="queued",
+        version=1,
+        dataset_id=None,
+        legacy_data_path=None,
+        config=config,
+    )
+
+    queued_payload = project_status(tmp_path, queued)
+
+    assert queued_payload["training_audit"]["evaluation_strategy"] == "external_test_holdout"
+    assert queued_payload["training_audit"]["explainability"] == {}
+
+    _write_json(tmp_path, "model_metadata.json", {"model_family": "traditional_ml"})
+    _write_json(
+        tmp_path,
+        "cv_metrics.json",
+        {
+            "folds": [
+                {
+                    "fold_index": 0,
+                    "best_params": {"svm_c": 1.0},
+                    "selection_metric": "balanced_accuracy",
+                    "selection_score": 0.88,
+                }
+            ]
+        },
+    )
+    _write_json(tmp_path, "status.json", {"model_family": "deep_learning", "history": [{"best_valid_loss": 0.1}]})
+    succeeded = RunRecord(
+        run_id="audit-run",
+        state="succeeded",
+        version=2,
+        dataset_id=None,
+        legacy_data_path=None,
+        config=config,
+    )
+
+    payload = project_status(tmp_path, succeeded)
+
+    assert payload["training_audit"]["traditional"] == {
+        "hyperparameter_search_csv": {"artifact": "hyperparameter_search.csv", "available": False},
+        "best_params": {"svm_c": 1.0},
+        "valid_balanced_accuracy": 0.88,
+    }
+    assert "deep_training" not in payload["training_audit"]
+    assert "fold" not in json.dumps(payload["training_audit"]).lower()
+    assert json.loads((tmp_path / "status.json").read_text(encoding="utf-8")) == payload
