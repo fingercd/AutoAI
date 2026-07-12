@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pytest
 
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
@@ -156,6 +157,51 @@ def test_new_traditional_builders_have_documented_types():
     assert logistic.C == 10.0
     assert logistic.random_state == 42
     assert logistic.class_weight == "balanced"
+
+
+@pytest.mark.parametrize(
+    ("sample_count", "expected_components", "expected_hidden", "expected_dropout"),
+    [
+        (100, 32, [32, 16], 0.5),
+        (101, 64, [64, 32], 0.4),
+        (301, 128, [128, 64], 0.3),
+    ],
+)
+def test_pca_mlp_profile_values_follow_document(sample_count, expected_components, expected_hidden, expected_dropout):
+    from backend.app.models.profiles import build_model_profile
+
+    profile = build_model_profile(
+        "pca_mlp",
+        train_sample_count=sample_count,
+        feature_count=500,
+    )
+    assert profile.values["pca_components"] == min(expected_components, sample_count - 1, 500)
+    assert profile.values["hidden_sizes"] == expected_hidden
+    assert profile.dropout == expected_dropout
+
+
+def test_pca_mlp_builder_fits_pca_on_train_rows_and_registers_original_axis_buffers():
+    import torch
+
+    from backend.app.models.registry import build_deep_model
+    from backend.app.training import TrainConfig
+
+    train_x = np.arange(4 * 6, dtype=np.float32).reshape(4, 6)
+    model = build_deep_model(
+        TrainConfig(model_type="pca_mlp"),
+        input_length=6,
+        class_count=2,
+        sample_count=4,
+        x_train=train_x,
+    )
+    assert "pca_mean" in dict(model.named_buffers())
+    assert "pca_components" in dict(model.named_buffers())
+    assert model.pca_components.shape == (3, 6)
+    base_values = torch.tensor(train_x[:2], requires_grad=True)
+    values = base_values.unsqueeze(1)
+    model(values).sum().backward()
+    assert base_values.grad is not None
+    assert base_values.grad.shape == base_values.shape
 
 
 def test_training_writes_architecture_v2_metadata(tmp_path, monkeypatch):
