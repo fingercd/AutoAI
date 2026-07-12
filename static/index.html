@@ -513,18 +513,12 @@
             <div class="panel">
               <h2>训练配置</h2>
               <label>模型架构</label>
-              <select id="modelType">
-                <option value="pls_da">PLS-DA</option>
-                <option value="svm">SVM</option>
-                <option value="random_forest">Random Forest</option>
-                <option value="xgboost">XGBoost</option>
-                <option value="cnn1d">1D-CNN</option>
-                <option value="transformer1d">1D-Transformer</option>
-                <option value="resnet1d">1D-ResNet</option>
-                <option value="inception1d">1D-Inception</option>
-                <option value="tcn1d">1D-TCN</option>
-                <option value="dscarnet">DSCARNet</option>
+              <select id="modelType" aria-describedby="modelCatalogHint" disabled>
+                <option value="">正在加载模型目录…</option>
               </select>
+              <p id="modelCatalogHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                正在读取当前环境可用的分类模型。
+              </p>
               <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
                 <label id="customSplitLabel">训练 / 验证 / 测试比例（总和为 10）</label>
@@ -853,6 +847,7 @@
       let lastPreprocessCurve = null;
       let lastPreprocessCanvasId = "preprocessCurveCanvas";
       let lastPreprocessKind = "raman";
+      let modelCatalogById = new Map();
 
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (value) => String(value ?? "")
@@ -865,6 +860,112 @@
       const api = (url, options = {}) => window.AutoAIRequest(url, options);
       const createRun = (...args) => window.AutoAITrainingStore.createRun(...args);
       const fetchRun = (...args) => window.AutoAITrainingStore.pollRun(...args);
+
+      const MODEL_CATALOG_GROUPS = [
+        { id: "traditional", label: "传统模型" },
+        { id: "basic_deep", label: "基础深度模型" },
+        { id: "convolutional", label: "卷积改进模型" },
+        { id: "long_range", label: "长距离模型" },
+        { id: "two_dimensional_mapping", label: "二维映射模型" },
+      ];
+
+      const MODEL_FAMILY_GROUP_ALIASES = {
+        traditional: "traditional",
+        traditional_ml: "traditional",
+        basic_deep: "basic_deep",
+        basic_deep_learning: "basic_deep",
+        convolutional: "convolutional",
+        convolutional_improvement: "convolutional",
+        long_range: "long_range",
+        long_distance: "long_range",
+        two_dimensional_mapping: "two_dimensional_mapping",
+        mapping_2d: "two_dimensional_mapping",
+      };
+
+      function modelCatalogGroupId(family) {
+        const normalized = String(family || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s-]+/g, "_");
+        return MODEL_FAMILY_GROUP_ALIASES[normalized] || "basic_deep";
+      }
+
+      function modelCatalogItem(modelType = $("modelType").value) {
+        return modelCatalogById.get(modelType) || null;
+      }
+
+      function renderModelCatalog(models, preferredModelId = $("modelType").value) {
+        const select = $("modelType");
+        const entries = models.filter((model) => typeof model?.id === "string" && model.id.trim());
+        if (!entries.length) throw new Error("模型目录未返回可渲染的模型");
+
+        const grouped = new Map(MODEL_CATALOG_GROUPS.map((group) => [group.id, []]));
+        entries.forEach((model) => grouped.get(modelCatalogGroupId(model.family)).push(model));
+        modelCatalogById = new Map(entries.map((model) => [model.id, model]));
+        select.replaceChildren();
+
+        const unavailableMessages = [];
+        MODEL_CATALOG_GROUPS.forEach((group) => {
+          const groupModels = grouped.get(group.id);
+          if (!groupModels.length) return;
+          const optgroup = document.createElement("optgroup");
+          optgroup.label = group.label;
+          groupModels.forEach((model) => {
+            const available = model.available !== false;
+            const reason = String(model.unavailable_reason || "当前环境不满足运行条件");
+            const option = document.createElement("option");
+            option.value = model.id;
+            option.disabled = !available;
+            option.textContent = available
+              ? String(model.display_name || model.id)
+              : `${String(model.display_name || model.id)}（不可用：${reason}）`;
+            option.title = available ? String(model.explainability_method || "") : reason;
+            optgroup.append(option);
+            if (!available) unavailableMessages.push(`${String(model.display_name || model.id)}：${reason}`);
+          });
+          select.append(optgroup);
+        });
+
+        const preferred = modelCatalogItem(preferredModelId);
+        const firstAvailable = entries.find((model) => model.available !== false);
+        const selected = preferred && preferred.available !== false ? preferred : firstAvailable || entries[0];
+        select.value = selected.id;
+        select.disabled = !firstAvailable;
+        $("modelCatalogHint").textContent = unavailableMessages.length
+          ? `当前不可用模型：${unavailableMessages.join("；")}`
+          : "模型目录已加载；模型按文档分类分组显示。";
+        updateModelOptionVisibility();
+      }
+
+      function renderModelCatalogFallback(error) {
+        const select = $("modelType");
+        const reason = error?.message || "无法连接模型目录";
+        if (modelCatalogById.size && select.options.length) {
+          $("modelCatalogHint").textContent = `模型目录刷新失败，继续使用已加载的目录：${reason}`;
+          return;
+        }
+        select.replaceChildren();
+        const option = document.createElement("option");
+        option.value = "";
+        option.disabled = true;
+        option.textContent = `模型目录暂不可用：${reason}`;
+        select.append(option);
+        select.disabled = true;
+        $("modelCatalogHint").textContent = "模型目录加载失败，未改变现有训练 API 或数据划分设置。";
+        updateModelOptionVisibility();
+      }
+
+      async function loadModelCatalog() {
+        try {
+          const payload = await api("/api/models");
+          const models = Array.isArray(payload) ? payload : payload?.models;
+          if (!Array.isArray(models)) throw new Error("模型目录响应格式无效");
+          renderModelCatalog(models);
+        } catch (error) {
+          renderModelCatalogFallback(error);
+          throw error;
+        }
+      }
 
       function setupHiDpiCanvas(canvas) {
         const rect = canvas.getBoundingClientRect();
@@ -1105,7 +1206,7 @@
       }
 
       function isTraditionalModel(modelType = $("modelType").value) {
-        return ["pls_da", "random_forest", "svm", "xgboost"].includes(modelType);
+        return modelCatalogGroupId(modelCatalogItem(modelType)?.family) === "traditional";
       }
 
       function usesFeatureWindowCount(modelType = $("modelType").value) {
@@ -2311,6 +2412,7 @@
       });
 
       window.addEventListener("load", () => loadHealth());
+      loadModelCatalog().catch(() => undefined);
       updateModelOptionVisibility();
       updateSplitOptionVisibility();
       updatePreprocessRangeMode("raman");
