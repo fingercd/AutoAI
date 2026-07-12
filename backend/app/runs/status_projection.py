@@ -36,6 +36,12 @@ def project_status(run_dir: Path, record: RunRecord, **fields: Any) -> dict[str,
         'dataset_id': record.dataset_id,
         **fields,
     }
+    payload["training_audit"] = build_training_status_projection(
+        run_dir,
+        config=record.config,
+        status=payload,
+        read_status_file=False,
+    )
     _atomic_json_write(run_dir / 'status.json', payload)
     return payload
 
@@ -51,8 +57,13 @@ def _read_json_mapping(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _merged_file_mapping(path: Path, override: Mapping[str, Any] | None) -> dict[str, Any]:
-    payload = _read_json_mapping(path)
+def _merged_file_mapping(
+    path: Path,
+    override: Mapping[str, Any] | None,
+    *,
+    read_file: bool = True,
+) -> dict[str, Any]:
+    payload = _read_json_mapping(path) if read_file else {}
     payload.update(_mapping(override))
     return payload
 
@@ -186,6 +197,7 @@ def build_training_status_projection(
     config: Mapping[str, Any] | None = None,
     status: Mapping[str, Any] | None = None,
     model_metadata: Mapping[str, Any] | None = None,
+    read_status_file: bool = True,
 ) -> dict[str, Any]:
     """Return a read-only, UI-ready audit summary for a completed or legacy Run.
 
@@ -196,7 +208,11 @@ def build_training_status_projection(
 
     run_path = Path(run_dir)
     config_payload = _merged_file_mapping(run_path / "config.json", config)
-    status_payload = _merged_file_mapping(run_path / "status.json", status)
+    status_payload = _merged_file_mapping(
+        run_path / "status.json",
+        status,
+        read_file=read_status_file,
+    )
     metadata_payload = _merged_file_mapping(run_path / "model_metadata.json", model_metadata)
 
     evaluation_strategy = _first_present(
