@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -91,6 +91,16 @@ class TrainConfig:
     feature_top_k: int = 5
     feature_n_repeats: int = 5
     feature_eval_split: str = "valid"
+
+
+@dataclass
+class TraditionalSelection:
+    config: TrainConfig
+    valid_balanced_accuracy: float
+    valid_macro_f1: float
+    search_rows: list[dict[str, Any]]
+    model: Any
+    valid_eval: dict[str, Any]
 
 
 def _read_status_file(status_file: Path) -> dict[str, Any]:
@@ -309,6 +319,7 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -366,6 +377,7 @@ def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indice
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -806,6 +818,7 @@ def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, labe
     )
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)),
         "macro_precision": float(precision_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
@@ -815,7 +828,7 @@ def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, labe
     }
 
 
-METRIC_SCALAR_KEYS = ("accuracy", "macro_f1", "weighted_f1", "macro_precision", "macro_recall")
+METRIC_SCALAR_KEYS = ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1", "macro_precision", "macro_recall")
 
 
 def _metrics_from_eval(eval_payload: dict[str, Any], label_names: list[str]) -> dict[str, Any]:
@@ -900,6 +913,92 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
     return [config]
 
 
+def _traditional_params(config: TrainConfig) -> dict[str, Any]:
+    return {
+        "pls_components": config.pls_components,
+        "svm_kernel": config.svm_kernel,
+        "svm_c": config.svm_c,
+        "svm_gamma": config.svm_gamma,
+        "random_forest_n_estimators": config.random_forest_n_estimators,
+        "random_forest_max_depth": config.random_forest_max_depth,
+        "random_forest_min_samples_leaf": config.random_forest_min_samples_leaf,
+        "random_forest_max_features": config.random_forest_max_features,
+        "xgboost_n_estimators": config.xgboost_n_estimators,
+        "xgboost_max_depth": config.xgboost_max_depth,
+        "xgboost_learning_rate": config.xgboost_learning_rate,
+        "xgboost_subsample": config.xgboost_subsample,
+        "xgboost_colsample_bytree": config.xgboost_colsample_bytree,
+        "xgboost_min_child_weight": config.xgboost_min_child_weight,
+        "xgboost_reg_lambda": config.xgboost_reg_lambda,
+        "xgboost_gamma": config.xgboost_gamma,
+    }
+
+
+def _select_traditional_config(
+    config: TrainConfig,
+    model_type: str,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    label_names: list[str],
+) -> TraditionalSelection:
+    best_model: Any | None = None
+    best_config = config
+    best_eval: dict[str, Any] | None = None
+    best_balanced_accuracy: float | None = None
+    search_rows: list[dict[str, Any]] = []
+    candidates = _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train)
+    for candidate in candidates:
+        model = build_traditional_model(candidate, y_train, len(label_names))
+        model.fit(x_train, y_train)
+        valid_eval = _evaluate_traditional_model(
+            model,
+            x_valid,
+            y_valid,
+            list(range(len(y_valid))),
+            label_names,
+        )
+        params = _traditional_params(candidate)
+        balanced_accuracy = float(valid_eval["balanced_accuracy"])
+        macro_f1 = float(valid_eval["macro_f1"])
+        search_rows.append(
+            {
+                "model_type": model_type,
+                "is_selected": False,
+                "valid_balanced_accuracy": balanced_accuracy,
+                "valid_macro_f1": macro_f1,
+                "valid_accuracy": float(valid_eval["accuracy"]),
+                "selection_metric": "balanced_accuracy",
+                "params": params,
+                "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+            }
+        )
+        if best_balanced_accuracy is None or balanced_accuracy > best_balanced_accuracy + 1e-12:
+            best_model = model
+            best_config = candidate
+            best_eval = valid_eval
+            best_balanced_accuracy = balanced_accuracy
+    if best_model is None or best_eval is None or best_balanced_accuracy is None:
+        raise ValueError("传统模型验证集搜索未产生可用模型")
+    selected_index = max(
+        range(len(search_rows)),
+        key=lambda index: (
+            float(search_rows[index]["valid_balanced_accuracy"]),
+            -index,
+        ),
+    )
+    search_rows[selected_index]["is_selected"] = True
+    return TraditionalSelection(
+        config=best_config,
+        valid_balanced_accuracy=best_balanced_accuracy,
+        valid_macro_f1=float(best_eval["macro_f1"]),
+        search_rows=search_rows,
+        model=best_model,
+        valid_eval=best_eval,
+    )
+
+
 def _fit_traditional_fold(
     config: TrainConfig,
     model_type: str,
@@ -908,40 +1007,39 @@ def _fit_traditional_fold(
     splits: dict[str, list[int]],
     label_names: list[str],
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
-    best_model: Any | None = None
-    best_config = config
-    best_eval: dict[str, Any] | None = None
-    search_rows: list[dict[str, Any]] = []
-    for candidate in _traditional_candidate_configs(config, model_type, x.shape[1], y[splits["train"]]):
-        model = build_traditional_model(candidate, y[splits["train"]], len(label_names))
-        model.fit(x[splits["train"]], y[splits["train"]])
-        valid_eval = _evaluate_traditional_model(model, x, y, splits["valid"], label_names)
-        row = {
-            "model_type": model_type,
-            "valid_macro_f1": valid_eval["macro_f1"],
-            "valid_accuracy": valid_eval["accuracy"],
-            "params": {
-                "pls_components": candidate.pls_components,
-                "svm_kernel": candidate.svm_kernel,
-                "svm_c": candidate.svm_c,
-                "svm_gamma": candidate.svm_gamma,
-                "random_forest_n_estimators": candidate.random_forest_n_estimators,
-                "random_forest_max_depth": candidate.random_forest_max_depth,
-                "random_forest_max_features": candidate.random_forest_max_features,
-                "xgboost_max_depth": candidate.xgboost_max_depth,
-                "xgboost_colsample_bytree": candidate.xgboost_colsample_bytree,
-                "xgboost_min_child_weight": candidate.xgboost_min_child_weight,
-                "xgboost_reg_lambda": candidate.xgboost_reg_lambda,
-            },
-        }
-        search_rows.append(row)
-        if best_eval is None or valid_eval["macro_f1"] > best_eval["macro_f1"] + 1e-12:
-            best_model = model
-            best_config = candidate
-            best_eval = valid_eval
-    if best_model is None or best_eval is None:
-        raise ValueError("传统模型验证集搜索未产生可用模型")
-    return best_model, best_config, best_eval, search_rows
+    selection = _select_traditional_config(
+        config,
+        model_type,
+        x[splits["train"]],
+        y[splits["train"]],
+        x[splits["valid"]],
+        y[splits["valid"]],
+        label_names,
+    )
+    return selection.model, selection.config, selection.valid_eval, selection.search_rows
+
+
+def _fit_final_traditional_model(
+    *,
+    selected_config: TrainConfig | TraditionalSelection,
+    model_type: str,
+    x_raw: np.ndarray,
+    y: np.ndarray,
+    train_valid_indices: list[int],
+    normalization: str,
+    label_names: list[str],
+) -> tuple[Any, dict[str, Any], np.ndarray]:
+    if isinstance(selected_config, TraditionalSelection):
+        selected_config = selected_config.config
+    selected_config = _clone_config(selected_config, model_type=model_type)
+    final_indices = np.asarray(sorted({int(index) for index in train_valid_indices}), dtype=np.int64)
+    if final_indices.size == 0:
+        raise ValueError("传统模型最终训练池不能为空")
+    normalizer = _fit_x_normalizer(x_raw[final_indices.tolist()], normalization)
+    x_final = _transform_x_with_normalizer(x_raw, normalizer)
+    model = build_traditional_model(selected_config, y[final_indices], len(label_names))
+    model.fit(x_final[final_indices], y[final_indices])
+    return model, normalizer, final_indices
 
 
 def _fit_deep_fold(
@@ -1336,19 +1434,39 @@ def _run_legacy_training(
         x = _transform_x_with_normalizer(x_model_raw, normalizer)
         fold_index = int(fold["fold_index"])
         write_progress(fold_index, max(0, fold_index - 1), fold)
+        fold_final_fit_indices: np.ndarray | None = None
+        fold_best_params: dict[str, Any] = {}
+        fold_selection_metric: str | None = None
+        fold_selection_score: float | None = None
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
+            fold_best_params = _traditional_params(selected_config)
+            fold_selection_metric = "balanced_accuracy"
+            fold_selection_score = float(valid_eval["balanced_accuracy"])
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
-            valid_eval = _evaluate_traditional_model(model, x, y_model, splits["valid"], label_names)
-            test_eval = _evaluate_traditional_model(model, x, y_model, splits["test"], label_names)
+            train_valid_indices = sorted({*splits["train"], *splits["valid"]})
+            final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
+                selected_config=selected_config,
+                model_type=model_type,
+                x_raw=x_model_raw,
+                y=y_model,
+                train_valid_indices=train_valid_indices,
+                normalization=config.normalization,
+                label_names=label_names,
+            )
+            final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
+            test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
+            model = final_model
+            normalizer = final_normalizer
             history_rows.append(
                 {
                     "fold_index": fold_index,
                     "epoch": 1,
                     "train_loss": None,
                     "valid_accuracy": valid_eval["accuracy"],
+                    "valid_balanced_accuracy": valid_eval["balanced_accuracy"],
                     "valid_macro_f1": valid_eval["macro_f1"],
                     "best_valid_macro_f1": valid_eval["macro_f1"],
                     "bad_epochs": 0,
@@ -1361,8 +1479,9 @@ def _run_legacy_training(
                     "splits": splits,
                     "test_true": test_eval["true"],
                     "test_pred": test_eval["pred"],
-                    "train_mean_curve": np.mean(x_model_raw[splits["train"]], axis=0),
+                    "train_mean_curve": np.mean(x_model_raw[train_valid_indices], axis=0),
                     "selected_config": selected_config.__dict__,
+                    "final_fit_indices": fold_final_fit_indices.tolist(),
                 }
             )
             dscarnet_mapping_metadata = None
@@ -1427,11 +1546,15 @@ def _run_legacy_training(
                 "fold_index": fold_index,
                 "test_repeat_index": fold["test_repeat_index"],
                 "accuracy": fold_metrics["accuracy"],
+                "balanced_accuracy": fold_metrics["balanced_accuracy"],
                 "macro_f1": fold_metrics["macro_f1"],
                 "weighted_f1": fold_metrics["weighted_f1"],
                 "train_accuracy": split_metrics["train"]["accuracy"],
+                "train_balanced_accuracy": split_metrics["train"]["balanced_accuracy"],
                 "valid_accuracy": split_metrics["valid"]["accuracy"],
+                "valid_balanced_accuracy": split_metrics["valid"]["balanced_accuracy"],
                 "test_accuracy": fold_metrics["accuracy"],
+                "test_balanced_accuracy": fold_metrics["balanced_accuracy"],
             }
         )
         cv_fold_payloads.append(
@@ -1441,6 +1564,10 @@ def _run_legacy_training(
                 "train_repeat_indices": fold["train_repeat_indices"],
                 "valid_repeat_indices": fold["valid_repeat_indices"],
                 "test_repeat_indices": fold.get("test_repeat_indices", []),
+                "final_fit_indices": fold_final_fit_indices.tolist() if fold_final_fit_indices is not None else [],
+                "best_params": fold_best_params,
+                "selection_metric": fold_selection_metric,
+                "selection_score": fold_selection_score,
                 "metrics": fold_metrics,
                 "split_metrics": split_metrics,
                 "preprocess": _json_normalizer(normalizer),
@@ -1541,7 +1668,23 @@ def _run_legacy_training(
     pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame(best_search_rows).to_csv(run_dir / "hyperparameter_search.csv", index=False, encoding="utf-8-sig")
+    search_columns = [
+        "fold_index",
+        "model_type",
+        "is_selected",
+        "valid_balanced_accuracy",
+        "valid_macro_f1",
+        "params_json",
+    ]
+    search_frame = pd.DataFrame(best_search_rows)
+    for column in search_columns:
+        if column not in search_frame.columns:
+            search_frame[column] = None
+    search_frame.reindex(columns=search_columns).to_csv(
+        run_dir / "hyperparameter_search.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     if last_model is not None and last_model_family == "traditional_ml":
         with (run_dir / "model.pkl").open("wb") as fh:
             pickle.dump(last_model, fh)
@@ -1578,6 +1721,7 @@ def _run_legacy_training(
         "fold_progress_text": f"{len(folds)}/{len(folds)}",
         "current_fold_repeat_index": folds[-1].get("test_repeat_index") if folds else None,
         "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
+        "best_valid_balanced_accuracy": max((row.get("valid_balanced_accuracy") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
         "fold_count": len(folds),
         "config": config_out,
