@@ -11,17 +11,6 @@ from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
 
 router = APIRouter()
 
-UI_PAGES = {
-    'workbench': 'ui-workbench.html',
-    'wizard': 'ui-wizard.html',
-    'dashboard': 'ui-dashboard.html',
-    'console': 'ui-console.html',
-    'minimal-lab': 'ui-minimal-lab.html',
-    'swiss': 'ui-swiss.html',
-    'dark-instrument': 'ui-dark-instrument.html',
-    'warm-paper': 'ui-warm-paper.html',
-}
-
 
 def _curve_intensity_summary(curves: list[dict[str, object]]) -> list[dict[str, object]]:
     summary: list[dict[str, object]] = []
@@ -46,19 +35,6 @@ def _curve_intensity_summary(curves: list[dict[str, object]]) -> list[dict[str, 
 @router.get('/')
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / 'index.html')
-
-
-@router.get('/ui')
-def ui_gallery() -> FileResponse:
-    return FileResponse(STATIC_DIR / 'ui-gallery.html')
-
-
-@router.get('/ui/{name}')
-def ui_variant(name: str) -> FileResponse:
-    filename = UI_PAGES.get(name)
-    if not filename:
-        raise HTTPException(status_code=404, detail='UI 方案不存在')
-    return FileResponse(STATIC_DIR / filename)
 
 
 @router.get('/health')
