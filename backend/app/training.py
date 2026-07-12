@@ -88,6 +88,8 @@ class TrainConfig:
     xgboost_colsample_bytree: float = 0.9
     xgboost_reg_lambda: float = 2.0
     pls_components: int | None = None
+    pca_components: int | None = None
+    logistic_c: float = 1.0
     svm_kernel: str = "rbf"
     random_forest_max_features: str | float = "sqrt"
     xgboost_min_child_weight: float = 1.0
@@ -902,41 +904,54 @@ def _aggregate_split_metrics(
 
 
 def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
-    band = _dimension_band(n_features)
     if model_type == "pls_da":
-        raw = [1, 2, 3, 5] if band == "1000-3000" else ([1, 2, 3, 5, 8] if band == "3000-6000" else [1, 2, 3, 5, 8, 10])
-        cap = max(1, min(max(raw), len(y_train) - 2, n_features))
+        raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
+        cap = max(1, min(len(y_train), n_features))
         return [_clone_config(config, pls_components=value) for value in raw if value <= cap]
+    if model_type == "pca_lda":
+        raw = [2, 3, 5, 8, 10, 15, 20, 30, 40, 50]
+        cap = max(1, min(len(y_train), n_features))
+        return [_clone_config(config, pca_components=value) for value in raw if value <= cap]
+    if model_type == "logistic_regression":
+        return [_clone_config(config, logistic_c=value) for value in (0.1, 1.0, 10.0)]
     if model_type == "svm":
-        scale_gamma = max(1e-6, 1.0 / max(1, n_features))
-        if band == "6000-10000":
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("rbf", scale_gamma, 1.0)]
-        elif band == "3000-6000":
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0)]
-        else:
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0), ("rbf", scale_gamma * 10, 1.0)]
-        return [_clone_config(config, svm_kernel=kernel, svm_gamma=gamma, svm_c=c) for kernel, gamma, c in candidates]
+        return [_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)]
     if model_type == "random_forest":
-        if band == "1000-3000":
-            candidates = [(300, 3, "sqrt"), (300, 5, "log2"), (300, None, 0.2)]
-        elif band == "3000-6000":
-            candidates = [(500, 3, "sqrt"), (500, 5, "log2"), (500, 8, 0.1)]
-        else:
-            candidates = [(600, 3, "sqrt"), (600, 5, "log2"), (600, 5, 0.05)]
+        candidates = [
+            (depth, leaf, max_features)
+            for depth in (3, 5, 8)
+            for leaf in (1, 2)
+            for max_features in ("sqrt", "log2", 0.1)
+        ]
         return [
-            _clone_config(config, random_forest_n_estimators=n, random_forest_max_depth=depth, random_forest_max_features=max_features)
-            for n, depth, max_features in candidates
+            _clone_config(
+                config,
+                random_forest_n_estimators=500,
+                random_forest_max_depth=depth,
+                random_forest_min_samples_leaf=leaf,
+                random_forest_max_features=max_features,
+            )
+            for depth, leaf, max_features in candidates
         ]
     if model_type == "xgboost":
-        if band == "1000-3000":
-            candidates = [(2, 0.6, 1, 1), (3, 1.0, 1, 5)]
-        elif band == "3000-6000":
-            candidates = [(2, 0.3, 3, 5), (3, 0.6, 5, 5)]
-        else:
-            candidates = [(2, 0.2, 5, 10), (2, 0.3, 10, 10)]
+        candidates = [
+            (n_estimators, depth, min_child)
+            for n_estimators in (100, 300)
+            for depth in (2, 3, 5)
+            for min_child in (3, 5)
+        ]
         return [
-            _clone_config(config, xgboost_max_depth=depth, xgboost_colsample_bytree=colsample, xgboost_min_child_weight=child, xgboost_reg_lambda=reg_lambda)
-            for depth, colsample, child, reg_lambda in candidates
+            _clone_config(
+                config,
+                xgboost_n_estimators=n_estimators,
+                xgboost_max_depth=depth,
+                xgboost_learning_rate=0.1,
+                xgboost_subsample=0.8,
+                xgboost_colsample_bytree=0.3,
+                xgboost_reg_lambda=10.0,
+                xgboost_min_child_weight=min_child,
+            )
+            for n_estimators, depth, min_child in candidates
         ]
     return [config]
 
@@ -944,6 +959,8 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
 def _traditional_params(config: TrainConfig) -> dict[str, Any]:
     return {
         "pls_components": config.pls_components,
+        "pca_components": config.pca_components,
+        "logistic_c": config.logistic_c,
         "svm_kernel": config.svm_kernel,
         "svm_c": config.svm_c,
         "svm_gamma": config.svm_gamma,
