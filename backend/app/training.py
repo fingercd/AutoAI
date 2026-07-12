@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,13 +32,15 @@ from .feature_selection import (
     write_feature_importance_artifacts,
     write_sample_feature_importance_artifacts,
 )
-from .models import build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
+from .models import ARCHITECTURE_VERSION, build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
+from .models.profiles import build_model_profile, model_range_warnings
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
 from .runs.contracts import RunRecord
 from .runs.artifacts import RunArtifactWriter
 from .runs.repository import InvalidRunTransition, RunRepository
 from .runs.status_projection import project_status
+from .training_explainability import explainability_method
 
 
 class TrainingRunReplaced(RuntimeError):
@@ -1706,17 +1708,54 @@ def _run_legacy_training(
             x_axis_warning=x_axis_warning,
         )
 
+    metadata_train_count = len(folds[0]["splits"].get("train", [])) if folds else 0
+    resolved_profile = build_model_profile(
+        model_type,
+        train_sample_count=metadata_train_count,
+        feature_count=x_raw.shape[1],
+    )
+    profile_payload = asdict(resolved_profile)
+    explainability = explainability_method(model_type, dscarnet_mode="dual")
+    range_warnings = model_range_warnings(
+        train_sample_count=metadata_train_count,
+        feature_count=x_raw.shape[1],
+    )
+    model_metadata = {
+        "model_type": model_type,
+        "model_family": last_model_family,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "N_train": metadata_train_count,
+        "L": int(x_raw.shape[1]),
+        "train_sample_count": metadata_train_count,
+        "feature_count": int(x_raw.shape[1]),
+        "profile": profile_payload,
+        "model_profile": profile_payload,
+        "resolved_profile": profile_payload,
+        "model_range_warnings": range_warnings,
+        "explainability_method": explainability,
+        "artifact_explainability_method": (
+            "interval_permutation_importance" if last_model_family == "traditional_ml" else explainability
+        ),
+    }
     config_out = {
         **config.__dict__,
         "model_type": model_type,
+        "architecture_version": ARCHITECTURE_VERSION,
         "data_path": str(Path(data_path).resolve()),
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "preprocess": {"mode": config.normalization, "fit_scope": "train_fold"},
         "evaluation_strategy": evaluation_strategy,
         "dimension_band": _dimension_band(x_raw.shape[1]),
         "fold_count": len(folds),
+        "N_train": metadata_train_count,
+        "L": int(x_raw.shape[1]),
+        "model_profile": profile_payload,
+        "model_range_warnings": range_warnings,
+        "explainability_method": explainability,
+        "artifact_explainability_method": model_metadata["artifact_explainability_method"],
     }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "split.json").write_text(json.dumps(cv_fold_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1757,6 +1796,10 @@ def _run_legacy_training(
         "history": history_rows,
         "model_type": model_type,
         "model_family": last_model_family,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "model_metadata": model_metadata,
+        "model_profile": profile_payload,
+        "explainability_method": explainability,
         "model_artifact": last_model_artifact,
         "model_artifact_note": (
             "最后一个交叉验证折模型，仅作下载参考，不用于汇报的交叉验证指标"
