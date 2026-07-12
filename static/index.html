@@ -531,19 +531,23 @@
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
                   <input id="splitTrain" type="number" value="8" min="0" max="10" aria-label="训练比例" />
                   <input id="splitValid" type="number" value="1" min="0" max="10" aria-label="验证比例" />
-                  <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
+                  <div id="splitTestField">
+                    <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
+                  </div>
                 </div>
               </div>
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
                 默认 8:1:1；加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
               </p>
-              <label class="checkbox-line">
-                <input id="cvEnabled" type="checkbox" />
-                开启交叉验证
-              </label>
-              <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                几个 Repeat_index 就跑几折，折数不可调。
-              </p>
+              <div id="cvOptions">
+                <label class="checkbox-line">
+                  <input id="cvEnabled" type="checkbox" />
+                  开启交叉验证
+                </label>
+                <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                  几个 Repeat_index 就跑几折，折数不可调。
+                </p>
+              </div>
               <div id="featureWindowOptions">
                 <label>重要性分段数</label>
                 <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
@@ -1127,15 +1131,34 @@
         return Number.isFinite(value) ? value : fallback;
       }
 
+      function applySplitPreset(mode) {
+        if (mode === "external") {
+          $("cvEnabled").checked = false;
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+          return;
+        }
+        if (mode === "loo") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+          return;
+        }
+        $("splitTrain").value = "8";
+        $("splitValid").value = "1";
+        $("splitTest").value = "1";
+      }
+
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetPath);
         const cvEnabled = $("cvEnabled").checked;
         const splitMode = hasExternalTest ? "external_test_holdout" : "stratified_holdout";
-        const splitTrain = readSplitNumber("splitTrain", 8);
-        const splitValid = readSplitNumber("splitValid", 1);
-        const splitTest = readSplitNumber("splitTest", 1);
-        if (splitTrain + splitValid + splitTest !== 10) {
+        const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);
+        const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);
+        const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);
+        if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10) {
           throw new Error("训练、验证、测试比例相加必须等于 10");
         }
         if (splitTrain <= 0) {
@@ -1149,7 +1172,7 @@
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,
+          split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),
           split_train: splitTrain,
           split_valid: splitValid,
           split_test: splitTest,
@@ -2198,13 +2221,23 @@
 
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetPath);
-        const cvEnabled = $("cvEnabled").checked;
+        let cvEnabled = $("cvEnabled").checked;
+        if (hasExternalTest) {
+          applySplitPreset("external");
+          cvEnabled = false;
+        } else if (cvEnabled) {
+          applySplitPreset("loo");
+        } else {
+          applySplitPreset("holdout");
+        }
+        $("cvOptions").classList.toggle("hidden", hasExternalTest);
+        $("splitTestField").classList.toggle("hidden", hasExternalTest || cvEnabled);
         $("splitTest").disabled = hasExternalTest || cvEnabled;
         $("customSplitOptions").setAttribute("aria-hidden", "false");
         if (hasExternalTest) {
-          $("splitModeHint").textContent = "已加载独立测试集：主数据使用训练/验证比例，独立测试集作为最终测试集。";
+          $("splitModeHint").textContent = "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
         } else if (cvEnabled) {
-          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余按训练/验证比例划分。";
+          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余固定按 8:2 训练/验证。";
         } else {
           $("splitModeHint").textContent = "默认 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
         }

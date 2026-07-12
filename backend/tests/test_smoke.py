@@ -1326,7 +1326,7 @@ def test_main_ui_prefers_sample_feature_importance_panel():
 def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert 'if (splitTrain + splitValid + splitTest !== 10)' in content
+    assert 'if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10)' in content
     assert 'if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10)' not in content
     assert "训练、验证、测试比例相加必须等于 10" in content
     assert "trainingRequestInFlight" in content
@@ -1334,6 +1334,17 @@ def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     assert "trainingRequestInFlight = false" in content
     assert "startButton.disabled = true" in content
     assert "startButton.disabled = false" in content
+
+
+def test_main_ui_external_dataset_forces_eight_two_and_hides_cv():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "function applySplitPreset(mode)" in content
+    assert 'id="cvOptions"' in content
+    assert 'id="splitTestField"' in content
+    assert '$("cvEnabled").checked = false' in content
+    assert '$("cvOptions").classList.toggle("hidden", hasExternalTest)' in content
+    assert 'applySplitPreset("external")' in content
 
 
 def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
@@ -1374,11 +1385,11 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert '<div class="metric">总数据<strong>${summary.samples}</strong></div>' in content
     assert '<div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>' in content
     assert '<div class="metric">样品种类<strong>' not in content
-    assert 'const splitTrain = readSplitNumber("splitTrain", 8);' in content
-    assert 'const splitValid = readSplitNumber("splitValid", 1);' in content
-    assert 'const splitTest = readSplitNumber("splitTest", 1);' in content
+    assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
+    assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
+    assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
     assert 'const cvEnabled = $("cvEnabled").checked;' in content
-    assert 'split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,' in content
+    assert 'split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
