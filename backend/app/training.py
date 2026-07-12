@@ -15,7 +15,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, classificat
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .classification_policy import EvaluationPolicy, resolve_evaluation_policy
+from .classification_policy import DEEP_TRAINING_DEFAULTS, EvaluationPolicy, resolve_evaluation_policy
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
     aggregate_attribution_sanity,
@@ -47,10 +47,14 @@ class TrainingRunReplaced(RuntimeError):
 
 @dataclass
 class TrainConfig:
-    epochs: int = 50
-    batch_size: int = 16
-    learning_rate: float = 0.001
-    seed: int = 42
+    epochs: int = DEEP_TRAINING_DEFAULTS.epochs
+    batch_size: int = DEEP_TRAINING_DEFAULTS.batch_size
+    learning_rate: float = DEEP_TRAINING_DEFAULTS.learning_rate
+    weight_decay: float = DEEP_TRAINING_DEFAULTS.weight_decay
+    scheduler_factor: float = DEEP_TRAINING_DEFAULTS.scheduler_factor
+    scheduler_patience: int = DEEP_TRAINING_DEFAULTS.scheduler_patience
+    min_learning_rate: float = DEEP_TRAINING_DEFAULTS.min_learning_rate
+    seed: int = DEEP_TRAINING_DEFAULTS.seed
     normalization: str = "zscore"
     split_mode: str = "stratified"
     split_train: int = 8
@@ -58,7 +62,7 @@ class TrainConfig:
     split_test: int = 1
     class_balance: str = "none"
     model_type: str = "cnn1d"
-    early_stopping_patience: int = 20
+    early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
     dropout: float | None = None
     hidden_size: int = 64
     transformer_heads: int = 4
@@ -310,6 +314,27 @@ def _dual_loader(
     return DataLoader(TensorDataset(tx1, tx2, ty), batch_size=batch_size, shuffle=shuffle)
 
 
+def _evaluate_deep_loss(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    *,
+    dual_input: bool,
+) -> float:
+    model.eval()
+    losses: list[float] = []
+    with torch.no_grad():
+        for batch in loader:
+            if dual_input:
+                batch_x1, batch_x2, batch_y = batch
+                logits = model(batch_x1, batch_x2)
+            else:
+                batch_x, batch_y = batch
+                logits = model(batch_x)
+            losses.append(float(criterion(logits, batch_y).detach().item()))
+    return float(np.mean(losses)) if losses else 0.0
+
+
 def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     model.eval()
     with torch.no_grad():
@@ -349,6 +374,7 @@ def _evaluate_dual(
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -1078,9 +1104,21 @@ def _fit_deep_fold(
     else:
         model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=config.scheduler_factor,
+        patience=config.scheduler_patience,
+        min_lr=config.min_learning_rate,
+    )
     history: list[dict[str, Any]] = []
     best_score = -1.0
+    best_valid_loss = float("inf")
     best_state = None
     bad_epochs = 0
     for epoch in range(1, config.epochs + 1):
@@ -1093,6 +1131,12 @@ def _fit_deep_fold(
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(
+                model,
+                _dual_loader(dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], config.batch_size, False),
+                criterion,
+                dual_input=True,
+            )
             valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], label_names)
         else:
             for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
@@ -1101,19 +1145,32 @@ def _fit_deep_fold(
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(
+                model,
+                _loader(x, y, splits["valid"], config.batch_size, False),
+                criterion,
+                dual_input=False,
+            )
             valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
-        improved = valid_eval["macro_f1"] > best_score + 1e-8
+        scheduler.step(valid_loss)
+        current_learning_rate = float(optimizer.param_groups[0]["lr"])
+        improved = valid_loss < best_valid_loss - 1e-8
         if improved:
-            best_score = valid_eval["macro_f1"]
+            best_valid_loss = valid_loss
             best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
             bad_epochs = 0
         else:
             bad_epochs += 1
+        best_score = max(best_score, float(valid_eval["macro_f1"]))
         history.append(
             {
                 "epoch": epoch,
                 "train_loss": float(np.mean(losses)) if losses else 0.0,
+                "valid_loss": valid_loss,
+                "best_valid_loss": best_valid_loss,
+                "learning_rate": current_learning_rate,
                 "valid_accuracy": valid_eval["accuracy"],
+                "valid_balanced_accuracy": valid_eval["balanced_accuracy"],
                 "valid_macro_f1": valid_eval["macro_f1"],
                 "best_valid_macro_f1": best_score,
                 "bad_epochs": bad_epochs,

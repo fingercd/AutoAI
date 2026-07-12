@@ -5,6 +5,22 @@ from typing import Mapping
 
 
 @dataclass(frozen=True)
+class DeepTrainingDefaults:
+    epochs: int = 200
+    batch_size: int = 8
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    scheduler_factor: float = 0.5
+    scheduler_patience: int = 10
+    min_learning_rate: float = 1e-6
+    early_stopping_patience: int = 20
+    seed: int = 42
+
+
+DEEP_TRAINING_DEFAULTS = DeepTrainingDefaults()
+
+
+@dataclass(frozen=True)
 class EvaluationPolicy:
     strategy: str
     split_train: int

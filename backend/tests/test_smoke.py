@@ -1347,6 +1347,18 @@ def test_main_ui_external_dataset_forces_eight_two_and_hides_cv():
     assert 'applySplitPreset("external")' in content
 
 
+def test_main_ui_uses_documented_deep_training_defaults():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'option value="normal"' not in content
+    assert 'option value="deep"' not in content
+    assert 'id="epochs" type="number" value="200" min="1" max="200"' in content
+    assert 'id="batchSize" type="number" value="8"' in content
+    assert 'id="learningRate" type="number" value="0.001"' in content
+    assert 'id="earlyStoppingPatience" type="number" value="20"' in content
+    assert 'value = $("trainTime").value === "deep" ? "100" : "50"' not in content
+
+
 def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
@@ -1395,7 +1407,8 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert 'id="cvEnabled"' in content
     assert "开启交叉验证" in content
     assert "几个 Repeat_index 就跑几折" in content
-    assert content.index('id="advancedOptions"') < content.index('id="trainTimeBlock"') < content.index('id="deepOptions"')
+    assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
+    assert 'id="trainTimeBlock"' not in content
     assert "function historyFoldOptions" in content
     assert "function selectedFoldHistory" in content
     assert 'id="historyFoldSelect"' in content
