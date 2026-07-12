@@ -41,7 +41,15 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
         "random_forest",
         "xgboost",
     }
-    assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+    assert DEEP_MODEL_TYPES == {
+        "pca_mlp",
+        "cnn1d",
+        "transformer1d",
+        "resnet1d",
+        "inception1d",
+        "tcn1d",
+        "dscarnet",
+    }
 
 
 @pytest.mark.parametrize(
