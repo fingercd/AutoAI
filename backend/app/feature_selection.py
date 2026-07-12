@@ -11,6 +11,7 @@ from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 from torch import nn
+from .training_explainability import explainability_method
 
 
 PredictFn = Callable[[np.ndarray], np.ndarray]
@@ -425,7 +426,7 @@ def sample_deep_attribution_importance(
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
     baseline_curve = _mean_curve(x, splits.get("train", []))
     metadata = metadata or []
-    method = "input_gradient_attribution" if model_type in {"transformer", "transformer1d"} else "gradcam_1d"
+    method = explainability_method(model_type)
 
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         return {
@@ -553,7 +554,7 @@ def sample_dscarnet_dual_2d_gradcam_importance(
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
     baseline_curve = _mean_curve(x, splits.get("train", []))
     metadata = metadata or []
-    method = "dscarnet_dual_2d_gradcam"
+    method = explainability_method("dscarnet", dscarnet_mode="dual")
 
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         return {
