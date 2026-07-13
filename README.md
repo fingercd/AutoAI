@@ -9,7 +9,7 @@ AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台�
 - 拉曼：按行号或 X 轴范围截取，支持基线校正及两种“截取/校正”顺序。
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
 - 分类评估：分层 8:1:1、按 `Repeat_index` 留一交叉验证、独立测试集 holdout。
-- 10 个模型：`pls_da`、`svm`、`random_forest`、`xgboost`、`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
+- 15 个目标分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`；实际可用性由运行环境决定。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
 历史 UI 画廊已经从正式产品移除；未跟踪的界面候选不属于本仓库发布内容。
@@ -19,7 +19,7 @@ AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台�
 - 已验证：Python `3.12.12`。
 - CPU 环境可直接安装核心依赖。
 - NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- DSCARNet 额外依赖 AggMap；其余 9 个模型不要求 AggMap。
+- DSCARNet 额外依赖 AggMap；其余 14 个目标模型不要求 AggMap。
 
 建议新建虚拟环境：
 
@@ -74,6 +74,8 @@ python -m pip install aggmap==1.2.1 --no-deps
 
 AutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
 
+AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目不使用的 `tensorflow-gpu`、`lapjv` 和 `shap`。因此按上述方式安装后，`pip check` 仍会报告 AggMap 的已知元数据冲突；这不表示 AutoAI 使用的 SAR/CAR 映射链路缺少依赖。核心环境不安装 AggMap 时不受此问题影响。
+
 ## 启动
 
 ### 一键启动
@@ -111,6 +113,10 @@ python -m backend.app.runs.worker
 
 ### 正式本地 URL
 
+- 主页面：<http://127.0.0.1:8000/>
+- API 文档：<http://127.0.0.1:8000/docs>
+- 健康检查：<http://127.0.0.1:8000/health>
+
 ## 分类模型 v2 契约
 
 当前目录公开 **15 个目标分类模型**，且训练入口仅支持分类：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。`Label` 即使为数字也按类别编码，`Repeat_index` 不改名并等同文档中的 Sample_ID。
@@ -120,9 +126,6 @@ python -m backend.app.runs.worker
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
 解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
-- 主页面：<http://127.0.0.1:8000/>
-- API 文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/health>
 
 ## 建模 CSV
 
@@ -195,6 +198,12 @@ curl http://127.0.0.1:8000/health
 ### AggMap 安装时尝试拉取 tensorflow-gpu
 
 不要直接执行普通的 `pip install aggmap`。先安装 `requirements-dscarnet.txt`，再执行 `python -m pip install aggmap==1.2.1 --no-deps`。
+
+安装后执行 `pip check` 会按 AggMap 1.2.1 的旧元数据报告 `tensorflow-gpu`、`lapjv`、`shap` 和若干固定旧版本冲突，这是当前兼容安装方式的已知现象。AutoAI 不调用 AggMap 的 TensorFlow AggModel，并为所用映射路径提供 SciPy `lapjv` 兼容层。
+
+### pandas 提示 numexpr 版本过低
+
+`numexpr` 不是 AutoAI 的必需依赖。如果环境中已经安装旧版并触发 pandas 警告，可升级到 pandas 提示的最低版本，或在不被其他项目使用时卸载旧版 `numexpr`；不要仅为消除警告改动 AutoAI 的核心依赖集合。
 
 ### 任务一直显示 queued
 
