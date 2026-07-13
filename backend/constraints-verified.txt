@@ -1,5 +1,6 @@
-# Versions verified together on Windows with Python 3.12.12.
-# This is a reproducibility aid, not the only supported environment.
+# Direct and optional dependency versions exercised on Windows with Python 3.12.12.
+# This is a reproducibility aid, not a claim that AggMap 1.2.1's obsolete
+# dependency metadata passes `pip check`. See README.md for the compatibility install.
 fastapi==0.115.9
 uvicorn==0.40.0
 python-multipart==0.0.22
