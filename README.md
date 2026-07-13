@@ -9,7 +9,7 @@ AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台�
 - 拉曼：按行号或 X 轴范围截取，支持基线校正及两种“截取/校正”顺序。
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
 - 分类评估：分层 8:1:1、按 `Repeat_index` 留一交叉验证、独立测试集 holdout。
-- 15 个目标分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`；实际可用性由运行环境决定。
+- 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
 历史 UI 画廊已经从正式产品移除；未跟踪的界面候选不属于本仓库发布内容。
@@ -19,7 +19,7 @@ AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台�
 - 已验证：Python `3.12.12`。
 - CPU 环境可直接安装核心依赖。
 - NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- DSCARNet 额外依赖 AggMap；其余 14 个目标模型不要求 AggMap。
+- DSCARNet 额外依赖 AggMap；其余 13 个当前可用模型不要求 AggMap。目录中的 `cnn_mamba1d` 另需 `mamba-ssm`，当前 Windows Conda 环境不可用。
 
 建议新建虚拟环境：
 
@@ -119,13 +119,13 @@ python -m backend.app.runs.worker
 
 ## 分类模型 v2 契约
 
-当前目录公开 **15 个目标分类模型**，且训练入口仅支持分类：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。`Label` 即使为数字也按类别编码，`Repeat_index` 不改名并等同文档中的 Sample_ID。
+当前能力目录公开 **15 个目标分类模型，其中 14 个可用**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 当前可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Repeat_index` 不改名并等同文档中的 Sample_ID。
 
-新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。15 个目标模型是能力目录，不等于当前环境全部可训练：`cnn_mamba1d` 在 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
+新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
 
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
+解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。`cnn_mamba1d` 若未来依赖可用，也采用 Log-loss 窗口遮挡。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
 
 ## 建模 CSV
 
