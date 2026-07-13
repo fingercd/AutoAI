@@ -7,6 +7,7 @@ from typing import Any
 
 from .artifacts import RunArtifactWriter
 from .contracts import RunRecord
+from .status_projection import project_status
 
 
 class TrainingExecution:
@@ -59,6 +60,12 @@ class TrainingExecution:
         self.cancel_check(record)
         writer.write_run_result(result)
         self.cancel_check(record)
+        result_fields = {
+            key: value
+            for key, value in result.items()
+            if key not in {'run_id', 'status', 'state', 'version', 'dataset_id', 'error', 'run_dir'}
+        }
+        project_status(self.run_dir, record, **result_fields)
         metadata = {
             key: result[key]
             for key in ('model_type', 'model_family', 'evaluation_strategy', 'fold_count')

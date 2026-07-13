@@ -98,12 +98,14 @@ class RunWorker:
             return True
         except Exception as exc:
             try:
-                self.repository.finish_failure(
+                failed = self.repository.finish_failure(
                     run.run_id,
                     claim_token=run.claim_token or '',
                     now=self.now(),
                     error=str(exc),
                 )
+                if self.project_status is not None:
+                    self.project_status(failed)
             except InvalidRunTransition:
                 pass
         return True

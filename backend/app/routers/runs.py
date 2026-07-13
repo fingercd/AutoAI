@@ -13,7 +13,7 @@ from ..http.principal import get_principal
 from ..runs.artifacts import RunArtifactWriter
 from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import InvalidRunTransition, RunNotFound
-from ..runs.status_projection import project_status
+from ..runs.status_projection import project_status, recover_status_from_artifacts
 from .deps import get_run_dir, get_run_repository, resolve_training_data_reference
 
 router = APIRouter()
@@ -29,6 +29,7 @@ def _projection(record: RunRecord) -> dict[str, Any]:
                 payload.update(loaded)
         except json.JSONDecodeError:
             payload = {}
+    payload = recover_status_from_artifacts(status_file.parent, payload)
     payload.update(
         {
             'run_id': record.run_id,
