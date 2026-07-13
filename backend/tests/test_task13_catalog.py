@@ -66,7 +66,7 @@ def test_models_catalog_degrades_optional_dependencies_without_server_error(monk
         "family": "long_range",
         "available": False,
         "unavailable_reason": "mamba test dependency missing",
-        "explainability_method": "input_gradient_attribution",
+        "explainability_method": "window_occlusion_log_loss",
     }
     assert by_id["dscarnet"]["available"] is False
     assert by_id["dscarnet"]["unavailable_reason"] == "aggmap test dependency missing"

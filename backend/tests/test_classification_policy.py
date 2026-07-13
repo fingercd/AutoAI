@@ -125,6 +125,45 @@ def test_final_traditional_fit_uses_only_train_and_valid(monkeypatch):
     assert normalizer["mode"] == "none"
 
 
+@pytest.mark.parametrize(
+    ("model_type", "expected_keys"),
+    [
+        ("pls_da", {"pls_components"}),
+        ("pca_lda", {"pca_components"}),
+        ("logistic_regression", {"logistic_c"}),
+        ("svm", {"svm_kernel", "svm_c", "svm_gamma"}),
+        (
+            "random_forest",
+            {
+                "random_forest_n_estimators",
+                "random_forest_max_depth",
+                "random_forest_min_samples_leaf",
+                "random_forest_max_features",
+            },
+        ),
+        (
+            "xgboost",
+            {
+                "xgboost_n_estimators",
+                "xgboost_max_depth",
+                "xgboost_learning_rate",
+                "xgboost_subsample",
+                "xgboost_colsample_bytree",
+                "xgboost_min_child_weight",
+                "xgboost_reg_lambda",
+                "xgboost_gamma",
+            },
+        ),
+    ],
+)
+def test_traditional_audit_contains_only_selected_model_parameters(model_type, expected_keys):
+    import backend.app.training as training
+
+    params = training._traditional_params(training.TrainConfig(model_type=model_type), model_type)
+
+    assert set(params) == expected_keys
+
+
 def test_deep_training_defaults_are_exact():
     from backend.app.classification_policy import DEEP_TRAINING_DEFAULTS
     import backend.app.training as training

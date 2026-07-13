@@ -2,21 +2,21 @@ from __future__ import annotations
 
 
 EXPLAINABILITY_METHOD_BY_MODEL = {
-    "pls_da": "window_permutation",
-    "pca_lda": "window_permutation",
-    "logistic_regression": "window_permutation",
-    "svm": "window_permutation",
-    "random_forest": "window_permutation",
-    "xgboost": "window_permutation",
-    "pca_mlp": "input_gradient_attribution",
+    "pls_da": "window_occlusion_log_loss",
+    "pca_lda": "window_occlusion_log_loss",
+    "logistic_regression": "window_occlusion_log_loss",
+    "svm": "window_occlusion_log_loss",
+    "random_forest": "window_occlusion_log_loss",
+    "xgboost": "window_occlusion_log_loss",
+    "pca_mlp": "window_occlusion_log_loss",
     "cnn1d": "gradcam_1d",
     "cnn1d_se": "gradcam_1d",
-    "transformer1d": "input_gradient_attribution",
+    "transformer1d": "window_occlusion_log_loss",
     "resnet1d": "gradcam_1d",
     "inception1d": "gradcam_1d",
     "tcn1d": "gradcam_1d",
-    "cnn_transformer1d": "input_gradient_attribution",
-    "cnn_mamba1d": "input_gradient_attribution",
+    "cnn_transformer1d": "window_occlusion_log_loss",
+    "cnn_mamba1d": "window_occlusion_log_loss",
 }
 
 

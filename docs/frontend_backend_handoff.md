@@ -14,7 +14,7 @@
 
 划分契约：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每折留一个 `Repeat_index` 作 test，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2，独立数据作唯一 test，并禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后使用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，以最低 validation loss 保存最佳权重。
 
-解释性契约：六个传统模型使用窗口置换；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用 `abs(gradient * input)`；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。继续支持 `feature_importance.json/csv`、`sample_feature_importance.json/csv`、`model.pt/model.pkl` 等旧下载名。
+解释性契约：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。继续支持 `feature_importance.json/csv`、`sample_feature_importance.json/csv`、`model.pt/model.pkl` 等旧下载名。
 
 ## 1. 项目概况
 
@@ -675,7 +675,7 @@ class_weight
 解释性配置规则：
 
 1. `feature_selection_enabled=false` 时仍会在状态中返回 disabled 摘要，并写入兼容的解释性 artifact 摘要。
-2. `feature_window_count` 只影响传统 ML 和无卷积模型的窗口重要性；指标为 `baseline_macro_f1 - perturbed_macro_f1`，正值越大表示遮挡/置乱该窗口后 macro-F1 下降越多，窗口越重要。
+2. `feature_window_count` 只影响传统 ML 和无卷积模型的窗口重要性；它是请求值，后端会选择与请求值最接近、且能整除实际特征数的窗口数，保证每个窗口覆盖完全相同的点数。例如 160 个特征请求 100 窗时，实际生成 80 窗、每窗 2 点。JSON 产物用 `requested_window_count`、`window_count`、`window_width` 和 `window_policy="nearest_divisor_equal_width"` 明确记录解析结果。指标为 `masked_true_class_log_loss - original_true_class_log_loss`，等价于 `log(p_before / p_after)`。正值越大表示遮挡该窗口后真实类别置信度受损越明显。
 3. 卷积模型和 `transformer1d` 继续使用原有单样品解释：卷积/ResNet/Inception/TCN 用 Grad-CAM-like，Transformer 用输入梯度，DSCARNet 用 SAR/CAR 双通路 2D Grad-CAM 回投。
 4. `feature_top_k` 控制每个样品或聚合结果展示的前若干重要区间。
 5. `dscarnet_pca_components` 和 `dscarnet_cluster_channels` 只对 `model_type=dscarnet` 生效。
@@ -888,8 +888,8 @@ storage/runs/{run_id}/
 | hyperparameter_search.csv | 传统模型每折小范围参数搜索记录；深度模型通常为空或仅含固定配置 |
 | model.pt | 深度学习模型；留一 CV 时仅为最后一折模型，holdout 时为本次训练模型 |
 | model.pkl | 传统机器学习模型；留一 CV 时仅为最后一折模型，holdout 时为本次训练模型 |
-| feature_importance.json/csv | 聚合重要区间；传统模型为 `baseline_macro_f1 - perturbed_macro_f1` |
-| sample_feature_importance.json/csv | 深度模型 test 集单样品重要区间，前端优先展示 |
+| feature_importance.json/csv | 聚合重要区间；传统及无卷积模型按真实类别等权聚合 Log-loss 增量 |
+| sample_feature_importance.json/csv | test 集单样品重要区间；传统及无卷积模型同时生成，正式前端只展示该单样本结果 |
 | dscarnet_mapping.json | DSCARNet SAR/CAR 映射元数据，仅 DSCARNet 生成 |
 | dscarnet_pca.joblib | DSCARNet PCA 对象，仅写入 run 目录，当前下载接口不开放 |
 | dscarnet_sar_aggmap.joblib | DSCARNet SAR AggMap 对象，仅写入 run 目录，当前下载接口不开放 |

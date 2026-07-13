@@ -46,17 +46,50 @@ def test_missing_dscarnet_dependency_does_not_break_catalog(monkeypatch):
     assert by_id['cnn_mamba1d']['available'] is False
 
 
-def test_model_catalog_initialization_waits_for_modules_and_disables_unsafe_fallback():
+def test_dscarnet_catalog_uses_project_lapjv_compatibility(monkeypatch):
+    from backend.app import dscarnet_mapping
+    from backend.app.routers import catalog
+
+    original_find_spec = catalog.importlib.util.find_spec
+    loader_calls = []
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == 'aggmap':
+            return object()
+        if name == 'lapjv':
+            return None
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(catalog.importlib.util, 'find_spec', fake_find_spec)
+    monkeypatch.setattr(
+        dscarnet_mapping,
+        '_load_aggmap_class',
+        lambda: loader_calls.append(True) or object(),
+    )
+
+    assert catalog._dscarnet_capability() == (True, None)
+    assert loader_calls == [True]
+
+
+def test_model_catalog_initialization_has_module_and_dom_ready_paths():
     content = Path('static/index.html').read_text(encoding='utf-8')
     fallback = content.split('function renderModelCatalogFallback', 1)[1].split('async function loadModelCatalog', 1)[0]
 
     assert 'window.addEventListener("autoai:modules-ready", initializeApiBackedUi' in content
+    assert 'apiBackedUiInitialized' in content
+    assert 'window.setTimeout(initializeApiBackedUi, 1000)' in content
+    assert 'apiWithTimeout("/api/models", 30000)' in content
     assert 'window.AutoAIRequest && window.AutoAITrainingStore' in content
-    assert 'api("/api/models")' in content
     assert 'select.replaceChildren()' in fallback
     assert 'select.disabled = true' in fallback
     assert '<option value="pls_da">PLS-DA</option>' not in content
     assert '<option value="dscarnet">DSCARNet</option>' not in content
+
+
+def test_model_option_visibility_tolerates_removed_optional_blocks():
+    content = Path('static/index.html').read_text(encoding='utf-8')
+
+    assert '$("trainTimeBlock")?.classList.toggle("hidden", traditional)' in content
 
 
 def test_training_store_announces_module_readiness():
