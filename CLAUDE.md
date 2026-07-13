@@ -3,13 +3,13 @@
 - 默认遵循本项目 `AGENTS.md` 的协作、验证和交付规则。
 - Git 只保留代码、配置和文档；数据、训练产物、缓存、视频、模型、压缩包、二进制工具不进 Git。
 - 提交前只 stage 本次任务相关代码/文档，禁止在项目根目录盲用 `git add -A` 把数据或产物扫进索引。
-- 除自动化测试用例外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，交付前还需要用项目根目录的本地 `data.csv` 跑一次真实数据流程验证；`data.csv` 是本地验证数据，不能提交进 Git。
+- 除自动化测试用例外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，项目根目录存在本地 `data.csv` 时还需要跑一次真实数据流程验证；`data.csv` 是本地验证数据，不能提交进 Git。
 - `data.csv` 验证优先选择轻量模型完成一次训练/评估闭环；如果因为耗时、环境、数据缺失或数据状态无法运行，必须在交付说明中明确写出未运行原因。
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **AutoAI** (1682 symbols, 3825 relationships, 132 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **AutoAI** (1171 symbols, 2424 relationships, 99 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

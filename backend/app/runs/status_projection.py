@@ -129,10 +129,13 @@ def recover_status_from_artifacts(run_dir: Path, payload: dict[str, Any]) -> dic
         changed = True
 
     history = _read_history(run_dir / 'history.csv')
-    if history and not recovered.get('history'):
-        recovered['history'] = history
-        recovered['actual_epochs'] = len(history)
-        changed = True
+    if history:
+        if not recovered.get('history'):
+            recovered['history'] = history
+            changed = True
+        if recovered.get('actual_epochs') is None:
+            recovered['actual_epochs'] = len(recovered.get('history') or history)
+            changed = True
 
     config = _read_json_object(run_dir / 'config.json')
     if config:

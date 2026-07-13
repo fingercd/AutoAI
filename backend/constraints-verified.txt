@@ -1,0 +1,28 @@
+# Versions verified together on Windows with Python 3.12.12.
+# This is a reproducibility aid, not the only supported environment.
+fastapi==0.115.9
+uvicorn==0.40.0
+python-multipart==0.0.22
+pydantic==2.11.9
+numpy==2.2.6
+pandas==3.0.3
+scipy==1.13.1
+joblib==1.4.2
+scikit-learn==1.6.1
+xgboost==2.1.1
+torch==2.5.1
+rampy==0.6.4
+matplotlib==3.10.0
+pytest==9.0.3
+httpx==0.27.0
+aggmap==1.2.1
+colored==2.3.2
+colorlog==6.10.1
+future==1.0.0
+pynndescent==0.6.0
+python-highcharts==0.4.2
+umap-learn==0.5.12
+numba==0.65.1
+llvmlite==0.47.0
+seaborn==0.13.2
+tqdm==4.67.1

@@ -1,172 +1,139 @@
-# AutoAI Server Deployment Notes
+# AutoAI-v2 服务器部署说明
 
-目标：把本地项目部署到校园集群，使用服务器 Miniconda/Anaconda 环境，在 `node3` 常驻运行 Web 服务；本地用户通过 SSH 隧道访问网页并提交训练。
+目标是在校园集群中运行 FastAPI Web 服务和独立训练 worker，并通过 SSH 隧道从本地访问。当前已验证的解释器是 Python 3.12.12；集群 GPU/CUDA 组合必须按实际驱动选择 PyTorch。
 
-> 当前状态（2026-07-06）：主服务仍是 FastAPI + `static/index.html` 同源托管。训练任务使用 FastAPI `BackgroundTasks` 和 `storage/runs/{run_id}/status.json` 记录状态，尚未切换为独立队列 worker。色谱主页面默认调用 HPLC 三步预处理；Transformer 已注册；预处理页已有曲线预览和 HPLC 原始/处理后对比。
-
-## 1. 服务器约定
+## 1. 目录与访问约定
 
 ```text
-登录入口：ibmnode / 10.49.16.5:8822
-默认运行节点：node3
-联网安装节点：node2
-项目目录：~/AutoAI
+项目目录：~/AutoAI-v2
 服务端口：8000
 推荐访问：SSH tunnel
 ```
 
-不建议第一版直接改 Nginx、防火墙或系统服务。集群内 compute node 往往是内网地址，本地电脑通常不能直接访问 `node3:8000`，所以推荐隧道：
+本地隧道示例：
 
 ```powershell
 ssh -N -L 8000:127.0.0.1:8000 node3
 ```
 
-然后本地浏览器打开：
+浏览器打开 <http://127.0.0.1:8000/>。
 
-```text
-http://127.0.0.1:8000/
-```
+具体登录入口、跳板机、端口和计算节点属于部署环境配置，不应硬编码进公开脚本或提交凭据。
 
-## 2. 上传项目
+## 2. 获取私密仓库
 
-从本地项目根目录打包，建议排除训练输出：
-
-```powershell
-Compress-Archive -Path backend,static,deploy,docs,data.csv,README.md,CONTEXT.md,AGENTS.md,AutoAI_开发计划.md -DestinationPath autoai_deploy.zip -Force
-scp autoai_deploy.zip ibmnode:~/autoai_deploy.zip
-```
-
-登录后解压：
+在已配置 GitHub 凭据的机器上：
 
 ```bash
-mkdir -p ~/AutoAI
-unzip -o ~/autoai_deploy.zip -d ~/AutoAI
-cd ~/AutoAI
+git clone https://github.com/fingercd/AutoAI-v2.git ~/AutoAI-v2
+cd ~/AutoAI-v2
 ```
 
-## 3. 在 node2 安装依赖
+仓库不包含 `data.csv`、上传数据、模型或历史运行产物。不要把本地附件或内部计划打入部署包。
 
-如果 home 是共享文件系统，建议在联网的 node2 执行：
+## 3. Python 3.12 与依赖
+
+在可联网节点创建环境：
 
 ```bash
-ssh node2
-cd ~/AutoAI
-bash deploy/install_on_node2.sh
+conda create -y -n autoai-v2 python=3.12
+conda activate autoai-v2
+python -m pip install --upgrade pip
 ```
 
-该脚本会创建或复用 `autoai` conda 环境，并安装：
-
-```text
-fastapi
-uvicorn
-python-multipart
-pandas
-numpy
-scikit-learn
-torch
-matplotlib
-rampy
-aggmap 及 DSCARNet 所需兼容依赖
-```
-
-DSCARNet 依赖 `aggmap==1.2.1`，当前建议按 `backend/requirements.txt` 中说明使用 `--no-deps` 安装 aggmap，再安装兼容依赖，避免旧版 PyPI 元数据拉取不合适的包。
-
-## 4. 在 node3 选择空闲 GPU
+CPU 或已单独安装正确 CUDA PyTorch 的环境：
 
 ```bash
-ssh node3
+python -m pip install -r backend/requirements.txt -c backend/constraints-verified.txt
+```
+
+需要 DSCARNet 时：
+
+```bash
+python -m pip install -r backend/requirements-dscarnet.txt -c backend/constraints-verified.txt
+python -m pip install aggmap==1.2.1 --no-deps
+```
+
+CUDA 版 PyTorch 应先按官方渠道安装；随后安装 requirements 时，pip 会保留满足版本范围的现有 torch。
+
+基本导入检查：
+
+```bash
+python -c "from backend.app.main import app; print(app.title)"
+python -c "from backend.app.runs.worker import RunWorker; print(RunWorker.__name__)"
+```
+
+`deploy/install_on_node2.sh` 是旧集群辅助脚本，默认环境名和 Python 版本可能不符合上述验证基线；使用前应显式审核或优先执行本节手动命令。
+
+## 4. 启动 Web 与 worker
+
+训练 HTTP 请求只创建 SQLite 中的 queued Run。FastAPI 不使用 BackgroundTasks 执行训练；必须同时运行独立 worker。
+
+终端 1（Web）：
+
+```bash
+cd ~/AutoAI-v2
+conda activate autoai-v2
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+终端 2（worker）：
+
+```bash
+cd ~/AutoAI-v2
+conda activate autoai-v2
+python -m backend.app.runs.worker
+```
+
+需要对局域网直接监听时才将 host 改为 `0.0.0.0`，并先确认集群安全策略。
+
+仓库中的 `deploy/run_on_node3.sh` 与 `deploy/start_persistent_node3.sh` 目前只管理 Web 进程，且默认 `APP_DIR=$HOME/AutoAI`。在 v2 中使用时必须显式传入：
+
+```bash
+APP_DIR="$HOME/AutoAI-v2" bash deploy/run_on_node3.sh
+```
+
+worker 仍需由另一个终端、SGE 作业或集群进程管理器独立托管。不要仅启动 Web 后就进行训练验收。
+
+## 5. GPU 选择
+
+```bash
 nvidia-smi
+export CUDA_VISIBLE_DEVICES=<空闲GPU编号>
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-若 GPU 6 空闲：
+Web 与 worker 可使用相同环境；GPU 环境变量应设置在 worker 进程上。
+
+## 6. SGE
+
+如果服务必须通过 SGE：
 
 ```bash
-export CUDA_VISIBLE_DEVICES=6
-```
-
-若 GPU 7 空闲：
-
-```bash
-export CUDA_VISIBLE_DEVICES=7
-```
-
-## 5. 在 node3 启动服务
-
-临时前台运行：
-
-```bash
-cd ~/AutoAI
-bash deploy/run_on_node3.sh
-```
-
-常驻后台运行：
-
-```bash
-cd ~/AutoAI
-bash deploy/start_persistent_node3.sh
-```
-
-查看日志：
-
-```bash
-tail -f ~/AutoAI/storage/logs/autoai.out.log
-tail -f ~/AutoAI/storage/logs/autoai.err.log
-```
-
-停止服务：
-
-```bash
-cd ~/AutoAI
-bash deploy/stop_persistent_node3.sh
-```
-
-## 6. 通过 SGE 提交
-
-如果集群要求服务也通过 SGE 提交：
-
-```bash
-cd ~/AutoAI
+cd ~/AutoAI-v2
 qsub deploy/qsub_autoai_node3.sh
 qstat
 ```
 
-## 7. 本地访问验收
+提交前审核脚本中的目录、队列、GPU 和日志参数，并确保另有 worker 作业。仓库脚本是环境模板，不替代集群管理员规范。
 
-在本地 PowerShell 开隧道：
+## 7. 验收
 
-```powershell
-.\deploy\local_tunnel.ps1
+```bash
+curl http://127.0.0.1:8000/health
 ```
 
-或直接：
+验收清单：
 
-```powershell
-ssh -N -L 8000:127.0.0.1:8000 node3
-```
+1. `/health` 返回 `{"status":"ok"}`，首页和 `/docs` 可访问。
+2. 上传一份本地建模 CSV，返回数据摘要和稳定 `dataset_id`。
+3. 创建训练任务后，状态从 queued/running 进入 success；如果一直 queued，检查 worker。
+4. 页面显示 train/valid/test 指标、macro-F1、混淆矩阵和训练/解释性图表。
+5. 能下载 predictions、metrics 和对应模型 artifact。
+6. 拉曼与 HPLC 预处理能下载统一 CSV；HPLC 曲线同时包含 `raw_y` 与 `processed_y`。
 
-浏览器打开：
+不要依赖固定的样本数、类别名、GPU 编号或模型文件扩展名作为部署成功标准。
 
-```text
-http://127.0.0.1:8000/
-```
+## 8. 持久化与备份
 
-验收标准：
-
-1. 首页能打开。
-2. `data.csv` 自动加载并显示 90 条样本、Fe/Si 各 45 条。
-3. 点击“开始训练”后状态从 `pending/running` 变为 `success`。
-4. 页面显示 test accuracy / macro F1。
-5. 能下载 `predictions.csv`、`metrics.json`、`model.pt`。
-6. 能下载 `feature_importance.json/csv` 和 `sample_feature_importance.json/csv`；如果模型是 MLP，页面应显示不支持解释性分析而不是报错。
-7. 拉曼/色谱预处理上传后能下载统一格式 CSV；色谱默认 HPLC 流程应显示原始/处理后曲线和共同时间轴信息。
-
-## 8. 当前还需要继续补齐的生产功能
-
-当前版本已经能完成本地/服务器训练闭环，但还需要继续加强：
-
-- 训练任务改为真正的队列 Worker，避免 Web 进程重启丢状态。
-- 如确实需要交叉验证，再把 Repeat_index 整组划分扩展为完整多轮留一法；当前默认是 8/1/1 或外部测试集模式。
-- 增加 focal loss。
-- 增加用户级权限、任务隔离和上传配额。
-- 增加服务器端 systemd 或 SGE 长期运行策略的最终确认。
-- 若要通过接口下载 DSCARNet joblib 映射文件，需要扩展 artifact 白名单并补路径安全测试。
+运行状态位于 `storage/`，包括上传、SQLite 数据库、日志和 Run artifacts；该目录不进 Git。升级代码前应单独备份所需数据，并确保 Web 与 worker 停止或使用一致版本。不要把 `storage/` 复制回 Git 仓库。

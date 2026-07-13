@@ -43,9 +43,11 @@ def _projection(record: RunRecord) -> dict[str, Any]:
     )
     if record.error:
         payload['error'] = record.error
+    else:
+        payload.pop('error', None)
     if record.manifest_name:
         payload['manifest_name'] = record.manifest_name
-    return payload
+    return recover_status_from_artifacts(status_file.parent, payload)
 
 
 @router.post('/api/training/runs', status_code=202)

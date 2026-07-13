@@ -1,9 +1,27 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
 venv/
 env/
+
+# Local credentials and agent/tool state.
+.env
+.env.*
+!.env.example
+auth.json
+.sandbox-secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+.claude/
+.codex/
+.agents/
+.codegraph/
+.gitnexus/
 
 # Local data, generated outputs, and heavyweight artifacts must not enter Git.
 data.csv
@@ -14,6 +32,12 @@ data.csv
 work/
 outputs/
 storage/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
 autoai_deploy.zip
 *.zip
 *.7z
@@ -39,11 +63,31 @@ autoai_deploy.zip
 *.pyd
 *.node
 node_modules/
+vendor/
 .cache/
 .remotion/
 
-~$*.docx
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.pptx
+*.ppt
+~$*
 *.log
+*.pid
+*.out
+*.err
+
+# Local planning/review material and non-product UI explorations.
+docs/superpowers/
+docs/*-prompt.md
+static/ui-*.html
+static/instrument-workbench.css
+static/lims-portal.css
+static/notebook-studio.css
+static/notebook-studio.js
+/25
 
 # OMC (oh-my-claudecode) 工作区,2026-07-05 切到 superpowers 后启用
 .omc/

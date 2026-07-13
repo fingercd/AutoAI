@@ -1,0 +1,23 @@
+# Optional DSCARNet/AggMap runtime additions.
+#
+# AggMap 1.2.1 has obsolete PyPI dependency metadata (including
+# tensorflow-gpu and lapjv). Install this file first, then install AggMap
+# itself without dependency resolution:
+#
+#   python -m pip install -r backend/requirements-dscarnet.txt
+#   python -m pip install aggmap==1.2.1 --no-deps
+#
+# AutoAI supplies a SciPy linear-assignment compatibility layer for lapjv
+# and uses AggMap only for SAR/CAR mapping, not its TensorFlow AggModel.
+
+-r requirements.txt
+
+colored>=2,<3
+colorlog>=6,<7
+future>=1,<2
+matplotlib>=3.8,<4
+pynndescent>=0.5,<0.7
+python-highcharts==0.4.2
+seaborn>=0.13,<0.14
+tqdm>=4.66,<5
+umap-learn>=0.5.7,<0.6

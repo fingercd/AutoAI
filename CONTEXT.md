@@ -10,7 +10,7 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 - 入口脚本是 `run.py`。
 - 主要代码在 `backend/` 和 `static/`，主前端为 `static/index.html`。
 - 测试集中在 `backend/tests/test_smoke.py`。
-- 已有多个 UI 方案、模型相关改动和较多未跟踪文件，进入前必须先看 `git status --short`。
+- 正式前端只有 `static/index.html` 与 `static/js/`；历史 UI 画廊和未跟踪候选不属于产品快照。
 - 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
 - HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
@@ -50,6 +50,7 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 - 前端优先展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条和中文色标。
 - 聚合解释性产物是 `feature_importance.json/csv`；单样品解释性产物是 `sample_feature_importance.json/csv`。传统模型通常只有聚合重要性，状态可能是 `ready`、`disabled`、`failed`、`unsupported`。
 - DSCARNet 额外写入 `dscarnet_mapping.json`、`dscarnet_pca.joblib`、`dscarnet_sar_aggmap.joblib`、`dscarnet_car_aggmap.joblib`，但当前下载接口不对白名单外 joblib 文件开放。
+- 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。
 
 ## 运行方式
 
@@ -68,8 +69,8 @@ C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:ap
 打开：
 
 - `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/ui`
 - `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/health`
 
 ## 验证方式
 
@@ -89,8 +90,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 - 不要把 `.omc/state/`、缓存、模型权重、大数据加入 git。
 - 不要把 UI 方案、后端接口和训练逻辑混在一次大改里。
 
-## 下一步建议
+## 维护提醒
 
-1. 先整理 `.gitignore` 降低 git 状态噪声，但不要自动删除历史文件。
-2. 梳理 `static/ui-*` 多套 UI 方案，明确正式、候选和归档状态。
-3. 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
+- 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
+- 直接使用 uvicorn 不会启动训练 worker；本地一键入口 `run.py` 默认同时启动二者。

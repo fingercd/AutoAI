@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from backend.app.routers import runs as runs_router
 from backend.app.runs.contracts import RunRecord
@@ -54,13 +55,30 @@ def test_project_status_preserves_result_fields_while_record_state_stays_authori
     assert payload['completed_folds'] == 1
 
 
-def test_projection_recovers_legacy_success_status_from_artifacts_and_persists_it(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    'stored_status',
+    [
+        {'run_id': 'run-1', 'status': 'success', 'state': 'succeeded', 'version': 3, 'dataset_id': 'ds-1'},
+        {'run_id': 'run-1', 'status': 'running', 'state': 'running', 'version': 2, 'dataset_id': 'ds-1'},
+        {
+            'run_id': 'run-1',
+            'status': 'success',
+            'state': 'succeeded',
+            'version': 3,
+            'dataset_id': 'ds-1',
+            'history': [
+                {'fold_index': 1, 'epoch': 1, 'train_loss': 0.5, 'valid_accuracy': 0.75},
+                {'fold_index': 1, 'epoch': 2, 'train_loss': 0.3, 'valid_accuracy': 0.8},
+            ],
+        },
+        None,
+    ],
+)
+def test_projection_recovers_legacy_success_status_from_artifacts_and_persists_it(tmp_path, monkeypatch, stored_status):
     run_dir = tmp_path / 'run-1'
     run_dir.mkdir()
-    (run_dir / 'status.json').write_text(
-        json.dumps({'run_id': 'run-1', 'status': 'success', 'state': 'succeeded', 'version': 3, 'dataset_id': 'ds-1'}),
-        encoding='utf-8',
-    )
+    if stored_status is not None:
+        (run_dir / 'status.json').write_text(json.dumps(stored_status), encoding='utf-8')
     metrics = {
         'train': {'accuracy': 0.9},
         'valid': {'accuracy': 0.8},

@@ -1,48 +1,115 @@
-# AutoAI — 谱学数据预处理与自动建模平台
+# AutoAI-v2
 
-## 快速启动
+AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
+
+当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
+
+## 正式功能
+
+- 拉曼：按行号或 X 轴范围截取，支持基线校正及两种“截取/校正”顺序。
+- HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
+- 分类评估：分层 8:1:1、按 `Repeat_index` 留一交叉验证、独立测试集 holdout。
+- 10 个模型：`pls_da`、`svm`、`random_forest`、`xgboost`、`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
+- 可解释性：传统模型使用窗口置乱后的 macro-F1 下降；卷积模型使用 Grad-CAM-like；Transformer 使用输入梯度；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
+
+历史 UI 画廊已经从正式产品移除；未跟踪的界面候选不属于本仓库发布内容。
+
+## 环境要求
+
+- 已验证：Python `3.12.12`。
+- CPU 环境可直接安装核心依赖。
+- NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
+- DSCARNet 额外依赖 AggMap；其余 9 个模型不要求 AggMap。
+
+建议新建虚拟环境：
 
 ```bash
-# 首次运行先安装依赖
-python -m pip install -r backend/requirements.txt
-
-# 命令行启动（自动打开浏览器）
-python run.py
-
-# 自定义端口 / 热重载
-python run.py --port 9000 --reload
+python -m venv .venv
 ```
 
-PyCharm：右键 `run.py` → Run 即可。
-
-如果使用本机已有的 pytorch conda 环境，也可以直接：
+Windows PowerShell：
 
 ```powershell
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run.py
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-等效的手动命令：
+Linux/macOS：
+
+```bash
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+## 三种安装方式
+
+### 核心运行环境
+
+普通兼容安装：
+
+```bash
+python -m pip install -r backend/requirements.txt
+```
+
+使用当前环境验证过的直接依赖版本基线：
+
+```bash
+python -m pip install -r backend/requirements.txt -c backend/constraints-verified.txt
+```
+
+### 开发和测试环境
+
+```bash
+python -m pip install -r backend/requirements-dev.txt -c backend/constraints-verified.txt
+```
+
+### DSCARNet 可选环境
+
+AggMap 1.2.1 的 PyPI 元数据包含过时的 `tensorflow-gpu` 和 `lapjv` 依赖，必须分两步安装：
+
+```bash
+python -m pip install -r backend/requirements-dscarnet.txt -c backend/constraints-verified.txt
+python -m pip install aggmap==1.2.1 --no-deps
+```
+
+AutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
+
+## 启动
+
+### 一键启动
+
+`run.py` 默认同时启动网页服务与本地训练 worker，并打开浏览器：
+
+```bash
+python run.py
+```
+
+常用参数：
+
+```bash
+python run.py --help
+python run.py --host 0.0.0.0 --port 8000 --no-browser
+python run.py --reload
+python run.py --no-worker
+```
+
+### 手动拆分 Web 与 worker
+
+终端 1：
 
 ```bash
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-打开：
+终端 2：
 
-```text
-http://127.0.0.1:8000/          → 主页面
-http://127.0.0.1:8000/ui        → UI 方案画廊
-http://127.0.0.1:8000/docs      → Swagger API 文档
+```bash
+python -m backend.app.runs.worker
 ```
 
-## 功能
+只启动 uvicorn 时，训练任务会停留在 queued，直到 worker 启动。
 
-- **数据预处理**：上传拉曼 / 色谱原始 CSV，范围截取（按行 / 按 X 轴）、生成统一建模 CSV；拉曼支持基线校正，色谱主流程默认使用 HPLC 三步预处理（统一时间轴插值、逐条消负、面积归一化）
-- **AI 建模**：上传建模 CSV → 选择分层 holdout、`Repeat_index` 留一交叉验证或独立测试集 holdout → 查看指标、混淆矩阵和预测结果 → 下载模型与结果文件
-- **10 类分类模型**：PLS-DA / SVM / Random Forest / XGBoost + 1D-CNN / 1D-Transformer / 1D-ResNet / 1D-Inception / 1D-TCN / DSCARNet
-- **可解释性分析**：卷积模型使用 1D Grad-CAM-like，1D-Transformer 使用输入梯度归因，DSCARNet 使用 SAR/CAR 双通路 2D Grad-CAM 并回投到 1D 特征；传统 ML 使用 `baseline_macro_f1 - perturbed_macro_f1` 的窗口重要性
-- **分类限定**：当前版本不实现回归任务；PLSR、SVR 是回归变体，文档中保留说明但前端训练选项不启用
-- **8 套 UI 方案**：Workbench / Wizard / Dashboard / Console / Minimal Lab / Swiss / Dark Instrument / Warm Paper
+### 正式本地 URL
 
 ## 分类模型 v2 契约
 
@@ -53,65 +120,94 @@ http://127.0.0.1:8000/docs      → Swagger API 文档
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
 解释性方法矩阵：六个传统模型使用窗口置换后的 macro-F1 下降；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用原始特征轴上的 `abs(gradient * input)`；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
+- 主页面：<http://127.0.0.1:8000/>
+- API 文档：<http://127.0.0.1:8000/docs>
+- 健康检查：<http://127.0.0.1:8000/health>
 
-训练请求只在 SQLite RunRepository 中创建 `queued` Run；独立本机 worker 通过 claim token 和 lease 执行训练，FastAPI 进程不以内置后台任务承担训练。`status.json` 是兼容投影，Run 成功前必须先原子提交 Manifest。请求不接受 `owner_id` 或 `tenant_id`，未来身份只由服务端 Principal 注入。
+## 建模 CSV
 
-本地 worker 可单独启动：
-
-```powershell
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m backend.app.runs.worker
-```
-
-## 当前前端说明
-
-主工作台是 `static/index.html`。`/ui` 下的多套界面是候选或历史 UI 方案，用于比较设计，不一定代表当前正式交互。
-
-色谱主页面默认提交到 `/api/preprocess/hplc`，并默认开启三步 HPLC 标准流程：`hplc_interpolate=true`、`hplc_subtract_min=true`、`hplc_normalize_area=true`。旧的 `/api/preprocess/chromatography` 仍保留为简单范围截取接口。
-
-模型配置里，“重要性分段数”只对传统 ML 显示并提交，因为传统 ML 使用窗口遮挡/置乱后 `macro-F1` 的下降量做重要性分析。深度模型解释不依赖该分段数。
-
-训练完成后，run 目录会保存 `config.json`、`label_map.json`、`split.json`、`metrics.json`、`cv_metrics.json`、`fold_metrics.csv`、`predictions.csv`、`cv_predictions.csv`、`hyperparameter_search.csv`、模型文件和解释性 JSON/CSV。留一交叉验证时模型文件只对应最后一折，最终报告性能以 CV 汇总为准。DSCARNet 额外保存 AggMap/PCA 映射元数据与 joblib 文件；当前下载接口只开放白名单内的常规 artifact。
-
-DSCARNet 依赖 `aggmap==1.2.1` 及其兼容依赖。`backend/requirements.txt` 中记录了当前 conda 环境推荐的安装方式：`python -m pip install aggmap==1.2.1 --no-deps`，避免被旧 PyPI 元数据拉取不合适的依赖。
-
-## 建模数据划分说明
-
-当前分类评估有三种口径：
-
-- 没有独立测试集，选择普通划分：按标签比例分层抽样，默认 `train : valid : test = 8 : 1 : 1`。
-- 没有独立测试集，选择留一交叉验证：每折留 1 个 `Repeat_index` 独立样品组作为 test，其余样品组默认按 `8 : 2` 划分 train/valid。
-- 有独立测试集：独立测试集只作为最终 test，主数据默认按 `8 : 2` 划分 train/valid。
-
-同一个 `Repeat_index` 下的所有重复测量会全部进入同一个集合，避免同一样品的重复测量同时出现在训练集和测试集里造成数据泄漏和指标虚高。所有标准化参数、传统模型小范围调参和深度模型 early stopping 都只使用当前训练集/验证集完成。
-
-上传建模 CSV 时需要保证：
-
-- 同一个 `Repeat_index` 内只能对应一个 `Label`。
-- 每个 `Repeat_index` 的重复测量次数应保持一致。
-- `Label` 永远按分类标签编码；即使是数字，也不会按连续回归值处理。
-
-例如 50 条数据、10 个 `Repeat_index`、每组 5 条重复测量时：
+建模文件固定需要以下字段：
 
 ```text
-分层 holdout: train 8 组、valid 1 组、test 1 组
-留一交叉验证: 10 个外层折，每折 test 1 组，其余 9 组再按 8:2 生成 train/valid
-独立测试集: 主数据 train/valid = 8:2，独立测试文件作为 test
+Index, Name, XXX, Intensity, Label, Repeat_index
+```
+
+- `XXX` 与 `Intensity` 是等长数值数组。
+- `Label` 必填并始终作为分类类别。
+- `Repeat_index` 表示同一样品的重复测量组；同组不得混入多个 `Label`。
+- 不同样品的重复次数应一致。
+
+最小工作流程：
+
+1. 在网页上传拉曼/色谱原始 CSV 并完成预处理。
+2. 下载统一 CSV，补全 `Label` 与 `Repeat_index`。
+3. 将建模 CSV 上传到“AI 建模”。
+4. 选择模型与评估口径，创建 queued Run。
+5. worker 完成训练后查看 train/valid/test 指标、混淆矩阵、曲线和解释结果。
+6. 下载预测、指标和模型 artifact。
+
+仓库不附带真实 `data.csv`。本地验证数据、上传文件、模型和运行结果都位于 Git 管理范围之外。
+
+## 目录结构
+
+```text
+backend/app/                 FastAPI、预处理、训练、Run 队列与模型
+backend/tests/               自动化测试
+backend/requirements*.txt    核心、开发、DSCARNet 依赖与验证约束
+static/index.html            正式网页入口
+static/js/                   正式前端模块
+deploy/                      集群部署脚本与说明
+docs/                        接口契约、ADR 和发布规范
+storage/                     本地上传、SQLite 与训练产物（不进 Git）
+run.py                       一键启动入口
 ```
 
 ## 验证
 
-```powershell
-Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
-$env:PYTHONPATH='D:\PythonProject\AutoAI'
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
+安装开发依赖后，在仓库根目录运行：
+
+```bash
+python -m pytest backend/tests -q
+python -m compileall backend/app -q
+python run.py --help
+python -c "from backend.app.main import app; print(app.title)"
+python -c "from backend.app.runs.worker import RunWorker; print(RunWorker.__name__)"
 ```
 
-前端 `static/index.html` 是 HTML 内联脚本，不能直接 `node --check static/index.html`。需要先抽取 `<script>` 内容再检查：
+服务启动后：
 
-```powershell
-$html = [System.IO.File]::ReadAllText('D:\PythonProject\AutoAI\static\index.html', [System.Text.Encoding]::UTF8)
-$matches = [regex]::Matches($html, '<script\b[^>]*>([\s\S]*?)</script>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-$script = ($matches | ForEach-Object { $_.Groups[1].Value }) -join "`n"
-$script | node --check --input-type=commonjs
+```bash
+curl http://127.0.0.1:8000/health
 ```
+
+应返回：
+
+```json
+{"status":"ok"}
+```
+
+## 常见问题
+
+### 安装了 CUDA 驱动但 PyTorch 仍使用 CPU
+
+检查 `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`。若为 `False`，按 PyTorch 官方渠道重新安装与驱动/CUDA 匹配的 wheel，然后再安装 AutoAI 其余依赖。
+
+### AggMap 安装时尝试拉取 tensorflow-gpu
+
+不要直接执行普通的 `pip install aggmap`。先安装 `requirements-dscarnet.txt`，再执行 `python -m pip install aggmap==1.2.1 --no-deps`。
+
+### 任务一直显示 queued
+
+确认独立 worker 正在运行，或改用默认会同时启动 worker 的 `python run.py`。
+
+### 修改代码后浏览器仍显示旧行为
+
+未使用 `--reload` 的服务不会自动加载新代码。停止旧进程并重启，然后刷新浏览器。
+
+### 上传后提示 Label 或 Repeat_index 无效
+
+检查六个必需字段、空值、数组长度，以及同一 `Repeat_index` 是否只对应一个标签。
+
+## 协作与发布
+
+前后端契约见 `docs/frontend_backend_handoff.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。
