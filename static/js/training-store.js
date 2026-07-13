@@ -18,3 +18,4 @@ export async function cancelRun(runId) {
 }
 
 window.AutoAITrainingStore = { createRun, pollRun, cancelRun };
+window.dispatchEvent(new CustomEvent('autoai:modules-ready'));

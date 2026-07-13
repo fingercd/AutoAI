@@ -62,3 +62,29 @@ def test_worker_renews_lease_while_execution_is_running(tmp_path):
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert repo.get(created.run_id).state == 'succeeded'
+
+
+def test_worker_projects_failed_record_after_execution_error(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    created = repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
+    projected = []
+
+    def execute(_):
+        raise RuntimeError('training exploded')
+
+    worker = RunWorker(
+        repository=repo,
+        worker_id='test-worker',
+        execute=execute,
+        now=lambda: datetime.now(timezone.utc),
+        project_status=projected.append,
+    )
+
+    assert worker.run_once() is True
+    failed = repo.get(created.run_id)
+    assert failed.state == 'failed'
+    assert failed.error == 'training exploded'
+    assert len(projected) == 1
+    assert projected[0].state == 'failed'
+    assert projected[0].error == 'training exploded'

@@ -1267,30 +1267,6 @@ def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
     assert len(payload["curves"][0]["raw_y"]) == 9
 
 
-@pytest.mark.parametrize("path", ["/ui", "/ui/workbench", "/ui/wizard", "/ui/dashboard", "/ui/console"])
-def test_ui_variant_routes(path):
-    from fastapi.testclient import TestClient
-    from backend.app.main import app
-
-    client = TestClient(app)
-    response = client.get(path)
-
-    assert response.status_code == 200
-    assert "AutoAI" in response.text
-
-
-def test_ui_variant_assets_are_served():
-    from fastapi.testclient import TestClient
-    from backend.app.main import app
-
-    client = TestClient(app)
-
-    assert client.get("/static/autoai-variants.css").status_code == 200
-    script_response = client.get("/static/autoai-variants.js")
-    assert script_response.status_code == 200
-    assert "initAutoAIVariant" in script_response.text
-
-
 def test_main_ui_prefers_sample_feature_importance_panel():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
