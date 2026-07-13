@@ -53,3 +53,14 @@ def test_official_ui_external_audit_never_renders_cv_or_fold_progress():
     assert '独立测试集最终评估' in content
     assert 'const progressMarkup = isExternal' in content
     assert 'renderTrainingAudit(run);' in content
+
+
+def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'id="dscarnetInputMode"' in content
+    assert '<option value="sar">SAR</option>' in content
+    assert '<option value="car">CAR</option>' in content
+    assert '<option value="dual">SAR + CAR</option>' in content
+    assert 'dscarnet_input_mode: $("dscarnetInputMode").value' in content
+    assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content

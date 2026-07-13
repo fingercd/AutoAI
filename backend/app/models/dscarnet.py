@@ -241,24 +241,29 @@ class DSCARStem2D(nn.Module):
         input_height: int,
         input_channels: int = 1,
         conv1_kernel_size: int = 19,
+        filter_number: int = 64,
         batchnorm: bool = False,
     ):
         super().__init__()
         padding = int(conv1_kernel_size) // 2
+        f1 = int(filter_number)
+        f2 = max(f1 + 1, int(round(f1 * 1.5)))
+        f3 = max(f2 + 1, f1 * 2)
+        self.out_channels = f3
         self.conv1 = _conv2d_bn_stem(
             input_channels,
-            64,
+            f1,
             kernel_size=conv1_kernel_size,
             padding=padding,
             batchnorm=batchnorm,
         )
 
         if input_height > 25:
-            self.conv2 = _conv2d_bn_stem(64, 96, kernel_size=5, stride=2, padding=0, batchnorm=batchnorm)
-            self.conv3 = _conv2d_bn_stem(96, 128, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
+            self.conv2 = _conv2d_bn_stem(f1, f2, kernel_size=5, stride=2, padding=0, batchnorm=batchnorm)
+            self.conv3 = _conv2d_bn_stem(f2, f3, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
         else:
-            self.conv2 = _conv2d_bn_stem(64, 96, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
-            self.conv3 = _conv2d_bn_stem(96, 128, kernel_size=5, stride=1, padding=2, batchnorm=batchnorm)
+            self.conv2 = _conv2d_bn_stem(f1, f2, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
+            self.conv3 = _conv2d_bn_stem(f2, f3, kernel_size=5, stride=1, padding=2, batchnorm=batchnorm)
 
         self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
@@ -350,6 +355,7 @@ class SingleDSCARNet2D(nn.Module):
         input_shape: tuple[int, ...],
         n_outputs: int = 2,
         conv1_kernel_size: int = 19,
+        filter_number: int = 64,
         n_inception: int = 1,
         dense_layers: Sequence[int] = (128,),
         dense_avf: str = "relu",
@@ -363,13 +369,14 @@ class SingleDSCARNet2D(nn.Module):
             input_height=h,
             input_channels=input_channels,
             conv1_kernel_size=conv1_kernel_size,
+            filter_number=filter_number,
             batchnorm=batchnorm,
         )
 
-        in_channels = 128
+        in_channels = self.stem.out_channels
         blocks: list[InceptionBlock2D] = []
         for i in range(n_inception):
-            unit = 48 * (2 ** i)
+            unit = max(4, int(round(filter_number * 0.75))) * (2 ** i)
             block = InceptionBlock2D(in_channels, unit=unit, batchnorm=batchnorm)
             blocks.append(block)
             in_channels = block.out_channels
@@ -509,6 +516,7 @@ class DualDSCARNet2D(nn.Module):
         input_shape2: tuple[int, ...],
         n_outputs: int = 2,
         conv1_kernel_size: int = 19,
+        filter_number: int = 64,
         n_inception: int = 1,
         dense_layers: Sequence[int] = (128,),
         dense_avf: str = "relu",
@@ -522,12 +530,13 @@ class DualDSCARNet2D(nn.Module):
             input_height=h1,
             input_channels=input_channels1,
             conv1_kernel_size=conv1_kernel_size,
+            filter_number=filter_number,
             batchnorm=batchnorm,
         )
-        ch1 = 128
+        ch1 = self.stem1.out_channels
         blocks1: list[InceptionBlock2D] = []
         for i in range(n_inception):
-            unit = 48 * (2 ** i)
+            unit = max(4, int(round(filter_number * 0.75))) * (2 ** i)
             block = InceptionBlock2D(ch1, unit=unit, batchnorm=batchnorm)
             blocks1.append(block)
             ch1 = block.out_channels
@@ -539,12 +548,13 @@ class DualDSCARNet2D(nn.Module):
             input_height=h2,
             input_channels=input_channels2,
             conv1_kernel_size=conv1_kernel_size,
+            filter_number=filter_number,
             batchnorm=batchnorm,
         )
-        ch2 = 128
+        ch2 = self.stem2.out_channels
         blocks2: list[InceptionBlock2D] = []
         for i in range(n_inception):
-            unit = 48 * (2 ** i)
+            unit = max(4, int(round(filter_number * 0.75))) * (2 ** i)
             block = InceptionBlock2D(ch2, unit=unit, batchnorm=batchnorm)
             blocks2.append(block)
             ch2 = block.out_channels
@@ -593,6 +603,7 @@ def _get_activation(name: str) -> nn.Module:
 
 def single_dscarnet(
     input_shape: tuple[int, ...],
+    filter_number: int = 64,
     n_outputs: int = 2,
     conv1_kernel_size: int = 19,
     n_inception: int = 1,
@@ -606,6 +617,7 @@ def single_dscarnet(
         input_shape=input_shape,
         n_outputs=n_outputs,
         conv1_kernel_size=conv1_kernel_size,
+        filter_number=filter_number,
         n_inception=n_inception,
         dense_layers=dense_layers,
         dense_avf=dense_avf,
@@ -617,6 +629,7 @@ def single_dscarnet(
 def dual_dscarnet(
     input_shape1: tuple[int, ...],
     input_shape2: tuple[int, ...],
+    filter_number: int = 64,
     n_outputs: int = 2,
     conv1_kernel_size: int = 19,
     n_inception: int = 1,
@@ -631,6 +644,7 @@ def dual_dscarnet(
         input_shape2=input_shape2,
         n_outputs=n_outputs,
         conv1_kernel_size=conv1_kernel_size,
+        filter_number=filter_number,
         n_inception=n_inception,
         dense_layers=dense_layers,
         dense_avf=dense_avf,

@@ -420,7 +420,7 @@ def test_dscarnet_registry_uses_dual_2d_builder():
     assert not isinstance(model, DSCARNet1D)
     assert model.last_avf is None
     logits = model(torch.ones(2, 1, 5, 5), torch.ones(2, 1, 5, 5))
-    assert logits.shape == (2, 2)
+    assert logits.shape == (2, 1)
 
 
 def test_registry_allows_only_current_active_classification_models():
@@ -1404,8 +1404,10 @@ def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
     assert "featureSegmentKind" in content
     assert "特征点" in content
     assert "Grad-CAM 与输入梯度归因差异较大" not in content
-    assert 'id="intensitySummary"' in content
-    assert "强度点数" in content
+    assert "renderIntensitySummary" not in content
+    assert 'id="intensitySummary"' not in content
+    assert "强度点数" not in content
+    assert "强度已生成" not in content
 
 
 def test_main_ui_exposes_custom_split_and_cv_epoch_summary():

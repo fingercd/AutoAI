@@ -55,7 +55,7 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
 
 @pytest.mark.parametrize(
     ("sample_count", "expected_band", "expected_dropout"),
-    [(100, "small", 0.5), (101, "medium", 0.4), (300, "medium", 0.4), (301, "large", 0.3)],
+    [(100, "small", 0.5), (101, "medium", 0.4), (299, "medium", 0.4), (300, "large", 0.3)],
 )
 def test_model_profile_sample_boundaries(sample_count, expected_band, expected_dropout):
     from backend.app.models.profiles import build_model_profile
@@ -71,7 +71,7 @@ def test_model_profile_sample_boundaries(sample_count, expected_band, expected_d
 
 @pytest.mark.parametrize(
     ("feature_count", "expected_band"),
-    [(1000, "short"), (1001, "medium"), (3000, "medium"), (3001, "long")],
+    [(1000, "short"), (1001, "medium"), (2999, "medium"), (3000, "long")],
 )
 def test_model_profile_feature_boundaries(feature_count, expected_band):
     from backend.app.models.profiles import build_model_profile
@@ -128,7 +128,7 @@ def test_registry_builds_promoted_document_deep_models(model_type):
         sample_count=16,
     )
     logits = model(torch.randn(2, 1, 64))
-    assert logits.shape == (2, 2)
+    assert logits.shape == (2, 1)
 
 
 def test_traditional_candidate_grids_are_exact():
@@ -155,8 +155,8 @@ def test_traditional_candidate_grids_are_exact():
     random_forest = training._traditional_candidate_configs(config, "random_forest", 100, y_train)
     assert len(random_forest) == 18
     assert {candidate.random_forest_n_estimators for candidate in random_forest} == {500}
-    assert {candidate.random_forest_max_depth for candidate in random_forest} == {3, 5, 8}
-    assert {candidate.random_forest_min_samples_leaf for candidate in random_forest} == {1, 2}
+    assert {candidate.random_forest_max_depth for candidate in random_forest} == {3, 5, 10}
+    assert {candidate.random_forest_min_samples_leaf for candidate in random_forest} == {2, 5}
     assert {candidate.random_forest_max_features for candidate in random_forest} == {"sqrt", "log2", 0.1}
 
     xgboost = training._traditional_candidate_configs(config, "xgboost", 100, y_train)

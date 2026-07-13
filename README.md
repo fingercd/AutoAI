@@ -44,9 +44,15 @@ http://127.0.0.1:8000/docs      → Swagger API 文档
 - **分类限定**：当前版本不实现回归任务；PLSR、SVR 是回归变体，文档中保留说明但前端训练选项不启用
 - **8 套 UI 方案**：Workbench / Wizard / Dashboard / Console / Minimal Lab / Swiss / Dark Instrument / Warm Paper
 
-## 稳定 Run 架构基线
+## 分类模型 v2 契约
 
-稳定架构版本固定保留 master 已有的 10 个分类模型及其数学行为。新增模型、网络结构、二分类输出形式、DSCARNet 映射策略或传统模型搜索空间，必须使用独立模型计划并在固定数据集上验收。
+当前目录公开 **15 个目标分类模型**，且训练入口仅支持分类：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。`Label` 即使为数字也按类别编码，`Repeat_index` 不改名并等同文档中的 Sample_ID。
+
+新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。15 个目标模型是能力目录，不等于当前环境全部可训练：`cnn_mamba1d` 在 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
+
+评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
+
+解释性方法矩阵：六个传统模型使用窗口置换后的 macro-F1 下降；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用原始特征轴上的 `abs(gradient * input)`；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
 
 训练请求只在 SQLite RunRepository 中创建 `queued` Run；独立本机 worker 通过 claim token 和 lease 执行训练，FastAPI 进程不以内置后台任务承担训练。`status.json` 是兼容投影，Run 成功前必须先原子提交 Manifest。请求不接受 `owner_id` 或 `tenant_id`，未来身份只由服务端 Principal 注入。
 

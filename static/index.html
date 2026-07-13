@@ -581,8 +581,14 @@
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
                   <label>Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
-                  <label>DSCARNet inception blocks</label>
-                  <input id="dscarnetInceptionBlocks" type="number" value="1" min="1" max="3" />
+                  <div id="dscarnetOptions" class="hidden">
+                    <label>DSCARNet 输入模式</label>
+                    <select id="dscarnetInputMode">
+                      <option value="dual">SAR + CAR</option>
+                      <option value="sar">SAR</option>
+                      <option value="car">CAR</option>
+                    </select>
+                  </div>
                 </div>
                 <div id="traditionalOptions" class="hidden">
                   <div id="randomForestOptions" class="hidden">
@@ -1281,7 +1287,7 @@
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
-          dscarnet_inception_blocks: Number($("dscarnetInceptionBlocks").value),
+          dscarnet_input_mode: $("dscarnetInputMode").value,
           random_forest_n_estimators: Number($("rfEstimators").value),
           random_forest_max_depth: numberOrNull("rfMaxDepth"),
           random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
@@ -2288,19 +2294,6 @@
         $("hplcOptionsToggle").setAttribute("aria-expanded", String(!collapsed));
       }
 
-      function renderIntensitySummary(summary = []) {
-        if (!summary.length) return "";
-        const items = summary.map((item) => `
-          <div class="feature-chip">
-            <strong>${escapeHtml(item.name || "样本")}</strong>
-            <div>强度点数：${escapeHtml(item.point_count ?? "-")}</div>
-            <div>最小/最大：${formatMetric(item.min)} / ${formatMetric(item.max)}</div>
-            <div>${item.all_zero ? "强度全为 0" : "强度已生成"}</div>
-          </div>
-        `).join("");
-        return `<div id="intensitySummary" class="feature-list">${items}</div>`;
-      }
-
       function updatePreprocessRangeMode(kind) {
         const prefix = preprocessPrefix(kind);
         const mode = $(`${prefix}RangeMode`).value;
@@ -2354,7 +2347,6 @@
         const infoLines = effectiveKind === "hplc" && result.common_time
           ? `<p style="color:#667085;font-size:12px">统一时间轴: ${result.common_time.length} 点, 步长 ${((result.common_time[1]-result.common_time[0])*60).toFixed(3)} 秒</p>`
           : "";
-        const intensitySummaryHtml = renderIntensitySummary(result.intensity_summary || []);
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
@@ -2362,7 +2354,6 @@
           </div>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
           ${infoLines}
-          ${intensitySummaryHtml}
           ${
             hasCurves
               ? `<h3>${title}</h3>
@@ -2434,6 +2425,7 @@
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
         $("svmOptions").classList.toggle("hidden", modelType !== "svm");
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
+        $("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet");
       }
 
       function updateSplitOptionVisibility() {

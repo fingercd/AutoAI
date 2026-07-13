@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 
@@ -47,38 +48,42 @@ _CNN_KERNELS_BY_FEATURE_BAND = {
 _CNN_POOLS_BY_FEATURE_BAND = {
     "short": [2, 2, 2],
     "medium": [4, 2, 2],
-    "long": [4, 2, 2],
+    "long": [4, 4, 2],
 }
 _RESNET_L_VALUES = {
-    "short": {"stem_kernel": 7, "stem_pool": 2, "block_kernel": 3, "block_pools": [2, 2, 2]},
-    "medium": {"stem_kernel": 9, "stem_pool": 4, "block_kernel": 3, "block_pools": [2, 2, 2]},
-    "long": {"stem_kernel": 9, "stem_pool": 4, "block_kernel": 5, "block_pools": [2, 2, 2]},
+    "short": {"kernels": [7, 5, 3], "pools": [2, 2, 2]},
+    "medium": {"kernels": [9, 5, 3], "pools": [4, 2, 2]},
+    "long": {"kernels": [9, 7, 5], "pools": [4, 4, 2]},
 }
-_INCEPTION_BRANCH_CHANNELS_BY_SAMPLE_BAND = {"small": 8, "medium": 16, "large": 32}
+_INCEPTION_CHANNELS_BY_SAMPLE_BAND = {
+    "small": {"stem_channels": 8, "block_channels": [16, 32, 32]},
+    "medium": {"stem_channels": 16, "block_channels": [32, 64, 64]},
+    "large": {"stem_channels": 32, "block_channels": [64, 128, 128]},
+}
 _INCEPTION_L_VALUES = {
-    "short": {"stem_kernel": 7, "stem_pool": 2, "branch_kernels": [1, 3, 5, 7]},
-    "medium": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": [3, 5, 7, 9]},
-    "long": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": [5, 7, 9, 11]},
+    "short": {"stem_kernel": 7, "branch_kernels": [1, 3, 5, 7], "pools": [2, 2, 2]},
+    "medium": {"stem_kernel": 9, "branch_kernels": [1, 3, 7, 11], "pools": [4, 2, 2]},
+    "long": {"stem_kernel": 11, "branch_kernels": [1, 5, 9, 15], "pools": [4, 4, 2]},
 }
-_TCN_CHANNELS_BY_SAMPLE_BAND = {"small": 16, "medium": 32, "large": 64}
+_TCN_CHANNELS_BY_SAMPLE_BAND = {"small": 32, "medium": 64, "large": 128}
 _TCN_L_VALUES = {
     "short": {"stem_kernel": 7, "stem_pool": 2, "dilations": [1, 2, 4]},
-    "medium": {"stem_kernel": 9, "stem_pool": 4, "dilations": [1, 2, 4, 8]},
+    "medium": {"stem_kernel": 9, "stem_pool": 4, "dilations": [1, 2, 4]},
     "long": {"stem_kernel": 9, "stem_pool": 4, "dilations": [1, 2, 4, 8]},
 }
 _LONG_RANGE_VALUES = {
-    "small": {"d_model": 32, "heads": 4, "layers": 2, "ffn": 64, "conv_channels": [8, 16, 32], "d_state": 16},
-    "medium": {"d_model": 64, "heads": 4, "layers": 3, "ffn": 128, "conv_channels": [16, 32, 64], "d_state": 16},
-    "large": {"d_model": 128, "heads": 8, "layers": 4, "ffn": 256, "conv_channels": [32, 64, 128], "d_state": 16},
+    "small": {"d_model": 32, "heads": 2, "layers": 1, "ffn": 64, "conv_channels": [8, 16, 32], "d_state": 16},
+    "medium": {"d_model": 64, "heads": 4, "layers": 1, "ffn": 128, "conv_channels": [16, 32, 64], "d_state": 16},
+    "large": {"d_model": 128, "heads": 4, "layers": 2, "ffn": 256, "conv_channels": [32, 64, 128], "d_state": 16},
 }
 
 
 def sample_band(n: int) -> str:
-    return "small" if int(n) <= 100 else ("medium" if int(n) <= 300 else "large")
+    return "small" if int(n) <= 100 else ("medium" if int(n) < 300 else "large")
 
 
 def feature_band(length: int) -> str:
-    return "short" if int(length) <= 1000 else ("medium" if int(length) <= 3000 else "long")
+    return "short" if int(length) <= 1000 else ("medium" if int(length) < 3000 else "long")
 
 
 def default_dropout(n: int) -> float:
@@ -138,7 +143,7 @@ def build_model_profile(
     elif model_key == "inception1d":
         values.update(
             {
-                "branch_channels": _INCEPTION_BRANCH_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band],
+                **_INCEPTION_CHANNELS_BY_SAMPLE_BAND[resolved_sample_band],
                 **_INCEPTION_L_VALUES[resolved_feature_band],
             }
         )
@@ -159,6 +164,8 @@ def build_model_profile(
                 "layers": long_range["layers"],
                 "ffn": long_range["ffn"],
                 "conv_channels": list(long_range["conv_channels"]),
+                "kernels": list(_CNN_KERNELS_BY_FEATURE_BAND[resolved_feature_band]),
+                "pools": list(_CNN_POOLS_BY_FEATURE_BAND[resolved_feature_band]),
                 "d_state": long_range["d_state"],
                 "d_conv": 4,
                 "expand": 2,
@@ -173,6 +180,32 @@ def build_model_profile(
         dropout=dropout,
         values=values,
     )
+
+
+def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> dict[str, Any]:
+    n = int(train_sample_count)
+    length = int(feature_count)
+    n_band = sample_band(n)
+    l_band = feature_band(length)
+    cluster_grid = {
+        "small": {"short": 3, "medium": 5, "long": 7},
+        "medium": {"short": 5, "medium": 7, "long": 9},
+        "large": {"short": 7, "medium": 9, "long": 11},
+    }
+    capacity = {
+        "small": {"filter_number": 16, "n_inception": 1, "dense_layers": [32]},
+        "medium": {"filter_number": 32, "n_inception": 1, "dense_layers": [64]},
+        "large": {"filter_number": 64, "n_inception": 2, "dense_layers": [128]},
+    }[n_band]
+    n_target = math.ceil((math.sqrt(8 * (0.8**2) * length + 1) - 1) / 2)
+    return {
+        "sample_band": n_band,
+        "feature_band": l_band,
+        "pca_components": min(n_target, n - 1, length),
+        "cluster_channels": cluster_grid[n_band][l_band],
+        "conv1_kernel_size": {"short": 7, "medium": 11, "long": 19}[l_band],
+        **capacity,
+    }
 
 
 def model_range_warnings(*, train_sample_count: int, feature_count: int) -> list[str]:

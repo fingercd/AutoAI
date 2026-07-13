@@ -27,13 +27,14 @@ from .feature_selection import (
     primary_feature_segment,
     sample_deep_attribution_importance,
     sample_dscarnet_dual_2d_gradcam_importance,
+    sample_dscarnet_single_2d_gradcam_importance,
     sample_occlusion_importance,
     unavailable_feature_importance,
     write_feature_importance_artifacts,
     write_sample_feature_importance_artifacts,
 )
 from .models import ARCHITECTURE_VERSION, build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
-from .models.profiles import build_model_profile, model_range_warnings
+from .models.profiles import build_dscarnet_profile, build_model_profile, model_range_warnings
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
 from .runs.contracts import RunRecord
@@ -72,6 +73,9 @@ class TrainConfig:
     dscarnet_inception_blocks: int = 1
     dscarnet_pca_components: int = 30
     dscarnet_cluster_channels: int = 9
+    dscarnet_input_mode: str = "dual"
+    resolved_train_sample_count: int = 100
+    resolved_feature_count: int = 1000
     knn_n_neighbors: int = 5
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
@@ -318,6 +322,12 @@ def _dual_loader(
     return DataLoader(TensorDataset(tx1, tx2, ty), batch_size=batch_size, shuffle=shuffle)
 
 
+def _single_2d_loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
+    tx = torch.tensor(x[indices], dtype=torch.float32)
+    ty = torch.tensor(y[indices], dtype=torch.long)
+    return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
+
+
 def _evaluate_deep_loss(
     model: nn.Module,
     loader: DataLoader,
@@ -335,7 +345,8 @@ def _evaluate_deep_loss(
             else:
                 batch_x, batch_y = batch
                 logits = model(batch_x)
-            losses.append(float(criterion(logits, batch_y).detach().item()))
+            target = batch_y.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else batch_y
+            losses.append(float(criterion(logits, target).detach().item()))
     return float(np.mean(losses)) if losses else 0.0
 
 
@@ -343,7 +354,11 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     model.eval()
     with torch.no_grad():
         logits = model(torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1))
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
     pred = probs.argmax(axis=1)
     true = y[indices]
     return {
@@ -373,7 +388,11 @@ def _evaluate_dual(
         tx1 = torch.tensor(x1[indices], dtype=torch.float32)
         tx2 = torch.tensor(x2[indices], dtype=torch.float32)
         logits = model(tx1, tx2)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
     pred = probs.argmax(axis=1)
     true = y[indices]
     return {
@@ -573,22 +592,22 @@ def _deep_sample_feature_result(
         if model_type == "dscarnet":
             if dscarnet_mapped is None or dscarnet_mapping_metadata is None:
                 raise ValueError("DSCARNet 缺少 SAR/CAR 二维映射结果，无法计算双通路解释性")
-            sample_result = sample_dscarnet_dual_2d_gradcam_importance(
-                model,
-                x,
-                y,
-                x_sar=dscarnet_mapped.x_sar,
-                x_car=dscarnet_mapped.x_car,
-                pca=dscarnet_mapped.pca,
-                sar_mapper=dscarnet_mapped.sar_mapper,
-                car_mapper=dscarnet_mapped.car_mapper,
-                mapping_metadata=dscarnet_mapping_metadata,
-                x_axis=x_axis,
-                splits=splits,
-                label_names=label_names,
-                metadata=metadata,
-                top_k=config.feature_top_k,
-            )
+            mode = dscarnet_mapping_metadata.get("mode", "dual")
+            if mode == "dual":
+                sample_result = sample_dscarnet_dual_2d_gradcam_importance(
+                    model, x, y, x_sar=dscarnet_mapped.x_sar, x_car=dscarnet_mapped.x_car,
+                    pca=dscarnet_mapped.pca, sar_mapper=dscarnet_mapped.sar_mapper,
+                    car_mapper=dscarnet_mapped.car_mapper, mapping_metadata=dscarnet_mapping_metadata,
+                    x_axis=x_axis, splits=splits, label_names=label_names, metadata=metadata, top_k=config.feature_top_k,
+                )
+            else:
+                mapped_values = dscarnet_mapped.x_sar if mode == "sar" else dscarnet_mapped.x_car
+                mapper = dscarnet_mapped.sar_mapper if mode == "sar" else dscarnet_mapped.car_mapper
+                sample_result = sample_dscarnet_single_2d_gradcam_importance(
+                    model, x, y, mapped_values=mapped_values, mapper=mapper, mode=mode, pca=dscarnet_mapped.pca,
+                    mapping_metadata=dscarnet_mapping_metadata, x_axis=x_axis, splits=splits,
+                    label_names=label_names, metadata=metadata, top_k=config.feature_top_k,
+                )
         else:
             sample_result = sample_deep_attribution_importance(
                 model,
@@ -919,8 +938,8 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
     if model_type == "random_forest":
         candidates = [
             (depth, leaf, max_features)
-            for depth in (3, 5, 8)
-            for leaf in (1, 2)
+            for depth in (3, 5, 10)
+            for leaf in (2, 5)
             for max_features in ("sqrt", "log2", 0.1)
         ]
         return [
@@ -976,6 +995,29 @@ def _traditional_params(config: TrainConfig) -> dict[str, Any]:
         "xgboost_min_child_weight": config.xgboost_min_child_weight,
         "xgboost_reg_lambda": config.xgboost_reg_lambda,
         "xgboost_gamma": config.xgboost_gamma,
+    }
+
+
+def _evaluate_single_2d(model: nn.Module, values: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    model.eval()
+    with torch.no_grad():
+        logits = model(torch.tensor(values[indices], dtype=torch.float32))
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+    pred = probs.argmax(axis=1)
+    true = y[indices]
+    return {
+        "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
+        "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
+        "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
+        "recall": float(recall_score(true, pred, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(true, pred, labels=list(range(len(labels)))).tolist(),
+        "probabilities": probs.tolist(), "pred": pred.tolist(), "true": true.tolist(),
     }
 
 
@@ -1106,18 +1148,24 @@ def _fit_deep_fold(
     dscarnet_mapped: DSCARNetMappedInputs | None = None
     dscarnet_mapping_metadata: dict[str, Any] | None = None
     if model_type == "dscarnet":
+        mode = str(config.dscarnet_input_mode or "dual").lower()
+        dscarnet_profile = build_dscarnet_profile(train_sample_count=len(splits["train"]), feature_count=x.shape[1])
+        config.resolved_train_sample_count = len(splits["train"])
+        config.resolved_feature_count = x.shape[1]
         dscarnet_mapped = fit_dscarnet_2d_mapping(
             x,
             splits["train"],
-            pca_components=config.dscarnet_pca_components,
-            cluster_channels=config.dscarnet_cluster_channels,
+            pca_components=int(dscarnet_profile["pca_components"]),
+            cluster_channels=int(dscarnet_profile["cluster_channels"]),
             seed=config.seed,
+            mode=mode,
         )
+        dscarnet_mapped.metadata["resolved_profile"] = dscarnet_profile
         dscarnet_mapping_metadata = save_dscarnet_mapping_artifacts(run_dir, dscarnet_mapped)
         model = build_dscarnet_model(
             config,
-            dscarnet_mapped.model_input_shape_sar,
-            dscarnet_mapped.model_input_shape_car,
+            None if dscarnet_mapped.x_sar is None else dscarnet_mapped.model_input_shape_sar,
+            None if dscarnet_mapped.x_car is None else dscarnet_mapped.model_input_shape_car,
             len(label_names),
         )
     else:
@@ -1135,7 +1183,13 @@ def _fit_deep_fold(
                 joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
             except Exception:
                 pass
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    if len(label_names) == 2:
+        pos_weight = None
+        if config.class_balance == "class_weight":
+            pos_weight = torch.tensor([float(counts[0] / max(counts[1], 1.0))], dtype=torch.float32)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -1156,10 +1210,12 @@ def _fit_deep_fold(
     for epoch in range(1, config.epochs + 1):
         model.train()
         losses = []
-        if dscarnet_mapped is not None:
+        if dscarnet_mapped is not None and dscarnet_mapped.metadata["mode"] == "dual":
             for bx1, bx2, by in _dual_loader(dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["train"], config.batch_size, True):
                 optimizer.zero_grad()
-                loss = criterion(model(bx1, bx2), by)
+                logits = model(bx1, bx2)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
@@ -1170,10 +1226,25 @@ def _fit_deep_fold(
                 dual_input=True,
             )
             valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], label_names)
+        elif dscarnet_mapped is not None:
+            branch_values = dscarnet_mapped.x_sar if dscarnet_mapped.metadata["mode"] == "sar" else dscarnet_mapped.x_car
+            assert branch_values is not None
+            for bx, by in _single_2d_loader(branch_values, y, splits["train"], config.batch_size, True):
+                optimizer.zero_grad()
+                logits = model(bx)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(model, _single_2d_loader(branch_values, y, splits["valid"], config.batch_size, False), criterion, dual_input=False)
+            valid_eval = _evaluate_single_2d(model, branch_values, y, splits["valid"], label_names)
         else:
             for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
                 optimizer.zero_grad()
-                loss = criterion(model(bx), by)
+                logits = model(bx)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
@@ -1590,9 +1661,16 @@ def _run_legacy_training(
             for row in history:
                 history_rows.append({**row, "fold_index": fold_index})
             if dscarnet_mapped is not None:
-                train_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["train"], label_names)
-                valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["valid"], label_names)
-                test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
+                mode = dscarnet_mapped.metadata.get("mode", "dual")
+                if mode == "dual":
+                    train_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["train"], label_names)
+                    valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["valid"], label_names)
+                    test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
+                else:
+                    branch_values = dscarnet_mapped.x_sar if mode == "sar" else dscarnet_mapped.x_car
+                    train_eval = _evaluate_single_2d(model, branch_values, y_model, splits["train"], label_names)
+                    valid_eval = _evaluate_single_2d(model, branch_values, y_model, splits["valid"], label_names)
+                    test_eval = _evaluate_single_2d(model, branch_values, y_model, splits["test"], label_names)
             else:
                 train_eval = _evaluate(model, x, y_model, splits["train"], label_names)
                 valid_eval = _evaluate(model, x, y_model, splits["valid"], label_names)
@@ -1739,13 +1817,12 @@ def _run_legacy_training(
         )
 
     metadata_train_count = len(folds[0]["splits"].get("train", [])) if folds else 0
-    resolved_profile = build_model_profile(
-        model_type,
-        train_sample_count=metadata_train_count,
-        feature_count=x_raw.shape[1],
-    )
-    profile_payload = asdict(resolved_profile)
-    explainability = explainability_method(model_type, dscarnet_mode="dual")
+    if model_type == "dscarnet":
+        profile_payload = build_dscarnet_profile(train_sample_count=metadata_train_count, feature_count=x_raw.shape[1])
+    else:
+        profile_payload = asdict(build_model_profile(model_type, train_sample_count=metadata_train_count, feature_count=x_raw.shape[1]))
+    dscarnet_mode = str(config.dscarnet_input_mode or "dual").lower()
+    explainability = explainability_method(model_type, dscarnet_mode=dscarnet_mode)
     range_warnings = model_range_warnings(
         train_sample_count=metadata_train_count,
         feature_count=x_raw.shape[1],
@@ -1767,6 +1844,14 @@ def _run_legacy_training(
             "interval_permutation_importance" if last_model_family == "traditional_ml" else explainability
         ),
     }
+    if last_model_family == "deep_learning":
+        model_metadata.update(
+            {
+                "classification_head": "binary_single_logit" if len(label_names) == 2 else "multiclass_logits",
+                "loss_function": "BCEWithLogitsLoss" if len(label_names) == 2 else "CrossEntropyLoss",
+                "output_dim": 1 if len(label_names) == 2 else len(label_names),
+            }
+        )
     if getattr(last_model, "pca_metadata", None) is not None:
         model_metadata["pca"] = last_model.pca_metadata
     config_out = {
