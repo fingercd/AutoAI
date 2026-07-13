@@ -9,21 +9,21 @@ import torch
 from torch import nn
 
 
-N_CHANNELS: dict[str, int] = {"small": 16, "medium": 32, "large": 64}
+N_CHANNELS: dict[str, int] = {"small": 32, "medium": 64, "large": 128}
 
 L_PROFILE: dict[str, dict[str, Any]] = {
     "short": {"stem_kernel": 7, "stem_pool": 2, "dilations": (1, 2, 4)},
-    "medium": {"stem_kernel": 9, "stem_pool": 4, "dilations": (1, 2, 4, 8)},
+    "medium": {"stem_kernel": 9, "stem_pool": 4, "dilations": (1, 2, 4)},
     "long": {"stem_kernel": 9, "stem_pool": 4, "dilations": (1, 2, 4, 8)},
 }
 
 
 def _sample_band(sample_count: int) -> str:
-    return "small" if sample_count <= 100 else ("medium" if sample_count <= 300 else "large")
+    return "small" if sample_count <= 100 else ("medium" if sample_count < 300 else "large")
 
 
 def _feature_band(feature_count: int) -> str:
-    return "short" if feature_count <= 1000 else ("medium" if feature_count <= 3000 else "long")
+    return "short" if feature_count <= 1000 else ("medium" if feature_count < 3000 else "long")
 
 
 def _optional_int(value: Any) -> int | None:
@@ -113,20 +113,20 @@ class TCNBlock1DDocumentV2(nn.Module):
             bias=False,
         )
         self.bn2 = nn.BatchNorm1d(self.out_channels)
-        self.net = nn.Sequential(self.conv1, self.bn1, nn.ReLU(inplace=True), self.conv2, self.bn2)
+        self.dropout = nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity()
+        self.net = nn.Sequential(self.conv1, self.bn1, nn.ReLU(inplace=True), self.dropout, self.conv2, self.bn2)
         self.shortcut = (
             nn.Identity()
             if self.in_channels == self.out_channels
             else nn.Conv1d(self.in_channels, self.out_channels, kernel_size=1, bias=False)
         )
         self.activation = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         main = self.net(x)
         residual = self.shortcut(x)
         main, residual = _same_length_pair(main, residual)
-        return self.activation(self.dropout(main + residual))
+        return self.activation(main + residual)
 
 
 class TCN1DDocumentV2(nn.Module):
@@ -206,6 +206,7 @@ class TCN1DDocumentV2(nn.Module):
                     channels,
                     dilation=dilation,
                     kernel_size=kernel_size,
+                    dropout=dropout_value,
                 )
                 for dilation in dilations
             ]

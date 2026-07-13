@@ -28,8 +28,16 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 
 ## 模型与可解释性
 
+分类模型 v2 的权威目标为 **15 个目标分类模型**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。当前仅支持分类；`Repeat_index` 不改名并等同 Sample_ID。新 Run 写入 `architecture_version="docx-classification-v2"`，旧模型类、权重和 artifact 只读兼容。
+
+15 个目标模型是 catalog 契约，不表示每个依赖在本机都可用。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而禁用并跳过训练验收；不得回退成近似模型。`dscarnet` 支持 SAR、CAR、dual 三模式；二分类深度模型使用单 logit + `BCEWithLogitsLoss`。
+
+`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 的外层 test 留一个 `Repeat_index`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+
+解释性矩阵：六个传统模型使用窗口置换；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用 `abs(gradient * input)`；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM；`dscarnet` 使用 SAR/CAR/dual 模式对应的 2D Grad-CAM 回投。旧 artifact 名保持兼容。
+
 - 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
-- 当前稳定可训练模型目录固定为 master 已有的 10 个分类模型；新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
+- master 的旧 10 模型继续只读兼容；v2 模型结构和能力目录按独立分类模型计划验收。
 - 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
 - 传统机器学习模型：`pls_da`、`svm`、`random_forest`、`xgboost`。
 - 深度模型：`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。

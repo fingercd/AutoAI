@@ -9,21 +9,25 @@ import torch
 from torch import nn
 
 
-N_BRANCH_CHANNELS: dict[str, int] = {"small": 8, "medium": 16, "large": 32}
+N_CHANNELS: dict[str, tuple[int, int, int, int]] = {
+    "small": (8, 16, 32, 32),
+    "medium": (16, 32, 64, 64),
+    "large": (32, 64, 128, 128),
+}
 
 L_PROFILE: dict[str, dict[str, Any]] = {
-    "short": {"stem_kernel": 7, "stem_pool": 2, "branch_kernels": (1, 3, 5, 7)},
-    "medium": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": (3, 5, 7, 9)},
-    "long": {"stem_kernel": 9, "stem_pool": 4, "branch_kernels": (5, 7, 9, 11)},
+    "short": {"stem_kernel": 7, "branch_kernels": (1, 3, 5, 7), "pools": (2, 2, 2)},
+    "medium": {"stem_kernel": 9, "branch_kernels": (1, 3, 7, 11), "pools": (4, 2, 2)},
+    "long": {"stem_kernel": 11, "branch_kernels": (1, 5, 9, 15), "pools": (4, 4, 2)},
 }
 
 
 def _sample_band(sample_count: int) -> str:
-    return "small" if sample_count <= 100 else ("medium" if sample_count <= 300 else "large")
+    return "small" if sample_count <= 100 else ("medium" if sample_count < 300 else "large")
 
 
 def _feature_band(feature_count: int) -> str:
-    return "short" if feature_count <= 1000 else ("medium" if feature_count <= 3000 else "long")
+    return "short" if feature_count <= 1000 else ("medium" if feature_count < 3000 else "long")
 
 
 def _optional_int(value: Any) -> int | None:
@@ -155,50 +159,52 @@ class Inception1DDocumentV2(nn.Module):
         feature_band = _feature_band(resolved_l)
         l_values = dict(L_PROFILE[feature_band])
 
-        branch_channels_value = values.get("branch_channels", values.get("channels", N_BRANCH_CHANNELS[sample_band]))
-        if isinstance(branch_channels_value, (tuple, list)):
-            branch_channels_value = branch_channels_value[-1]
-        branch_channels = int(branch_channels_value)
+        default_channels = N_CHANNELS[sample_band]
+        stem_channels = int(values.get("stem_channels", default_channels[0]))
+        block_channels = tuple(int(item) for item in values.get("block_channels", default_channels[1:]))
+        if len(block_channels) != 3 or any(channel % 4 != 0 for channel in block_channels):
+            raise ValueError("block_channels 必须包含三个可被4整除的正整数")
         stem_kernel = int(values.get("stem_kernel", values.get("K0", l_values["stem_kernel"])))
         kernels_value = values.get("branch_kernels", values.get("kernels", l_values["branch_kernels"]))
         kernels = tuple(int(kernel) for kernel in kernels_value)
         if len(kernels) != 4 or any(kernel <= 0 for kernel in kernels):
             raise ValueError("branch_kernels 必须包含四个正整数")
-        pool_size = int(values.get("stem_pool", values.get("pool", values.get("P0", l_values["stem_pool"]))))
-        if pool_size <= 0:
-            raise ValueError("pool_size 必须是正整数")
+        pools = tuple(int(item) for item in values.get("pools", l_values["pools"]))
+        if len(pools) != 3 or min(pools) <= 0:
+            raise ValueError("pools 必须包含三个正整数")
         dropout_value = 0.25 if dropout is None and profile_dropout is None else float(
             dropout if dropout is not None else profile_dropout
         )
         if not 0.0 <= dropout_value <= 1.0:
             raise ValueError("dropout 必须位于 [0, 1]")
         if hidden_size is not None:
-            branch_channels = max(1, min(branch_channels, int(hidden_size)))
-        block_count = int(values.get("inception_blocks", inception_blocks))
-        if block_count <= 0:
-            raise ValueError("inception_blocks 必须是正整数")
+            stem_channels = max(1, min(stem_channels, int(hidden_size)))
 
         self.sample_count = resolved_n
         self.sample_band = sample_band
         self.feature_band = feature_band
-        self.branch_channels = branch_channels
-        self.channels = (branch_channels,) * 4
+        self.branch_channels = tuple(channel // 4 for channel in block_channels)
+        self.channels = (stem_channels, *block_channels)
         self.kernels = (stem_kernel, *kernels)
-        self.pool_sizes = (pool_size,)
+        self.pool_sizes = pools
         self.dropout_value = dropout_value
         self.stem = nn.Sequential(
-            nn.Conv1d(1, branch_channels, kernel_size=stem_kernel, padding=stem_kernel // 2, bias=False),
-            nn.BatchNorm1d(branch_channels),
+            nn.Conv1d(1, stem_channels, kernel_size=stem_kernel, padding=stem_kernel // 2, bias=False),
+            nn.BatchNorm1d(stem_channels),
             nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=pool_size, stride=pool_size, ceil_mode=True),
+            nn.MaxPool1d(kernel_size=pools[0], stride=pools[0], ceil_mode=True),
         )
         blocks: list[InceptionBlock1DDocumentV2] = []
-        in_channels = branch_channels
-        for _ in range(block_count):
-            block = InceptionBlock1DDocumentV2(in_channels, branch_channels, kernels=kernels)
+        block_pools: list[nn.Module] = []
+        in_channels = stem_channels
+        for index, out_channels in enumerate(block_channels):
+            block = InceptionBlock1DDocumentV2(in_channels, out_channels // 4, kernels=kernels)
             blocks.append(block)
             in_channels = block.out_channels
+            pool_size = pools[index + 1] if index < 2 else 1
+            block_pools.append(nn.MaxPool1d(pool_size, pool_size, ceil_mode=True) if pool_size > 1 else nn.Identity())
         self.inception_blocks = nn.ModuleList(blocks)
+        self.block_pools = nn.ModuleList(block_pools)
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
@@ -221,7 +227,7 @@ class Inception1DDocumentV2(nn.Module):
 
     @property
     def pools(self) -> tuple[nn.Module, ...]:
-        return (self.stem[3],)
+        return (self.stem[3], *self.block_pools[:2])
 
     @property
     def classifier(self) -> nn.Sequential:
@@ -238,8 +244,9 @@ class Inception1DDocumentV2(nn.Module):
         if x.ndim != 3 or x.shape[1] != 1:
             raise ValueError("Inception1DDocumentV2 输入必须是 (batch, 1, length)")
         x = self.stem(x)
-        for block in self.inception_blocks:
+        for block, pool in zip(self.inception_blocks, self.block_pools):
             x = block(x)
+            x = pool(x)
         return self.head(x)
 
 

@@ -9,13 +9,13 @@ from torch import nn
 from .cnn1d_v2 import CNN1DDocumentV2
 from .cnn_se1d import CNNSE1DDocumentV2
 from .cnn_transformer1d import CNNTransformer1D
-from .dscarnet import dual_dscarnet
+from .dscarnet import dual_dscarnet, single_dscarnet
 from .inception1d_v2 import Inception1DDocumentV2
 from .pls_da import build_pls_da
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
 from .pca_mlp import PCAMLPClassifier
-from .profiles import build_model_profile
+from .profiles import build_dscarnet_profile, build_model_profile
 from .random_forest import build_random_forest
 from .resnet1d_v2 import ResNet1DDocumentV2
 from .svm import build_svm
@@ -143,6 +143,7 @@ def build_deep_model(
     x_train: np.ndarray | None = None,
 ) -> nn.Module:
     model_type = canonical_model_type(config.model_type)
+    output_dim = 1 if int(class_count) == 2 else int(class_count)
     if model_type == "pca_mlp":
         if x_train is None:
             raise ValueError("PCA-MLP 必须提供当前折训练集用于拟合 PCA")
@@ -159,7 +160,7 @@ def build_deep_model(
             pca.components_,
             profile.values["hidden_sizes"],
             profile.dropout,
-            class_count,
+            output_dim,
         )
         model.pca_model = pca
         model.pca_metadata = {
@@ -180,47 +181,49 @@ def build_deep_model(
     if model_type == "cnn1d":
         return CNN1DDocumentV2(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             sample_count=sample_count,
             profile=profile,
         )
     if model_type == "cnn1d_se":
         return CNNSE1DDocumentV2(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             sample_count=sample_count,
             profile=profile,
         )
     if model_type == "resnet1d":
         return ResNet1DDocumentV2(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             sample_count=sample_count,
             profile=profile,
         )
     if model_type == "inception1d":
         return Inception1DDocumentV2(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             sample_count=sample_count,
             profile=profile,
         )
     if model_type == "tcn1d":
         return TCN1DDocumentV2(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             sample_count=sample_count,
             profile=profile,
         )
     if model_type == "cnn_transformer1d":
         return CNNTransformer1D(
             input_length=input_length,
-            class_count=class_count,
+            class_count=output_dim,
             dropout=profile.dropout,
             hidden_size=int(values["d_model"]),
             transformer_heads=int(values["heads"]),
             transformer_layers=int(values["layers"]),
             conv_channels=tuple(int(item) for item in values["conv_channels"]),
+            conv_kernels=tuple(int(item) for item in values["kernels"]),
+            pool_sizes=tuple(int(item) for item in values["pools"]),
             dim_feedforward=int(values["ffn"]),
         )
     if model_type == "dscarnet":
@@ -230,16 +233,38 @@ def build_deep_model(
 
 def build_dscarnet_model(
     config: Any,
-    input_shape1: tuple[int, ...],
-    input_shape2: tuple[int, ...],
+    input_shape1: tuple[int, ...] | None,
+    input_shape2: tuple[int, ...] | None,
     class_count: int,
 ) -> nn.Module:
+    output_dim = 1 if int(class_count) == 2 else int(class_count)
+    mode = str(getattr(config, "dscarnet_input_mode", "dual") or "dual").lower()
+    profile = build_dscarnet_profile(
+        train_sample_count=int(getattr(config, "resolved_train_sample_count", 100)),
+        feature_count=int(getattr(config, "resolved_feature_count", 1000)),
+    )
+    common = {
+        "filter_number": int(profile["filter_number"]),
+        "n_outputs": output_dim,
+        "conv1_kernel_size": int(profile["conv1_kernel_size"]),
+        "n_inception": int(profile["n_inception"]),
+        "dense_layers": tuple(int(item) for item in profile["dense_layers"]),
+        "last_avf": None,
+    }
+    if mode == "sar":
+        if input_shape1 is None:
+            raise ValueError("SAR 模式缺少 SAR 输入形状")
+        return single_dscarnet(input_shape1, **common)
+    if mode == "car":
+        if input_shape2 is None:
+            raise ValueError("CAR 模式缺少 CAR 输入形状")
+        return single_dscarnet(input_shape2, **common)
+    if mode != "dual" or input_shape1 is None or input_shape2 is None:
+        raise ValueError("DSCARNet dual 模式需要 SAR 和 CAR 输入形状")
     return dual_dscarnet(
         input_shape1,
         input_shape2,
-        n_outputs=class_count,
-        n_inception=max(1, int(config.dscarnet_inception_blocks)),
-        last_avf=None,
+        **common,
     )
 
 

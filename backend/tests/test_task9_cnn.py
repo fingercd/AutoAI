@@ -11,8 +11,8 @@ from backend.app.models.cnn_se1d import CNNSE1DDocumentV2, SEBlock1D
     [
         (100, [8, 16, 32]),
         (101, [16, 32, 64]),
-        (300, [16, 32, 64]),
-        (301, [32, 64, 128]),
+        (299, [16, 32, 64]),
+        (300, [32, 64, 128]),
     ],
 )
 def test_document_cnn_uses_n_profile(sample_count, expected_channels):
@@ -28,8 +28,8 @@ def test_document_cnn_uses_n_profile(sample_count, expected_channels):
     [
         (1000, [7, 5, 3], [2, 2, 2]),
         (1001, [9, 5, 3], [4, 2, 2]),
-        (3000, [9, 5, 3], [4, 2, 2]),
-        (3001, [9, 7, 5], [4, 2, 2]),
+        (2999, [9, 5, 3], [4, 2, 2]),
+        (3000, [9, 7, 5], [4, 4, 2]),
     ],
 )
 def test_document_cnn_uses_l_profile(input_length, expected_kernels, expected_pools):

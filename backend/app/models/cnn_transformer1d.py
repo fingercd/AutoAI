@@ -31,9 +31,9 @@ def _resolve_heads(d_model: int, requested_heads: int) -> int:
     return heads
 
 
-def _ceil_pool_length(length: int, stages: int = 3) -> int:
-    for _ in range(stages):
-        length = (length + 1) // 2
+def _ceil_pool_length(length: int, pools: Sequence[int]) -> int:
+    for pool in pools:
+        length = math.ceil(length / int(pool))
     return max(1, length)
 
 
@@ -61,6 +61,8 @@ class CNNTransformer1D(nn.Module):
         num_layers: int | None = None,
         layers: int | None = None,
         conv_channels: Sequence[int] | None = None,
+        conv_kernels: Sequence[int] | None = None,
+        pool_sizes: Sequence[int] | None = None,
         dim_feedforward: int | None = None,
     ) -> None:
         super().__init__()
@@ -107,22 +109,37 @@ class CNNTransformer1D(nn.Module):
         if channels[-1] != self.d_model:
             channels = (*channels[:2], self.d_model)
         self.conv_channels = channels
+        if conv_kernels is None or pool_sizes is None:
+            if self.input_length <= 1000:
+                default_kernels, default_pools = (7, 5, 3), (2, 2, 2)
+            elif self.input_length < 3000:
+                default_kernels, default_pools = (9, 5, 3), (4, 2, 2)
+            else:
+                default_kernels, default_pools = (9, 7, 5), (4, 4, 2)
+            conv_kernels = default_kernels if conv_kernels is None else conv_kernels
+            pool_sizes = default_pools if pool_sizes is None else pool_sizes
+        kernels = tuple(int(value) for value in conv_kernels)
+        pools = tuple(int(value) for value in pool_sizes)
+        if len(kernels) != 3 or len(pools) != 3 or min(*kernels, *pools) <= 0:
+            raise ValueError("conv_kernels 和 pool_sizes 必须各包含三个正整数")
+        self.conv_kernels = kernels
+        self.pool_sizes = pools
 
         cnn_layers: list[nn.Module] = []
         in_channels = 1
-        for out_channels in channels:
+        for out_channels, kernel_size, pool_size in zip(channels, kernels, pools):
             cnn_layers.extend(
                 [
-                    nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                    nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2, bias=False),
                     nn.BatchNorm1d(out_channels),
                     nn.ReLU(inplace=True),
-                    nn.MaxPool1d(kernel_size=2, stride=2, ceil_mode=True),
+                    nn.MaxPool1d(kernel_size=pool_size, stride=pool_size, ceil_mode=True),
                 ]
             )
             in_channels = out_channels
         self.cnn = nn.Sequential(*cnn_layers)
 
-        token_length = _ceil_pool_length(self.input_length)
+        token_length = _ceil_pool_length(self.input_length, pools)
         self.token_length = token_length
         self.position = nn.Parameter(torch.zeros(1, token_length, self.d_model))
         encoder_layer = nn.TransformerEncoderLayer(

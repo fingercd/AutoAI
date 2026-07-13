@@ -23,33 +23,18 @@ N_CHANNELS: dict[str, tuple[int, int, int]] = {
 }
 
 L_PROFILE: dict[str, dict[str, Any]] = {
-    "short": {
-        "stem_kernel": 7,
-        "stem_pool": 2,
-        "block_kernel": 3,
-        "block_pools": (2, 2, 2),
-    },
-    "medium": {
-        "stem_kernel": 9,
-        "stem_pool": 4,
-        "block_kernel": 3,
-        "block_pools": (2, 2, 2),
-    },
-    "long": {
-        "stem_kernel": 9,
-        "stem_pool": 4,
-        "block_kernel": 5,
-        "block_pools": (2, 2, 2),
-    },
+    "short": {"kernels": (7, 5, 3), "pools": (2, 2, 2)},
+    "medium": {"kernels": (9, 5, 3), "pools": (4, 2, 2)},
+    "long": {"kernels": (9, 7, 5), "pools": (4, 4, 2)},
 }
 
 
 def _band_for_sample_count(sample_count: int) -> str:
-    return "small" if sample_count <= 100 else ("medium" if sample_count <= 300 else "large")
+    return "small" if sample_count <= 100 else ("medium" if sample_count < 300 else "large")
 
 
 def _band_for_feature_count(feature_count: int) -> str:
-    return "short" if feature_count <= 1000 else ("medium" if feature_count <= 3000 else "long")
+    return "short" if feature_count <= 1000 else ("medium" if feature_count < 3000 else "long")
 
 
 def _profile_values(
@@ -159,10 +144,7 @@ class ResidualBlock1DDocumentV2(nn.Module):
         self.shortcut = (
             nn.Identity()
             if self.in_channels == self.out_channels
-            else nn.Sequential(
-                nn.Conv1d(self.in_channels, self.out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm1d(self.out_channels),
-            )
+            else nn.Conv1d(self.in_channels, self.out_channels, kernel_size=1, bias=False)
         )
         self.activation = nn.ReLU(inplace=True)
         self.pool = (
@@ -226,28 +208,11 @@ class ResNet1DDocumentV2(nn.Module):
 
         channels_value = values.get("channels", N_CHANNELS[sample_band])
         channels = _as_int_tuple(channels_value, name="channels", length=3)
-        kernels_value = values.get("kernels")
-        stem_kernel = int(values.get("stem_kernel", values.get("K0", profile_l_values["stem_kernel"])))
-        block_kernel = int(values.get("block_kernel", values.get("kernel", profile_l_values["block_kernel"])))
-        if kernels_value is not None:
-            kernels = _as_int_tuple(kernels_value, name="kernels")
-            stem_kernel = kernels[0]
-            block_kernel = kernels[-1] if len(kernels) > 1 else kernels[0]
-        pools_value = values.get("pools")
-        stem_pool = int(values.get("stem_pool", values.get("P0", profile_l_values["stem_pool"])))
-        block_pools = tuple(int(item) for item in profile_l_values["block_pools"])
-        if pools_value is not None:
-            pools = _as_int_tuple(pools_value, name="pools")
-            if len(pools) == 4:
-                stem_pool, block_pools = pools[0], pools[1:]
-            elif len(pools) == 3:
-                block_pools = pools
-                stem_pool = pools[0]
-            elif len(pools) == 1:
-                stem_pool = block_pools = (pools[0],) * 3
-            else:
-                raise ValueError("pools 必须包含 1、3 或 4 个整数")
-        block_pools = _as_int_tuple(block_pools, name="block_pools", length=3)
+        kernels = _as_int_tuple(values.get("kernels", profile_l_values["kernels"]), name="kernels", length=3)
+        pools = _as_int_tuple(values.get("pools", profile_l_values["pools"]), name="pools", length=3)
+        stem_kernel, stem_pool = kernels[0], pools[0]
+        block_kernels = (kernels[1], kernels[2], kernels[2])
+        block_pools = (pools[1], pools[2], 1)
         dropout_value = _resolve_dropout(dropout if dropout is not None else profile_dropout)
         if hidden_size is not None:
             # Hidden size is a legacy knob.  It may lower the first width, but
@@ -260,8 +225,8 @@ class ResNet1DDocumentV2(nn.Module):
         self.sample_band = sample_band
         self.feature_band = feature_band
         self.channels = tuple(channels)
-        self.kernels = (stem_kernel, block_kernel)
-        self.pool_sizes = (stem_pool, *block_pools)
+        self.kernels = kernels
+        self.pool_sizes = pools
         self.dropout_value = dropout_value
 
         self.stem = nn.Sequential(
@@ -272,7 +237,7 @@ class ResNet1DDocumentV2(nn.Module):
         self.stem_pool = nn.MaxPool1d(kernel_size=stem_pool, stride=stem_pool, ceil_mode=True)
         blocks: list[ResidualBlock1DDocumentV2] = []
         in_channels = channels[0]
-        for out_channels, pool_size in zip(channels, block_pools):
+        for out_channels, pool_size, block_kernel in zip(channels, block_pools, block_kernels):
             blocks.append(
                 ResidualBlock1DDocumentV2(
                     in_channels,

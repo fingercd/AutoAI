@@ -21,7 +21,7 @@ _KERNELS_BY_FEATURE_BAND: dict[str, tuple[int, int, int]] = {
 _POOLS_BY_FEATURE_BAND: dict[str, tuple[int, int, int]] = {
     "short": (2, 2, 2),
     "medium": (4, 2, 2),
-    "long": (4, 2, 2),
+    "long": (4, 4, 2),
 }
 _DROPOUT_BY_SAMPLE_BAND = {"small": 0.5, "medium": 0.4, "large": 0.3}
 
@@ -54,7 +54,7 @@ CNNProfile = CNN1DProfile
 def _sample_band(sample_count: int) -> str:
     if sample_count <= 100:
         return "small"
-    if sample_count <= 300:
+    if sample_count < 300:
         return "medium"
     return "large"
 
@@ -62,7 +62,7 @@ def _sample_band(sample_count: int) -> str:
 def _feature_band(input_length: int) -> str:
     if input_length <= 1000:
         return "short"
-    if input_length <= 3000:
+    if input_length < 3000:
         return "medium"
     return "long"
 

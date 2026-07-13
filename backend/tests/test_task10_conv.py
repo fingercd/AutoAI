@@ -24,7 +24,7 @@ def test_resnet_has_three_blocks_and_explicit_target_layer():
 
     assert len(model.blocks) == 3
     assert model.blocks[0].shortcut.__class__ is nn.Identity
-    assert isinstance(model.blocks[1].shortcut, nn.Sequential)
+    assert isinstance(model.blocks[1].shortcut, nn.Conv1d)
     assert model.gradcam_target_layer() is model.blocks[-1].conv2
 
     seen: list[tuple[int, ...]] = []
@@ -55,7 +55,7 @@ def test_inception_has_four_equal_width_conv_branches_and_target_hook():
 
 @pytest.mark.parametrize(
     ("input_length", "expected_dilations"),
-    [(1000, (1, 2, 4)), (1001, (1, 2, 4, 8)), (3001, (1, 2, 4, 8))],
+    [(1000, (1, 2, 4)), (1001, (1, 2, 4)), (3000, (1, 2, 4, 8))],
 )
 def test_tcn_uses_only_document_dilations_and_targets_last_second_conv(input_length, expected_dilations):
     model = TCN1DDocumentV2(input_length=input_length, class_count=2, sample_count=100)
