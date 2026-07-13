@@ -65,44 +65,23 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **AutoAI** (1682 symbols, 3825 relationships, 132 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+本项目已经初始化 GitNexus，但它是按需使用的辅助工具，不是修改代码、诊断问题、阶段验收或交付前的默认门禁。优先使用定向文件阅读、`rg`、测试、运行日志和真实接口响应解决范围明确的问题。
 
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
+## 使用条件与限额
 
-## Always Do
+- 仅在任务确实依赖跨模块调用链、公共接口影响面、大型重构或难以通过普通搜索确认的依赖关系时使用 GitNexus。
+- `query` / `context` 用于陌生且跨模块的执行流；默认 `include_content=false`、`limit<=3`、`max_symbols<=8`。第一次结果明显不相关或目标未找到时，停止继续扩展图查询，改用 `rg` 和定向文件阅读。
+- `impact` 按一个完整“改动簇”最多执行一次，不对每个函数、私有辅助方法或测试函数逐一执行。只有公共核心接口或高风险共享路径需要单独检查。
+- `detect_changes` 仅在大型多文件改动完成后或用户明确要求提交前执行一次；普通小改、只读诊断、文档修改和未提交交付不要求运行。
+- `analyze` 只有在索引明确过期、当前任务确实依赖图谱且旧索引会影响结论时才运行；每个任务最多一次，禁止按 Task、阶段或文件重复刷新。
+- GitNexus 查询或索引失败通常不阻塞主体任务；只有用户明确把图谱、影响分析或索引状态列为交付物/验收条件时才视为阻塞。
+- 运行时故障、服务启动、前端加载、HTTP 接口、数据库内容和服务器资源问题优先以真实运行证据为准，不用 GitNexus 结果替代日志、请求或测试。
+- 不因项目已初始化 GitNexus 就自动读取全部 processes、clusters、schema，或连续调用 `query`、`context`、`impact` 做重复验证。
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+## 适用示例
 
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/AutoAI/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/AutoAI/clusters` | All functional areas |
-| `gitnexus://repo/AutoAI/processes` | All execution flows |
-| `gitnexus://repo/AutoAI/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+- 修改训练状态机、模型注册公共入口或跨前后端契约时，可对相关改动簇做一次影响分析。
+- 大范围重命名、抽取或移动公共 symbol 时，可使用图谱辅助确认调用者；仍需以测试和代码审查作为最终证据。
+- 小型 UI 文案、局部样式、单文件 bug、测试断言、文档与配置调整默认不使用 GitNexus。
 
 <!-- gitnexus:end -->
