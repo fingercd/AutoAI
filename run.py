@@ -54,7 +54,6 @@ def main() -> None:
   ║        🧪 AutoAI 谱学建模平台                 ║
   ║                                              ║
   ║  本地访问: {url}                     ║
-  ║  UI 画廊:  {url}/ui                        ║
   ║  API 文档: {url}/docs                      ║
   ║  健康检查: {url}/health                    ║
   ║                                              ║

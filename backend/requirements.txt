@@ -1,66 +1,24 @@
-# =============================================================================
-# AutoAI 运行时依赖 —— 一键安装:
-#     python -m pip install -r backend/requirements.txt
-#
-# 平台提示:
-#   * Windows / Linux CPU 用户:这一份可直接装。torch 会自动装 CPU 版。
-#   * Mac Apple Silicon 用户:PyTorch 官方 wheel 通用,但 torch 在 M1/M2 上
-#     如遇问题可用 conda:conda install pytorch torchvision -c pytorch
-#   * Linux + CUDA 用户:先按 https://pytorch.org/get-started/locally/ 选好
-#     CUDA 版本装 torch,再 pip install -r requirements.txt 时它会跳过 torch。
-#
-# 可选依赖 (DSCARNet 模型):
-#   AggMap 1.2.1 的 PyPI 元数据会拉旧版 tensorflow-gpu 和 lapjv,
-#   所以单独装它,且 --no-deps:
-#       python -m pip install aggmap==1.2.1 --no-deps
-#       python -m pip install colorlog colored umap-learn python-highcharts future pynndescent
-#   不装 AggMap 也能用其余 9 个模型(PLS-DA / SVM / RF / XGBoost / CNN1D /
-#   Transformer1D / ResNet1D / Inception1D / TCN1D)。
-# =============================================================================
+# AutoAI core runtime (Python 3.12 verified).
+# For a fully reproducible install, add: -c backend/constraints-verified.txt
 
+# Web/API
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+python-multipart>=0.0.18,<1
+pydantic>=2,<3
 
-# ---- Web 框架 ----
-fastapi>=0.110
-uvicorn[standard]>=0.27
-python-multipart>=0.0.9      # FastAPI 处理 multipart/form-data (文件上传) 必须
+# Data and scientific computing
+numpy>=1.26,<3
+pandas>=2.1,<4
+scipy>=1.11,<2
+joblib>=1.3,<2
 
+# Classical and deep-learning models
+scikit-learn>=1.4,<2
+xgboost>=2.0,<3
+torch>=2.1,<3
 
-# ---- 数据与科学计算 ----
-numpy>=1.26
-pandas>=2.1
-scipy>=1.11                  # DSCARNet 映射用 scipy.spatial.distance / scipy.optimize
+# Raman baseline correction
+rampy>=0.4.5,<1
 
-
-# ---- 机器学习 / 经典模型 ----
-scikit-learn>=1.4
-xgboost>=2.0                 # models/xgboost.py (lazy import,缺失时只影响 XGBoost 模型)
-
-
-# ---- 深度学习 ----
-# CPU 通用版;GPU 用户如需 CUDA 版,装前先按官网选 wheel。
-# torch 是最大的包 (~800MB),首次安装会比较慢,属正常现象。
-torch>=2.1
-
-
-# ---- 谱学 / 拉曼基线校正 ----
-rampy>=0.4.5                 # parsers.py baseline correction (缺失时会 fallback 到内部多项式)
-
-
-# ---- AggMap (DSCARNet 专用,见顶部说明) ----
-# aggmap 本身不在这里 pip 装(因为它的元数据带旧 TF),需要 DSCARNet 请按顶部命令装。
-# 下面这些是 AggMap 真正用到的运行时依赖,提前装好以便 --no-deps 装 aggmap 后即可用。
-# 不用 DSCARNet 也可以留着,无害(只是几个绘图/降维工具)。
-colorlog
-colored
-umap-learn
-python-highcharts
-future
-pynndescent
-
-
-# ---- 序列化 / 持久化 ----
-joblib>=1.3                  # sklearn 模型 + AggMap 映射 dump/load
-
-
-# ---- 可视化 (AggMap 间接用) ----
-matplotlib>=3.8              # AggMap 内部绘图依赖,缺失会导致 AggMap 报错
+# DSCARNet/AggMap is deliberately optional. See requirements-dscarnet.txt.

@@ -12,7 +12,6 @@ from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
 
 router = APIRouter()
 
-
 _MODEL_CATALOG: tuple[tuple[str, str, str], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml"),
     ("pca_lda", "PCA-LDA", "traditional_ml"),

@@ -1,14 +1,5 @@
-# =============================================================================
-# AutoAI 开发 / 测试依赖 —— 在 requirements.txt 基础上追加:
-#     python -m pip install -r backend/requirements.txt
-#     python -m pip install -r backend/requirements-dev.txt
-#
-# 跑测试:
-#     python -m pytest backend/tests/test_smoke.py -q
-# =============================================================================
-
+# AutoAI development/test dependencies. Core runtime is inherited below.
 -r requirements.txt
 
-# ---- 测试 ----
-pytest>=8.0
-httpx>=0.27                  # fastapi.testclient.TestClient 的底层 HTTP 客户端
+pytest>=8,<10
+httpx>=0.27,<1

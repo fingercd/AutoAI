@@ -14,7 +14,7 @@
 ## 项目当前形态
 
 - 后端是 FastAPI，入口为 `run.py` 或 `backend.app.main:app`。
-- 前端主入口是 `static/index.html`，由后端静态托管；`static/ui-*.html` 和多套 CSS/JS 是 UI 方案或历史候选。
+- 前端主入口是 `static/index.html`，由后端静态托管；正式快照不包含历史 UI 画廊或候选方案。
 - 主要回归测试在 `backend/tests/test_smoke.py`。
 - 推荐本机 Python 为 `C:\Users\lenovo\anaconda3\envs\pytorch\python.exe`。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史开发计划，不能把里面的 React/Vite、Redis/RQ、SQLite 等早期路线当成当前实现。
@@ -33,7 +33,7 @@
 
 - 当前建模任务仅支持分类；`Label` 即使为数字也按类别名编码，不作为连续回归目标。`PLSR`、`SVR` 是回归变体，本版训练入口不启用。
 - 当前 10 类分类模型固定为：`pls_da`、`svm`、`random_forest`、`xgboost`、`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
-- 当前稳定可训练模型目录固定为 master 已有的 10 个分类模型；新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
+- 当前稳定可训练模型固定为正式基线已有的 10 个分类模型；新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
 - 支持三种分类评估口径：无独立测试集时可选 `stratified_holdout`（按标签比例 8:1:1 划分 train/valid/test）或 `leave_one_repeat_index_cv`（每折留 1 个 `Repeat_index` 作 test，其余按 8:2 划分 train/valid）；有独立测试集时使用 `external_test_holdout`（主数据 8:2 划分 train/valid，独立测试集作最终 test）。
 - 所有标准化参数只由当前训练集拟合，并应用于同一评估口径下的验证集和测试集。
 - 深度学习模型：`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet` 支持 test 集单样品可解释性分析。
@@ -46,7 +46,7 @@
 
 ## 验证命令
 
-除单元/冒烟测试外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，交付前还需要用项目根目录的本地 `data.csv` 跑一次真实数据流程验证；`data.csv` 是本地验证数据，不能提交进 Git。优先选择轻量模型完成一次训练/评估闭环；如果因为耗时、环境、数据缺失或数据状态无法运行，必须在交付说明中明确写出未运行原因。
+除单元/冒烟测试外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，交付前在项目根目录存在本地 `data.csv` 时还需要跑一次真实数据流程验证；`data.csv` 是本地验证数据，不能提交进 Git。优先选择轻量模型完成一次训练/评估闭环；如果因为耗时、环境、数据缺失或数据状态无法运行，必须在交付说明中明确写出未运行原因。
 
 ```powershell
 Set-Location -LiteralPath 'D:\PythonProject\AutoAI'

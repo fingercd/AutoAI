@@ -4,7 +4,7 @@
 
 本文只描述项目、接口契约和对接注意事项，不包含 UI 视觉或布局建议。
 
-> 当前稳定接口契约：主前端为 `static/index.html`，不是 React/Vite 主链路；色谱主界面默认调用 `/api/preprocess/hplc` 并开启 HPLC 三步标准流程。当前建模仅支持分类任务，评估口径支持分层 holdout、`Repeat_index` 留一交叉验证和独立测试集 holdout。训练 HTTP 请求只创建 SQLite 中的 `queued` Run，由独立本机 worker 执行；`status.json` 只是兼容投影。当前稳定模型和算法以 master 为准，模型数学改动必须使用独立模型计划。
+> 当前稳定接口契约：主前端为 `static/index.html`，不是 React/Vite 主链路；色谱主界面默认调用 `/api/preprocess/hplc` 并开启 HPLC 三步标准流程。当前建模仅支持分类任务，评估口径支持分层 holdout、`Repeat_index` 留一交叉验证和独立测试集 holdout。训练 HTTP 请求只创建 SQLite 中的 `queued` Run，由独立本机 worker 执行；`status.json` 只是兼容投影。稳定模型和算法以当前正式实现为准，模型数学改动必须使用独立模型计划。
 
 ## 分类模型 v2 接口契约
 
@@ -100,8 +100,7 @@ FastAPI 主动抛错时通常返回：
 {
   "run_id": "xxxx",
   "status": "failed",
-  "error": "错误原因",
-  "traceback": "后端完整 traceback"
+  "error": "错误原因"
 }
 ```
 
@@ -160,13 +159,13 @@ GET /health
 
 用途：页面加载后检查后端是否在线。
 
-### 5.2 项目根目录 data.csv 摘要
+### 5.2 可选本地 data.csv 摘要（兼容接口）
 
 ```http
 GET /api/sample/summary
 ```
 
-如果项目根目录存在 `data.csv`，返回它的建模摘要。若不存在，返回 404。
+仓库不附带 `data.csv`。如果维护者在项目根目录放置了本地验证文件，该接口返回其建模摘要；不存在时返回 404。正式前端应优先使用数据集上传接口和稳定的 `dataset_id`。
 
 返回结构和上传数据集的 `summary` 一致。
 
@@ -405,7 +404,7 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | dataset_id | string | 否 | 首选稳定数据集引用；与 `data_path` 不能同时传 |
-| data_path | string | 否 | 受控本地兼容路径；不传则使用项目根目录 `data.csv` |
+| data_path | string | 否 | 受控本地兼容路径；仅供本地兼容，正式流程优先使用 `dataset_id` |
 | test_dataset_id | string | 否 | 独立测试集的稳定数据集引用；与 `test_data_path` 不能同时传 |
 | test_data_path | string | 否 | 受控本地兼容路径；传入时后端使用 `external_test_holdout` |
 | config | object | 否 | 训练参数 |
@@ -428,7 +427,7 @@ Content-Type: application/json
 GET /api/training/runs
 ```
 
-返回一个数组，每项是一次训练的 `status.json` 内容。最新训练排在前面。
+返回一个数组，每项是 RunRepository 记录与兼容状态/产物投影合并后的 Run 状态。最新训练排在前面。
 
 列表和单个 Run 的状态以 SQLite RunRepository 为准；`status.json` 只作为兼容字段投影。
 
@@ -480,7 +479,7 @@ cancelled  -> paused
   "model_family": "deep_learning",
   "model_artifact": "model.pt",
   "sample_count": 90,
-  "test_sample_count": 0,
+  "test_sample_count": 18,
   "label_names": ["A", "B"],
   "target_epochs": 50,
   "actual_epochs": 26,
@@ -497,8 +496,8 @@ cancelled  -> paused
 
 1. `model_family` 是 `traditional_ml`。
 2. `model_artifact` 是 `model.pkl`。
-3. `target_epochs` 和 `actual_epochs` 都是 1。
-4. `history[0].train_loss` 是 `null`。
+3. `target_epochs` 保留请求配置值，但传统模型不是逐 epoch 优化；`actual_epochs` 对应已生成的每折历史行数，留一 CV 时可能大于 1。
+4. 每个传统模型历史行的 `train_loss` 是 `null`。
 5. 前端不要假设所有模型都有 loss 曲线。
 6. 传统模型会写入 `hyperparameter_search.csv`，记录每折候选参数和验证集表现。
 
@@ -507,7 +506,7 @@ cancelled  -> paused
 1. `model_family` 是 `deep_learning`。
 2. `model_artifact` 是 `model.pt`。
 3. `history` 中通常有多轮 epoch。
-4. 可能因为早停导致 `actual_epochs < target_epochs`。
+4. 可能因为早停减少训练历史；单折时比较 `actual_epochs` 与 `target_epochs`，留一 CV 时应比较 `actual_epochs` 与 `total_target_epochs`。
 5. 留一交叉验证时模型权重只保存最后一折；页面展示的最终性能必须读汇总指标。
 
 ### 5.8 下载训练产物
@@ -937,7 +936,7 @@ summary.repeat_index.group_count
 
 ```text
 POST /api/preprocess/raman
-POST /api/preprocess/chromatography
+POST /api/preprocess/hplc
 ```
 
 必须返回 200，并且响应中包含：
@@ -959,6 +958,7 @@ corrected_y
 
 ```text
 raw_y
+processed_y
 ```
 
 ### 11.4 训练任务

@@ -1,14 +1,15 @@
-# AutoAI 谱学数据预处理与自动建模平台开发计划
+# AutoAI 谱学数据预处理与自动建模平台开发计划（历史路线）
 
-> 状态提示（2026-07-06）：本文件是早期开发计划和需求来源参考，部分技术路线已经过时。当前项目已经采用 FastAPI + `static/index.html` 静态前端闭环，而不是 React/Vite 主链路；当前模型已包含 CNN1D、MLP、Transformer、UNet1D、DSCARNet、KNN、RandomForest、SVM、XGBoost；色谱主流程默认使用 `/api/preprocess/hplc` 的 HPLC 三步预处理；可解释性逻辑也已分为传统 ML loss 遮挡法、CNN/UNet Grad-CAM-like、Transformer 输入梯度归因、DSCARNet SAR/CAR 双通路 2D Grad-CAM 回投。接手当前任务时优先阅读 `AGENTS.md`、`CONTEXT.md`、`README.md` 和 `docs/frontend_backend_handoff.md`，本文件仅作为历史需求与路线参考。
+> **历史文档，不作为当前实现或安装说明。** 本文件保留早期需求与技术路线原文，其中 React/Vite、BackgroundTasks、Redis/RQ、旧模型清单和旧命令均可能已经失效。当前事实以 `README.md`、`CONTEXT.md`、`AGENTS.md` 和 `docs/frontend_backend_handoff.md` 为准；维护者不得据此直接修改正式主线。
 
-## 当前实现快照（以代码和上下文文档为准）
+## 当前实现提示（仅帮助识别下文的过时内容）
 
-- 当前没有独立 `frontend/` 主链路，正式页面是 `static/index.html`，由 FastAPI 同源托管；`static/ui-*.html` 是候选或历史 UI。
-- 训练任务目前使用 FastAPI `BackgroundTasks` 写入 `storage/runs/{run_id}/status.json`，尚未切到 Redis/RQ/Celery 或独立 worker 队列。
-- 数据划分按 `Repeat_index` 整组划分 train/valid/test；目前不是完整多轮留一法交叉验证。
+- 当前没有独立 `frontend/` 主链路，正式页面是 `static/index.html`，由 FastAPI 同源托管；历史 UI 画廊已移除。
+- 训练 HTTP 请求只创建 SQLite 中的 queued Run，由独立 worker 通过 claim token 和 lease 执行；FastAPI `BackgroundTasks` 不承担训练。
+- 分类评估支持分层 8:1:1、`Repeat_index` 留一交叉验证和独立测试集 holdout。
+- 正式模型固定为 4 个传统分类模型和 6 个深度分类模型，准确清单见 `README.md`。
 - 训练产物包含常规配置、指标、预测结果、模型文件和解释性 JSON/CSV；DSCARNet 额外写入 AggMap/PCA 映射元数据与 joblib 文件。
-- 下面 1-9 步保留原始规划语境，出现 React/Vite、SQLite、Redis/RQ、worker、完整留一法等内容时，均按历史计划理解。
+- 下面 1-9 步保留原始规划语境，出现 React/Vite、BackgroundTasks、Redis/RQ、旧模型或旧命令时，均按历史计划理解。
 
 本文档根据 `AutoAI要求.docx`、示例建模数据 `data.csv`、原始拉曼数据目录 `拉曼/`、原始色谱数据目录 `色谱/` 整理。目标是在服务器内网部署一个网页系统，让用户通过浏览器完成数据上传、预处理、自动划分、模型训练、结果查看和结果下载。
 
