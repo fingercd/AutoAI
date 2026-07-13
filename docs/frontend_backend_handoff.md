@@ -6,6 +6,16 @@
 
 > 当前稳定接口契约：主前端为 `static/index.html`，不是 React/Vite 主链路；色谱主界面默认调用 `/api/preprocess/hplc` 并开启 HPLC 三步标准流程。当前建模仅支持分类任务，评估口径支持分层 holdout、`Repeat_index` 留一交叉验证和独立测试集 holdout。训练 HTTP 请求只创建 SQLite 中的 `queued` Run，由独立本机 worker 执行；`status.json` 只是兼容投影。当前稳定模型和算法以 master 为准，模型数学改动必须使用独立模型计划。
 
+## 分类模型 v2 接口契约
+
+`GET /api/models` 返回 **15 个目标分类模型**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。当前仅支持分类；`Repeat_index` 不改名并等同 Sample_ID。新 Run 使用 `architecture_version="docx-classification-v2"`，旧类、旧权重和旧 artifact 名只读兼容。
+
+模型目录始终列出15项，但 capability 决定是否可选。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而返回 `available=false`。`dscarnet_input_mode` 接受 `sar`、`car`、`dual`（默认）；二分类深度模型使用单 logit + `BCEWithLogitsLoss`，接口仍输出两列类别概率。
+
+划分契约：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每折留一个 `Repeat_index` 作 test，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2，独立数据作唯一 test，并禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后使用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，以最低 validation loss 保存最佳权重。
+
+解释性契约：六个传统模型使用窗口置换；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用 `abs(gradient * input)`；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。继续支持 `feature_importance.json/csv`、`sample_feature_importance.json/csv`、`model.pt/model.pkl` 等旧下载名。
+
 ## 1. 项目概况
 
 AutoAI 是一个部署在服务器或本机的谱学数据预处理及分类建模平台。当前后端使用 FastAPI，前端是静态 HTML/CSS/JS，由 FastAPI 同源托管。

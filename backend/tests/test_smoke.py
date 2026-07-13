@@ -420,16 +420,32 @@ def test_dscarnet_registry_uses_dual_2d_builder():
     assert not isinstance(model, DSCARNet1D)
     assert model.last_avf is None
     logits = model(torch.ones(2, 1, 5, 5), torch.ones(2, 1, 5, 5))
-    assert logits.shape == (2, 2)
+    assert logits.shape == (2, 1)
 
 
-def test_registry_allows_only_current_ten_classification_models():
+def test_registry_allows_only_current_active_classification_models():
     from backend.app.models.registry import DEEP_MODEL_TYPES, TRADITIONAL_MODEL_TYPES, canonical_model_type
 
-    assert TRADITIONAL_MODEL_TYPES == {"pls_da", "svm", "random_forest", "xgboost"}
-    assert DEEP_MODEL_TYPES == {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
+    assert TRADITIONAL_MODEL_TYPES == {
+        "pls_da",
+        "pca_lda",
+        "logistic_regression",
+        "svm",
+        "random_forest",
+        "xgboost",
+    }
+    assert DEEP_MODEL_TYPES == {
+        "pca_mlp",
+        "cnn1d",
+        "cnn1d_se",
+        "resnet1d",
+        "inception1d",
+        "tcn1d",
+        "cnn_transformer1d",
+        "dscarnet",
+    }
     assert canonical_model_type("PLS-DA") == "pls_da"
-    assert canonical_model_type("1D-Transformer") == "transformer1d"
+    assert canonical_model_type("1D-Transformer") == "cnn_transformer1d"
     assert canonical_model_type("1D-ResNet") == "resnet1d"
     assert canonical_model_type("1D-Inception") == "inception1d"
     assert canonical_model_type("1D-TCN") == "tcn1d"
@@ -618,6 +634,11 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
         assert fold["test_repeat_index"] not in fold["train_repeat_indices"]
         assert fold["test_repeat_index"] not in fold["valid_repeat_indices"]
         assert set(fold["train_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
+        assert set(fold["test_repeat_indices"]).isdisjoint(fold["train_repeat_indices"])
+        assert set(fold["test_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
+        assert len(fold["splits"]["train"]) == 8
+        assert len(fold["splits"]["valid"]) == 2
+        assert len(fold["splits"]["test"]) == 2
 
 
 def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
@@ -666,8 +687,8 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
             "model_type": "pls_da",
             "test_data_path": str(test_source),
             "split_train": 8,
-            "split_valid": 1,
-            "split_test": 1,
+            "split_valid": 2,
+            "split_test": 0,
             "feature_selection_enabled": False,
         },
     )
@@ -678,9 +699,13 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert result["test_sample_count"] == 8
     assert result["fold_count"] == 1
     assert not split_payload[0]["splits"]["test"]
-    assert len(split_payload[0]["splits"]["train"]) == 18
-    assert len(split_payload[0]["splits"]["valid"]) == 2
+    assert len(split_payload[0]["splits"]["train"]) == 16
+    assert len(split_payload[0]["splits"]["valid"]) == 4
     assert len(split_payload[0]["external_test_indices"]) == 8
+    train_groups = set(split_payload[0]["train_repeat_indices"])
+    valid_groups = set(split_payload[0]["valid_repeat_indices"])
+    assert train_groups.isdisjoint(valid_groups)
+    assert set(split_payload[0]["test_repeat_indices"]) == {"1", "2", "3", "4"}
     assert set(predictions["dataset"]) == {"external_test"}
 
 
@@ -777,9 +802,9 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
                 "model_type": "svm",
                 "normalization": "none",
                 "split_mode": "leave_one_repeat_index_cv",
-                "split_train": 6,
+                "split_train": 8,
                 "split_valid": 2,
-                "split_test": 2,
+                "split_test": 0,
             "feature_window_count": 4,
             "feature_top_k": 2,
             "feature_n_repeats": 2,
@@ -869,7 +894,8 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     )
 
     assert result["status"] == "success"
-    assert result["model_type"] == model_type
+    expected_model_type = "cnn_transformer1d" if model_type == "transformer1d" else model_type
+    assert result["model_type"] == expected_model_type
     assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
     assert result["fold_count"] == 6
     run_dir = tmp_path / result["run_id"]
@@ -1267,6 +1293,27 @@ def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
     assert len(payload["curves"][0]["raw_y"]) == 9
 
 
+@pytest.mark.parametrize("path", ["/ui", "/ui/workbench", "/ui/wizard", "/ui/dashboard", "/ui/console"])
+def test_obsolete_ui_variant_routes_are_not_exposed(path):
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    client = TestClient(app)
+    response = client.get(path)
+
+    assert response.status_code == 404
+
+
+def test_obsolete_ui_variant_assets_are_not_served():
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    client = TestClient(app)
+
+    assert client.get("/static/autoai-variants.css").status_code == 404
+    assert client.get("/static/autoai-variants.js").status_code == 404
+
+
 def test_main_ui_prefers_sample_feature_importance_panel():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
@@ -1296,7 +1343,7 @@ def test_main_ui_prefers_sample_feature_importance_panel():
 def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert 'if (splitTrain + splitValid + splitTest !== 10)' in content
+    assert 'if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10)' in content
     assert 'if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10)' not in content
     assert "训练、验证、测试比例相加必须等于 10" in content
     assert "trainingRequestInFlight" in content
@@ -1304,6 +1351,29 @@ def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     assert "trainingRequestInFlight = false" in content
     assert "startButton.disabled = true" in content
     assert "startButton.disabled = false" in content
+
+
+def test_main_ui_external_dataset_forces_eight_two_and_hides_cv():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "function applySplitPreset(mode)" in content
+    assert 'id="cvOptions"' in content
+    assert 'id="splitTestField"' in content
+    assert '$("cvEnabled").checked = false' in content
+    assert '$("cvOptions").classList.toggle("hidden", hasExternalTest)' in content
+    assert 'applySplitPreset("external")' in content
+
+
+def test_main_ui_uses_documented_deep_training_defaults():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'option value="normal"' not in content
+    assert 'option value="deep"' not in content
+    assert 'id="epochs" type="number" value="200" min="1" max="200"' in content
+    assert 'id="batchSize" type="number" value="8"' in content
+    assert 'id="learningRate" type="number" value="0.001"' in content
+    assert 'id="earlyStoppingPatience" type="number" value="20"' in content
+    assert 'value = $("trainTime").value === "deep" ? "100" : "50"' not in content
 
 
 def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
@@ -1334,8 +1404,10 @@ def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
     assert "featureSegmentKind" in content
     assert "特征点" in content
     assert "Grad-CAM 与输入梯度归因差异较大" not in content
-    assert 'id="intensitySummary"' in content
-    assert "强度点数" in content
+    assert "renderIntensitySummary" not in content
+    assert 'id="intensitySummary"' not in content
+    assert "强度点数" not in content
+    assert "强度已生成" not in content
 
 
 def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
@@ -1344,17 +1416,18 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert '<div class="metric">总数据<strong>${summary.samples}</strong></div>' in content
     assert '<div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>' in content
     assert '<div class="metric">样品种类<strong>' not in content
-    assert 'const splitTrain = readSplitNumber("splitTrain", 8);' in content
-    assert 'const splitValid = readSplitNumber("splitValid", 1);' in content
-    assert 'const splitTest = readSplitNumber("splitTest", 1);' in content
+    assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
+    assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
+    assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
     assert 'const cvEnabled = $("cvEnabled").checked;' in content
-    assert 'split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,' in content
+    assert 'split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
     assert "开启交叉验证" in content
     assert "几个 Repeat_index 就跑几折" in content
-    assert content.index('id="advancedOptions"') < content.index('id="trainTimeBlock"') < content.index('id="deepOptions"')
+    assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
+    assert 'id="trainTimeBlock"' not in content
     assert "function historyFoldOptions" in content
     assert "function selectedFoldHistory" in content
     assert 'id="historyFoldSelect"' in content

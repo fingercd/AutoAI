@@ -513,20 +513,11 @@
             <div class="panel">
               <h2>训练配置</h2>
               <label>模型架构</label>
-              <select id="modelType" aria-describedby="modelCatalogHint">
-                <option value="pls_da">PLS-DA</option>
-                <option value="svm">SVM</option>
-                <option value="random_forest">Random Forest</option>
-                <option value="xgboost">XGBoost</option>
-                <option value="cnn1d">1D-CNN</option>
-                <option value="transformer1d">1D-Transformer</option>
-                <option value="resnet1d">1D-ResNet</option>
-                <option value="inception1d">1D-Inception</option>
-                <option value="tcn1d">1D-TCN</option>
-                <option value="dscarnet">DSCARNet</option>
+              <select id="modelType" aria-describedby="modelCatalogHint" disabled>
+                <option value="">正在加载模型目录…</option>
               </select>
               <p id="modelCatalogHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                正在读取当前环境可用的分类模型；加载失败时仍可使用以上稳定模型。
+                正在读取当前环境可用的分类模型。
               </p>
               <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
@@ -534,19 +525,23 @@
                 <div class="grid" style="grid-template-columns: repeat(3, 1fr); gap: 10px">
                   <input id="splitTrain" type="number" value="8" min="0" max="10" aria-label="训练比例" />
                   <input id="splitValid" type="number" value="1" min="0" max="10" aria-label="验证比例" />
-                  <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
+                  <div id="splitTestField">
+                    <input id="splitTest" type="number" value="1" min="0" max="10" aria-label="测试比例" />
+                  </div>
                 </div>
               </div>
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
                 默认 8:1:1；加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
               </p>
-              <label class="checkbox-line">
-                <input id="cvEnabled" type="checkbox" />
-                开启交叉验证
-              </label>
-              <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                几个 Repeat_index 就跑几折，折数不可调。
-              </p>
+              <div id="cvOptions">
+                <label class="checkbox-line">
+                  <input id="cvEnabled" type="checkbox" />
+                  开启交叉验证
+                </label>
+                <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
+                  几个 Repeat_index 就跑几折，折数不可调。
+                </p>
+              </div>
               <div id="featureWindowOptions">
                 <label>重要性分段数</label>
                 <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
@@ -555,13 +550,6 @@
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
               <div id="advancedOptions" class="hidden">
-                <div id="trainTimeBlock">
-                  <label>训练时间</label>
-                  <select id="trainTime">
-                    <option value="normal">正常：50 epoch</option>
-                    <option value="deep">深入：100 epoch</option>
-                  </select>
-                </div>
                 <label>标准化</label>
                 <select id="normalization">
                   <option value="zscore">zscore</option>
@@ -576,21 +564,31 @@
                 </select>
                 <div id="deepOptions">
                   <label>Epoch</label>
-                  <input id="epochs" type="number" value="50" min="1" max="500" />
+                  <input id="epochs" type="number" value="200" min="1" max="200" />
                   <label>Batch size</label>
-                  <input id="batchSize" type="number" value="16" min="1" max="256" />
+                  <input id="batchSize" type="number" value="8" min="1" max="256" />
                   <label>Learning rate</label>
                   <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
                   <label>Early stopping patience</label>
                   <input id="earlyStoppingPatience" type="number" value="20" min="0" max="100" />
+                  <label>Weight decay（文档固定）</label>
+                  <input id="weightDecay" type="number" value="0.0001" readonly />
+                  <label>ReduceLROnPlateau（factor / patience / min lr）</label>
+                  <input id="schedulerDefaults" type="text" value="0.5 / 10 / 0.000001" readonly />
                   <label>Dropout（留空自动）</label>
                   <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
                   <label>Hidden size</label>
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
                   <label>Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
-                  <label>DSCARNet inception blocks</label>
-                  <input id="dscarnetInceptionBlocks" type="number" value="1" min="1" max="3" />
+                  <div id="dscarnetOptions" class="hidden">
+                    <label>DSCARNet 输入模式</label>
+                    <select id="dscarnetInputMode">
+                      <option value="dual">SAR + CAR</option>
+                      <option value="sar">SAR</option>
+                      <option value="car">CAR</option>
+                    </select>
+                  </div>
                 </div>
                 <div id="traditionalOptions" class="hidden">
                   <div id="randomForestOptions" class="hidden">
@@ -652,6 +650,7 @@
               <div id="runStatus" class="status">尚未开始</div>
               <div id="trainingProgress"></div>
               <div id="metrics" style="margin-top:14px"></div>
+              <div id="trainingAudit"></div>
               <div id="trainingCharts"></div>
               <div id="featureImportance"></div>
               <div id="confusionMatrix"></div>
@@ -878,15 +877,28 @@
       ];
 
       const MODEL_FAMILY_GROUP_ALIASES = {
+        traditional: "traditional",
         traditional_ml: "traditional",
         basic_deep: "basic_deep",
+        basic_deep_learning: "basic_deep",
         convolutional: "convolutional",
+        convolutional_improvement: "convolutional",
         long_range: "long_range",
+        long_distance: "long_range",
         two_dimensional_mapping: "two_dimensional_mapping",
+        mapping_2d: "two_dimensional_mapping",
       };
 
       function modelCatalogGroupId(family) {
-        return MODEL_FAMILY_GROUP_ALIASES[String(family || "").trim().toLowerCase()] || "basic_deep";
+        const normalized = String(family || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s-]+/g, "_");
+        return MODEL_FAMILY_GROUP_ALIASES[normalized] || "basic_deep";
+      }
+
+      function modelCatalogItem(modelType = $("modelType").value) {
+        return modelCatalogById.get(modelType) || null;
       }
 
       function renderModelCatalog(models, preferredModelId = $("modelType").value) {
@@ -921,22 +933,32 @@
           select.append(optgroup);
         });
 
-        const preferred = modelCatalogById.get(preferredModelId);
+        const preferred = modelCatalogItem(preferredModelId);
         const firstAvailable = entries.find((model) => model.available !== false);
-        const selected = preferred && preferred.available !== false ? preferred : firstAvailable;
-        if (selected) select.value = selected.id;
+        const selected = preferred && preferred.available !== false ? preferred : firstAvailable || entries[0];
+        select.value = selected.id;
         select.disabled = !firstAvailable;
         $("modelCatalogHint").textContent = unavailableMessages.length
           ? `当前不可用模型：${unavailableMessages.join("；")}`
-          : "模型目录已加载；模型按类别分组显示。";
+          : "模型目录已加载；模型按文档分类分组显示。";
         updateModelOptionVisibility();
       }
 
       function renderModelCatalogFallback(error) {
         const select = $("modelType");
         const reason = error?.message || "无法连接模型目录";
-        select.disabled = false;
-        $("modelCatalogHint").textContent = `模型目录加载失败，继续使用页面内置的稳定模型：${reason}`;
+        if (modelCatalogById.size && select.options.length) {
+          $("modelCatalogHint").textContent = `模型目录刷新失败，继续使用已加载的目录：${reason}`;
+          return;
+        }
+        select.replaceChildren();
+        const option = document.createElement("option");
+        option.value = "";
+        option.disabled = true;
+        option.textContent = `模型目录暂不可用：${reason}`;
+        select.append(option);
+        select.disabled = true;
+        $("modelCatalogHint").textContent = "模型目录加载失败，未改变现有训练 API 或数据划分设置。";
         updateModelOptionVisibility();
       }
 
@@ -953,7 +975,7 @@
 
       function initializeApiBackedUi() {
         loadHealth();
-        loadModelCatalog();
+        loadModelCatalog().catch(() => undefined);
       }
 
       window.addEventListener("autoai:modules-ready", initializeApiBackedUi, { once: true });
@@ -1197,7 +1219,7 @@
       }
 
       function isTraditionalModel(modelType = $("modelType").value) {
-        return ["pls_da", "random_forest", "svm", "xgboost"].includes(modelType);
+        return modelCatalogGroupId(modelCatalogItem(modelType)?.family) === "traditional";
       }
 
       function usesFeatureWindowCount(modelType = $("modelType").value) {
@@ -1220,15 +1242,34 @@
         return Number.isFinite(value) ? value : fallback;
       }
 
+      function applySplitPreset(mode) {
+        if (mode === "external") {
+          $("cvEnabled").checked = false;
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+          return;
+        }
+        if (mode === "loo") {
+          $("splitTrain").value = "8";
+          $("splitValid").value = "2";
+          $("splitTest").value = "0";
+          return;
+        }
+        $("splitTrain").value = "8";
+        $("splitValid").value = "1";
+        $("splitTest").value = "1";
+      }
+
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetPath);
         const cvEnabled = $("cvEnabled").checked;
         const splitMode = hasExternalTest ? "external_test_holdout" : "stratified_holdout";
-        const splitTrain = readSplitNumber("splitTrain", 8);
-        const splitValid = readSplitNumber("splitValid", 1);
-        const splitTest = readSplitNumber("splitTest", 1);
-        if (splitTrain + splitValid + splitTest !== 10) {
+        const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);
+        const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);
+        const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);
+        if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10) {
           throw new Error("训练、验证、测试比例相加必须等于 10");
         }
         if (splitTrain <= 0) {
@@ -1242,7 +1283,7 @@
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: cvEnabled ? "leave_one_repeat_index_cv" : splitMode,
+          split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),
           split_train: splitTrain,
           split_valid: splitValid,
           split_test: splitTest,
@@ -1252,7 +1293,7 @@
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
-          dscarnet_inception_blocks: Number($("dscarnetInceptionBlocks").value),
+          dscarnet_input_mode: $("dscarnetInputMode").value,
           random_forest_n_estimators: Number($("rfEstimators").value),
           random_forest_max_depth: numberOrNull("rfMaxDepth"),
           random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
@@ -1294,6 +1335,112 @@
         return "-";
       }
 
+      function trainingAuditFor(run) {
+        const directAudit = run?.training_audit;
+        if (directAudit && typeof directAudit === "object") return directAudit;
+        const nestedStatus = run?.status;
+        return nestedStatus && typeof nestedStatus === "object" && nestedStatus.training_audit && typeof nestedStatus.training_audit === "object"
+          ? nestedStatus.training_audit
+          : {};
+      }
+
+      function isExternalTestHoldout(run) {
+        const audit = trainingAuditFor(run);
+        const strategy = audit.evaluation_strategy || run?.evaluation_strategy || run?.config?.split_mode;
+        return strategy === "external_test_holdout";
+      }
+
+      function formatAuditNumber(value) {
+        const number = Number(value);
+        return Number.isFinite(number) ? String(number) : "-";
+      }
+
+      function formatAuditParams(params) {
+        if (!params || typeof params !== "object") return "-";
+        try {
+          return escapeHtml(JSON.stringify(params));
+        } catch (_) {
+          return "-";
+        }
+      }
+
+      function renderTrainingAudit(run) {
+        const target = $("trainingAudit");
+        const audit = trainingAuditFor(run);
+        if (!target || !audit || typeof audit !== "object") return;
+        const isExternal = isExternalTestHoldout(run);
+        const sections = [];
+        const traditional = audit.traditional;
+        const deep = audit.deep_training;
+        const explainability = audit.explainability;
+
+        if (traditional && typeof traditional === "object") {
+          const search = traditional.hyperparameter_search_csv || {};
+          const searchArtifact = String(search.artifact || "hyperparameter_search.csv");
+          const searchHint = search.available && run.run_id
+            ? `<a class="secondary" href="/api/training/runs/${encodeURIComponent(run.run_id)}/artifact/${encodeURIComponent(searchArtifact)}">下载参数搜索 CSV</a>`
+            : `<span>参数搜索 CSV：${escapeHtml(searchArtifact)}（当前 Run 未提供下载）</span>`;
+          if (isExternal) {
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>传统模型审计</h3>
+                <div class="metrics">
+                  <div class="metric">验证 Balanced Accuracy<strong>${formatAuditNumber(traditional.valid_balanced_accuracy)}</strong></div>
+                  <div class="metric wide">最佳参数<strong style="font-size:12px;word-break:break-all">${formatAuditParams(traditional.best_params)}</strong></div>
+                </div>
+                <div class="actions">${searchHint}</div>
+              </div>
+            `);
+          } else {
+            const selections = Array.isArray(traditional.best_params_by_fold) ? traditional.best_params_by_fold : [];
+            const rows = selections.map((entry) => `
+              <tr>
+                <td>${escapeHtml(String(entry.fold_index ?? "-"))}</td>
+                <td>${formatAuditNumber(entry.valid_balanced_accuracy)}</td>
+                <td><code>${formatAuditParams(entry.params)}</code></td>
+              </tr>
+            `).join("");
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>传统模型参数审计</h3>
+                ${rows ? `<table><thead><tr><th>折</th><th>验证 Balanced Accuracy</th><th>最佳参数</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty-state">未提供参数选择明细。</p>'}
+                <div class="actions">${searchHint}</div>
+              </div>
+            `);
+          }
+        }
+
+        if (deep && typeof deep === "object") {
+          sections.push(`
+            <div class="chart-card" style="margin-top:14px">
+              <h3>深度训练审计</h3>
+              <div class="metrics">
+                <div class="metric">Best valid loss<strong>${formatAuditNumber(deep.best_valid_loss)}</strong></div>
+                <div class="metric">实际 Epoch<strong>${formatAuditNumber(deep.actual_epochs)}</strong></div>
+                <div class="metric">最低学习率<strong>${formatAuditNumber(deep.min_learning_rate)}</strong></div>
+              </div>
+            </div>
+          `);
+        }
+
+        if (explainability && typeof explainability === "object") {
+          const hasExplainability = ["declared_method", "artifact_method", "importance_metric"].some((key) => explainability[key] != null);
+          if (hasExplainability) {
+            sections.push(`
+              <div class="chart-card" style="margin-top:14px">
+                <h3>可解释性审计</h3>
+                <div class="metrics">
+                  <div class="metric">声明方法<strong>${escapeHtml(String(explainability.declared_method ?? "-"))}</strong></div>
+                  <div class="metric">产物方法<strong>${escapeHtml(String(explainability.artifact_method ?? "-"))}</strong></div>
+                  <div class="metric">重要性指标<strong>${escapeHtml(String(explainability.importance_metric ?? "-"))}</strong></div>
+                </div>
+              </div>
+            `);
+          }
+        }
+        target.innerHTML = sections.join("");
+      }
+
       function inferValidMetricsFromHistory(history) {
         const latestByFold = new Map();
         (history || []).forEach((row) => {
@@ -1327,6 +1474,7 @@
           </div>
         `;
         $("metrics").innerHTML = "";
+        $("trainingAudit").innerHTML = "";
         $("trainingCharts").innerHTML = "";
         $("featureImportance").innerHTML = "";
         $("confusionMatrix").innerHTML = "";
@@ -2021,6 +2169,7 @@
             </div>
           `;
           $("trainingCharts").innerHTML = "";
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           $("confusionMatrix").innerHTML = "";
           $("downloads").innerHTML = "";
@@ -2030,25 +2179,33 @@
         if (run.status === "pending" || run.status === "running") {
           const totalTargetEpochs = runTotalTargetEpochs(run);
           const foldProgress = runFoldProgressText(run);
+          const isExternal = isExternalTestHoldout(run);
+          const progressMarkup = isExternal
+            ? `<div class="metric">评估模式<strong>独立测试集最终评估</strong></div>`
+            : `
+                <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
+                <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
+              `;
+          const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
           $("trainingProgress").innerHTML = `
             <div class="training-state">
               <div class="spinner"></div>
               <div>
                 <strong>模型正在训练</strong>
-                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · 折进度 ${foldProgress} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · ${progressText} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
               </div>
             </div>
           `;
           $("metrics").innerHTML = `
             <div class="metrics">
               <div class="metric">当前状态<strong>${statusText}</strong></div>
-              <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
-              <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
+              ${progressMarkup}
               <div class="metric">目标 Epoch<strong>${totalTargetEpochs}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
           `;
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           return;
         }
@@ -2072,6 +2229,7 @@
               <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
             </div>
           `;
+          renderTrainingAudit(run);
           if (run.model_family === "traditional_ml") {
             $("trainingCharts").innerHTML = "";
           } else {
@@ -2102,6 +2260,7 @@
           clearInterval(poller);
           $("trainingProgress").innerHTML = "";
           $("trainingCharts").innerHTML = "";
+          $("trainingAudit").innerHTML = "";
           $("featureImportance").innerHTML = "";
           $("confusionMatrix").innerHTML = "";
           $("downloads").innerHTML = "";
@@ -2139,19 +2298,6 @@
         const collapsed = panel.classList.toggle("hidden");
         $("hplcOptionsToggle").textContent = collapsed ? "参数" : "收起";
         $("hplcOptionsToggle").setAttribute("aria-expanded", String(!collapsed));
-      }
-
-      function renderIntensitySummary(summary = []) {
-        if (!summary.length) return "";
-        const items = summary.map((item) => `
-          <div class="feature-chip">
-            <strong>${escapeHtml(item.name || "样本")}</strong>
-            <div>强度点数：${escapeHtml(item.point_count ?? "-")}</div>
-            <div>最小/最大：${formatMetric(item.min)} / ${formatMetric(item.max)}</div>
-            <div>${item.all_zero ? "强度全为 0" : "强度已生成"}</div>
-          </div>
-        `).join("");
-        return `<div id="intensitySummary" class="feature-list">${items}</div>`;
       }
 
       function updatePreprocessRangeMode(kind) {
@@ -2207,7 +2353,6 @@
         const infoLines = effectiveKind === "hplc" && result.common_time
           ? `<p style="color:#667085;font-size:12px">统一时间轴: ${result.common_time.length} 点, 步长 ${((result.common_time[1]-result.common_time[0])*60).toFixed(3)} 秒</p>`
           : "";
-        const intensitySummaryHtml = renderIntensitySummary(result.intensity_summary || []);
         resultTarget.innerHTML = `
           <div class="metrics">
             <div class="metric">样本数<strong>${result.rows}</strong></div>
@@ -2215,7 +2360,6 @@
           </div>
           <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
           ${infoLines}
-          ${intensitySummaryHtml}
           ${
             hasCurves
               ? `<h3>${title}</h3>
@@ -2287,17 +2431,28 @@
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
         $("svmOptions").classList.toggle("hidden", modelType !== "svm");
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
+        $("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet");
       }
 
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetPath);
-        const cvEnabled = $("cvEnabled").checked;
+        let cvEnabled = $("cvEnabled").checked;
+        if (hasExternalTest) {
+          applySplitPreset("external");
+          cvEnabled = false;
+        } else if (cvEnabled) {
+          applySplitPreset("loo");
+        } else {
+          applySplitPreset("holdout");
+        }
+        $("cvOptions").classList.toggle("hidden", hasExternalTest);
+        $("splitTestField").classList.toggle("hidden", hasExternalTest || cvEnabled);
         $("splitTest").disabled = hasExternalTest || cvEnabled;
         $("customSplitOptions").setAttribute("aria-hidden", "false");
         if (hasExternalTest) {
-          $("splitModeHint").textContent = "已加载独立测试集：主数据使用训练/验证比例，独立测试集作为最终测试集。";
+          $("splitModeHint").textContent = "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
         } else if (cvEnabled) {
-          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余按训练/验证比例划分。";
+          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余固定按 8:2 训练/验证。";
         } else {
           $("splitModeHint").textContent = "默认 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
         }
@@ -2355,9 +2510,6 @@
         const collapsed = body.classList.toggle("hidden");
         $("toggleCurvePreview").textContent = collapsed ? "展开" : "收起";
         if (!collapsed) redrawCurrentCurvePreview();
-      });
-      $("trainTime").addEventListener("change", () => {
-        $("epochs").value = $("trainTime").value === "deep" ? "100" : "50";
       });
       $("ramanBaselineMethodMode").addEventListener("change", () => {
         $("ramanCustomMethodBox").classList.toggle("hidden", $("ramanBaselineMethodMode").value !== "custom");

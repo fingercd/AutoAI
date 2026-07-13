@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,10 +11,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .classification_policy import DEEP_TRAINING_DEFAULTS, EvaluationPolicy, resolve_evaluation_policy
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
     aggregate_attribution_sanity,
@@ -26,18 +27,21 @@ from .feature_selection import (
     primary_feature_segment,
     sample_deep_attribution_importance,
     sample_dscarnet_dual_2d_gradcam_importance,
+    sample_dscarnet_single_2d_gradcam_importance,
     sample_occlusion_importance,
     unavailable_feature_importance,
     write_feature_importance_artifacts,
     write_sample_feature_importance_artifacts,
 )
-from .models import build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
+from .models import ARCHITECTURE_VERSION, build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
+from .models.profiles import build_dscarnet_profile, build_model_profile, model_range_warnings
 from .parsers import load_modeling_csv
 from .paths import RUNS_DIR
 from .runs.contracts import RunRecord
 from .runs.artifacts import RunArtifactWriter
 from .runs.repository import InvalidRunTransition, RunRepository
 from .runs.status_projection import project_status
+from .training_explainability import explainability_method
 
 
 class TrainingRunReplaced(RuntimeError):
@@ -46,10 +50,14 @@ class TrainingRunReplaced(RuntimeError):
 
 @dataclass
 class TrainConfig:
-    epochs: int = 50
-    batch_size: int = 16
-    learning_rate: float = 0.001
-    seed: int = 42
+    epochs: int = DEEP_TRAINING_DEFAULTS.epochs
+    batch_size: int = DEEP_TRAINING_DEFAULTS.batch_size
+    learning_rate: float = DEEP_TRAINING_DEFAULTS.learning_rate
+    weight_decay: float = DEEP_TRAINING_DEFAULTS.weight_decay
+    scheduler_factor: float = DEEP_TRAINING_DEFAULTS.scheduler_factor
+    scheduler_patience: int = DEEP_TRAINING_DEFAULTS.scheduler_patience
+    min_learning_rate: float = DEEP_TRAINING_DEFAULTS.min_learning_rate
+    seed: int = DEEP_TRAINING_DEFAULTS.seed
     normalization: str = "zscore"
     split_mode: str = "stratified"
     split_train: int = 8
@@ -57,7 +65,7 @@ class TrainConfig:
     split_test: int = 1
     class_balance: str = "none"
     model_type: str = "cnn1d"
-    early_stopping_patience: int = 20
+    early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
     dropout: float | None = None
     hidden_size: int = 64
     transformer_heads: int = 4
@@ -65,6 +73,9 @@ class TrainConfig:
     dscarnet_inception_blocks: int = 1
     dscarnet_pca_components: int = 30
     dscarnet_cluster_channels: int = 9
+    dscarnet_input_mode: str = "dual"
+    resolved_train_sample_count: int = 100
+    resolved_feature_count: int = 1000
     knn_n_neighbors: int = 5
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
@@ -81,6 +92,8 @@ class TrainConfig:
     xgboost_colsample_bytree: float = 0.9
     xgboost_reg_lambda: float = 2.0
     pls_components: int | None = None
+    pca_components: int | None = None
+    logistic_c: float = 1.0
     svm_kernel: str = "rbf"
     random_forest_max_features: str | float = "sqrt"
     xgboost_min_child_weight: float = 1.0
@@ -90,6 +103,16 @@ class TrainConfig:
     feature_top_k: int = 5
     feature_n_repeats: int = 5
     feature_eval_split: str = "valid"
+
+
+@dataclass
+class TraditionalSelection:
+    config: TrainConfig
+    valid_balanced_accuracy: float
+    valid_macro_f1: float
+    search_rows: list[dict[str, Any]]
+    model: Any
+    valid_eval: dict[str, Any]
 
 
 def _read_status_file(status_file: Path) -> dict[str, Any]:
@@ -119,14 +142,20 @@ def _raise_if_run_replaced(status_file: Path) -> None:
     raise TrainingRunReplaced(f"训练任务 {status.get('run_id') or status_file.parent.name} 已被新任务 {replaced_by} 替换")
 
 
-def _validate_split_ratio_config(config: TrainConfig) -> None:
-    ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
+def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
+    ratios = (int(policy.split_train), int(policy.split_valid), int(policy.split_test))
     if any(value < 0 for value in ratios):
         raise ValueError("划分比例必须是非负整数")
-    if sum(ratios) != 10:
-        raise ValueError("训练、验证、测试比例相加必须等于 10")
-    if ratios[0] <= 0:
-        raise ValueError("训练集比例必须大于 0")
+    if policy.strategy == "external_test_holdout":
+        if ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
+            raise ValueError("独立测试集模式要求主数据训练/验证比例相加必须等于 10，且内部测试比例为 0")
+        return
+    if policy.strategy == "leave_one_repeat_index_cv":
+        if not policy.cv_allowed or ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
+            raise ValueError("留一交叉验证要求训练/验证比例相加必须等于 10，且内部测试比例为 0")
+        return
+    if ratios[0] <= 0 or ratios[1] <= 0 or ratios[2] <= 0 or sum(ratios) != 10:
+        raise ValueError("训练、验证、测试比例相加必须等于 10，且三项均大于 0")
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -293,15 +322,48 @@ def _dual_loader(
     return DataLoader(TensorDataset(tx1, tx2, ty), batch_size=batch_size, shuffle=shuffle)
 
 
+def _single_2d_loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
+    tx = torch.tensor(x[indices], dtype=torch.float32)
+    ty = torch.tensor(y[indices], dtype=torch.long)
+    return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
+
+
+def _evaluate_deep_loss(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    *,
+    dual_input: bool,
+) -> float:
+    model.eval()
+    losses: list[float] = []
+    with torch.no_grad():
+        for batch in loader:
+            if dual_input:
+                batch_x1, batch_x2, batch_y = batch
+                logits = model(batch_x1, batch_x2)
+            else:
+                batch_x, batch_y = batch
+                logits = model(batch_x)
+            target = batch_y.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else batch_y
+            losses.append(float(criterion(logits, target).detach().item()))
+    return float(np.mean(losses)) if losses else 0.0
+
+
 def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     model.eval()
     with torch.no_grad():
         logits = model(torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1))
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
     pred = probs.argmax(axis=1)
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -326,11 +388,16 @@ def _evaluate_dual(
         tx1 = torch.tensor(x1[indices], dtype=torch.float32)
         tx2 = torch.tensor(x2[indices], dtype=torch.float32)
         logits = model(tx1, tx2)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
     pred = probs.argmax(axis=1)
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -359,6 +426,7 @@ def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indice
     true = y[indices]
     return {
         "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
         "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
         "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
@@ -524,22 +592,22 @@ def _deep_sample_feature_result(
         if model_type == "dscarnet":
             if dscarnet_mapped is None or dscarnet_mapping_metadata is None:
                 raise ValueError("DSCARNet 缺少 SAR/CAR 二维映射结果，无法计算双通路解释性")
-            sample_result = sample_dscarnet_dual_2d_gradcam_importance(
-                model,
-                x,
-                y,
-                x_sar=dscarnet_mapped.x_sar,
-                x_car=dscarnet_mapped.x_car,
-                pca=dscarnet_mapped.pca,
-                sar_mapper=dscarnet_mapped.sar_mapper,
-                car_mapper=dscarnet_mapped.car_mapper,
-                mapping_metadata=dscarnet_mapping_metadata,
-                x_axis=x_axis,
-                splits=splits,
-                label_names=label_names,
-                metadata=metadata,
-                top_k=config.feature_top_k,
-            )
+            mode = dscarnet_mapping_metadata.get("mode", "dual")
+            if mode == "dual":
+                sample_result = sample_dscarnet_dual_2d_gradcam_importance(
+                    model, x, y, x_sar=dscarnet_mapped.x_sar, x_car=dscarnet_mapped.x_car,
+                    pca=dscarnet_mapped.pca, sar_mapper=dscarnet_mapped.sar_mapper,
+                    car_mapper=dscarnet_mapped.car_mapper, mapping_metadata=dscarnet_mapping_metadata,
+                    x_axis=x_axis, splits=splits, label_names=label_names, metadata=metadata, top_k=config.feature_top_k,
+                )
+            else:
+                mapped_values = dscarnet_mapped.x_sar if mode == "sar" else dscarnet_mapped.x_car
+                mapper = dscarnet_mapped.sar_mapper if mode == "sar" else dscarnet_mapped.car_mapper
+                sample_result = sample_dscarnet_single_2d_gradcam_importance(
+                    model, x, y, mapped_values=mapped_values, mapper=mapper, mode=mode, pca=dscarnet_mapped.pca,
+                    mapping_metadata=dscarnet_mapping_metadata, x_axis=x_axis, splits=splits,
+                    label_names=label_names, metadata=metadata, top_k=config.feature_top_k,
+                )
         else:
             sample_result = sample_deep_attribution_importance(
                 model,
@@ -799,6 +867,7 @@ def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, labe
     )
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
         "weighted_f1": float(f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)),
         "macro_precision": float(precision_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
@@ -808,7 +877,7 @@ def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, labe
     }
 
 
-METRIC_SCALAR_KEYS = ("accuracy", "macro_f1", "weighted_f1", "macro_precision", "macro_recall")
+METRIC_SCALAR_KEYS = ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1", "macro_precision", "macro_recall")
 
 
 def _metrics_from_eval(eval_payload: dict[str, Any], label_names: list[str]) -> dict[str, Any]:
@@ -854,43 +923,167 @@ def _aggregate_split_metrics(
 
 
 def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
-    band = _dimension_band(n_features)
     if model_type == "pls_da":
-        raw = [1, 2, 3, 5] if band == "1000-3000" else ([1, 2, 3, 5, 8] if band == "3000-6000" else [1, 2, 3, 5, 8, 10])
-        cap = max(1, min(max(raw), len(y_train) - 2, n_features))
+        raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
+        cap = max(1, min(len(y_train), n_features))
         return [_clone_config(config, pls_components=value) for value in raw if value <= cap]
+    if model_type == "pca_lda":
+        raw = [2, 3, 5, 8, 10, 15, 20, 30, 40, 50]
+        cap = max(1, min(len(y_train), n_features))
+        return [_clone_config(config, pca_components=value) for value in raw if value <= cap]
+    if model_type == "logistic_regression":
+        return [_clone_config(config, logistic_c=value) for value in (0.1, 1.0, 10.0)]
     if model_type == "svm":
-        scale_gamma = max(1e-6, 1.0 / max(1, n_features))
-        if band == "6000-10000":
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("rbf", scale_gamma, 1.0)]
-        elif band == "3000-6000":
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0)]
-        else:
-            candidates = [("linear", "scale", 0.1), ("linear", "scale", 1.0), ("linear", "scale", 10.0), ("rbf", scale_gamma, 1.0), ("rbf", scale_gamma * 10, 1.0)]
-        return [_clone_config(config, svm_kernel=kernel, svm_gamma=gamma, svm_c=c) for kernel, gamma, c in candidates]
+        return [_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)]
     if model_type == "random_forest":
-        if band == "1000-3000":
-            candidates = [(300, 3, "sqrt"), (300, 5, "log2"), (300, None, 0.2)]
-        elif band == "3000-6000":
-            candidates = [(500, 3, "sqrt"), (500, 5, "log2"), (500, 8, 0.1)]
-        else:
-            candidates = [(600, 3, "sqrt"), (600, 5, "log2"), (600, 5, 0.05)]
+        candidates = [
+            (depth, leaf, max_features)
+            for depth in (3, 5, 10)
+            for leaf in (2, 5)
+            for max_features in ("sqrt", "log2", 0.1)
+        ]
         return [
-            _clone_config(config, random_forest_n_estimators=n, random_forest_max_depth=depth, random_forest_max_features=max_features)
-            for n, depth, max_features in candidates
+            _clone_config(
+                config,
+                random_forest_n_estimators=500,
+                random_forest_max_depth=depth,
+                random_forest_min_samples_leaf=leaf,
+                random_forest_max_features=max_features,
+            )
+            for depth, leaf, max_features in candidates
         ]
     if model_type == "xgboost":
-        if band == "1000-3000":
-            candidates = [(2, 0.6, 1, 1), (3, 1.0, 1, 5)]
-        elif band == "3000-6000":
-            candidates = [(2, 0.3, 3, 5), (3, 0.6, 5, 5)]
-        else:
-            candidates = [(2, 0.2, 5, 10), (2, 0.3, 10, 10)]
+        candidates = [
+            (n_estimators, depth, min_child)
+            for n_estimators in (100, 300)
+            for depth in (2, 3, 5)
+            for min_child in (3, 5)
+        ]
         return [
-            _clone_config(config, xgboost_max_depth=depth, xgboost_colsample_bytree=colsample, xgboost_min_child_weight=child, xgboost_reg_lambda=reg_lambda)
-            for depth, colsample, child, reg_lambda in candidates
+            _clone_config(
+                config,
+                xgboost_n_estimators=n_estimators,
+                xgboost_max_depth=depth,
+                xgboost_learning_rate=0.1,
+                xgboost_subsample=0.8,
+                xgboost_colsample_bytree=0.3,
+                xgboost_reg_lambda=10.0,
+                xgboost_min_child_weight=min_child,
+            )
+            for n_estimators, depth, min_child in candidates
         ]
     return [config]
+
+
+def _traditional_params(config: TrainConfig) -> dict[str, Any]:
+    return {
+        "pls_components": config.pls_components,
+        "pca_components": config.pca_components,
+        "logistic_c": config.logistic_c,
+        "svm_kernel": config.svm_kernel,
+        "svm_c": config.svm_c,
+        "svm_gamma": config.svm_gamma,
+        "random_forest_n_estimators": config.random_forest_n_estimators,
+        "random_forest_max_depth": config.random_forest_max_depth,
+        "random_forest_min_samples_leaf": config.random_forest_min_samples_leaf,
+        "random_forest_max_features": config.random_forest_max_features,
+        "xgboost_n_estimators": config.xgboost_n_estimators,
+        "xgboost_max_depth": config.xgboost_max_depth,
+        "xgboost_learning_rate": config.xgboost_learning_rate,
+        "xgboost_subsample": config.xgboost_subsample,
+        "xgboost_colsample_bytree": config.xgboost_colsample_bytree,
+        "xgboost_min_child_weight": config.xgboost_min_child_weight,
+        "xgboost_reg_lambda": config.xgboost_reg_lambda,
+        "xgboost_gamma": config.xgboost_gamma,
+    }
+
+
+def _evaluate_single_2d(model: nn.Module, values: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    model.eval()
+    with torch.no_grad():
+        logits = model(torch.tensor(values[indices], dtype=torch.float32))
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
+        else:
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+    pred = probs.argmax(axis=1)
+    true = y[indices]
+    return {
+        "accuracy": float(accuracy_score(true, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(true, pred)),
+        "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(true, pred, average="weighted", zero_division=0)),
+        "precision": float(precision_score(true, pred, average="macro", zero_division=0)),
+        "recall": float(recall_score(true, pred, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(true, pred, labels=list(range(len(labels)))).tolist(),
+        "probabilities": probs.tolist(), "pred": pred.tolist(), "true": true.tolist(),
+    }
+
+
+def _select_traditional_config(
+    config: TrainConfig,
+    model_type: str,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    label_names: list[str],
+) -> TraditionalSelection:
+    best_model: Any | None = None
+    best_config = config
+    best_eval: dict[str, Any] | None = None
+    best_balanced_accuracy: float | None = None
+    search_rows: list[dict[str, Any]] = []
+    candidates = _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train)
+    for candidate in candidates:
+        model = build_traditional_model(candidate, y_train, len(label_names))
+        model.fit(x_train, y_train)
+        valid_eval = _evaluate_traditional_model(
+            model,
+            x_valid,
+            y_valid,
+            list(range(len(y_valid))),
+            label_names,
+        )
+        params = _traditional_params(candidate)
+        balanced_accuracy = float(valid_eval["balanced_accuracy"])
+        macro_f1 = float(valid_eval["macro_f1"])
+        search_rows.append(
+            {
+                "model_type": model_type,
+                "is_selected": False,
+                "valid_balanced_accuracy": balanced_accuracy,
+                "valid_macro_f1": macro_f1,
+                "valid_accuracy": float(valid_eval["accuracy"]),
+                "selection_metric": "balanced_accuracy",
+                "params": params,
+                "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+            }
+        )
+        if best_balanced_accuracy is None or balanced_accuracy > best_balanced_accuracy + 1e-12:
+            best_model = model
+            best_config = candidate
+            best_eval = valid_eval
+            best_balanced_accuracy = balanced_accuracy
+    if best_model is None or best_eval is None or best_balanced_accuracy is None:
+        raise ValueError("传统模型验证集搜索未产生可用模型")
+    selected_index = max(
+        range(len(search_rows)),
+        key=lambda index: (
+            float(search_rows[index]["valid_balanced_accuracy"]),
+            -index,
+        ),
+    )
+    search_rows[selected_index]["is_selected"] = True
+    return TraditionalSelection(
+        config=best_config,
+        valid_balanced_accuracy=best_balanced_accuracy,
+        valid_macro_f1=float(best_eval["macro_f1"]),
+        search_rows=search_rows,
+        model=best_model,
+        valid_eval=best_eval,
+    )
 
 
 def _fit_traditional_fold(
@@ -901,40 +1094,39 @@ def _fit_traditional_fold(
     splits: dict[str, list[int]],
     label_names: list[str],
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
-    best_model: Any | None = None
-    best_config = config
-    best_eval: dict[str, Any] | None = None
-    search_rows: list[dict[str, Any]] = []
-    for candidate in _traditional_candidate_configs(config, model_type, x.shape[1], y[splits["train"]]):
-        model = build_traditional_model(candidate, y[splits["train"]], len(label_names))
-        model.fit(x[splits["train"]], y[splits["train"]])
-        valid_eval = _evaluate_traditional_model(model, x, y, splits["valid"], label_names)
-        row = {
-            "model_type": model_type,
-            "valid_macro_f1": valid_eval["macro_f1"],
-            "valid_accuracy": valid_eval["accuracy"],
-            "params": {
-                "pls_components": candidate.pls_components,
-                "svm_kernel": candidate.svm_kernel,
-                "svm_c": candidate.svm_c,
-                "svm_gamma": candidate.svm_gamma,
-                "random_forest_n_estimators": candidate.random_forest_n_estimators,
-                "random_forest_max_depth": candidate.random_forest_max_depth,
-                "random_forest_max_features": candidate.random_forest_max_features,
-                "xgboost_max_depth": candidate.xgboost_max_depth,
-                "xgboost_colsample_bytree": candidate.xgboost_colsample_bytree,
-                "xgboost_min_child_weight": candidate.xgboost_min_child_weight,
-                "xgboost_reg_lambda": candidate.xgboost_reg_lambda,
-            },
-        }
-        search_rows.append(row)
-        if best_eval is None or valid_eval["macro_f1"] > best_eval["macro_f1"] + 1e-12:
-            best_model = model
-            best_config = candidate
-            best_eval = valid_eval
-    if best_model is None or best_eval is None:
-        raise ValueError("传统模型验证集搜索未产生可用模型")
-    return best_model, best_config, best_eval, search_rows
+    selection = _select_traditional_config(
+        config,
+        model_type,
+        x[splits["train"]],
+        y[splits["train"]],
+        x[splits["valid"]],
+        y[splits["valid"]],
+        label_names,
+    )
+    return selection.model, selection.config, selection.valid_eval, selection.search_rows
+
+
+def _fit_final_traditional_model(
+    *,
+    selected_config: TrainConfig | TraditionalSelection,
+    model_type: str,
+    x_raw: np.ndarray,
+    y: np.ndarray,
+    train_valid_indices: list[int],
+    normalization: str,
+    label_names: list[str],
+) -> tuple[Any, dict[str, Any], np.ndarray]:
+    if isinstance(selected_config, TraditionalSelection):
+        selected_config = selected_config.config
+    selected_config = _clone_config(selected_config, model_type=model_type)
+    final_indices = np.asarray(sorted({int(index) for index in train_valid_indices}), dtype=np.int64)
+    if final_indices.size == 0:
+        raise ValueError("传统模型最终训练池不能为空")
+    normalizer = _fit_x_normalizer(x_raw[final_indices.tolist()], normalization)
+    x_final = _transform_x_with_normalizer(x_raw, normalizer)
+    model = build_traditional_model(selected_config, y[final_indices], len(label_names))
+    model.fit(x_final[final_indices], y[final_indices])
+    return model, normalizer, final_indices
 
 
 def _fit_deep_fold(
@@ -956,59 +1148,132 @@ def _fit_deep_fold(
     dscarnet_mapped: DSCARNetMappedInputs | None = None
     dscarnet_mapping_metadata: dict[str, Any] | None = None
     if model_type == "dscarnet":
+        mode = str(config.dscarnet_input_mode or "dual").lower()
+        dscarnet_profile = build_dscarnet_profile(train_sample_count=len(splits["train"]), feature_count=x.shape[1])
+        config.resolved_train_sample_count = len(splits["train"])
+        config.resolved_feature_count = x.shape[1]
         dscarnet_mapped = fit_dscarnet_2d_mapping(
             x,
             splits["train"],
-            pca_components=config.dscarnet_pca_components,
-            cluster_channels=config.dscarnet_cluster_channels,
+            pca_components=int(dscarnet_profile["pca_components"]),
+            cluster_channels=int(dscarnet_profile["cluster_channels"]),
             seed=config.seed,
+            mode=mode,
         )
+        dscarnet_mapped.metadata["resolved_profile"] = dscarnet_profile
         dscarnet_mapping_metadata = save_dscarnet_mapping_artifacts(run_dir, dscarnet_mapped)
         model = build_dscarnet_model(
             config,
-            dscarnet_mapped.model_input_shape_sar,
-            dscarnet_mapped.model_input_shape_car,
+            None if dscarnet_mapped.x_sar is None else dscarnet_mapped.model_input_shape_sar,
+            None if dscarnet_mapped.x_car is None else dscarnet_mapped.model_input_shape_car,
             len(label_names),
         )
     else:
-        model = build_deep_model(config, input_length=x.shape[1], class_count=len(label_names), sample_count=sample_count)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+        model = build_deep_model(
+            config,
+            input_length=x.shape[1],
+            class_count=len(label_names),
+            sample_count=sample_count,
+            x_train=x[splits["train"]] if model_type == "pca_mlp" else None,
+        )
+        if model_type == "pca_mlp" and getattr(model, "pca_model", None) is not None:
+            try:
+                import joblib
+
+                joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
+            except Exception:
+                pass
+    if len(label_names) == 2:
+        pos_weight = None
+        if config.class_balance == "class_weight":
+            pos_weight = torch.tensor([float(counts[0] / max(counts[1], 1.0))], dtype=torch.float32)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=config.scheduler_factor,
+        patience=config.scheduler_patience,
+        min_lr=config.min_learning_rate,
+    )
     history: list[dict[str, Any]] = []
     best_score = -1.0
+    best_valid_loss = float("inf")
     best_state = None
     bad_epochs = 0
     for epoch in range(1, config.epochs + 1):
         model.train()
         losses = []
-        if dscarnet_mapped is not None:
+        if dscarnet_mapped is not None and dscarnet_mapped.metadata["mode"] == "dual":
             for bx1, bx2, by in _dual_loader(dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["train"], config.batch_size, True):
                 optimizer.zero_grad()
-                loss = criterion(model(bx1, bx2), by)
+                logits = model(bx1, bx2)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(
+                model,
+                _dual_loader(dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], config.batch_size, False),
+                criterion,
+                dual_input=True,
+            )
             valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y, splits["valid"], label_names)
+        elif dscarnet_mapped is not None:
+            branch_values = dscarnet_mapped.x_sar if dscarnet_mapped.metadata["mode"] == "sar" else dscarnet_mapped.x_car
+            assert branch_values is not None
+            for bx, by in _single_2d_loader(branch_values, y, splits["train"], config.batch_size, True):
+                optimizer.zero_grad()
+                logits = model(bx)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(model, _single_2d_loader(branch_values, y, splits["valid"], config.batch_size, False), criterion, dual_input=False)
+            valid_eval = _evaluate_single_2d(model, branch_values, y, splits["valid"], label_names)
         else:
             for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
                 optimizer.zero_grad()
-                loss = criterion(model(bx), by)
+                logits = model(bx)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
                 loss.backward()
                 optimizer.step()
                 losses.append(float(loss.item()))
+            valid_loss = _evaluate_deep_loss(
+                model,
+                _loader(x, y, splits["valid"], config.batch_size, False),
+                criterion,
+                dual_input=False,
+            )
             valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
-        improved = valid_eval["macro_f1"] > best_score + 1e-8
+        scheduler.step(valid_loss)
+        current_learning_rate = float(optimizer.param_groups[0]["lr"])
+        improved = valid_loss < best_valid_loss - 1e-8
         if improved:
-            best_score = valid_eval["macro_f1"]
+            best_valid_loss = valid_loss
             best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
             bad_epochs = 0
         else:
             bad_epochs += 1
+        best_score = max(best_score, float(valid_eval["macro_f1"]))
         history.append(
             {
                 "epoch": epoch,
                 "train_loss": float(np.mean(losses)) if losses else 0.0,
+                "valid_loss": valid_loss,
+                "best_valid_loss": best_valid_loss,
+                "learning_rate": current_learning_rate,
                 "valid_accuracy": valid_eval["accuracy"],
+                "valid_balanced_accuracy": valid_eval["balanced_accuracy"],
                 "valid_macro_f1": valid_eval["macro_f1"],
                 "best_valid_macro_f1": best_score,
                 "bad_epochs": bad_epochs,
@@ -1171,12 +1436,23 @@ def _run_legacy_training(
     repository: RunRepository | None = None,
     record: RunRecord | None = None,
 ) -> dict[str, Any]:
-    test_data_path = (config_data or {}).get("test_data_path")
-    config_input = {key: value for key, value in (config_data or {}).items() if key in TrainConfig().__dict__}
-    config = TrainConfig(**{**TrainConfig().__dict__, **config_input})
-    _validate_split_ratio_config(config)
+    raw_config = dict(config_data or {})
+    test_data_path = raw_config.get("test_data_path")
+    policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
+    config_input = {key: value for key, value in raw_config.items() if key in TrainConfig().__dict__}
+    config = TrainConfig(
+        **{
+            **TrainConfig().__dict__,
+            **config_input,
+            "split_mode": policy.strategy,
+            "split_train": policy.split_train,
+            "split_valid": policy.split_valid,
+            "split_test": policy.split_test,
+        }
+    )
+    _validate_split_ratio_config(policy)
     model_type = canonical_model_type(config.model_type)
-    evaluation_strategy = _canonical_evaluation_strategy(config, bool(test_data_path))
+    evaluation_strategy = policy.strategy
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1219,7 +1495,7 @@ def _run_legacy_training(
         test_sample_count = int(len(test_y))
         x_model_raw = np.vstack([x_raw, test_x_raw])
         y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, repeat_index, _clone_config(config, split_test=0))
+        internal_splits = _split_indices(y, repeat_index, config)
         _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
         external_indices = list(range(len(y), len(y_model)))
         folds = [
@@ -1318,19 +1594,39 @@ def _run_legacy_training(
         x = _transform_x_with_normalizer(x_model_raw, normalizer)
         fold_index = int(fold["fold_index"])
         write_progress(fold_index, max(0, fold_index - 1), fold)
+        fold_final_fit_indices: np.ndarray | None = None
+        fold_best_params: dict[str, Any] = {}
+        fold_selection_metric: str | None = None
+        fold_selection_score: float | None = None
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
+            fold_best_params = _traditional_params(selected_config)
+            fold_selection_metric = "balanced_accuracy"
+            fold_selection_score = float(valid_eval["balanced_accuracy"])
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
-            valid_eval = _evaluate_traditional_model(model, x, y_model, splits["valid"], label_names)
-            test_eval = _evaluate_traditional_model(model, x, y_model, splits["test"], label_names)
+            train_valid_indices = sorted({*splits["train"], *splits["valid"]})
+            final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
+                selected_config=selected_config,
+                model_type=model_type,
+                x_raw=x_model_raw,
+                y=y_model,
+                train_valid_indices=train_valid_indices,
+                normalization=config.normalization,
+                label_names=label_names,
+            )
+            final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
+            test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
+            model = final_model
+            normalizer = final_normalizer
             history_rows.append(
                 {
                     "fold_index": fold_index,
                     "epoch": 1,
                     "train_loss": None,
                     "valid_accuracy": valid_eval["accuracy"],
+                    "valid_balanced_accuracy": valid_eval["balanced_accuracy"],
                     "valid_macro_f1": valid_eval["macro_f1"],
                     "best_valid_macro_f1": valid_eval["macro_f1"],
                     "bad_epochs": 0,
@@ -1343,8 +1639,9 @@ def _run_legacy_training(
                     "splits": splits,
                     "test_true": test_eval["true"],
                     "test_pred": test_eval["pred"],
-                    "train_mean_curve": np.mean(x_model_raw[splits["train"]], axis=0),
+                    "train_mean_curve": np.mean(x_model_raw[train_valid_indices], axis=0),
                     "selected_config": selected_config.__dict__,
+                    "final_fit_indices": fold_final_fit_indices.tolist(),
                 }
             )
             dscarnet_mapping_metadata = None
@@ -1357,16 +1654,23 @@ def _run_legacy_training(
                 splits=splits,
                 label_names=label_names,
                 run_dir=run_dir,
-                sample_count=int(len(y_model)),
+                sample_count=int(len(splits["train"])),
                 cancel_check=check_run_active,
             )
             check_run_active()
             for row in history:
                 history_rows.append({**row, "fold_index": fold_index})
             if dscarnet_mapped is not None:
-                train_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["train"], label_names)
-                valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["valid"], label_names)
-                test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
+                mode = dscarnet_mapped.metadata.get("mode", "dual")
+                if mode == "dual":
+                    train_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["train"], label_names)
+                    valid_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["valid"], label_names)
+                    test_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, splits["test"], label_names)
+                else:
+                    branch_values = dscarnet_mapped.x_sar if mode == "sar" else dscarnet_mapped.x_car
+                    train_eval = _evaluate_single_2d(model, branch_values, y_model, splits["train"], label_names)
+                    valid_eval = _evaluate_single_2d(model, branch_values, y_model, splits["valid"], label_names)
+                    test_eval = _evaluate_single_2d(model, branch_values, y_model, splits["test"], label_names)
             else:
                 train_eval = _evaluate(model, x, y_model, splits["train"], label_names)
                 valid_eval = _evaluate(model, x, y_model, splits["valid"], label_names)
@@ -1409,11 +1713,15 @@ def _run_legacy_training(
                 "fold_index": fold_index,
                 "test_repeat_index": fold["test_repeat_index"],
                 "accuracy": fold_metrics["accuracy"],
+                "balanced_accuracy": fold_metrics["balanced_accuracy"],
                 "macro_f1": fold_metrics["macro_f1"],
                 "weighted_f1": fold_metrics["weighted_f1"],
                 "train_accuracy": split_metrics["train"]["accuracy"],
+                "train_balanced_accuracy": split_metrics["train"]["balanced_accuracy"],
                 "valid_accuracy": split_metrics["valid"]["accuracy"],
+                "valid_balanced_accuracy": split_metrics["valid"]["balanced_accuracy"],
                 "test_accuracy": fold_metrics["accuracy"],
+                "test_balanced_accuracy": fold_metrics["balanced_accuracy"],
             }
         )
         cv_fold_payloads.append(
@@ -1423,6 +1731,10 @@ def _run_legacy_training(
                 "train_repeat_indices": fold["train_repeat_indices"],
                 "valid_repeat_indices": fold["valid_repeat_indices"],
                 "test_repeat_indices": fold.get("test_repeat_indices", []),
+                "final_fit_indices": fold_final_fit_indices.tolist() if fold_final_fit_indices is not None else [],
+                "best_params": fold_best_params,
+                "selection_metric": fold_selection_metric,
+                "selection_score": fold_selection_score,
                 "metrics": fold_metrics,
                 "split_metrics": split_metrics,
                 "preprocess": _json_normalizer(normalizer),
@@ -1504,17 +1816,63 @@ def _run_legacy_training(
             x_axis_warning=x_axis_warning,
         )
 
+    metadata_train_count = len(folds[0]["splits"].get("train", [])) if folds else 0
+    if model_type == "dscarnet":
+        profile_payload = build_dscarnet_profile(train_sample_count=metadata_train_count, feature_count=x_raw.shape[1])
+    else:
+        profile_payload = asdict(build_model_profile(model_type, train_sample_count=metadata_train_count, feature_count=x_raw.shape[1]))
+    dscarnet_mode = str(config.dscarnet_input_mode or "dual").lower()
+    explainability = explainability_method(model_type, dscarnet_mode=dscarnet_mode)
+    range_warnings = model_range_warnings(
+        train_sample_count=metadata_train_count,
+        feature_count=x_raw.shape[1],
+    )
+    model_metadata = {
+        "model_type": model_type,
+        "model_family": last_model_family,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "N_train": metadata_train_count,
+        "L": int(x_raw.shape[1]),
+        "train_sample_count": metadata_train_count,
+        "feature_count": int(x_raw.shape[1]),
+        "profile": profile_payload,
+        "model_profile": profile_payload,
+        "resolved_profile": profile_payload,
+        "model_range_warnings": range_warnings,
+        "explainability_method": explainability,
+        "artifact_explainability_method": (
+            "interval_permutation_importance" if last_model_family == "traditional_ml" else explainability
+        ),
+    }
+    if last_model_family == "deep_learning":
+        model_metadata.update(
+            {
+                "classification_head": "binary_single_logit" if len(label_names) == 2 else "multiclass_logits",
+                "loss_function": "BCEWithLogitsLoss" if len(label_names) == 2 else "CrossEntropyLoss",
+                "output_dim": 1 if len(label_names) == 2 else len(label_names),
+            }
+        )
+    if getattr(last_model, "pca_metadata", None) is not None:
+        model_metadata["pca"] = last_model.pca_metadata
     config_out = {
         **config.__dict__,
         "model_type": model_type,
+        "architecture_version": ARCHITECTURE_VERSION,
         "data_path": str(Path(data_path).resolve()),
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "preprocess": {"mode": config.normalization, "fit_scope": "train_fold"},
         "evaluation_strategy": evaluation_strategy,
         "dimension_band": _dimension_band(x_raw.shape[1]),
         "fold_count": len(folds),
+        "N_train": metadata_train_count,
+        "L": int(x_raw.shape[1]),
+        "model_profile": profile_payload,
+        "model_range_warnings": range_warnings,
+        "explainability_method": explainability,
+        "artifact_explainability_method": model_metadata["artifact_explainability_method"],
     }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "split.json").write_text(json.dumps(cv_fold_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1523,7 +1881,23 @@ def _run_legacy_training(
     pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame(best_search_rows).to_csv(run_dir / "hyperparameter_search.csv", index=False, encoding="utf-8-sig")
+    search_columns = [
+        "fold_index",
+        "model_type",
+        "is_selected",
+        "valid_balanced_accuracy",
+        "valid_macro_f1",
+        "params_json",
+    ]
+    search_frame = pd.DataFrame(best_search_rows)
+    for column in search_columns:
+        if column not in search_frame.columns:
+            search_frame[column] = None
+    search_frame.reindex(columns=search_columns).to_csv(
+        run_dir / "hyperparameter_search.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     if last_model is not None and last_model_family == "traditional_ml":
         with (run_dir / "model.pkl").open("wb") as fh:
             pickle.dump(last_model, fh)
@@ -1539,6 +1913,10 @@ def _run_legacy_training(
         "history": history_rows,
         "model_type": model_type,
         "model_family": last_model_family,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "model_metadata": model_metadata,
+        "model_profile": profile_payload,
+        "explainability_method": explainability,
         "model_artifact": last_model_artifact,
         "model_artifact_note": (
             "最后一个交叉验证折模型，仅作下载参考，不用于汇报的交叉验证指标"
@@ -1560,6 +1938,7 @@ def _run_legacy_training(
         "fold_progress_text": f"{len(folds)}/{len(folds)}",
         "current_fold_repeat_index": folds[-1].get("test_repeat_index") if folds else None,
         "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
+        "best_valid_balanced_accuracy": max((row.get("valid_balanced_accuracy") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
         "fold_count": len(folds),
         "config": config_out,
