@@ -375,6 +375,20 @@ def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int]
     }
 
 
+def _deep_probabilities(model: nn.Module, values: np.ndarray) -> np.ndarray:
+    """Return class probabilities for a normalized 1D deep-model batch."""
+
+    model.eval()
+    with torch.no_grad():
+        logits = model(torch.tensor(values, dtype=torch.float32).unsqueeze(1))
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            positive = torch.sigmoid(logits)
+            probs = torch.cat((1.0 - positive, positive), dim=1)
+        else:
+            probs = torch.softmax(logits, dim=1)
+    return probs.cpu().numpy()
+
+
 def _evaluate_dual(
     model: nn.Module,
     x1: np.ndarray,
@@ -508,7 +522,7 @@ def _compute_sample_feature_importance(
         result = {
             "status": "disabled",
             "reason": "特征区间识别已关闭",
-            "method": "sample_occlusion_importance",
+            "method": "sample_occlusion_log_loss",
             "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
@@ -535,7 +549,7 @@ def _compute_sample_feature_importance(
         result = {
             "status": "failed",
             "reason": f"单样品重要区间计算失败: {exc}",
-            "method": "sample_occlusion_importance",
+            "method": "sample_occlusion_log_loss",
             "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
@@ -580,8 +594,8 @@ def _deep_sample_feature_result(
         return {
             "status": "disabled",
             "reason": "特征区间识别已关闭",
-            "method": "deep_attribution",
-            "baseline": "deep_attribution",
+            "method": explainability_method(model_type),
+            "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
             "x_axis_warning": x_axis_warning,
@@ -589,7 +603,21 @@ def _deep_sample_feature_result(
         }
 
     try:
-        if model_type == "dscarnet":
+        method = explainability_method(model_type)
+        if method == "window_occlusion_log_loss":
+            sample_result = sample_occlusion_importance(
+                x,
+                y,
+                x_axis=x_axis,
+                splits=splits,
+                label_names=label_names,
+                score_fn=lambda values: _deep_probabilities(model, values),
+                mean_indices=splits.get("train", []),
+                metadata=metadata,
+                window_count=config.feature_window_count,
+                top_k=config.feature_top_k,
+            )
+        elif model_type == "dscarnet":
             if dscarnet_mapped is None or dscarnet_mapping_metadata is None:
                 raise ValueError("DSCARNet 缺少 SAR/CAR 二维映射结果，无法计算双通路解释性")
             mode = dscarnet_mapping_metadata.get("mode", "dual")
@@ -628,8 +656,8 @@ def _deep_sample_feature_result(
         return {
             "status": "failed",
             "reason": f"单样品可解释性计算失败: {exc}",
-            "method": "deep_attribution",
-            "baseline": "deep_attribution",
+            "method": explainability_method(model_type),
+            "baseline": "train_mean_curve",
             "x_axis": [float(item) for item in np.asarray(x_axis, dtype=np.float32).reshape(-1)],
             "baseline_curve": [float(item) for item in np.asarray(mean_curve, dtype=np.float32).reshape(-1)],
             "x_axis_warning": x_axis_warning,
@@ -975,27 +1003,40 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
     return [config]
 
 
-def _traditional_params(config: TrainConfig) -> dict[str, Any]:
-    return {
-        "pls_components": config.pls_components,
-        "pca_components": config.pca_components,
-        "logistic_c": config.logistic_c,
-        "svm_kernel": config.svm_kernel,
-        "svm_c": config.svm_c,
-        "svm_gamma": config.svm_gamma,
-        "random_forest_n_estimators": config.random_forest_n_estimators,
-        "random_forest_max_depth": config.random_forest_max_depth,
-        "random_forest_min_samples_leaf": config.random_forest_min_samples_leaf,
-        "random_forest_max_features": config.random_forest_max_features,
-        "xgboost_n_estimators": config.xgboost_n_estimators,
-        "xgboost_max_depth": config.xgboost_max_depth,
-        "xgboost_learning_rate": config.xgboost_learning_rate,
-        "xgboost_subsample": config.xgboost_subsample,
-        "xgboost_colsample_bytree": config.xgboost_colsample_bytree,
-        "xgboost_min_child_weight": config.xgboost_min_child_weight,
-        "xgboost_reg_lambda": config.xgboost_reg_lambda,
-        "xgboost_gamma": config.xgboost_gamma,
-    }
+def _traditional_params(config: TrainConfig, model_type: str) -> dict[str, Any]:
+    """Return only the parameters that actually configure the selected model."""
+
+    if model_type == "pls_da":
+        return {"pls_components": config.pls_components}
+    if model_type == "pca_lda":
+        return {"pca_components": config.pca_components}
+    if model_type == "logistic_regression":
+        return {"logistic_c": config.logistic_c}
+    if model_type == "svm":
+        return {
+            "svm_kernel": config.svm_kernel,
+            "svm_c": config.svm_c,
+            "svm_gamma": config.svm_gamma,
+        }
+    if model_type == "random_forest":
+        return {
+            "random_forest_n_estimators": config.random_forest_n_estimators,
+            "random_forest_max_depth": config.random_forest_max_depth,
+            "random_forest_min_samples_leaf": config.random_forest_min_samples_leaf,
+            "random_forest_max_features": config.random_forest_max_features,
+        }
+    if model_type == "xgboost":
+        return {
+            "xgboost_n_estimators": config.xgboost_n_estimators,
+            "xgboost_max_depth": config.xgboost_max_depth,
+            "xgboost_learning_rate": config.xgboost_learning_rate,
+            "xgboost_subsample": config.xgboost_subsample,
+            "xgboost_colsample_bytree": config.xgboost_colsample_bytree,
+            "xgboost_min_child_weight": config.xgboost_min_child_weight,
+            "xgboost_reg_lambda": config.xgboost_reg_lambda,
+            "xgboost_gamma": config.xgboost_gamma,
+        }
+    return {}
 
 
 def _evaluate_single_2d(model: nn.Module, values: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
@@ -1046,7 +1087,7 @@ def _select_traditional_config(
             list(range(len(y_valid))),
             label_names,
         )
-        params = _traditional_params(candidate)
+        params = _traditional_params(candidate, model_type)
         balanced_accuracy = float(valid_eval["balanced_accuracy"])
         macro_f1 = float(valid_eval["macro_f1"])
         search_rows.append(
@@ -1357,7 +1398,10 @@ def _cv_f1_window_importance(
         "importance_metric": "baseline_macro_f1_minus_perturbed_macro_f1",
         "eval_split": "outer_cv_test",
         "baseline_macro_f1": baseline_score,
+        "window_policy": "nearest_divisor_equal_width",
+        "requested_window_count": int(window_count),
         "window_count": len(windows),
+        "window_width": int(windows[0]["end_index"] - windows[0]["start_index"] + 1),
         "top_k": int(top_k),
         "n_repeats": 1,
         "x_axis": [float(item) for item in x_axis_array],
@@ -1367,6 +1411,41 @@ def _cv_f1_window_importance(
         "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
         "x_axis_warning": x_axis_warning,
     }
+
+
+def _traditional_fold_log_loss_importance(
+    *,
+    config: TrainConfig,
+    model: Any,
+    normalizer: Any,
+    x_raw: np.ndarray,
+    y: np.ndarray,
+    splits: dict[str, list[int]],
+    mean_indices: list[int],
+    x_axis: list[float],
+    label_names: list[str],
+    metadata: list[dict[str, Any]],
+    x_axis_warning: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute per-sample true-class log-loss attribution for one traditional-model fold."""
+
+    result = sample_occlusion_importance(
+        x_raw,
+        y,
+        x_axis=x_axis,
+        splits=splits,
+        label_names=label_names,
+        score_fn=lambda values: _traditional_probabilities(
+            model,
+            _transform_x_with_normalizer(values, normalizer),
+        ),
+        mean_indices=mean_indices,
+        metadata=metadata,
+        window_count=config.feature_window_count,
+        top_k=config.feature_top_k,
+    )
+    result["x_axis_warning"] = x_axis_warning
+    return result
 
 
 def _canonical_evaluation_strategy(config: TrainConfig, has_external_test: bool) -> str:
@@ -1534,6 +1613,7 @@ def _run_legacy_training(
     last_model_artifact = "model.pkl" if last_model_family == "traditional_ml" else "model.pt"
     final_deep_context: dict[str, Any] | None = None
     deep_sample_results: list[dict[str, Any]] = []
+    traditional_sample_results: list[dict[str, Any]] = []
     best_search_rows: list[dict[str, Any]] = []
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
@@ -1602,7 +1682,7 @@ def _run_legacy_training(
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
-            fold_best_params = _traditional_params(selected_config)
+            fold_best_params = _traditional_params(selected_config, model_type)
             fold_selection_metric = "balanced_accuracy"
             fold_selection_score = float(valid_eval["balanced_accuracy"])
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
@@ -1644,6 +1724,26 @@ def _run_legacy_training(
                     "final_fit_indices": fold_final_fit_indices.tolist(),
                 }
             )
+            if config.feature_selection_enabled:
+                check_run_active()
+                traditional_sample_results.append(
+                    _tag_fold_sample_result(
+                        _traditional_fold_log_loss_importance(
+                            config=config,
+                            model=model,
+                            normalizer=normalizer,
+                            x_raw=x_model_raw,
+                            y=y_model,
+                            splits=splits,
+                            mean_indices=fold_final_fit_indices.tolist(),
+                            x_axis=feature_x_axis,
+                            label_names=label_names,
+                            metadata=metadata,
+                            x_axis_warning=x_axis_warning,
+                        ),
+                        fold_index,
+                    )
+                )
             dscarnet_mapping_metadata = None
         else:
             model, history, dscarnet_mapped, dscarnet_mapping_metadata = _fit_deep_fold(
@@ -1788,23 +1888,21 @@ def _run_legacy_training(
 
     if model_family(model_type) == "traditional_ml":
         if config.feature_selection_enabled:
-            feature_result = _cv_f1_window_importance(
-                fold_artifacts=fold_artifacts,
-                x_raw=x_model_raw,
-                y=y_model,
-                x_axis=feature_x_axis,
-                label_names=label_names,
-                window_count=config.feature_window_count,
-                top_k=config.feature_top_k,
+            sample_result = _merge_deep_sample_results(traditional_sample_results, x_axis_warning)
+            feature_summary, sample_feature_summary = _write_deep_explainability_artifacts(
+                run_dir=run_dir,
+                sample_result=sample_result,
                 x_axis_warning=x_axis_warning,
             )
-            feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
         else:
-            feature_summary = _unsupported_explainability_summary("特征区间识别已关闭", method="interval_permutation_importance")
-        sample_feature_summary = _unsupported_explainability_summary(
-            "无卷积模型和机器学习模型使用交叉验证的全局 macro-F1 下降解释，不生成单样本 F1 重要性",
-            method="cv_macro_f1_drop_global_importance",
-        )
+            feature_summary = _unsupported_explainability_summary(
+                "特征区间识别已关闭",
+                method="macro_mean_sample_occlusion_log_loss",
+            )
+            sample_feature_summary = _unsupported_explainability_summary(
+                "特征区间识别已关闭",
+                method="sample_occlusion_log_loss",
+            )
     else:
         if final_deep_context is None:
             raise ValueError("深度模型训练未产生可解释性上下文")
@@ -1841,7 +1939,9 @@ def _run_legacy_training(
         "model_range_warnings": range_warnings,
         "explainability_method": explainability,
         "artifact_explainability_method": (
-            "interval_permutation_importance" if last_model_family == "traditional_ml" else explainability
+            sample_feature_summary.get("method")
+            or feature_summary.get("method")
+            or explainability
         ),
     }
     if last_model_family == "deep_learning":

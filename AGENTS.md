@@ -40,8 +40,8 @@
 - `cnn1d`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM / Grad-CAM-like。
 - 其中 `dscarnet` 当前实际使用 AggMap/PCA 的 SAR/CAR 双通路 2D 映射，再用双通路 2D Grad-CAM 回投到 1D 特征；不要把它当普通 1D CNN 解释。
 - `transformer1d` 使用输入梯度归因，避免直接套标准 CNN Grad-CAM。
-- 传统机器学习模型 `pls_da`、`random_forest`、`svm`、`xgboost` 使用窗口遮挡/置乱后的 `baseline_macro_f1 - perturbed_macro_f1` 做重要性分析；正值越大表示该区间被遮挡后 macro-F1 下降越多，区间越重要。
-- 深度模型优先生成 `sample_feature_importance.json/csv` 供前端展示；传统模型优先展示 `feature_importance.json/csv` 的全局窗口重要性。旧下载接口应保持可用。
+- 六个传统机器学习模型及 `pca_mlp`、`cnn_transformer1d` 使用窗口遮挡后的真实类别 Log-loss 增量做重要性分析：`masked_loss - original_loss = log(p_before / p_after)`；全局结果按真实类别等权聚合，正值表示遮挡后真实类别置信度受损。
+- 传统模型和无卷积深度模型同时生成 `feature_importance.json/csv` 与 `sample_feature_importance.json/csv`，前端默认展示全局并允许切换单样品。旧下载接口应保持可用。
 - DSCARNet 会额外写入 `dscarnet_mapping.json` 和 AggMap/PCA joblib 文件；当前 artifact 下载白名单不开放这些 joblib 文件，除非同步更新接口和测试。
 
 ## 验证命令

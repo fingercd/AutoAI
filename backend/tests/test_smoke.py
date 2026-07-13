@@ -127,18 +127,25 @@ class _FakeAggMap:
         return output
 
 
-def test_build_feature_windows_uses_configured_window_count():
-    from backend.app.feature_selection import build_feature_windows
+def test_build_feature_windows_uses_nearest_equal_width_divisor():
+    from backend.app.feature_selection import (
+        build_feature_windows,
+        resolve_equal_width_window_count,
+    )
     from backend.app.training import TrainConfig
 
     windows = build_feature_windows(10, window_count=4)
 
     assert windows == [
-        {"window_index": 0, "start_index": 0, "end_index": 2},
-        {"window_index": 1, "start_index": 3, "end_index": 5},
-        {"window_index": 2, "start_index": 6, "end_index": 7},
-        {"window_index": 3, "start_index": 8, "end_index": 9},
+        {"window_index": 0, "start_index": 0, "end_index": 1},
+        {"window_index": 1, "start_index": 2, "end_index": 3},
+        {"window_index": 2, "start_index": 4, "end_index": 5},
+        {"window_index": 3, "start_index": 6, "end_index": 7},
+        {"window_index": 4, "start_index": 8, "end_index": 9},
     ]
+    assert resolve_equal_width_window_count(160, 100) == 80
+    assert {window["end_index"] - window["start_index"] + 1 for window in build_feature_windows(160, 100)} == {2}
+    assert resolve_equal_width_window_count(157, 100) == 157
     assert build_feature_windows(5, window_count=100) == [
         {"window_index": 0, "start_index": 0, "end_index": 0},
         {"window_index": 1, "start_index": 1, "end_index": 1},
@@ -238,6 +245,8 @@ def test_sample_occlusion_importance_finds_true_label_signal_window():
     top_window = min(sample_b["windows"], key=lambda item: item["rank"])
     assert "original_loss" in top_window
     assert "masked_loss" in top_window
+    assert "masked_true_probability" in top_window
+    assert "true_probability_drop" in top_window
     assert "normalized_importance" in top_window
     assert top_window["importance"] == pytest.approx(top_window["masked_loss"] - top_window["original_loss"])
     normalized_values = [window["normalized_importance"] for window in sample_b["windows"]]
@@ -269,12 +278,104 @@ def test_sample_occlusion_importance_allows_no_positive_segments():
     )
 
     assert result["status"] == "ready"
+    assert result["method"] == "sample_occlusion_log_loss"
+    assert result["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
     assert result["samples"][0]["top_segments"] == []
-    assert result["samples"][0]["primary_segment"]["rank"] == 1
-    assert result["samples"][0]["primary_segment"]["importance"] == pytest.approx(0.0)
+    assert result["samples"][0]["primary_segment"] is None
     assert all("original_loss" in window and "masked_loss" in window for window in result["samples"][0]["windows"])
     assert all(window["importance"] == 0 for window in result["samples"][0]["windows"])
     assert all(window["normalized_importance"] == 0 for window in result["samples"][0]["windows"])
+
+
+def test_log_loss_importance_detects_probability_changes_without_label_flip():
+    from backend.app.feature_selection import sample_occlusion_importance
+
+    x = np.asarray([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+    y = np.asarray([0, 1], dtype=np.int64)
+
+    def score(values):
+        positive = np.clip(0.79 + 0.10 * values[:, 0] + 0.01 * values[:, 1], 1e-6, 1 - 1e-6)
+        return np.column_stack([1.0 - positive, positive])
+
+    result = sample_occlusion_importance(
+        x,
+        y,
+        x_axis=np.arange(2, dtype=np.float32),
+        splits={"train": [0], "test": [1]},
+        label_names=["A", "B"],
+        score_fn=score,
+        mean_indices=[0],
+        window_count=2,
+    )
+
+    windows = result["samples"][0]["windows"]
+    assert result["samples"][0]["pred_label"] == "B"
+    assert windows[0]["masked_true_probability"] == pytest.approx(0.80)
+    assert windows[1]["masked_true_probability"] == pytest.approx(0.89)
+    assert windows[0]["importance"] > windows[1]["importance"] > 0
+
+
+def test_log_loss_global_importance_uses_macro_class_mean():
+    from backend.app.feature_selection import aggregate_sample_feature_importance
+
+    def sample(class_id, importance):
+        return {
+            "true_class_id": class_id,
+            "windows": [{
+                "window_index": 0,
+                "start_index": 0,
+                "end_index": 0,
+                "start_x": 0.0,
+                "end_x": 0.0,
+                "importance": importance,
+                "original_loss": 0.1,
+                "masked_loss": 0.1 + importance,
+                "true_probability_drop": importance / 10,
+                "rank": 1,
+            }],
+        }
+
+    result = aggregate_sample_feature_importance({
+        "status": "ready",
+        "method": "sample_occlusion_log_loss",
+        "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
+        "top_k": 1,
+        "x_axis": [0.0],
+        "baseline_curve": [1.0],
+        "samples": [sample(0, 1.0), sample(0, 3.0), sample(1, 10.0)],
+    })
+
+    assert result["windows"][0]["importance"] == pytest.approx(6.0)
+    assert result["aggregation"] == "macro_class_mean"
+    assert result["aggregation_class_count"] == 2
+
+
+def test_log_loss_occlusion_caps_perturbed_inference_batches():
+    from backend.app.feature_selection import sample_occlusion_importance
+
+    x = np.zeros((302, 2), dtype=np.float32)
+    y = np.ones(302, dtype=np.int64)
+    calls = []
+
+    def score(values):
+        calls.append(len(values))
+        return np.tile(np.asarray([[0.1, 0.9]], dtype=np.float32), (len(values), 1))
+
+    sample_occlusion_importance(
+        x,
+        y,
+        x_axis=np.arange(2, dtype=np.float32),
+        splits={"train": [0], "test": list(range(1, 302))},
+        label_names=["A", "B"],
+        score_fn=score,
+        mean_indices=[0],
+        window_count=2,
+        max_perturbed_rows=256,
+    )
+
+    assert calls[0] == 301
+    assert calls[1:]
+    assert max(calls[1:]) <= 256
 
 
 def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
@@ -299,7 +400,7 @@ def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
         x_axis=np.arange(4, dtype=np.float32),
         splits={"train": [0], "test": [1]},
         label_names=["A", "B"],
-        score_fn=lambda values: np.asarray([[0.8, 0.2], [0.2, 0.8]], dtype=np.float32)[: values.shape[0]],
+        score_fn=lambda values: np.tile(np.asarray([[0.2, 0.8]], dtype=np.float32), (values.shape[0], 1)),
         mean_indices=[0],
         metadata=metadata,
         window_count=2,
@@ -322,7 +423,7 @@ def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
         splits={"train": [0], "test": [1]},
         label_names=["A", "B"],
         metadata=metadata,
-        model_type="transformer1d",
+        model_type="cnn1d",
         top_k=2,
     )
     deep_dir = tmp_path / "deep"
@@ -333,6 +434,8 @@ def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
     assert "importance_metric" in occlusion_csv.columns
     assert "original_loss" in occlusion_csv.columns
     assert "masked_loss" in occlusion_csv.columns
+    assert "masked_true_probability" in occlusion_csv.columns
+    assert "true_probability_drop" in occlusion_csv.columns
     assert "importance_metric" in deep_csv.columns
     assert "original_loss" not in deep_csv.columns
     assert "masked_loss" not in deep_csv.columns
@@ -814,19 +917,20 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
     feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
 
     assert result["feature_importance"]["status"] == "ready"
-    assert result["sample_feature_importance"]["status"] == "unsupported"
+    assert result["sample_feature_importance"]["status"] == "ready"
     assert (run_dir / "feature_importance.csv").exists()
     assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in feature_payload["top_segments"])
     assert len(feature_payload["windows"]) == 4
-    assert feature_payload["method"] == "interval_permutation_importance"
-    assert feature_payload["importance_metric"] == "baseline_macro_f1_minus_perturbed_macro_f1"
-    assert not (run_dir / "sample_feature_importance.json").exists()
-    assert not (run_dir / "sample_feature_importance.csv").exists()
+    assert feature_payload["method"] == "macro_mean_sample_occlusion_log_loss"
+    assert feature_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
+    assert feature_payload["aggregation"] == "macro_class_mean"
+    assert (run_dir / "sample_feature_importance.json").exists()
+    assert (run_dir / "sample_feature_importance.csv").exists()
 
     client = TestClient(main.app)
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 200
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 200
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 404
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
 
 
 def test_training_warns_when_sample_x_axes_are_inconsistent(tmp_path, monkeypatch):
@@ -901,28 +1005,31 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     run_dir = tmp_path / result["run_id"]
     if result.get("model_family") == "traditional_ml":
         assert (run_dir / "model.pkl").exists()
-        assert result["sample_feature_importance"]["status"] == "unsupported"
-        assert not (run_dir / "sample_feature_importance.json").exists()
-        assert not (run_dir / "sample_feature_importance.csv").exists()
+        assert result["sample_feature_importance"]["status"] == "ready"
+        assert (run_dir / "sample_feature_importance.json").exists()
+        assert (run_dir / "sample_feature_importance.csv").exists()
         feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
-        assert feature_payload["importance_metric"] == "baseline_macro_f1_minus_perturbed_macro_f1"
-        assert feature_payload["primary_segment"]
+        sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
+        assert feature_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
+        assert feature_payload["aggregation"] == "macro_class_mean"
+        assert sample_payload["method"] == "sample_occlusion_log_loss"
+        assert sample_payload["window_count"] == 4
         if feature_payload["top_segments"]:
             assert feature_payload["primary_segment"] == feature_payload["top_segments"][0]
         else:
-            assert feature_payload["primary_segment"]["rank"] == 1
+            assert feature_payload["primary_segment"] is None
     else:
         assert (run_dir / "model.pt").exists()
         assert result["sample_feature_importance"]["status"] == "ready"
         assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
         sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
         assert sample_payload["status"] == "ready"
-        assert sample_payload["method"] in {"gradcam_1d", "input_gradient_attribution", "dscarnet_dual_2d_gradcam"}
-        assert sample_payload["window_count"] == 40
-        assert sample_payload["window_count"] != 4
+        assert sample_payload["method"] in {"gradcam_1d", "sample_occlusion_log_loss", "dscarnet_dual_2d_gradcam"}
+        expected_window_count = 4 if sample_payload["method"] == "sample_occlusion_log_loss" else 40
+        assert sample_payload["window_count"] == expected_window_count
         assert sample_payload["x_axis_warning"]["status"] in {"consistent", "inconsistent"}
         assert sample_payload["samples"]
-        assert all(sample["primary_segment"] for sample in sample_payload["samples"])
+        assert all(sample["primary_segment"] is None or sample["primary_segment"]["importance"] > 0 for sample in sample_payload["samples"])
         assert all(
             len(sample["windows"]) == sample_payload["window_count"]
             for sample in sample_payload["samples"]
@@ -997,11 +1104,15 @@ def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp
     assert sample_payload["sample_count"] == result["test_sample_count"]
     assert len(sample_payload["samples"]) == result["test_sample_count"]
     assert all("fold_index" in sample for sample in sample_payload["samples"])
-    assert len(sample_csv) == 90 * 160
+    assert sample_payload["requested_window_count"] == 100
+    assert sample_payload["window_count"] == 80
+    assert sample_payload["window_width"] == 2
+    assert sample_payload["window_policy"] == "nearest_divisor_equal_width"
+    assert len(sample_csv) == 90 * sample_payload["window_count"]
     assert "fold_index" in sample_csv.columns
     assert sample_csv["fold_index"].notna().all()
-    assert "original_loss" not in sample_csv.columns
-    assert "masked_loss" not in sample_csv.columns
+    assert "original_loss" in sample_csv.columns
+    assert "masked_loss" in sample_csv.columns
 
 
 def test_create_run_persists_independent_queued_runs(tmp_path):
@@ -1319,14 +1430,15 @@ def test_main_ui_prefers_sample_feature_importance_panel():
 
     assert "sample_feature_importance" in content
     assert "featureSampleSelect" in content
-    assert "renderGlobalFeatureImportance" in content
+    assert "renderGlobalFeatureImportance" not in content
+    assert "run.feature_importance" not in content
+    assert "暂无单样本重要性" in content
     assert "function primaryFeatureSegment" in content
     assert "visibleFeatureSegments(data.top_segments).forEach" not in content
     assert "visibleFeatureSegments(sample.top_segments).forEach" not in content
-    assert "const segment = primaryFeatureSegment(data)" in content
     assert "const segment = primaryFeatureSegment(sample)" in content
-    assert "function drawSampleFeatureHeatmap" in content
-    assert "sample.windows" in content
+    assert "function drawFeatureHeatmap" in content
+    assert "source.windows" in content
     assert "normalized_importance" in content
     assert 'id="featureWindowOptions"' in content
     assert "featureWindowCount" in content

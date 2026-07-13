@@ -272,6 +272,80 @@
         font-size: 22px;
         margin-top: 4px;
       }
+      .audit-panel {
+        margin-top: 14px;
+        padding: 16px;
+        border: 1px solid #cfe6e2;
+        border-radius: 12px;
+        background: linear-gradient(145deg, #f7fcfb 0%, #ffffff 70%);
+      }
+      .audit-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .audit-header h3,
+      .audit-header p {
+        margin: 0;
+      }
+      .audit-header p {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .audit-badge {
+        flex: 0 0 auto;
+        padding: 5px 9px;
+        border-radius: 999px;
+        color: #08786f;
+        background: #e7f7f4;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .audit-config-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 10px;
+      }
+      .audit-config-card {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+      .audit-config-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 9px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .audit-score {
+        color: #08786f;
+        font-variant-numeric: tabular-nums;
+      }
+      .audit-param-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+      .audit-param {
+        min-width: 0;
+        padding: 6px 8px;
+        border-radius: 7px;
+        background: #f2f6f8;
+        color: #344054;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .audit-param b {
+        color: #101828;
+      }
       .training-state {
         display: flex;
         align-items: center;
@@ -285,11 +359,21 @@
       .spinner {
         width: 24px;
         height: 24px;
-        border: 3px solid #d8dee8;
-        border-top-color: var(--brand);
+        min-width: 24px;
+        min-height: 24px;
+        box-sizing: border-box;
+        position: relative;
         border-radius: 50%;
+        background: conic-gradient(var(--brand) 0 28%, #d8dee8 28% 100%);
         animation: spin 0.85s linear infinite;
         flex: 0 0 auto;
+      }
+      .spinner::after {
+        content: "";
+        position: absolute;
+        inset: 4px;
+        border-radius: 50%;
+        background: #fbfcfe;
       }
       .training-state strong {
         display: block;
@@ -847,6 +931,7 @@
       let currentRunId = null;
       let trainingRequestInFlight = false;
       let poller = null;
+      let pollingRunId = null;
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
       let currentCurveSource = "train";
@@ -855,6 +940,7 @@
       let lastPreprocessCanvasId = "preprocessCurveCanvas";
       let lastPreprocessKind = "raman";
       let modelCatalogById = new Map();
+      let apiBackedUiInitialized = false;
 
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (value) => String(value ?? "")
@@ -864,7 +950,27 @@
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
 
-      const api = (url, options = {}) => window.AutoAIRequest(url, options);
+      const api = async (url, options = {}) => {
+        if (window.AutoAIRequest) return window.AutoAIRequest(url, options);
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.detail || `HTTP ${response.status}`);
+        }
+        return response.json();
+      };
+      const apiWithTimeout = async (url, timeoutMs) => {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          return await api(url, { signal: controller.signal });
+        } catch (error) {
+          if (error?.name === "AbortError") throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+          throw error;
+        } finally {
+          window.clearTimeout(timer);
+        }
+      };
       const createRun = (...args) => window.AutoAITrainingStore.createRun(...args);
       const fetchRun = (...args) => window.AutoAITrainingStore.pollRun(...args);
 
@@ -875,6 +981,8 @@
         { id: "long_range", label: "长距离模型" },
         { id: "two_dimensional_mapping", label: "二维映射模型" },
       ];
+
+      const HIDDEN_MODEL_IDS = new Set(["cnn_mamba1d"]);
 
       const MODEL_FAMILY_GROUP_ALIASES = {
         traditional: "traditional",
@@ -903,7 +1011,9 @@
 
       function renderModelCatalog(models, preferredModelId = $("modelType").value) {
         const select = $("modelType");
-        const entries = models.filter((model) => typeof model?.id === "string" && model.id.trim());
+        const entries = models.filter((model) => (
+          typeof model?.id === "string" && model.id.trim() && !HIDDEN_MODEL_IDS.has(model.id)
+        ));
         if (!entries.length) throw new Error("模型目录未返回可渲染的模型");
 
         const grouped = new Map(MODEL_CATALOG_GROUPS.map((group) => [group.id, []]));
@@ -911,7 +1021,6 @@
         modelCatalogById = new Map(entries.map((model) => [model.id, model]));
         select.replaceChildren();
 
-        const unavailableMessages = [];
         MODEL_CATALOG_GROUPS.forEach((group) => {
           const groupModels = grouped.get(group.id);
           if (!groupModels.length) return;
@@ -925,10 +1034,9 @@
             option.disabled = !available;
             option.textContent = available
               ? String(model.display_name || model.id)
-              : `${String(model.display_name || model.id)}（不可用：${reason}）`;
+              : `${String(model.display_name || model.id)}（当前环境不可用）`;
             option.title = available ? String(model.explainability_method || "") : reason;
             optgroup.append(option);
-            if (!available) unavailableMessages.push(`${String(model.display_name || model.id)}：${reason}`);
           });
           select.append(optgroup);
         });
@@ -938,9 +1046,7 @@
         const selected = preferred && preferred.available !== false ? preferred : firstAvailable || entries[0];
         select.value = selected.id;
         select.disabled = !firstAvailable;
-        $("modelCatalogHint").textContent = unavailableMessages.length
-          ? `当前不可用模型：${unavailableMessages.join("；")}`
-          : "模型目录已加载；模型按文档分类分组显示。";
+        $("modelCatalogHint").textContent = "模型目录已加载；模型按文档分类分组显示。";
         updateModelOptionVisibility();
       }
 
@@ -964,7 +1070,7 @@
 
       async function loadModelCatalog() {
         try {
-          const payload = await api("/api/models");
+          const payload = await apiWithTimeout("/api/models", 30000);
           const models = Array.isArray(payload) ? payload : payload?.models;
           if (!Array.isArray(models)) throw new Error("模型目录响应格式无效");
           renderModelCatalog(models);
@@ -974,11 +1080,15 @@
       }
 
       function initializeApiBackedUi() {
+        if (apiBackedUiInitialized) return;
+        apiBackedUiInitialized = true;
         loadHealth();
         loadModelCatalog().catch(() => undefined);
       }
-
       window.addEventListener("autoai:modules-ready", initializeApiBackedUi, { once: true });
+      window.addEventListener("DOMContentLoaded", () => {
+        window.setTimeout(initializeApiBackedUi, 1000);
+      }, { once: true });
 
       function setupHiDpiCanvas(canvas) {
         const rect = canvas.getBoundingClientRect();
@@ -1350,18 +1460,94 @@
         return strategy === "external_test_holdout";
       }
 
-      function formatAuditNumber(value) {
-        const number = Number(value);
-        return Number.isFinite(number) ? String(number) : "-";
+      const AUDIT_PARAM_LABELS = {
+        pls_components: "PLS 成分数",
+        pca_components: "PCA 成分数",
+        logistic_c: "正则化 C",
+        svm_kernel: "核函数",
+        svm_c: "惩罚系数 C",
+        svm_gamma: "Gamma",
+        random_forest_n_estimators: "树数量",
+        random_forest_max_depth: "最大深度",
+        random_forest_min_samples_leaf: "叶节点最少样本",
+        random_forest_max_features: "每棵树特征数",
+        xgboost_n_estimators: "迭代树数量",
+        xgboost_max_depth: "最大深度",
+        xgboost_learning_rate: "学习率",
+        xgboost_subsample: "样本采样比例",
+        xgboost_colsample_bytree: "特征采样比例",
+        xgboost_min_child_weight: "最小子节点权重",
+        xgboost_reg_lambda: "L2 正则",
+        xgboost_gamma: "分裂阈值 Gamma",
+      };
+
+      const AUDIT_MODEL_PARAM_KEYS = {
+        pls_da: ["pls_components"],
+        pca_lda: ["pca_components"],
+        logistic_regression: ["logistic_c"],
+        svm: ["svm_kernel", "svm_c", "svm_gamma"],
+        random_forest: [
+          "random_forest_n_estimators",
+          "random_forest_max_depth",
+          "random_forest_min_samples_leaf",
+          "random_forest_max_features",
+        ],
+        xgboost: [
+          "xgboost_n_estimators",
+          "xgboost_max_depth",
+          "xgboost_learning_rate",
+          "xgboost_subsample",
+          "xgboost_colsample_bytree",
+          "xgboost_min_child_weight",
+          "xgboost_reg_lambda",
+          "xgboost_gamma",
+        ],
+      };
+
+      function auditParamsForModel(params, modelType) {
+        const source = params && typeof params === "object" ? params : {};
+        const keys = AUDIT_MODEL_PARAM_KEYS[modelType] || Object.keys(source);
+        return Object.fromEntries(keys.filter((key) => key in source).map((key) => [key, source[key]]));
       }
 
-      function formatAuditParams(params) {
-        if (!params || typeof params !== "object") return "-";
-        try {
-          return escapeHtml(JSON.stringify(params));
-        } catch (_) {
-          return "-";
-        }
+      function auditParamsMarkup(params) {
+        const entries = params && typeof params === "object" ? Object.entries(params) : [];
+        if (!entries.length) return '<span class="empty-state">未提供参数</span>';
+        return entries.map(([key, value]) => `
+          <span class="audit-param">${escapeHtml(AUDIT_PARAM_LABELS[key] || key)}：<b>${escapeHtml(String(value ?? "-"))}</b></span>
+        `).join("");
+      }
+
+      function traditionalAuditCards(selections, modelType) {
+        const groups = new Map();
+        selections.forEach((entry) => {
+          const params = auditParamsForModel(entry?.params, modelType);
+          const key = JSON.stringify(params, Object.keys(params).sort());
+          if (!groups.has(key)) groups.set(key, { params, folds: [], scores: [] });
+          const group = groups.get(key);
+          if (entry.fold_index != null) group.folds.push(entry.fold_index);
+          const score = Number(entry.valid_balanced_accuracy);
+          if (Number.isFinite(score)) group.scores.push(score);
+        });
+        return Array.from(groups.values()).map((group, index) => {
+          const score = group.scores.length
+            ? group.scores.reduce((sum, value) => sum + value, 0) / group.scores.length
+            : null;
+          const foldLabel = group.folds.length ? `适用折：${group.folds.join("、")}` : "最终选定参数";
+          return `
+            <div class="audit-config-card">
+              <div class="audit-config-title">
+                <span>配置 ${index + 1} · ${escapeHtml(foldLabel)}</span>
+                <span class="audit-score">${score == null ? "" : `平均验证 BA ${formatMetric(score)}`}</span>
+              </div>
+              <div class="audit-param-list">${auditParamsMarkup(group.params)}</div>
+            </div>
+          `;
+        }).join("");
+      }
+
+      function traditionalAuditConfigCount(selections, modelType) {
+        return new Set(selections.map((entry) => JSON.stringify(auditParamsForModel(entry?.params, modelType)))).size;
       }
 
       function renderTrainingAudit(run) {
@@ -1369,11 +1555,9 @@
         const audit = trainingAuditFor(run);
         if (!target || !audit || typeof audit !== "object") return;
         const isExternal = isExternalTestHoldout(run);
+        const modelType = run.model_type || run.config?.model_type;
         const sections = [];
         const traditional = audit.traditional;
-        const deep = audit.deep_training;
-        const explainability = audit.explainability;
-
         if (traditional && typeof traditional === "object") {
           const search = traditional.hyperparameter_search_csv || {};
           const searchArtifact = String(search.artifact || "hyperparameter_search.csv");
@@ -1381,60 +1565,32 @@
             ? `<a class="secondary" href="/api/training/runs/${encodeURIComponent(run.run_id)}/artifact/${encodeURIComponent(searchArtifact)}">下载参数搜索 CSV</a>`
             : `<span>参数搜索 CSV：${escapeHtml(searchArtifact)}（当前 Run 未提供下载）</span>`;
           if (isExternal) {
+            const cards = traditionalAuditCards([{
+              params: traditional.best_params,
+              valid_balanced_accuracy: traditional.valid_balanced_accuracy,
+            }], modelType);
             sections.push(`
-              <div class="chart-card" style="margin-top:14px">
-                <h3>传统模型审计</h3>
-                <div class="metrics">
-                  <div class="metric">验证 Balanced Accuracy<strong>${formatAuditNumber(traditional.valid_balanced_accuracy)}</strong></div>
-                  <div class="metric wide">最佳参数<strong style="font-size:12px;word-break:break-all">${formatAuditParams(traditional.best_params)}</strong></div>
+              <section class="audit-panel">
+                <div class="audit-header">
+                  <div><h3>参数选择记录</h3><p>记录验证集选出的最终配置，便于复核模型选择。</p></div>
+                  <span class="audit-badge">独立测试集</span>
                 </div>
+                <div class="audit-config-grid">${cards}</div>
                 <div class="actions">${searchHint}</div>
-              </div>
+              </section>
             `);
           } else {
             const selections = Array.isArray(traditional.best_params_by_fold) ? traditional.best_params_by_fold : [];
-            const rows = selections.map((entry) => `
-              <tr>
-                <td>${escapeHtml(String(entry.fold_index ?? "-"))}</td>
-                <td>${formatAuditNumber(entry.valid_balanced_accuracy)}</td>
-                <td><code>${formatAuditParams(entry.params)}</code></td>
-              </tr>
-            `).join("");
+            const cards = traditionalAuditCards(selections, modelType);
             sections.push(`
-              <div class="chart-card" style="margin-top:14px">
-                <h3>传统模型参数审计</h3>
-                ${rows ? `<table><thead><tr><th>折</th><th>验证 Balanced Accuracy</th><th>最佳参数</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="empty-state">未提供参数选择明细。</p>'}
-                <div class="actions">${searchHint}</div>
-              </div>
-            `);
-          }
-        }
-
-        if (deep && typeof deep === "object") {
-          sections.push(`
-            <div class="chart-card" style="margin-top:14px">
-              <h3>深度训练审计</h3>
-              <div class="metrics">
-                <div class="metric">Best valid loss<strong>${formatAuditNumber(deep.best_valid_loss)}</strong></div>
-                <div class="metric">实际 Epoch<strong>${formatAuditNumber(deep.actual_epochs)}</strong></div>
-                <div class="metric">最低学习率<strong>${formatAuditNumber(deep.min_learning_rate)}</strong></div>
-              </div>
-            </div>
-          `);
-        }
-
-        if (explainability && typeof explainability === "object") {
-          const hasExplainability = ["declared_method", "artifact_method", "importance_metric"].some((key) => explainability[key] != null);
-          if (hasExplainability) {
-            sections.push(`
-              <div class="chart-card" style="margin-top:14px">
-                <h3>可解释性审计</h3>
-                <div class="metrics">
-                  <div class="metric">声明方法<strong>${escapeHtml(String(explainability.declared_method ?? "-"))}</strong></div>
-                  <div class="metric">产物方法<strong>${escapeHtml(String(explainability.artifact_method ?? "-"))}</strong></div>
-                  <div class="metric">重要性指标<strong>${escapeHtml(String(explainability.importance_metric ?? "-"))}</strong></div>
+              <section class="audit-panel">
+                <div class="audit-header">
+                  <div><h3>参数选择记录</h3><p>每折只显示当前模型真正参与搜索的参数；相同配置已自动合并。</p></div>
+                  <span class="audit-badge">${selections.length} 折 · ${traditionalAuditConfigCount(selections, modelType)} 种配置</span>
                 </div>
-              </div>
+                <div class="audit-config-grid">${cards || '<p class="empty-state">未提供参数选择明细。</p>'}</div>
+                <div class="actions">${searchHint}</div>
+              </section>
             `);
           }
         }
@@ -1660,10 +1816,11 @@
       }
 
       function primaryFeatureSegment(source) {
-        if (source?.primary_segment) return source.primary_segment;
-        const segments = source?.top_segments || [];
+        const isPositive = (item) => Number(item?.importance) > 1e-12;
+        if (source?.primary_segment && isPositive(source.primary_segment)) return source.primary_segment;
+        const segments = (source?.top_segments || []).filter(isPositive);
         if (segments.length) return [...segments].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
-        const windows = source?.windows || [];
+        const windows = (source?.windows || []).filter(isPositive);
         if (windows.length) return [...windows].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
         return null;
       }
@@ -1737,18 +1894,41 @@
       }
 
       function normalizedImportanceValue(item, domain) {
-        const normalized = Number(item?.normalized_importance);
-        if (Number.isFinite(normalized)) return clamp01(normalized);
         const raw = Number(item?.importance);
         const span = Number(domain?.max) - Number(domain?.min);
+        if (Number.isFinite(raw) && Number.isFinite(span) && span <= 1e-12) return 0;
+        const normalized = Number(item?.normalized_importance);
+        if (Number.isFinite(normalized)) return clamp01(normalized);
         if (!Number.isFinite(raw) || !Number.isFinite(span) || span <= 1e-12) return 0;
         return clamp01((raw - Number(domain.min)) / span);
       }
 
-      function drawSampleFeatureHeatmap(ctx, sample, indexToX, curveLength, plotBottom, height) {
-        const windows = sample.windows || [];
-        const importanceDomain = sampleImportanceDomain(sample);
-        const heatmapY = plotBottom + 34;
+      function isLogLossOcclusionImportance(data) {
+        return data?.method === "sample_occlusion_log_loss"
+          || data?.importance_metric === "masked_true_class_log_loss_minus_original_true_class_log_loss";
+      }
+
+      function divergentImportanceColor(value, maxAbs) {
+        const raw = Number(value);
+        const scale = Number(maxAbs);
+        if (!Number.isFinite(raw) || !Number.isFinite(scale) || scale <= 1e-12 || Math.abs(raw) <= 1e-12) {
+          return "rgb(203, 213, 225)";
+        }
+        const ratio = clamp01(Math.abs(raw) / scale);
+        return raw > 0
+          ? mixColor([254, 226, 226], [185, 28, 28], ratio)
+          : mixColor([219, 234, 254], [30, 64, 175], ratio);
+      }
+
+      function drawFeatureHeatmap(ctx, source, indexToX, curveLength, plotBottom, height, options = {}) {
+        const windows = source.windows || [];
+        const importanceDomain = sampleImportanceDomain(source);
+        const logLossImportance = isLogLossOcclusionImportance(source);
+        const maxAbsImportance = Math.max(
+          Math.abs(Number(importanceDomain.min) || 0),
+          Math.abs(Number(importanceDomain.max) || 0),
+        );
+        const heatmapY = Number.isFinite(options.heatmapY) ? options.heatmapY : plotBottom + 34;
         const heatmapHeight = 22;
         const stripLeft = indexToX(0);
         const stripRight = indexToX(curveLength - 1);
@@ -1769,7 +1949,9 @@
           const end = Math.min(curveLength - 1, Number(window.end_index));
           const x0 = Math.floor(boundaryX(start, "start"));
           const x1 = Math.ceil(boundaryX(end, "end"));
-          ctx.fillStyle = importanceHeatmapColor(normalizedImportanceValue(window, importanceDomain));
+          ctx.fillStyle = logLossImportance
+            ? divergentImportanceColor(window.importance, maxAbsImportance)
+            : importanceHeatmapColor(normalizedImportanceValue(window, importanceDomain));
           ctx.fillRect(x0, heatmapY, Math.max(1, x1 - x0), heatmapHeight);
         });
         ctx.strokeStyle = "#d8dee8";
@@ -1779,71 +1961,37 @@
         const legendWidth = 18;
         const legendHeight = 72;
         const legendX = stripLeft;
-        const legendY = Math.min(height - 94, heatmapY + 44);
+        const legendY = Number.isFinite(options.legendY)
+          ? options.legendY
+          : Math.min(height - 94, heatmapY + 44);
         const gradient = ctx.createLinearGradient(0, legendY, 0, legendY + legendHeight);
-        gradient.addColorStop(0, importanceHeatmapColor(1));
-        gradient.addColorStop(0.28, importanceHeatmapColor(0.72));
-        gradient.addColorStop(0.58, importanceHeatmapColor(0.42));
-        gradient.addColorStop(1, importanceHeatmapColor(0));
+        if (logLossImportance) {
+          gradient.addColorStop(0, divergentImportanceColor(1, 1));
+          gradient.addColorStop(0.5, divergentImportanceColor(0, 1));
+          gradient.addColorStop(1, divergentImportanceColor(-1, 1));
+        } else {
+          gradient.addColorStop(0, importanceHeatmapColor(1));
+          gradient.addColorStop(0.28, importanceHeatmapColor(0.72));
+          gradient.addColorStop(0.58, importanceHeatmapColor(0.42));
+          gradient.addColorStop(1, importanceHeatmapColor(0));
+        }
         ctx.fillStyle = gradient;
         ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
         ctx.strokeStyle = "#d8dee8";
         ctx.strokeRect(legendX, legendY, legendWidth, legendHeight);
         ctx.fillStyle = "#475467";
         ctx.font = '13px "Segoe UI", Arial, sans-serif';
-        ctx.fillText("重要性高（关键特征）", legendX + legendWidth + 12, legendY + 13);
-        ctx.fillText("重要性低（贡献小）", legendX + legendWidth + 12, legendY + legendHeight - 2);
+        ctx.fillText(
+          logLossImportance ? "正值（遮挡后损失增大）" : "重要性高（关键特征）",
+          legendX + legendWidth + 12,
+          legendY + 13,
+        );
+        ctx.fillText(
+          logLossImportance ? "负值（遮挡后表现改善）" : "重要性低（贡献小）",
+          legendX + legendWidth + 12,
+          legendY + legendHeight - 2,
+        );
         ctx.restore();
-      }
-
-      function drawFeatureImportanceCanvas(data) {
-        const canvas = $("featureImportanceCanvas");
-        if (!canvas) return;
-        const { ctx, width, height } = setupHiDpiCanvas(canvas);
-        ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, width, height);
-        const curve = (data.mean_curve || []).map(Number);
-        const xAxis = (data.x_axis || []).map(Number);
-        if (!curve.length) {
-          ctx.fillStyle = "#667085";
-          ctx.fillText("暂无平均谱线数据", 44, 44);
-          return;
-        }
-        const pad = { left: 50, right: 18, top: 24, bottom: 36 };
-        const plotWidth = width - pad.left - pad.right;
-        const plotHeight = height - pad.top - pad.bottom;
-        const values = curve.filter((value) => Number.isFinite(value));
-        const minY = Math.min(...values);
-        const maxY = Math.max(...values);
-        const ySpan = Math.max(maxY - minY, 1e-9);
-        const indexToX = makeFeatureIndexToX(xAxis, curve.length, pad.left, plotWidth);
-        ctx.strokeStyle = "#d8dee8";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
-        const segment = primaryFeatureSegment(data);
-        if (segment) {
-          const x0 = indexToX(Math.max(0, Number(segment.start_index)));
-          const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
-          ctx.fillStyle = "rgba(180, 83, 9, 0.22)";
-          ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
-          ctx.fillStyle = "#344054";
-          ctx.fillText("#1", x0 + 4, pad.top + 14);
-        }
-        ctx.beginPath();
-        ctx.strokeStyle = "#0f766e";
-        ctx.lineWidth = 2;
-        curve.forEach((value, index) => {
-          if (!Number.isFinite(value)) return;
-          const x = indexToX(index);
-          const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
-          if (index === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-        ctx.fillStyle = "#667085";
-        ctx.fillText(formatFeatureX(xAxis[0] ?? 0), pad.left, height - 10);
-        ctx.fillText(formatFeatureX(xAxis[xAxis.length - 1] ?? curve.length - 1), width - pad.right - 68, height - 10);
       }
 
       function drawSampleFeatureImportanceCanvas(data, sample) {
@@ -1895,7 +2043,7 @@
         const plotBottom = pad.top + plotHeight;
         ctx.fillText(formatFeatureX(xAxis[0] ?? 0), pad.left, plotBottom + 20);
         ctx.fillText(formatFeatureX(xAxis[xAxis.length - 1] ?? curve.length - 1), width - pad.right - 68, plotBottom + 20);
-        drawSampleFeatureHeatmap(ctx, sample, indexToX, curve.length, plotBottom, height);
+        drawFeatureHeatmap(ctx, sample, indexToX, curve.length, plotBottom, height);
       }
 
       function featureSampleLabel(sample) {
@@ -1906,7 +2054,7 @@
       }
 
       function isLossOcclusionImportance(data) {
-        return data?.method === "sample_occlusion_importance";
+        return data?.method === "sample_occlusion_importance" || isLogLossOcclusionImportance(data);
       }
 
       function isF1WindowImportance(data) {
@@ -1924,6 +2072,7 @@
           input_gradient_attribution: "输入梯度",
           dscarnet_dual_2d_gradcam: "DSCARNet 双通路",
           sample_occlusion_importance: "窗口遮挡",
+          sample_occlusion_log_loss: "窗口遮挡 Log-loss",
           interval_permutation_importance: "窗口置乱",
           cv_macro_f1_window_importance: "窗口置乱",
           mean_gradcam_1d: "平均 Grad-CAM",
@@ -1943,6 +2092,7 @@
           sar_gradcam_plus_car_pca_backprojection: "双通路回投",
           baseline_macro_f1_minus_perturbed_macro_f1: "F1 下降",
           masked_loss_minus_original_loss: "Loss 增量",
+          masked_true_class_log_loss_minus_original_true_class_log_loss: "真实类别 Log-loss 增量",
         };
         return labels[metric] || metric || "-";
       }
@@ -1964,8 +2114,11 @@
         if (isDscarnetDualAttribution(data)) {
           return "SAR/CAR 双通路归因值没有明显高于其他位置。";
         }
+        if (isLogLossOcclusionImportance(data)) {
+          return "遮挡各窗口后，真实类别 Log-loss 没有增加；当前结果不指定第一重要区间。";
+        }
         return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
-          ? "遮挡或置乱各窗口后，macro-F1 没有明显下降。"
+          ? "遮挡或置乱各窗口后，评估指标没有明显下降。"
           : "各位置的梯度归因值没有明显高于其他位置。";
       }
 
@@ -1973,7 +2126,7 @@
         return `
           <div>解释方法<strong>${escapeHtml(featureMethodLabel(data.method))}</strong></div>
           <div>重要性指标<strong>${escapeHtml(featureMetricLabel(data.importance_metric))}</strong></div>
-          <div>窗口/点数<strong>${escapeHtml(String(data.window_count ?? "-"))}</strong></div>
+          <div>窗口数<strong>${escapeHtml(String(data.window_count ?? "-"))}</strong></div>
         `;
       }
 
@@ -1982,12 +2135,23 @@
         if (!target || !sample) return;
         const segment = primaryFeatureSegment(sample);
         const importanceDomain = sampleImportanceDomain(sample);
+        const detailWindow = segment
+          ? (sample.windows || []).find((window) => Number(window.rank) === Number(segment.rank)) || segment
+          : null;
+        const probabilityDetails = isLogLossOcclusionImportance(data) && detailWindow
+          ? `
+              <div>真实类别概率：${formatMetric(sample.true_probability)} → ${formatMetric(detailWindow.masked_true_probability)}</div>
+              <div>概率下降：${formatMetric(detailWindow.true_probability_drop)}</div>
+              <div>Log-loss：${formatMetric(detailWindow.original_loss)} → ${formatMetric(detailWindow.masked_loss)}</div>
+            `
+          : "";
         const chips = segment
           ? `
               <div class="feature-chip">
                 <strong>第 1 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
                 <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
                 <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
+                ${probabilityDetails}
               </div>
             `
           : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
@@ -2009,8 +2173,7 @@
         requestAnimationFrame(() => drawSampleFeatureImportanceCanvas(data, sample));
       }
 
-      async function renderSampleFeatureImportance(run, summary) {
-        const target = $("featureImportance");
+      async function renderSampleFeatureImportance(run, summary, target = $("featureImportance")) {
         const jsonArtifact = summary.artifact || "sample_feature_importance.json";
         const csvArtifact = summary.csv_artifact || "sample_feature_importance.csv";
         const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
@@ -2065,85 +2228,18 @@
         renderSelected();
       }
 
-      async function renderGlobalFeatureImportance(run) {
+      async function renderFeatureImportance(run) {
         const target = $("featureImportance");
-        const summary = run.feature_importance;
-        if (!summary) {
-          target.innerHTML = "";
+        const sampleSummary = run.sample_feature_importance;
+        if (sampleSummary?.artifact) {
+          await renderSampleFeatureImportance(run, sampleSummary, target);
           return;
         }
-        if (!summary.artifact && summary.status === "unsupported") {
-          target.innerHTML = `
-            <div class="training-state">
-              <div><strong>当前模型没有可展示的重要性分析</strong><span>${escapeHtml(summary.reason || "当前模型没有可展示的重要区间。")}</span></div>
-            </div>
-          `;
-          return;
-        }
-        const jsonArtifact = summary.artifact || "feature_importance.json";
-        const csvArtifact = summary.csv_artifact || "feature_importance.csv";
-        const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
-        const csvUrl = `/api/training/runs/${run.run_id}/artifact/${csvArtifact}`;
-        if (summary.status !== "ready") {
-          target.innerHTML = `
-            <div class="chart-card feature-card">
-              <h3>重要特征区间</h3>
-              <div class="training-state">
-                <div><strong>暂不可用</strong><span>${escapeHtml(summary.reason || "当前训练结果没有可展示的重要区间。")}</span></div>
-              </div>
-              <div class="actions">
-                <a class="secondary" href="${jsonUrl}">下载特征 JSON</a>
-                <a class="secondary" href="${csvUrl}">下载特征 CSV</a>
-              </div>
-            </div>
-          `;
-          return;
-        }
-        const data = await api(jsonUrl);
-        const segment = primaryFeatureSegment(data);
-        const importanceDomain = sampleImportanceDomain(data);
-        const chips = segment
-          ? `
-              <div class="feature-chip">
-                <strong>#1 ${featureSegmentKind(segment)} ${featureSegmentRange(segment)}</strong>
-                <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
-                <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
-              </div>
-            `
-          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
         target.innerHTML = `
-          <div class="chart-card feature-card">
-            <h3>重要特征区间</h3>
-            <div class="feature-meta">${featureMethodMetaHtml(data)}</div>
-            <canvas id="featureImportanceCanvas" width="1000" height="320"></canvas>
-            <div class="feature-list">${chips}</div>
-            <div class="actions">
-              <a class="secondary" href="${jsonUrl}">下载特征 JSON</a>
-              <a class="secondary" href="${csvUrl}">下载特征 CSV</a>
-            </div>
+          <div class="training-state">
+            <div><strong>暂无单样本重要性</strong><span>${escapeHtml(sampleSummary?.reason || "当前训练结果没有单样本重要性产物。")}</span></div>
           </div>
         `;
-        requestAnimationFrame(() => drawFeatureImportanceCanvas(data));
-      }
-
-      async function renderFeatureImportance(run) {
-        if (run.sample_feature_importance?.artifact) {
-          try {
-            await renderSampleFeatureImportance(run, run.sample_feature_importance);
-            return;
-          } catch (err) {
-            if (!run.feature_importance) throw err;
-          }
-        }
-        if (run.sample_feature_importance?.status === "unsupported" && !run.sample_feature_importance?.artifact && !run.feature_importance) {
-          $("featureImportance").innerHTML = `
-            <div class="training-state">
-              <div><strong>当前模型没有可展示的单样品解释</strong><span>${escapeHtml(run.sample_feature_importance.reason || "当前模型没有可展示的单样品重要区间。")}</span></div>
-            </div>
-          `;
-          return;
-        }
-        await renderGlobalFeatureImportance(run);
       }
 
       function renderRun(run) {
@@ -2177,6 +2273,7 @@
           return;
         }
         if (run.status === "pending" || run.status === "running") {
+          const traditionalModel = run.model_family === "traditional_ml" || isTraditionalModel(run.model_type || run.config?.model_type);
           const totalTargetEpochs = runTotalTargetEpochs(run);
           const foldProgress = runFoldProgressText(run);
           const isExternal = isExternalTestHoldout(run);
@@ -2187,20 +2284,29 @@
                 <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
               `;
           const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
-          $("trainingProgress").innerHTML = `
-            <div class="training-state">
-              <div class="spinner"></div>
-              <div>
-                <strong>模型正在训练</strong>
-                <span>${run.model_type || run.config?.model_type || "1D-CNN"} · 目标 ${totalTargetEpochs} epoch · ${progressText} · 开始时间 ${formatTime(run.started_at || run.created_at)}</span>
+          const trainingDetail = traditionalModel
+            ? `正在进行参数搜索与模型拟合 · ${progressText}`
+            : `最多 ${totalTargetEpochs} Epoch · ${progressText}`;
+          const epochMetric = traditionalModel
+            ? ""
+            : `<div class="metric">最多 Epoch<strong>${totalTargetEpochs}</strong></div>`;
+          const detailText = `${run.model_type || run.config?.model_type || "1D-CNN"} · ${trainingDetail} · 开始时间 ${formatTime(run.started_at || run.created_at)}`;
+          const activeState = $("trainingProgress").querySelector("[data-active-training-run]");
+          if (activeState?.dataset.activeTrainingRun === String(run.run_id || "")) {
+            activeState.querySelector("span").textContent = detailText;
+          } else {
+            $("trainingProgress").innerHTML = `
+              <div class="training-state" data-active-training-run="${escapeHtml(String(run.run_id || ""))}">
+                <div class="spinner"></div>
+                <div><strong>模型正在训练</strong><span>${escapeHtml(detailText)}</span></div>
               </div>
-            </div>
-          `;
+            `;
+          }
           $("metrics").innerHTML = `
             <div class="metrics">
               <div class="metric">当前状态<strong>${statusText}</strong></div>
               ${progressMarkup}
-              <div class="metric">目标 Epoch<strong>${totalTargetEpochs}</strong></div>
+              ${epochMetric}
               <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
             </div>
@@ -2214,7 +2320,10 @@
           const test = run.metrics?.test || run.metrics || {};
           const valid = run.metrics?.valid || inferValidMetricsFromHistory(run.history);
           const train = run.metrics?.train || {};
-          const totalTargetEpochs = runTotalTargetEpochs(run);
+          const traditionalModel = run.model_family === "traditional_ml" || isTraditionalModel(run.model_type || run.config?.model_type);
+          const epochMetric = traditionalModel
+            ? ""
+            : `<div class="metric">实际训练 Epoch<strong>${run.actual_epochs || "-"}</strong></div>`;
           const preferredFold = null;
           $("trainingProgress").innerHTML = "";
           $("metrics").innerHTML = `
@@ -2223,7 +2332,7 @@
               <div class="metric">Valid accuracy<strong>${formatMetric(valid.accuracy)}</strong></div>
               <div class="metric">Test accuracy<strong>${formatMetric(test.accuracy)}</strong></div>
               <div class="metric">Test macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
-              <div class="metric">训练 Epoch<strong>${run.actual_epochs || "-"}/${totalTargetEpochs}</strong></div>
+              ${epochMetric}
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.model_type || run.config?.model_type || "-"}</strong></div>
               <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
@@ -2270,8 +2379,15 @@
 
       async function pollCurrentRun() {
         if (!currentRunId) return;
-        const run = await fetchRun(currentRunId);
-        renderRun(run);
+        const requestedRunId = currentRunId;
+        if (pollingRunId === requestedRunId) return;
+        pollingRunId = requestedRunId;
+        try {
+          const run = await fetchRun(requestedRunId);
+          if (currentRunId === requestedRunId) renderRun(run);
+        } finally {
+          if (pollingRunId === requestedRunId) pollingRunId = null;
+        }
       }
 
       window.openRun = (runId) => {
@@ -2424,7 +2540,7 @@
       function updateModelOptionVisibility() {
         const modelType = $("modelType").value;
         const traditional = isTraditionalModel(modelType);
-        $("trainTimeBlock").classList.toggle("hidden", traditional);
+        $("trainTimeBlock")?.classList.toggle("hidden", traditional);
         $("featureWindowOptions").classList.toggle("hidden", !usesFeatureWindowCount(modelType));
         $("deepOptions").classList.toggle("hidden", traditional);
         $("traditionalOptions").classList.toggle("hidden", !traditional);

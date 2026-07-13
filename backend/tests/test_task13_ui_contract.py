@@ -5,7 +5,7 @@ def test_official_ui_loads_model_catalog_without_hard_coded_legacy_options():
     content = Path("static/index.html").read_text(encoding="utf-8")
 
     assert 'async function loadModelCatalog()' in content
-    assert 'api("/api/models")' in content
+    assert 'apiWithTimeout("/api/models", 30000)' in content
     assert 'function renderModelCatalog(models' in content
     assert 'const MODEL_CATALOG_GROUPS' in content
     assert '传统模型' in content
@@ -24,6 +24,7 @@ def test_official_ui_preserves_catalog_ids_and_explains_unavailable_models():
     assert 'model.display_name' in content
     assert 'option.disabled = !available' in content
     assert 'model.unavailable_reason' in content
+    assert '当前不可用模型：' not in content
     assert 'function renderModelCatalogFallback' in content
     assert 'loadModelCatalog().catch' in content
 
@@ -37,12 +38,12 @@ def test_official_ui_renders_training_audit_for_traditional_deep_and_explainabil
     assert 'traditional.best_params_by_fold' in content
     assert 'valid_balanced_accuracy' in content
     assert 'hyperparameter_search_csv' in content
-    assert 'audit.deep_training' in content
-    assert 'best_valid_loss' in content
-    assert 'min_learning_rate' in content
-    assert 'declared_method' in content
-    assert 'artifact_method' in content
-    assert 'importance_metric' in content
+    assert '参数选择记录' in content
+    assert '相同配置已自动合并' in content
+    assert 'auditParamsForModel' in content
+    assert 'audit.deep_training' not in content
+    assert '声明方法' not in content
+    assert '产物方法' not in content
 
 
 def test_official_ui_external_audit_never_renders_cv_or_fold_progress():
@@ -64,3 +65,43 @@ def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
     assert '<option value="dual">SAR + CAR</option>' in content
     assert 'dscarnet_input_mode: $("dscarnetInputMode").value' in content
     assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content
+
+
+def test_official_ui_hides_mamba_and_traditional_epoch_progress():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'const HIDDEN_MODEL_IDS = new Set(["cnn_mamba1d"])' in content
+    assert '!HIDDEN_MODEL_IDS.has(model.id)' in content
+    assert 'const epochMetric = traditionalModel' in content
+    assert '训练 Epoch<strong>${run.actual_epochs || "-"}/' not in content
+    assert '实际训练 Epoch' in content
+
+
+def test_training_spinner_is_stable_across_polling():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'data-active-training-run' in content
+    assert 'if (pollingRunId === requestedRunId) return;' in content
+    assert 'if (currentRunId === requestedRunId) renderRun(run);' in content
+    assert 'background: conic-gradient' in content
+
+
+def test_official_ui_only_renders_sample_feature_importance():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert "async function renderGlobalFeatureImportance" not in content
+    assert "function drawFeatureImportanceCanvas" not in content
+    assert "feature-view-switch" not in content
+    assert 'data-feature-view="global"' not in content
+    assert 'data-feature-view="sample"' not in content
+    assert "combinedLogLossView" not in content
+    assert "run.feature_importance" not in content
+    assert "暂无单样本重要性" in content
+    assert "await renderSampleFeatureImportance(run, sampleSummary, target);" in content
+    assert 'id="sampleFeatureImportanceCanvas" class="sample-feature-canvas"' in content
+    assert 'id="featureSampleSelect"' in content
+    assert 'const windows = source.windows || [];' in content
+    assert 'span <= 1e-12) return 0;' in content
+    assert 'function divergentImportanceColor' in content
+    assert 'sample_occlusion_log_loss' in content
+    assert 'const windows = (source?.windows || []).filter(isPositive);' in content

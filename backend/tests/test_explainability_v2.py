@@ -7,17 +7,17 @@ from torch import nn
     "model_type",
     ["pls_da", "pca_lda", "logistic_regression", "svm", "random_forest", "xgboost"],
 )
-def test_traditional_models_use_window_permutation(model_type):
+def test_traditional_models_use_window_occlusion_log_loss(model_type):
     from backend.app.training_explainability import explainability_method
 
-    assert explainability_method(model_type) == "window_permutation"
+    assert explainability_method(model_type) == "window_occlusion_log_loss"
 
 
 @pytest.mark.parametrize("model_type", ["pca_mlp", "transformer1d", "cnn_transformer1d", "cnn_mamba1d"])
-def test_long_distance_models_use_input_gradient(model_type):
+def test_non_convolution_models_use_window_occlusion_log_loss(model_type):
     from backend.app.training_explainability import explainability_method
 
-    assert explainability_method(model_type) == "input_gradient_attribution"
+    assert explainability_method(model_type) == "window_occlusion_log_loss"
 
 
 @pytest.mark.parametrize("model_type", ["cnn1d", "cnn1d_se", "resnet1d", "inception1d", "tcn1d"])
@@ -48,10 +48,9 @@ def test_unknown_explainability_model_is_rejected():
         explainability_method("unknown_model")
 
 
-def test_pca_mlp_attribution_keeps_original_feature_axis():
-    from backend.app.feature_selection import sample_deep_attribution_importance
+def test_pca_mlp_log_loss_occlusion_keeps_original_feature_axis():
     from backend.app.models.registry import build_deep_model
-    from backend.app.training import TrainConfig
+    from backend.app.training import TrainConfig, _deep_sample_feature_result
 
     x = np.asarray(
         [
@@ -63,27 +62,29 @@ def test_pca_mlp_attribution_keeps_original_feature_axis():
         dtype=np.float32,
     )
     y = np.asarray([0, 1, 0, 1], dtype=np.int64)
+    config = TrainConfig(model_type="pca_mlp", feature_window_count=3, feature_top_k=2)
     model = build_deep_model(
-        TrainConfig(model_type="pca_mlp"),
+        config,
         input_length=6,
         class_count=2,
         sample_count=2,
         x_train=x[:2],
     )
-    result = sample_deep_attribution_importance(
-        model,
-        x,
-        y,
+    result = _deep_sample_feature_result(
+        config=config,
+        model=model,
+        x=x,
+        y=y,
         x_axis=np.arange(6, dtype=np.float32),
         splits={"train": [0, 1], "valid": [], "test": [2, 3]},
+        x_axis_warning={"status": "consistent"},
         label_names=["A", "B"],
-        top_k=2,
-        model_type="pca_mlp",
+        metadata=[{"index": idx, "name": str(idx), "repeat_index": str(idx)} for idx in range(4)],
     )
 
-    assert result["method"] == "input_gradient_attribution"
-    assert result["importance_metric"] == "absolute_gradient_x_input"
-    assert all(len(sample["windows"]) == 6 for sample in result["samples"])
+    assert result["method"] == "sample_occlusion_log_loss"
+    assert result["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
+    assert all(len(sample["windows"]) == 3 for sample in result["samples"])
 
 
 def test_document_cnn_uses_explicit_gradcam_target_and_original_axis():

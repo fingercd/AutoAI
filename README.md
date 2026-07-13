@@ -10,7 +10,7 @@ AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台�
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
 - 分类评估：分层 8:1:1、按 `Repeat_index` 留一交叉验证、独立测试集 holdout。
 - 10 个模型：`pls_da`、`svm`、`random_forest`、`xgboost`、`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
-- 可解释性：传统模型使用窗口置乱后的 macro-F1 下降；卷积模型使用 Grad-CAM-like；Transformer 使用输入梯度；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
+- 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
 历史 UI 画廊已经从正式产品移除；未跟踪的界面候选不属于本仓库发布内容。
 
@@ -119,7 +119,7 @@ python -m backend.app.runs.worker
 
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型使用窗口置换后的 macro-F1 下降；`pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用原始特征轴上的 `abs(gradient * input)`；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
+解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、`cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
 - 主页面：<http://127.0.0.1:8000/>
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/health>

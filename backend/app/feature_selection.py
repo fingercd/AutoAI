@@ -28,6 +28,10 @@ FEATURE_COLUMNS = [
     "end_x",
     "importance",
     "importance_std",
+    "normalized_importance",
+    "mean_true_probability_drop",
+    "original_loss",
+    "masked_loss",
     "baseline_macro_f1",
     "permuted_macro_f1",
 ]
@@ -56,25 +60,48 @@ SAMPLE_FEATURE_COLUMNS = [
     "normalized_importance",
     "original_loss",
     "masked_loss",
+    "masked_true_probability",
+    "true_probability_drop",
 ]
 
-SAMPLE_FEATURE_LOSS_COLUMNS = ["original_loss", "masked_loss"]
+SAMPLE_FEATURE_LOSS_COLUMNS = [
+    "original_loss",
+    "masked_loss",
+    "masked_true_probability",
+    "true_probability_drop",
+]
+
+
+def resolve_equal_width_window_count(n_features: int, window_count: int) -> int:
+    """Choose the closest requested window count that divides the feature axis."""
+    if n_features <= 0:
+        return 0
+    target = max(1, min(int(window_count), int(n_features)))
+    divisors: set[int] = set()
+    for candidate in range(1, int(np.sqrt(n_features)) + 1):
+        if n_features % candidate != 0:
+            continue
+        divisors.add(candidate)
+        divisors.add(n_features // candidate)
+    # Prefer more windows when two divisors are equally close, preserving
+    # attribution resolution without reintroducing unequal window widths.
+    return min(divisors, key=lambda value: (abs(value - target), -value))
 
 
 def build_feature_windows(n_features: int, window_count: int) -> list[dict[str, int]]:
-    """Split a spectrum into contiguous feature-importance windows."""
+    """Split a spectrum into equal-width contiguous importance windows."""
     if n_features <= 0:
         return []
-    count = max(1, min(int(window_count), int(n_features)))
+    count = resolve_equal_width_window_count(n_features, window_count)
+    width = n_features // count
     windows = []
-    for window_index, chunk in enumerate(np.array_split(np.arange(n_features), count)):
-        if len(chunk) == 0:
-            continue
+    for window_index in range(count):
+        start = window_index * width
         windows.append(
             {
                 "window_index": int(window_index),
-                "start_index": int(chunk[0]),
-                "end_index": int(chunk[-1]),
+                "start_index": int(start),
+                "end_index": int(start + width - 1),
             }
         )
     return windows
@@ -104,11 +131,31 @@ def merge_ranked_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "window_count": 1,
                 "window_ranks": [int(window["rank"])],
             }
+            for key in (
+                "original_loss",
+                "masked_loss",
+                "masked_true_probability",
+                "true_probability_drop",
+                "mean_true_probability_drop",
+            ):
+                if key in window:
+                    current[key] = float(window[key])
             segments.append(current)
             continue
         current["end_index"] = int(window["end_index"])
         current["end_x"] = float(window["end_x"])
+        window_is_stronger = float(window["importance"]) > float(current["importance"])
         current["importance"] = float(max(current["importance"], window["importance"]))
+        if window_is_stronger:
+            for key in (
+                "original_loss",
+                "masked_loss",
+                "masked_true_probability",
+                "true_probability_drop",
+                "mean_true_probability_drop",
+            ):
+                if key in window:
+                    current[key] = float(window[key])
         if "normalized_importance" in current and "normalized_importance" in window:
             current["normalized_importance"] = float(
                 max(current["normalized_importance"], window["normalized_importance"])
@@ -128,7 +175,13 @@ def primary_feature_segment(
     if segments:
         return dict(sorted(segments, key=lambda item: int(item.get("rank", 10**9)))[0])
 
-    ranked_windows = [window for window in (windows or []) if "start_index" in window and "end_index" in window]
+    ranked_windows = [
+        window
+        for window in (windows or [])
+        if "start_index" in window
+        and "end_index" in window
+        and float(window.get("importance", 0.0)) > 1e-12
+    ]
     if not ranked_windows:
         return None
     window = dict(sorted(ranked_windows, key=lambda item: int(item.get("rank", 10**9)))[0])
@@ -258,7 +311,10 @@ def interval_permutation_importance(
         "method": "interval_permutation_importance",
         "eval_split": eval_split,
         "baseline_macro_f1": baseline_score,
+        "window_policy": "nearest_divisor_equal_width",
+        "requested_window_count": int(window_count),
         "window_count": len(windows),
+        "window_width": int(windows[0]["end_index"] - windows[0]["start_index"] + 1),
         "top_k": int(top_k),
         "n_repeats": repeats,
         "x_axis": _float_list(x_axis_array),
@@ -281,6 +337,7 @@ def sample_occlusion_importance(
     metadata: list[dict[str, Any]] | None = None,
     window_count: int = 50,
     top_k: int = 5,
+    max_perturbed_rows: int = 256,
 ) -> dict[str, Any]:
     """Compute per-sample interval attribution against each sample's true label."""
     x = np.asarray(x, dtype=np.float32)
@@ -293,7 +350,7 @@ def sample_occlusion_importance(
         return {
             "status": "unavailable",
             "reason": "特征矩阵为空，无法计算单样品重要区间",
-            "method": "sample_occlusion_importance",
+            "method": "sample_occlusion_log_loss",
             "baseline": "train_mean_curve",
             "x_axis": _float_list(x_axis_array),
             "baseline_curve": _float_list(baseline_curve),
@@ -305,7 +362,7 @@ def sample_occlusion_importance(
         return {
             "status": "unavailable",
             "reason": "没有可解释的测试集样品",
-            "method": "sample_occlusion_importance",
+            "method": "sample_occlusion_log_loss",
             "baseline": "train_mean_curve",
             "x_axis": _float_list(x_axis_array),
             "baseline_curve": _float_list(baseline_curve),
@@ -321,16 +378,41 @@ def sample_occlusion_importance(
     top_limit = max(1, int(top_k))
     window_scores: list[np.ndarray] = []
     window_losses: list[np.ndarray] = []
+    window_true_probabilities: list[np.ndarray] = []
+    sample_count = max(1, len(x_samples))
+    perturbed_row_limit = max(1, int(max_perturbed_rows))
+    windows_per_batch = max(1, perturbed_row_limit // sample_count)
+    true_row_indices = np.arange(len(y_samples))
 
-    for window in windows:
-        start = int(window["start_index"])
-        end = int(window["end_index"])
-        occluded = x_samples.copy()
-        occluded[:, start : end + 1] = baseline_curve[start : end + 1]
-        occluded_scores = _as_score_matrix(score_fn(occluded))
-        masked_losses = _true_label_losses(occluded_scores, y_samples)
-        window_scores.append(masked_losses - original_losses)
-        window_losses.append(masked_losses)
+    def score_perturbed(values: np.ndarray) -> np.ndarray:
+        parts = [
+            _as_score_matrix(score_fn(values[start : start + perturbed_row_limit]))
+            for start in range(0, len(values), perturbed_row_limit)
+        ]
+        return np.concatenate(parts, axis=0)
+
+    for chunk_start in range(0, len(windows), windows_per_batch):
+        chunk = windows[chunk_start : chunk_start + windows_per_batch]
+        perturbed_blocks = []
+        for window in chunk:
+            start = int(window["start_index"])
+            end = int(window["end_index"])
+            occluded = x_samples.copy()
+            occluded[:, start : end + 1] = baseline_curve[start : end + 1]
+            perturbed_blocks.append(occluded)
+        stacked = np.concatenate(perturbed_blocks, axis=0)
+        stacked_scores = score_perturbed(stacked)
+        expected_rows = len(chunk) * len(x_samples)
+        if stacked_scores.shape[0] != expected_rows or stacked_scores.shape[1] != base_scores.shape[1]:
+            raise ValueError("score_fn 返回的类别概率形状与遮挡批次不一致")
+        chunk_scores = stacked_scores.reshape(len(chunk), len(x_samples), base_scores.shape[1])
+        for occluded_scores in chunk_scores:
+            masked_losses = _true_label_losses(occluded_scores, y_samples)
+            window_scores.append(masked_losses - original_losses)
+            window_losses.append(masked_losses)
+            window_true_probabilities.append(
+                np.clip(occluded_scores[true_row_indices, y_samples], 1e-12, 1.0)
+            )
 
     samples = []
     for local_idx, ((split_name, source_idx), true_class) in enumerate(zip(ordered_items, y_samples)):
@@ -339,7 +421,12 @@ def sample_occlusion_importance(
         sample_meta = metadata[source_idx] if 0 <= source_idx < len(metadata) else {}
         sample_x_axis_array = _sample_x_axis_array(sample_meta, x_axis_array)
         rows = []
-        for window, importances, masked_losses in zip(windows, window_scores, window_losses):
+        for window, importances, masked_losses, masked_true_probs in zip(
+            windows,
+            window_scores,
+            window_losses,
+            window_true_probabilities,
+        ):
             start = int(window["start_index"])
             end = int(window["end_index"])
             true_prob = float(base_scores[local_idx, true_class_id])
@@ -354,16 +441,16 @@ def sample_occlusion_importance(
                     "importance": importance,
                     "original_loss": float(original_losses[local_idx]),
                     "masked_loss": float(masked_losses[local_idx]),
+                    "masked_true_probability": float(masked_true_probs[local_idx]),
+                    "true_probability_drop": float(true_prob - masked_true_probs[local_idx]),
                 }
             )
         importance_values = np.asarray([row["importance"] for row in rows], dtype=np.float64)
-        min_importance = float(np.min(importance_values)) if importance_values.size else 0.0
         max_importance = float(np.max(importance_values)) if importance_values.size else 0.0
-        importance_span = max_importance - min_importance
         for row in rows:
             row["normalized_importance"] = (
-                float((row["importance"] - min_importance) / importance_span)
-                if importance_span > 1e-12
+                float(max(0.0, row["importance"]) / max_importance)
+                if max_importance > 1e-12
                 else 0.0
             )
         ranked = sorted(rows, key=lambda item: (-item["importance"], item["start_index"]))
@@ -397,10 +484,13 @@ def sample_occlusion_importance(
 
     return {
         "status": "ready",
-        "method": "sample_occlusion_importance",
+        "method": "sample_occlusion_log_loss",
         "baseline": "train_mean_curve",
-        "importance_metric": "masked_loss_minus_original_loss",
+        "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
+        "window_policy": "nearest_divisor_equal_width",
+        "requested_window_count": int(window_count),
         "window_count": len(windows),
+        "window_width": int(windows[0]["end_index"] - windows[0]["start_index"] + 1),
         "top_k": top_limit,
         "x_axis": _float_list(x_axis_array),
         "baseline_curve": _float_list(baseline_curve),
@@ -427,6 +517,9 @@ def sample_deep_attribution_importance(
     baseline_curve = _mean_curve(x, splits.get("train", []))
     metadata = metadata or []
     method = explainability_method(model_type)
+
+    if method == "window_occlusion_log_loss":
+        raise ValueError("该模型应使用 sample_occlusion_importance 计算 Log-loss 窗口重要性")
 
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         return {
@@ -757,41 +850,80 @@ def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any
         return unavailable
 
     first_windows = samples[0].get("windows", [])
+    loss_occlusion = result.get("method") == "sample_occlusion_log_loss"
+    class_ids = np.asarray([int(sample.get("true_class_id", -1)) for sample in samples], dtype=np.int64)
+    present_class_ids = sorted(int(item) for item in np.unique(class_ids) if int(item) >= 0)
+
+    def aggregate_values(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        values_array = np.asarray(values, dtype=np.float64)
+        if not loss_occlusion or not present_class_ids or len(values_array) != len(class_ids):
+            return float(np.mean(values_array))
+        class_means = [float(np.mean(values_array[class_ids == class_id])) for class_id in present_class_ids]
+        return float(np.mean(class_means))
+
     rows = []
     for window_idx, window in enumerate(first_windows):
-        values = [
-            float(sample.get("windows", [])[window_idx].get("importance", 0.0))
+        sample_windows = [
+            sample.get("windows", [])[window_idx]
             for sample in samples
             if window_idx < len(sample.get("windows", []))
         ]
-        importance = float(np.mean(values)) if values else 0.0
-        rows.append(
-            {
-                "window_index": int(window.get("window_index", window_idx)),
-                "start_index": int(window.get("start_index", window_idx)),
-                "end_index": int(window.get("end_index", window_idx)),
-                "start_x": float(window.get("start_x", window_idx)),
-                "end_x": float(window.get("end_x", window_idx)),
-                "importance": importance,
-                "importance_std": float(np.std(values)) if values else 0.0,
-                "baseline_macro_f1": None,
-                "permuted_macro_f1": None,
-            }
-        )
+        values = [float(item.get("importance", 0.0)) for item in sample_windows]
+        row = {
+            "window_index": int(window.get("window_index", window_idx)),
+            "start_index": int(window.get("start_index", window_idx)),
+            "end_index": int(window.get("end_index", window_idx)),
+            "start_x": float(window.get("start_x", window_idx)),
+            "end_x": float(window.get("end_x", window_idx)),
+            "importance": aggregate_values(values),
+            "importance_std": float(np.std(values)) if values else 0.0,
+            "baseline_macro_f1": None,
+            "permuted_macro_f1": None,
+        }
+        if loss_occlusion:
+            row.update(
+                {
+                    "mean_true_probability_drop": aggregate_values(
+                        [float(item.get("true_probability_drop", 0.0)) for item in sample_windows]
+                    ),
+                    "original_loss": aggregate_values(
+                        [float(item.get("original_loss", 0.0)) for item in sample_windows]
+                    ),
+                    "masked_loss": aggregate_values(
+                        [float(item.get("masked_loss", 0.0)) for item in sample_windows]
+                    ),
+                }
+            )
+        rows.append(row)
 
     ranked = sorted(rows, key=lambda item: (-item["importance"], item["start_index"]))
+    max_positive = max((float(row["importance"]) for row in ranked), default=0.0)
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
+        row["normalized_importance"] = (
+            float(max(0.0, row["importance"]) / max_positive)
+            if max_positive > 1e-12
+            else 0.0
+        )
     top_limit = max(1, int(result.get("top_k") or 5))
     top_windows = [row for row in ranked if row["importance"] > 0][:top_limit]
     ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
     top_segments = merge_ranked_windows(top_windows)
     payload = {
         "status": "ready",
-        "method": f"mean_{result.get('method') or 'sample_feature_importance'}",
+        "method": (
+            "macro_mean_sample_occlusion_log_loss"
+            if loss_occlusion
+            else f"mean_{result.get('method') or 'sample_feature_importance'}"
+        ),
         "importance_metric": result.get("importance_metric"),
         "eval_split": "test",
+        "window_policy": result.get("window_policy"),
+        "requested_window_count": result.get("requested_window_count"),
         "window_count": len(rows),
+        "window_width": result.get("window_width"),
         "top_k": top_limit,
         "n_repeats": None,
         "x_axis": result.get("x_axis", []),
@@ -800,6 +932,9 @@ def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any
         "top_segments": top_segments,
         "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
     }
+    if loss_occlusion:
+        payload["aggregation"] = "macro_class_mean"
+        payload["aggregation_class_count"] = len(present_class_ids)
     if result.get("x_axis_warning"):
         payload["x_axis_warning"] = result.get("x_axis_warning")
     if result.get("sanity_checks"):
@@ -830,6 +965,8 @@ def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, An
         "importance_metric": result.get("importance_metric"),
         "eval_split": result.get("eval_split"),
         "baseline_macro_f1": result.get("baseline_macro_f1"),
+        "aggregation": result.get("aggregation"),
+        "aggregation_class_count": result.get("aggregation_class_count"),
         "artifact": "feature_importance.json",
         "csv_artifact": "feature_importance.csv",
         "top_segments": result.get("top_segments", []),
@@ -867,7 +1004,7 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
         for window in sample.get("windows", []):
             rows.append({**base, **window})
     columns = list(SAMPLE_FEATURE_COLUMNS)
-    if result.get("method") != "sample_occlusion_importance":
+    if result.get("method") not in {"sample_occlusion_importance", "sample_occlusion_log_loss"}:
         columns = [column for column in columns if column not in SAMPLE_FEATURE_LOSS_COLUMNS]
     pd.DataFrame(rows, columns=columns).to_csv(
         csv_path,

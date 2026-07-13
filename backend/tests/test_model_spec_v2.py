@@ -262,7 +262,7 @@ def test_training_writes_architecture_v2_metadata(tmp_path, monkeypatch):
     assert metadata["model_type"] == "pls_da"
     assert metadata["N_train"] == len(split["splits"]["train"])
     assert metadata["L"] == 12
-    assert metadata["explainability_method"] == "window_permutation"
+    assert metadata["explainability_method"] == "window_occlusion_log_loss"
     assert config["architecture_version"] == metadata["architecture_version"]
     assert status["architecture_version"] == metadata["architecture_version"]
     assert status["model_metadata"] == metadata

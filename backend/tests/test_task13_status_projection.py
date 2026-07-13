@@ -122,6 +122,39 @@ def test_projects_deep_audit_values_from_status_history(tmp_path: Path) -> None:
     assert projection["explainability"]["importance_metric"] == "gradcam_activation"
 
 
+def test_projects_log_loss_occlusion_contract(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path,
+        "status.json",
+        {
+            "feature_importance": {
+                "method": "macro_mean_sample_occlusion_log_loss",
+                "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
+            },
+            "sample_feature_importance": {
+                "method": "sample_occlusion_log_loss",
+                "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
+            },
+        },
+    )
+    _write_json(
+        tmp_path,
+        "model_metadata.json",
+        {
+            "explainability_method": "window_occlusion_log_loss",
+            "artifact_explainability_method": "sample_occlusion_log_loss",
+        },
+    )
+
+    projection = build_training_status_projection(tmp_path)
+
+    assert projection["explainability"] == {
+        "declared_method": "window_occlusion_log_loss",
+        "artifact_method": "sample_occlusion_log_loss",
+        "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
+    }
+
+
 def test_external_projection_never_exposes_cv_or_fold_fields_and_legacy_runs_are_safe(tmp_path: Path) -> None:
     _write_json(
         tmp_path,

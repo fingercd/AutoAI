@@ -83,15 +83,15 @@ def _dscarnet_capability() -> tuple[bool, str | None]:
     try:
         from ..models.dscarnet import dual_dscarnet
 
-        # Do not invoke the legacy AggMap compatibility loader here: a broken
-        # native lapjv import can terminate the interpreter before Python can
-        # turn it into an exception.  The catalog must remain safe for the
-        # landing page, so require the real runtime dependencies first.
         if importlib.util.find_spec("aggmap") is None:
             return False, "DSCARNet/AggMap 不可用：缺少 aggmap"
-        if importlib.util.find_spec("lapjv") is None:
-            return False, "DSCARNet/AggMap 不可用：缺少 lapjv"
-        importlib.import_module("aggmap")
+
+        # Use the same compatibility path as training. AggMap 1.2.1 imports
+        # lapjv eagerly, while AutoAI supplies a SciPy implementation when
+        # the obsolete native dependency is absent.
+        from ..dscarnet_mapping import _load_aggmap_class
+
+        _load_aggmap_class()
         dual_dscarnet((4, 4, 1), (4, 4, 1), n_outputs=2, last_avf=None)
     except Exception as exc:  # AggMap and its native optional dependencies are not guaranteed.
         return _capability_failure("DSCARNet/AggMap", exc)
