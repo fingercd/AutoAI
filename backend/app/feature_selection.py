@@ -11,6 +11,7 @@ from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 from torch import nn
+from .training_explainability import explainability_method
 
 
 PredictFn = Callable[[np.ndarray], np.ndarray]
@@ -425,7 +426,7 @@ def sample_deep_attribution_importance(
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
     baseline_curve = _mean_curve(x, splits.get("train", []))
     metadata = metadata or []
-    method = "input_gradient_attribution" if model_type in {"transformer", "transformer1d"} else "gradcam_1d"
+    method = explainability_method(model_type)
 
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         return {
@@ -454,7 +455,21 @@ def sample_deep_attribution_importance(
     x_samples = x[sample_indices]
     y_samples = y[sample_indices]
     if method == "gradcam_1d":
-        attributions, scores, actual_method = _gradcam_1d_attributions(model, x_samples, y_samples, x.shape[1])
+        try:
+            attributions, scores, actual_method = _gradcam_1d_attributions(model, x_samples, y_samples, x.shape[1])
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "reason": f"Grad-CAM 计算失败: {exc}",
+                "method": "gradcam_1d",
+                "baseline": "deep_attribution",
+                "importance_metric": "gradcam_activation",
+                "window_count": int(x.shape[1]),
+                "top_k": max(1, int(top_k)),
+                "x_axis": _float_list(x_axis_array),
+                "baseline_curve": _float_list(baseline_curve),
+                "samples": [],
+            }
         method = actual_method
     else:
         attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
@@ -528,6 +543,66 @@ def sample_deep_attribution_importance(
     return result
 
 
+def sample_dscarnet_single_2d_gradcam_importance(
+    model: nn.Module,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    mapped_values: np.ndarray,
+    mapper: Any,
+    mode: str,
+    pca: Any | None,
+    mapping_metadata: dict[str, Any],
+    x_axis: np.ndarray | list[float],
+    splits: dict[str, list[int]],
+    label_names: list[str],
+    metadata: list[dict[str, Any]] | None = None,
+    top_k: int = 5,
+) -> dict[str, Any]:
+    x = np.asarray(x, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
+    mode = str(mode).lower()
+    method = explainability_method("dscarnet", dscarnet_mode=mode)
+    x_axis_array = _safe_x_axis(x_axis, x.shape[1])
+    baseline_curve = _mean_curve(x, splits.get("train", []))
+    ordered_items = _ordered_test_indices(splits)
+    if not ordered_items:
+        return {"status": "unavailable", "reason": "没有可解释的测试集样品", "method": method, "samples": []}
+    indices = [idx for _split, idx in ordered_items]
+    labels_array = y[indices]
+    cams, scores = _gradcam_2d_single_attributions(model, np.asarray(mapped_values)[indices], labels_array)
+    prefix = "f_" if mode == "sar" else "pc_"
+    target_count = x.shape[1] if mode == "sar" else int(pca.components_.shape[0])
+    mapped_attr = _aggmap_cam_to_feature_matrix(cams, mapper, target_count, prefix)
+    if mode == "car":
+        mapped_attr = mapped_attr[:, :target_count] @ np.abs(pca.components_[:target_count, :])
+    attributions = _normalize_rows(mapped_attr)
+    scores = _as_score_matrix(scores)
+    metadata = metadata or []
+    samples = []
+    for local_idx, ((split_name, source_idx), true_class) in enumerate(zip(ordered_items, labels_array)):
+        pred_class = int(np.argmax(scores[local_idx]))
+        sample_meta = metadata[source_idx] if source_idx < len(metadata) else {}
+        sample_axis = _sample_x_axis_array(sample_meta, x_axis_array)
+        rows, top_segments = _attribution_windows(attributions[local_idx], x_axis_array=sample_axis, top_k=max(1, int(top_k)))
+        samples.append({
+            "sample_id": f"{split_name}:{source_idx}", "dataset": split_name, "source_index": int(source_idx),
+            "index": sample_meta.get("index", int(source_idx)), "name": str(sample_meta.get("name", f"sample_{source_idx}")),
+            "repeat_index": str(sample_meta.get("repeat_index", "")), "true_class_id": int(true_class),
+            "pred_class_id": pred_class, "true_label": _label_at(label_names, int(true_class)),
+            "pred_label": _label_at(label_names, pred_class), "correct": pred_class == int(true_class),
+            "true_probability": float(scores[local_idx, int(true_class)]), "pred_probability": float(scores[local_idx, pred_class]),
+            "curve": _float_list(x[source_idx]), "sample_x_axis": _float_list(sample_axis), "windows": rows,
+            "top_segments": top_segments, "primary_segment": primary_feature_segment(top_segments, rows),
+        })
+    return {
+        "status": "ready", "method": method, "baseline": "deep_attribution",
+        "importance_metric": "sar_gradcam_backprojection" if mode == "sar" else "car_gradcam_pca_backprojection",
+        "window_count": int(x.shape[1]), "top_k": max(1, int(top_k)), "x_axis": _float_list(x_axis_array),
+        "baseline_curve": _float_list(baseline_curve), "dscarnet_mapping": mapping_metadata, "samples": samples,
+    }
+
+
 def sample_dscarnet_dual_2d_gradcam_importance(
     model: nn.Module,
     x: np.ndarray,
@@ -553,7 +628,7 @@ def sample_dscarnet_dual_2d_gradcam_importance(
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
     baseline_curve = _mean_curve(x, splits.get("train", []))
     metadata = metadata or []
-    method = "dscarnet_dual_2d_gradcam"
+    method = explainability_method("dscarnet", dscarnet_mode="dual")
 
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         return {
@@ -1010,6 +1085,43 @@ def _aggmap_cam_to_feature_matrix(
     return output
 
 
+def _gradcam_2d_single_attributions(
+    model: nn.Module,
+    mapped_samples: np.ndarray,
+    y_samples: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    target = getattr(model, "inception", None)
+    if target is None or not isinstance(target, nn.Module):
+        raise ValueError("DSCARNet 单通路模型缺少可用于 2D Grad-CAM 的 inception")
+    device = _model_device(model)
+    model.eval()
+    model.zero_grad(set_to_none=True)
+    captured: dict[str, torch.Tensor] = {}
+    def capture(_module: nn.Module, _inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
+        if output.requires_grad:
+            captured["activation"] = output
+            output.retain_grad()
+    handle = target.register_forward_hook(capture)
+    try:
+        inputs = torch.tensor(mapped_samples, dtype=torch.float32, device=device)
+        labels = torch.tensor(y_samples, dtype=torch.long, device=device)
+        logits = model(inputs)
+        activation = captured.get("activation")
+        if activation is None or activation.ndim != 4:
+            raise ValueError("DSCARNet 单通路 Grad-CAM 未捕获到四维激活")
+        selected, scores = _selected_logits_and_scores(logits, labels)
+        selected.backward()
+        gradients = activation.grad
+        if gradients is None:
+            raise ValueError("DSCARNet 单通路 Grad-CAM 未捕获到梯度")
+        weights = gradients.mean(dim=(2, 3), keepdim=True)
+        cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
+        cam = F.interpolate(cam, size=inputs.shape[-2:], mode="bilinear", align_corners=False).squeeze(1)
+        return cam.detach().cpu().numpy(), scores.cpu().numpy()
+    finally:
+        handle.remove()
+
+
 def _dscarnet_dual_2d_gradcam_attributions(
     model: nn.Module,
     x_sar_samples: np.ndarray,
@@ -1064,7 +1176,7 @@ def _gradcam_2d_branch_attributions(
         activation = captured.get("activation")
         if activation is None or activation.ndim != 4:
             raise ValueError("DSCARNet 2D Grad-CAM 未捕获到四维激活")
-        selected = logits[torch.arange(labels.shape[0], device=device), labels].sum()
+        selected, scores = _selected_logits_and_scores(logits, labels)
         selected.backward()
         gradients = activation.grad
         if gradients is None:
@@ -1073,7 +1185,6 @@ def _gradcam_2d_branch_attributions(
         cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
         target_size = sar_inputs.shape[-2:] if branch == 1 else car_inputs.shape[-2:]
         cam = F.interpolate(cam, size=target_size, mode="bilinear", align_corners=False).squeeze(1)
-        scores = torch.softmax(logits.detach(), dim=1)
         return cam.detach().cpu().numpy(), scores.cpu().numpy()
     finally:
         handle.remove()
@@ -1125,6 +1236,15 @@ def _model_device(model: nn.Module) -> torch.device:
         return torch.device("cpu")
 
 
+def _selected_logits_and_scores(logits: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if logits.ndim == 2 and logits.shape[1] == 1:
+        signed = torch.where(labels == 1, logits[:, 0], -logits[:, 0])
+        positive = torch.sigmoid(logits.detach())
+        return signed.sum(), torch.cat((1.0 - positive, positive), dim=1)
+    selected = logits[torch.arange(labels.shape[0], device=logits.device), labels].sum()
+    return selected, torch.softmax(logits.detach(), dim=1)
+
+
 def _input_gradient_attributions(
     model: nn.Module,
     x_samples: np.ndarray,
@@ -1137,11 +1257,10 @@ def _input_gradient_attributions(
     inputs.requires_grad_(True)
     labels = torch.tensor(y_samples, dtype=torch.long, device=device)
     logits = model(inputs)
-    selected = logits[torch.arange(labels.shape[0], device=device), labels].sum()
+    selected, scores = _selected_logits_and_scores(logits, labels)
     selected.backward()
     gradients = inputs.grad.detach()
     attributions = torch.abs(gradients * inputs.detach()).squeeze(1)
-    scores = torch.softmax(logits.detach(), dim=1)
     return attributions.cpu().numpy(), scores.cpu().numpy()
 
 
@@ -1151,8 +1270,11 @@ def _gradcam_1d_attributions(
     y_samples: np.ndarray,
     output_length: int,
 ) -> tuple[np.ndarray, np.ndarray, str]:
+    explicit_target = callable(getattr(model, "gradcam_target_layer", None))
     target = _find_gradcam_target(model)
     if target is None:
+        if explicit_target:
+            raise RuntimeError("模型已声明 gradcam_target_layer，但未返回可用目标层")
         attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
         return attributions, scores, "input_gradient_attribution"
 
@@ -1173,24 +1295,35 @@ def _gradcam_1d_attributions(
         logits = model(inputs)
         activation = captured.get("activation")
         if activation is None or activation.ndim != 3:
+            if explicit_target:
+                raise RuntimeError("Grad-CAM 目标层未产生 Batch×Channel×Length 激活")
             attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
             return attributions, scores, "input_gradient_attribution"
-        selected = logits[torch.arange(labels.shape[0], device=device), labels].sum()
+        selected, scores = _selected_logits_and_scores(logits, labels)
         selected.backward()
         gradients = activation.grad
         if gradients is None:
+            if explicit_target:
+                raise RuntimeError("Grad-CAM 目标层未捕获梯度")
             attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
             return attributions, scores, "input_gradient_attribution"
         weights = gradients.mean(dim=2, keepdim=True)
         cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
         cam = F.interpolate(cam, size=output_length, mode="linear", align_corners=False).squeeze(1)
-        scores = torch.softmax(logits.detach(), dim=1)
         return cam.detach().cpu().numpy(), scores.cpu().numpy(), "gradcam_1d"
     finally:
         handle.remove()
 
 
 def _find_gradcam_target(model: nn.Module) -> nn.Module | None:
+    resolver = getattr(model, "gradcam_target_layer", None)
+    if callable(resolver):
+        target = resolver()
+        if target is None:
+            return None
+        if not isinstance(target, nn.Module):
+            raise TypeError("gradcam_target_layer() 必须返回 torch.nn.Module 或 None")
+        return target
     if hasattr(model, "inception") and isinstance(getattr(model, "inception"), nn.Module):
         return getattr(model, "inception")
     up_blocks = getattr(model, "up_blocks", None)

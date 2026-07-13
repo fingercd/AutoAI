@@ -3,17 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from sklearn.decomposition import PCA
 from torch import nn
 
-from .cnn1d import CNN1D
-from .dscarnet import dual_dscarnet
-from .inception1d import Inception1D
+from .cnn1d_v2 import CNN1DDocumentV2
+from .cnn_se1d import CNNSE1DDocumentV2
+from .cnn_transformer1d import CNNTransformer1D
+from .dscarnet import dual_dscarnet, single_dscarnet
+from .inception1d_v2 import Inception1DDocumentV2
 from .pls_da import build_pls_da
+from .logistic_regression import build_logistic_regression
+from .pca_lda import build_pca_lda
+from .pca_mlp import PCAMLPClassifier
+from .profiles import build_dscarnet_profile, build_model_profile
 from .random_forest import build_random_forest
-from .resnet1d import ResNet1D
+from .resnet1d_v2 import ResNet1DDocumentV2
 from .svm import build_svm
-from .tcn1d import TCN1D
-from .transformer import Transformer1D
+from .tcn1d_v2 import TCN1DDocumentV2
 from .xgboost import build_xgboost
 
 
@@ -21,18 +27,27 @@ MODEL_ALIASES = {
     "pls": "pls_da",
     "pls-da": "pls_da",
     "pls_da": "pls_da",
+    "pca_lda": "pca_lda",
+    "logistic_regression": "logistic_regression",
+    "logistic-regression": "logistic_regression",
+    "logreg": "logistic_regression",
     "1d-cnn": "cnn1d",
     "1dcnn": "cnn1d",
     "cnn1d": "cnn1d",
-    "transformer": "transformer1d",
-    "transformer1d": "transformer1d",
-    "1d-transformer": "transformer1d",
+    "cnn1d_se": "cnn1d_se",
+    "cnn-se": "cnn1d_se",
+    "transformer": "cnn_transformer1d",
+    "transformer1d": "cnn_transformer1d",
+    "1d-transformer": "cnn_transformer1d",
     "resnet1d": "resnet1d",
     "1d-resnet": "resnet1d",
     "inception1d": "inception1d",
     "1d-inception": "inception1d",
     "tcn1d": "tcn1d",
     "1d-tcn": "tcn1d",
+    "pca_mlp": "pca_mlp",
+    "cnn_transformer1d": "cnn_transformer1d",
+    "cnn_mamba1d": "cnn_mamba1d",
     "dscarnet": "dscarnet",
     "dscar_net": "dscarnet",
     "random_forest": "random_forest",
@@ -55,9 +70,52 @@ RETIRED_OR_REGRESSION_MODEL_TYPES = {
     "svr",
 }
 
-DEEP_MODEL_TYPES = {"cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"}
-TRADITIONAL_MODEL_TYPES = {"pls_da", "svm", "random_forest", "xgboost"}
+TARGET_DEEP_MODEL_TYPES = {
+    "pca_mlp",
+    "cnn1d",
+    "cnn1d_se",
+    "resnet1d",
+    "inception1d",
+    "tcn1d",
+    "cnn_transformer1d",
+    "cnn_mamba1d",
+    "dscarnet",
+}
+TARGET_TRADITIONAL_MODEL_TYPES = {
+    "pls_da",
+    "pca_lda",
+    "logistic_regression",
+    "svm",
+    "random_forest",
+    "xgboost",
+}
+TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
+DEEP_MODEL_TYPES = {
+    "pca_mlp",
+    "cnn1d",
+    "cnn1d_se",
+    "resnet1d",
+    "inception1d",
+    "tcn1d",
+    "cnn_transformer1d",
+    "dscarnet",
+}
+TRADITIONAL_MODEL_TYPES = {
+    "pls_da",
+    "pca_lda",
+    "logistic_regression",
+    "svm",
+    "random_forest",
+    "xgboost",
+}
 SUPPORTED_MODEL_TYPES = DEEP_MODEL_TYPES | TRADITIONAL_MODEL_TYPES
+
+
+ARCHITECTURE_VERSION = "docx-classification-v2"
+
+
+class ModelNotImplementedForVersion(ValueError):
+    pass
 
 
 def canonical_model_type(model_type: str) -> str:
@@ -65,6 +123,8 @@ def canonical_model_type(model_type: str) -> str:
     if key in RETIRED_OR_REGRESSION_MODEL_TYPES:
         raise ValueError("当前仅支持分类任务的 10 类模型；KNN/MLP/UNet 已移除，PLSR/SVR 是回归变体暂不启用")
     canonical = MODEL_ALIASES.get(key, key)
+    if canonical in TARGET_MODEL_TYPES and canonical not in SUPPORTED_MODEL_TYPES:
+        raise ModelNotImplementedForVersion(f"模型 {canonical} 尚未在 docx-classification-v2 实现")
     if canonical not in SUPPORTED_MODEL_TYPES:
         raise ValueError(f"当前仅支持分类任务的 10 类模型，不支持: {model_type}")
     return canonical
@@ -74,18 +134,98 @@ def model_family(model_type: str) -> str:
     return "traditional_ml" if canonical_model_type(model_type) in TRADITIONAL_MODEL_TYPES else "deep_learning"
 
 
-def build_deep_model(config: Any, input_length: int, class_count: int, sample_count: int) -> nn.Module:
+def build_deep_model(
+    config: Any,
+    input_length: int,
+    class_count: int,
+    sample_count: int,
+    *,
+    x_train: np.ndarray | None = None,
+) -> nn.Module:
     model_type = canonical_model_type(config.model_type)
+    output_dim = 1 if int(class_count) == 2 else int(class_count)
+    if model_type == "pca_mlp":
+        if x_train is None:
+            raise ValueError("PCA-MLP 必须提供当前折训练集用于拟合 PCA")
+        train_values = np.asarray(x_train, dtype=np.float32)
+        profile = build_model_profile(
+            "pca_mlp",
+            train_sample_count=len(train_values),
+            feature_count=train_values.shape[1],
+        )
+        pca = PCA(n_components=profile.values["pca_components"], random_state=int(config.seed))
+        pca.fit(train_values)
+        model = PCAMLPClassifier(
+            pca.mean_,
+            pca.components_,
+            profile.values["hidden_sizes"],
+            profile.dropout,
+            output_dim,
+        )
+        model.pca_model = pca
+        model.pca_metadata = {
+            "components": int(profile.values["pca_components"]),
+            "fit_scope": "train",
+            "original_feature_count": int(train_values.shape[1]),
+            "train_sample_count": int(len(train_values)),
+            "hidden_sizes": list(profile.values["hidden_sizes"]),
+            "dropout": float(profile.dropout),
+        }
+        return model
+    profile = build_model_profile(
+        model_type,
+        train_sample_count=sample_count,
+        feature_count=input_length,
+    )
+    values = profile.values
     if model_type == "cnn1d":
-        return CNN1D(input_length, class_count, sample_count, config.dropout, config.hidden_size)
-    if model_type == "transformer1d":
-        return Transformer1D(input_length, class_count, config.dropout, max(config.hidden_size, 16), config.transformer_heads)
+        return CNN1DDocumentV2(
+            input_length=input_length,
+            class_count=output_dim,
+            sample_count=sample_count,
+            profile=profile,
+        )
+    if model_type == "cnn1d_se":
+        return CNNSE1DDocumentV2(
+            input_length=input_length,
+            class_count=output_dim,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "resnet1d":
-        return ResNet1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return ResNet1DDocumentV2(
+            input_length=input_length,
+            class_count=output_dim,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "inception1d":
-        return Inception1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return Inception1DDocumentV2(
+            input_length=input_length,
+            class_count=output_dim,
+            sample_count=sample_count,
+            profile=profile,
+        )
     if model_type == "tcn1d":
-        return TCN1D(input_length, class_count, config.dropout, max(config.hidden_size, 32))
+        return TCN1DDocumentV2(
+            input_length=input_length,
+            class_count=output_dim,
+            sample_count=sample_count,
+            profile=profile,
+        )
+    if model_type == "cnn_transformer1d":
+        return CNNTransformer1D(
+            input_length=input_length,
+            class_count=output_dim,
+            dropout=profile.dropout,
+            hidden_size=int(values["d_model"]),
+            transformer_heads=int(values["heads"]),
+            transformer_layers=int(values["layers"]),
+            conv_channels=tuple(int(item) for item in values["conv_channels"]),
+            conv_kernels=tuple(int(item) for item in values["kernels"]),
+            pool_sizes=tuple(int(item) for item in values["pools"]),
+            dim_feedforward=int(values["ffn"]),
+        )
     if model_type == "dscarnet":
         raise ValueError("DSCARNet requires 2D AggMap SAR/CAR inputs; use build_dscarnet_model instead")
     raise ValueError(f"Unsupported model_type: {config.model_type}")
@@ -93,16 +233,38 @@ def build_deep_model(config: Any, input_length: int, class_count: int, sample_co
 
 def build_dscarnet_model(
     config: Any,
-    input_shape1: tuple[int, ...],
-    input_shape2: tuple[int, ...],
+    input_shape1: tuple[int, ...] | None,
+    input_shape2: tuple[int, ...] | None,
     class_count: int,
 ) -> nn.Module:
+    output_dim = 1 if int(class_count) == 2 else int(class_count)
+    mode = str(getattr(config, "dscarnet_input_mode", "dual") or "dual").lower()
+    profile = build_dscarnet_profile(
+        train_sample_count=int(getattr(config, "resolved_train_sample_count", 100)),
+        feature_count=int(getattr(config, "resolved_feature_count", 1000)),
+    )
+    common = {
+        "filter_number": int(profile["filter_number"]),
+        "n_outputs": output_dim,
+        "conv1_kernel_size": int(profile["conv1_kernel_size"]),
+        "n_inception": int(profile["n_inception"]),
+        "dense_layers": tuple(int(item) for item in profile["dense_layers"]),
+        "last_avf": None,
+    }
+    if mode == "sar":
+        if input_shape1 is None:
+            raise ValueError("SAR 模式缺少 SAR 输入形状")
+        return single_dscarnet(input_shape1, **common)
+    if mode == "car":
+        if input_shape2 is None:
+            raise ValueError("CAR 模式缺少 CAR 输入形状")
+        return single_dscarnet(input_shape2, **common)
+    if mode != "dual" or input_shape1 is None or input_shape2 is None:
+        raise ValueError("DSCARNet dual 模式需要 SAR 和 CAR 输入形状")
     return dual_dscarnet(
         input_shape1,
         input_shape2,
-        n_outputs=class_count,
-        n_inception=max(1, int(config.dscarnet_inception_blocks)),
-        last_avf=None,
+        **common,
     )
 
 
@@ -117,6 +279,10 @@ def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any
     class_weight = "balanced" if config.class_balance == "class_weight" else None
     if model_type == "pls_da":
         return build_pls_da(getattr(config, "pls_components", 2) or 2)
+    if model_type == "pca_lda":
+        return build_pca_lda(getattr(config, "pca_components", 2) or 2)
+    if model_type == "logistic_regression":
+        return build_logistic_regression(getattr(config, "logistic_c", 1.0), config.seed, class_weight)
     if model_type == "random_forest":
         return build_random_forest(
             config.random_forest_n_estimators,

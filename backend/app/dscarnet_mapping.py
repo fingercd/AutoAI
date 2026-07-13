@@ -26,20 +26,24 @@ _LAPJV_BACKEND = "lapjv"
 
 @dataclass
 class DSCARNetMappedInputs:
-    x_sar: np.ndarray
-    x_car: np.ndarray
-    pca: PCA
-    sar_mapper: Any
-    car_mapper: Any
+    x_sar: np.ndarray | None
+    x_car: np.ndarray | None
+    pca: PCA | None
+    sar_mapper: Any | None
+    car_mapper: Any | None
     metadata: dict[str, Any]
 
     @property
     def model_input_shape_sar(self) -> tuple[int, int, int]:
+        if self.x_sar is None:
+            raise ValueError("当前 DSCARNet 模式不包含 SAR 输入")
         channels, height, width = self.x_sar.shape[1:]
         return int(height), int(width), int(channels)
 
     @property
     def model_input_shape_car(self) -> tuple[int, int, int]:
+        if self.x_car is None:
+            raise ValueError("当前 DSCARNet 模式不包含 CAR 输入")
         channels, height, width = self.x_car.shape[1:]
         return int(height), int(width), int(channels)
 
@@ -173,6 +177,7 @@ def fit_dscarnet_2d_mapping(
     cluster_channels: int = 9,
     seed: int = 42,
     aggmap_factory: Any | None = None,
+    mode: str = "dual",
 ) -> DSCARNetMappedInputs:
     x = np.asarray(x, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
@@ -181,32 +186,36 @@ def fit_dscarnet_2d_mapping(
     if len(train_indices) < 2:
         raise ValueError("DSCARNet AggMap/PCA 至少需要 2 个训练样品")
 
+    mode = str(mode or "dual").strip().lower()
+    if mode not in {"sar", "car", "dual"}:
+        raise ValueError("dscarnet mode 必须是 sar、car 或 dual")
     aggmap_factory = aggmap_factory or _load_aggmap_class()
     n_components = max(1, min(int(pca_components), int(x.shape[1]), int(len(train_indices) - 1)))
 
     feature_columns = _feature_columns(x.shape[1])
-    sar_mapper = _fit_mapper(
-        x[train_indices],
-        feature_columns,
-        cluster_channels=cluster_channels,
-        aggmap_factory=aggmap_factory,
-    )
-    x_sar = _nhwc_to_nchw(sar_mapper.batch_transform(x, scale_method="minmax", n_jobs=1))
+    sar_mapper = None
+    x_sar = None
+    if mode in {"sar", "dual"}:
+        sar_mapper = _fit_mapper(x[train_indices], feature_columns, cluster_channels=cluster_channels, aggmap_factory=aggmap_factory)
+        x_sar = _nhwc_to_nchw(sar_mapper.batch_transform(x, scale_method="minmax", n_jobs=1))
 
-    pca = PCA(n_components=n_components, random_state=int(seed))
-    train_pca = pca.fit_transform(x[train_indices])
-    all_pca = pca.transform(x).astype(np.float32)
-    component_columns = _component_columns(n_components)
-    car_mapper = _fit_mapper(
-        train_pca.astype(np.float32),
-        component_columns,
-        cluster_channels=cluster_channels,
-        aggmap_factory=aggmap_factory,
-    )
-    x_car = _nhwc_to_nchw(car_mapper.batch_transform(all_pca, scale_method="minmax", n_jobs=1))
+    pca = None
+    car_mapper = None
+    x_car = None
+    component_columns: list[str] = []
+    if mode in {"car", "dual"}:
+        pca = PCA(n_components=n_components, random_state=int(seed))
+        train_pca = pca.fit_transform(x[train_indices])
+        all_pca = pca.transform(x).astype(np.float32)
+        component_columns = _component_columns(n_components)
+        car_mapper = _fit_mapper(train_pca.astype(np.float32), component_columns, cluster_channels=cluster_channels, aggmap_factory=aggmap_factory)
+        x_car = _nhwc_to_nchw(car_mapper.batch_transform(all_pca, scale_method="minmax", n_jobs=1))
 
     metadata = {
-        "method": "dscarnet_aggmap_sar_car",
+        "method": f"dscarnet_aggmap_{mode}",
+        "mode": mode,
+        "schema_version": 2,
+        "active_branches": [item for item in ("sar", "car") if mode == "dual" or mode == item],
         "fit_scope": "train",
         "source_url": DSCAR_SOURCE_URL,
         "dual_dscarnet_source_url": DSCAR_DUAL_SOURCE_URL,
@@ -222,10 +231,10 @@ def fit_dscarnet_2d_mapping(
         "train_sample_count": int(len(train_indices)),
         "feature_columns": feature_columns,
         "component_columns": component_columns,
-        "input_shape_sar": [int(item) for item in x_sar.shape[1:]],
-        "input_shape_car": [int(item) for item in x_car.shape[1:]],
-        "model_input_shape_sar": [int(item) for item in (x_sar.shape[2], x_sar.shape[3], x_sar.shape[1])],
-        "model_input_shape_car": [int(item) for item in (x_car.shape[2], x_car.shape[3], x_car.shape[1])],
+        "input_shape_sar": None if x_sar is None else [int(item) for item in x_sar.shape[1:]],
+        "input_shape_car": None if x_car is None else [int(item) for item in x_car.shape[1:]],
+        "model_input_shape_sar": None if x_sar is None else [int(item) for item in (x_sar.shape[2], x_sar.shape[3], x_sar.shape[1])],
+        "model_input_shape_car": None if x_car is None else [int(item) for item in (x_car.shape[2], x_car.shape[3], x_car.shape[1])],
     }
     return DSCARNetMappedInputs(
         x_sar=x_sar,
@@ -241,19 +250,18 @@ def save_dscarnet_mapping_artifacts(run_dir: str | Path, mapped: DSCARNetMappedI
     run_path = Path(run_dir)
     writer = RunArtifactWriter(run_path)
     metadata = dict(mapped.metadata)
-    metadata.update(
-        {
-            "pca_artifact": "dscarnet_pca.joblib",
-            "sar_mapper_artifact": "dscarnet_sar_aggmap.joblib",
-            "car_mapper_artifact": "dscarnet_car_aggmap.joblib",
-        }
+    artifact_values = (
+        ("dscarnet_pca.joblib", mapped.pca, "pca_artifact"),
+        ("dscarnet_sar_aggmap.joblib", mapped.sar_mapper, "sar_mapper_artifact"),
+        ("dscarnet_car_aggmap.joblib", mapped.car_mapper, "car_mapper_artifact"),
     )
+    for name, value, metadata_key in artifact_values:
+        if value is not None:
+            metadata[metadata_key] = name
     writer.write_json("dscarnet_mapping.json", metadata)
-    for name, value in (
-        ("dscarnet_pca.joblib", mapped.pca),
-        ("dscarnet_sar_aggmap.joblib", mapped.sar_mapper),
-        ("dscarnet_car_aggmap.joblib", mapped.car_mapper),
-    ):
+    for name, value, _metadata_key in artifact_values:
+        if value is None:
+            continue
         buffer = io.BytesIO()
         joblib.dump(value, buffer)
         writer.write_private_bytes(name, buffer.getvalue())
