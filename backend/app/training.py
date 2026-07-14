@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.model_selection import ParameterSampler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -80,7 +81,8 @@ class TrainConfig:
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
     knn_p: int = 2
-    random_forest_n_estimators: int = 100
+    random_forest_n_estimators: int = 200
+    random_forest_search_iterations: int = 10
     random_forest_max_depth: int | None = 3
     random_forest_min_samples_leaf: int = 2
     svm_c: float = 1.0
@@ -96,6 +98,7 @@ class TrainConfig:
     logistic_c: float = 1.0
     svm_kernel: str = "rbf"
     random_forest_max_features: str | float = "sqrt"
+    random_forest_oob_score: bool = False
     xgboost_min_child_weight: float = 1.0
     xgboost_gamma: float = 0.0
     feature_selection_enabled: bool = True
@@ -964,21 +967,29 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
     if model_type == "svm":
         return [_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)]
     if model_type == "random_forest":
-        candidates = [
-            (depth, leaf, max_features)
-            for depth in (3, 5, 10)
-            for leaf in (2, 5)
-            for max_features in ("sqrt", "log2", 0.1)
-        ]
+        n_estimators = int(config.random_forest_n_estimators)
+        search_iterations = int(config.random_forest_search_iterations)
+        if not 50 <= n_estimators <= 1000:
+            raise ValueError("随机森林每组树数必须在 50 到 1000 之间")
+        if not 1 <= search_iterations <= 18:
+            raise ValueError("随机森林搜索候选数必须在 1 到 18 之间")
+        candidates = ParameterSampler(
+            {
+                "random_forest_max_depth": [3, 5, 10],
+                "random_forest_min_samples_leaf": [2, 5],
+                "random_forest_max_features": ["sqrt", "log2", 0.1],
+            },
+            n_iter=search_iterations,
+            random_state=config.seed,
+        )
         return [
             _clone_config(
                 config,
-                random_forest_n_estimators=500,
-                random_forest_max_depth=depth,
-                random_forest_min_samples_leaf=leaf,
-                random_forest_max_features=max_features,
+                random_forest_n_estimators=n_estimators,
+                random_forest_oob_score=True,
+                **params,
             )
-            for depth, leaf, max_features in candidates
+            for params in candidates
         ]
     if model_type == "xgboost":
         candidates = [
@@ -1071,6 +1082,15 @@ def _select_traditional_config(
     y_valid: np.ndarray,
     label_names: list[str],
 ) -> TraditionalSelection:
+    if model_type == "random_forest":
+        return _select_random_forest_config(
+            config,
+            x_train,
+            y_train,
+            x_valid,
+            y_valid,
+            label_names,
+        )
     best_model: Any | None = None
     best_config = config
     best_eval: dict[str, Any] | None = None
@@ -1098,6 +1118,9 @@ def _select_traditional_config(
                 "valid_macro_f1": macro_f1,
                 "valid_accuracy": float(valid_eval["accuracy"]),
                 "selection_metric": "balanced_accuracy",
+                "selection_score": balanced_accuracy,
+                "oob_accuracy": None,
+                "oob_balanced_accuracy": None,
                 "params": params,
                 "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
             }
@@ -1124,6 +1147,87 @@ def _select_traditional_config(
         search_rows=search_rows,
         model=best_model,
         valid_eval=best_eval,
+    )
+
+
+def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, float]:
+    probabilities = np.asarray(model.oob_decision_function_, dtype=float)
+    if probabilities.ndim != 2 or probabilities.shape[0] != len(y_train):
+        raise ValueError("随机森林未产生有效的袋外预测")
+    covered = np.isfinite(probabilities).all(axis=1) & (probabilities.sum(axis=1) > 0)
+    if not np.any(covered):
+        raise ValueError("随机森林袋外预测没有覆盖任何训练样本")
+    classes = np.asarray(model.classes_)
+    predicted = classes[np.argmax(probabilities[covered], axis=1)]
+    true = np.asarray(y_train)[covered]
+    return float(accuracy_score(true, predicted)), float(balanced_accuracy_score(true, predicted))
+
+
+def _select_random_forest_config(
+    config: TrainConfig,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_valid: np.ndarray,
+    y_valid: np.ndarray,
+    label_names: list[str],
+) -> TraditionalSelection:
+    best_model: Any | None = None
+    best_config: TrainConfig | None = None
+    best_key: tuple[float, float, int] | None = None
+    best_index: int | None = None
+    search_rows: list[dict[str, Any]] = []
+    candidates = _traditional_candidate_configs(config, "random_forest", x_train.shape[1], y_train)
+    for index, candidate in enumerate(candidates):
+        model = build_traditional_model(candidate, y_train, len(label_names))
+        model.fit(x_train, y_train)
+        oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
+        params = _traditional_params(candidate, "random_forest")
+        search_rows.append(
+            {
+                "model_type": "random_forest",
+                "is_selected": False,
+                "valid_balanced_accuracy": None,
+                "valid_macro_f1": None,
+                "valid_accuracy": None,
+                "selection_metric": "oob_balanced_accuracy",
+                "selection_score": oob_balanced_accuracy,
+                "oob_accuracy": oob_accuracy,
+                "oob_balanced_accuracy": oob_balanced_accuracy,
+                "params": params,
+                "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+            }
+        )
+        candidate_key = (oob_balanced_accuracy, oob_accuracy, -index)
+        if best_key is None or candidate_key > best_key:
+            best_model = model
+            best_config = candidate
+            best_key = candidate_key
+            best_index = index
+    if best_model is None or best_config is None or best_key is None or best_index is None:
+        raise ValueError("随机森林袋外随机搜索未产生可用模型")
+    valid_eval = _evaluate_traditional_model(
+        best_model,
+        x_valid,
+        y_valid,
+        list(range(len(y_valid))),
+        label_names,
+    )
+    selected_row = search_rows[best_index]
+    selected_row.update(
+        {
+            "is_selected": True,
+            "valid_balanced_accuracy": float(valid_eval["balanced_accuracy"]),
+            "valid_macro_f1": float(valid_eval["macro_f1"]),
+            "valid_accuracy": float(valid_eval["accuracy"]),
+        }
+    )
+    return TraditionalSelection(
+        config=best_config,
+        valid_balanced_accuracy=float(valid_eval["balanced_accuracy"]),
+        valid_macro_f1=float(valid_eval["macro_f1"]),
+        search_rows=search_rows,
+        model=best_model,
+        valid_eval=valid_eval,
     )
 
 
@@ -1160,6 +1264,8 @@ def _fit_final_traditional_model(
     if isinstance(selected_config, TraditionalSelection):
         selected_config = selected_config.config
     selected_config = _clone_config(selected_config, model_type=model_type)
+    if model_type == "random_forest":
+        selected_config = _clone_config(selected_config, random_forest_oob_score=False)
     final_indices = np.asarray(sorted({int(index) for index in train_valid_indices}), dtype=np.int64)
     if final_indices.size == 0:
         raise ValueError("传统模型最终训练池不能为空")
@@ -1683,8 +1789,11 @@ def _run_legacy_training(
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
             fold_best_params = _traditional_params(selected_config, model_type)
-            fold_selection_metric = "balanced_accuracy"
-            fold_selection_score = float(valid_eval["balanced_accuracy"])
+            selected_search_row = next((row for row in search_rows if row.get("is_selected")), {})
+            fold_selection_metric = str(selected_search_row.get("selection_metric") or "balanced_accuracy")
+            fold_selection_score = float(
+                selected_search_row.get("selection_score", valid_eval["balanced_accuracy"])
+            )
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
             final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
@@ -1985,6 +2094,11 @@ def _run_legacy_training(
         "fold_index",
         "model_type",
         "is_selected",
+        "selection_metric",
+        "selection_score",
+        "oob_accuracy",
+        "oob_balanced_accuracy",
+        "valid_accuracy",
         "valid_balanced_accuracy",
         "valid_macro_f1",
         "params_json",

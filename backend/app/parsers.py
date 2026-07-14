@@ -11,6 +11,8 @@ import pandas as pd
 
 
 REQUIRED_MODELING_COLUMNS = {"Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"}
+EXCEL_CELL_CHARACTER_LIMIT = 32_767
+OUTPUT_SIGNIFICANT_DIGITS = 9
 
 
 @dataclass
@@ -171,11 +173,43 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
     numeric = numeric.iloc[:, :2].dropna()
     if numeric.empty:
         raise ValueError(f"{path.name} 没有可解析的两列数值数据")
-    x = numeric.iloc[:, 0].to_numpy(dtype=np.float32)
+    # X 轴保留输入精度，避免 450.82 先量化为 float32 后被输出成
+    # 450.82000732421875 之类的长文本。强度仍沿用现有 float32 计算契约。
+    x = numeric.iloc[:, 0].to_numpy(dtype=np.float64)
     y = numeric.iloc[:, 1].to_numpy(dtype=np.float32)
     if kind not in {"raman", "chromatography", "hplc"}:
         raise ValueError("kind 必须是 raman、chromatography 或 hplc")
     return x, y
+
+
+def _normalize_numeric_array(values: np.ndarray, field_name: str) -> list[float]:
+    array = np.asarray(values)
+    if array.ndim != 1:
+        raise ValueError(f"{field_name} 必须是一维数组")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{field_name} 含有 NaN 或无穷值")
+    return [float(format(float(value), f".{OUTPUT_SIGNIFICANT_DIGITS}g")) for value in array]
+
+
+def _serialize_modeling_array(
+    values: np.ndarray,
+    field_name: str,
+    source_name: str,
+) -> tuple[list[float], str]:
+    normalized = _normalize_numeric_array(values, field_name)
+    serialized = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    if len(serialized) > EXCEL_CELL_CHARACTER_LIMIT:
+        raise ValueError(
+            f"{source_name} 的 {field_name} 含 {len(normalized)} 个点，紧凑序列化后仍有 "
+            f"{len(serialized)} 个字符，超过 Excel 单元格上限 {EXCEL_CELL_CHARACTER_LIMIT}；"
+            "请缩小行号范围或 X 轴数值范围后重试"
+        )
+    return normalized, serialized
 
 
 def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
@@ -237,34 +271,28 @@ def preprocess_raw_files(
     x_min: float | None = None,
     x_max: float | None = None,
     baseline_method: str = "arPLS",
-    baseline_order: str = "range_then_baseline",
     display_names: list[str] | None = None,
 ) -> pd.DataFrame:
-    if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
-        raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
     records = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         x, y = read_raw_spectrum(path, kind=kind)
         indexer, range_label = _range_indexer(x, start_row, end_row, range_mode, x_min, x_max)
-        if kind == "raman" and baseline_order == "baseline_then_range":
-            y = _baseline_correct(x, y, baseline_method)
-            x = x[indexer]
-            y = y[indexer]
-        else:
-            x = x[indexer]
-            y = y[indexer]
+        x = x[indexer]
+        y = y[indexer]
         if len(x) == 0:
             raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
-        if kind == "raman" and baseline_order != "baseline_then_range":
+        if kind == "raman":
             y = _baseline_correct(x, y, baseline_method)
+        _x_values, x_serialized = _serialize_modeling_array(x, "XXX", display_name)
+        _y_values, y_serialized = _serialize_modeling_array(y, "Intensity", display_name)
         records.append(
             {
                 "Index": index,
                 "Name": display_name,
-                "XXX": json.dumps(x.astype(float).tolist(), ensure_ascii=False),
-                "Intensity": json.dumps(y.astype(float).tolist(), ensure_ascii=False),
+                "XXX": x_serialized,
+                "Intensity": y_serialized,
                 "Label": "",
                 "Repeat_index": "",
             }
@@ -281,11 +309,8 @@ def preprocess_raw_files_with_preview(
     x_min: float | None = None,
     x_max: float | None = None,
     baseline_method: str = "arPLS",
-    baseline_order: str = "range_then_baseline",
     display_names: list[str] | None = None,
 ) -> dict:
-    if baseline_order not in {"range_then_baseline", "baseline_then_range"}:
-        raise ValueError("baseline_order must be range_then_baseline or baseline_then_range")
     records = []
     curves = []
     for index, file_path in enumerate(files, start=1):
@@ -293,27 +318,25 @@ def preprocess_raw_files_with_preview(
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
         full_x, full_y = read_raw_spectrum(path, kind=kind)
         indexer, range_label = _range_indexer(full_x, start_row, end_row, range_mode, x_min, x_max)
-        if kind == "raman" and baseline_order == "baseline_then_range":
-            full_corrected_y = _baseline_correct(full_x, full_y, baseline_method)
-            x = full_x[indexer]
-            raw_y = full_y[indexer]
-            corrected_y = full_corrected_y[indexer]
+        x = full_x[indexer]
+        raw_y = full_y[indexer]
+        if kind == "raman":
+            corrected_y = _baseline_correct(x, raw_y.copy(), baseline_method)
         else:
-            x = full_x[indexer]
-            raw_y = full_y[indexer]
-            if kind == "raman":
-                corrected_y = raw_y.copy()
-                corrected_y = _baseline_correct(x, corrected_y, baseline_method)
-            else:
-                corrected_y = raw_y.copy()
+            corrected_y = raw_y.copy()
         if len(x) == 0:
             raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
+        x_values, x_serialized = _serialize_modeling_array(x, "XXX", display_name)
+        corrected_values, corrected_serialized = _serialize_modeling_array(
+            corrected_y, "Intensity", display_name
+        )
+        raw_values = _normalize_numeric_array(raw_y, "raw_y")
         records.append(
             {
                 "Index": index,
                 "Name": display_name,
-                "XXX": json.dumps(x.astype(float).tolist(), ensure_ascii=False),
-                "Intensity": json.dumps(corrected_y.astype(float).tolist(), ensure_ascii=False),
+                "XXX": x_serialized,
+                "Intensity": corrected_serialized,
                 "Label": "",
                 "Repeat_index": "",
             }
@@ -321,15 +344,15 @@ def preprocess_raw_files_with_preview(
         curves.append(
             ({
                 "name": display_name,
-                "x": x.astype(float).tolist(),
-                "raw_y": raw_y.astype(float).tolist(),
-                "corrected_y": corrected_y.astype(float).tolist(),
+                "x": x_values,
+                "raw_y": raw_values,
+                "corrected_y": corrected_values,
             }
             if kind == "raman"
             else {
                 "name": display_name,
-                "x": x.astype(float).tolist(),
-                "raw_y": raw_y.astype(float).tolist(),
+                "x": x_values,
+                "raw_y": raw_values,
             })
         )
     frame = pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])

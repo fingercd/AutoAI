@@ -121,7 +121,8 @@
         padding: 7px 8px;
       }
       button.primary,
-      button.secondary {
+      button.secondary,
+      button.danger {
         min-height: 38px;
         border: 0;
         border-radius: 6px;
@@ -139,6 +140,19 @@
       button.secondary {
         background: #eef2f6;
         color: var(--ink);
+      }
+      button.danger {
+        background: #fee4e2;
+        color: var(--bad);
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+      .row-actions {
+        display: flex;
+        gap: 8px;
+        white-space: nowrap;
       }
       .actions {
         display: flex;
@@ -676,12 +690,11 @@
                 </div>
                 <div id="traditionalOptions" class="hidden">
                   <div id="randomForestOptions" class="hidden">
-                    <label>随机森林树数量</label>
-                    <input id="rfEstimators" type="number" value="100" min="10" max="1000" step="10" />
-                    <label>最大深度（留空不限制）</label>
-                    <input id="rfMaxDepth" type="number" value="3" min="1" max="50" />
-                    <label>叶节点最小样本数</label>
-                    <input id="rfMinSamplesLeaf" type="number" value="2" min="1" max="20" />
+                    <label>每组候选的树数量</label>
+                    <input id="rfEstimators" type="number" value="200" min="50" max="1000" step="50" />
+                    <label>OOB 随机搜索候选数</label>
+                    <input id="rfSearchIterations" type="number" value="10" min="1" max="18" />
+                    <p class="hint">从 18 组结构参数中按训练种子随机抽取，以袋外 balanced accuracy 选择最佳配置。</p>
                   </div>
                   <div id="svmOptions" class="hidden">
                     <label>SVM C</label>
@@ -766,11 +779,6 @@
                 <label>拉曼位移上限（留空不限制）</label>
                 <input id="ramanXMax" type="number" step="any" placeholder="例如 1800" />
               </div>
-              <label>基线校正顺序</label>
-              <select id="ramanBaselineOrder">
-                <option value="range_then_baseline">先选数据范围，后基线预处理</option>
-                <option value="baseline_then_range">先基线预处理，后选数据范围</option>
-              </select>
               <label>基线校正方法</label>
               <select id="ramanBaselineMethodMode">
                 <option value="arPLS">默认 arPLS</option>
@@ -864,22 +872,7 @@
             <h2>使用手册</h2>
             <h3>一、拉曼数据预处理</h3>
             <p>上传多个拉曼 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是拉曼位移。系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Repeat_index。</p>
-            <p>基线校正顺序有两种：</p>
-            <table>
-              <thead><tr><th>方式</th><th>处理流程</th><th>适合情况</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td>先选数据范围，后基线预处理</td>
-                  <td>先截取目标行范围，只对截取后的片段做 baseline 校正。</td>
-                  <td>只关心某个目标区间，希望区间外强峰不影响校正。</td>
-                </tr>
-                <tr>
-                  <td>先基线预处理，后选数据范围</td>
-                  <td>先对整条原始光谱做 baseline 校正，再截取目标行范围。</td>
-                  <td>希望基线估计利用完整光谱的整体背景趋势。</td>
-                </tr>
-              </tbody>
-            </table>
+            <p>系统固定先按行号或 X 轴数值截取目标范围，再对截取后的光谱片段执行基线校正，避免区间外强峰影响目标区间。</p>
             <h3>二、色谱数据预处理</h3>
             <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
             <p><strong>HPLC 高级预处理：</strong>适合多份 HPLC 文件一起建模前使用，主要解决时间轴轻微错位、负强度和总响应量不同这三类问题。开启后系统按固定顺序处理：先把各文件插值到共同时间轴，再逐条曲线减去自身最小值让强度非负，最后按真实时间轴做梯形积分，把每条曲线总面积归一化为 1。</p>
@@ -909,6 +902,7 @@
             <p><strong>数据划分比例：</strong>默认 8:1:1，用户可以直接修改训练、验证、测试比例；加载独立测试集时，主数据使用训练/验证比例，独立测试集作为最终测试集，后端状态中会标记为 external_test_holdout。</p>
             <p><strong>开启交叉验证：</strong>交叉验证作为单独开关，几个 Repeat_index 就跑几折，每折留 1 个独立样品组作为测试集，其余样品组按用户填写的训练/验证比例划分。</p>
             <p><strong>Repeat_index 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Repeat_index 整组划分。同一个 Repeat_index 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
+            <p><strong>随机森林 OOB 搜索：</strong>默认从 18 组结构参数中按训练种子随机抽取 10 组，每组训练 200 棵树，以袋外 balanced accuracy 选优；验证集只用于报告胜出配置的表现。</p>
             <p>所有标准化参数均只由当前折的训练集拟合标准化，并应用到同折验证集和测试集；Label 即使是数字也会按类别名编码，不作为连续回归值处理。</p>
             <p>无卷积的传统模型使用遮挡/置乱窗口后的 macro-F1 变化做重要性分析，计算方式为 baseline_macro_f1 - perturbed_macro_f1；正值越大表示遮挡该区间后 F1 下降越多，该区间越重要。卷积模型和 Transformer 继续使用原有的梯度、Grad-CAM 或 DSCARNet 双通路归因。</p>
             <h3>四、结果下载</h3>
@@ -1405,8 +1399,7 @@
           transformer_heads: Number($("transformerHeads").value),
           dscarnet_input_mode: $("dscarnetInputMode").value,
           random_forest_n_estimators: Number($("rfEstimators").value),
-          random_forest_max_depth: numberOrNull("rfMaxDepth"),
-          random_forest_min_samples_leaf: Number($("rfMinSamplesLeaf").value),
+          random_forest_search_iterations: Number($("rfSearchIterations").value),
           svm_c: Number($("svmC").value),
           svm_gamma: textNumberOrKeyword("svmGamma"),
           xgboost_n_estimators: Number($("xgbEstimators").value),
@@ -1523,10 +1516,12 @@
         selections.forEach((entry) => {
           const params = auditParamsForModel(entry?.params, modelType);
           const key = JSON.stringify(params, Object.keys(params).sort());
-          if (!groups.has(key)) groups.set(key, { params, folds: [], scores: [] });
+          if (!groups.has(key)) groups.set(key, { params, folds: [], scores: [], metrics: [] });
           const group = groups.get(key);
           if (entry.fold_index != null) group.folds.push(entry.fold_index);
-          const score = Number(entry.valid_balanced_accuracy);
+          const metric = entry.selection_metric || "balanced_accuracy";
+          const score = Number(entry.selection_score ?? entry.valid_balanced_accuracy);
+          group.metrics.push(metric);
           if (Number.isFinite(score)) group.scores.push(score);
         });
         return Array.from(groups.values()).map((group, index) => {
@@ -1534,11 +1529,14 @@
             ? group.scores.reduce((sum, value) => sum + value, 0) / group.scores.length
             : null;
           const foldLabel = group.folds.length ? `适用折：${group.folds.join("、")}` : "最终选定参数";
+          const scoreLabel = group.metrics.every((metric) => metric === "oob_balanced_accuracy")
+            ? "平均 OOB BA"
+            : "平均验证 BA";
           return `
             <div class="audit-config-card">
               <div class="audit-config-title">
                 <span>配置 ${index + 1} · ${escapeHtml(foldLabel)}</span>
-                <span class="audit-score">${score == null ? "" : `平均验证 BA ${formatMetric(score)}`}</span>
+                <span class="audit-score">${score == null ? "" : `${scoreLabel} ${formatMetric(score)}`}</span>
               </div>
               <div class="audit-param-list">${auditParamsMarkup(group.params)}</div>
             </div>
@@ -1567,6 +1565,8 @@
           if (isExternal) {
             const cards = traditionalAuditCards([{
               params: traditional.best_params,
+              selection_metric: traditional.selection_metric,
+              selection_score: traditional.selection_score,
               valid_balanced_accuracy: traditional.valid_balanced_accuracy,
             }], modelType);
             sections.push(`
@@ -1997,6 +1997,8 @@
       function drawSampleFeatureImportanceCanvas(data, sample) {
         const canvas = $("sampleFeatureImportanceCanvas");
         if (!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) return;
         const { ctx, width, height } = setupHiDpiCanvas(canvas);
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
@@ -2170,7 +2172,7 @@
             <a class="secondary" href="${csvUrl}">下载单样品特征 CSV</a>
           </div>
         `;
-        requestAnimationFrame(() => drawSampleFeatureImportanceCanvas(data, sample));
+        drawSampleFeatureImportanceCanvas(data, sample);
       }
 
       async function renderSampleFeatureImportance(run, summary, target = $("featureImportance")) {
@@ -2285,7 +2287,7 @@
               `;
           const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
           const trainingDetail = traditionalModel
-            ? `正在进行参数搜索与模型拟合 · ${progressText}`
+            ? `${(run.model_type || run.config?.model_type) === "random_forest" ? "正在进行 OOB 随机参数搜索" : "正在进行参数搜索与模型拟合"} · ${progressText}`
             : `最多 ${totalTargetEpochs} Epoch · ${progressText}`;
           const epochMetric = traditionalModel
             ? ""
@@ -2363,6 +2365,7 @@
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/history.csv">下载训练曲线 CSV</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/status.json">下载完整 JSON</a>
             <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/${modelArtifact}">${modelLabel}</a>
+            <button class="danger" type="button" onclick="window.deleteRun('${run.run_id}')">删除此训练记录</button>
           `;
         }
         if (run.status === "failed") {
@@ -2444,7 +2447,6 @@
           if (xMax) form.append("x_max", xMax);
         }
         if (effectiveKind === "raman") {
-          form.append("baseline_order", $("ramanBaselineOrder").value);
           form.append("baseline_method", selectedRamanBaselineMethod());
         }
         if (effectiveKind === "hplc") {
@@ -2504,6 +2506,11 @@
           .map((run) => {
             const trainAcc = run.metrics?.train?.accuracy;
             const testAcc = run.metrics?.test?.accuracy ?? run.metrics?.accuracy;
+            const terminal = ["succeeded", "failed", "cancelled"].includes(run.state)
+              || ["success", "failed", "paused"].includes(run.status);
+            const deleteButton = terminal
+              ? `<button class="danger" onclick="window.deleteRun('${run.run_id}')">删除</button>`
+              : `<button class="secondary" disabled title="排队中或运行中的任务不能删除">删除</button>`;
             return `
               <tr>
                 <td>${formatTime(run.completed_at || run.started_at || run.created_at)}</td>
@@ -2513,7 +2520,7 @@
                 <td>${formatMetric(trainAcc)}</td>
                 <td>${formatMetric(testAcc)}</td>
                 <td><span class="status ${run.status || ""}">${run.status || "unknown"}</span></td>
-                <td><button class="secondary" onclick="window.openRun('${run.run_id}')">查看</button></td>
+                <td><div class="row-actions"><button class="secondary" onclick="window.openRun('${run.run_id}')">查看</button>${deleteButton}</div></td>
               </tr>
             `;
           })
@@ -2536,6 +2543,35 @@
           </table>
         `;
       }
+
+      function clearDeletedRunPanel(runId) {
+        clearInterval(poller);
+        currentRunId = null;
+        pollingRunId = null;
+        $("runStatus").textContent = `${runId} 记录已删除`;
+        $("runStatus").className = "status";
+        $("trainingProgress").innerHTML = `<div class="empty-state">该训练记录及全部产物已永久删除。</div>`;
+        $("metrics").innerHTML = "";
+        $("trainingAudit").innerHTML = "";
+        $("trainingCharts").innerHTML = "";
+        $("featureImportance").innerHTML = "";
+        $("confusionMatrix").innerHTML = "";
+        $("downloads").innerHTML = "";
+      }
+
+      window.deleteRun = async (runId) => {
+        const confirmed = window.confirm(
+          `确定永久删除训练记录 ${runId} 吗？\n模型、指标、预测结果和其他产物都将一并删除，无法恢复。`,
+        );
+        if (!confirmed) return;
+        try {
+          await api(`/api/training/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+          if (currentRunId === runId) clearDeletedRunPanel(runId);
+          await loadRuns();
+        } catch (error) {
+          window.alert(`删除失败：${error.message}`);
+        }
+      };
 
       function updateModelOptionVisibility() {
         const modelType = $("modelType").value;
@@ -2581,16 +2617,13 @@
         document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
         $(`view-${viewName}`).classList.remove("hidden");
         if (viewName === "runs") loadRuns();
+        if (viewName === "modeling" && currentRunId) {
+          pollCurrentRun().catch((error) => window.alert(error.message));
+        }
       }
 
       document.querySelectorAll("nav button").forEach((button) => {
-        button.addEventListener("click", () => {
-          document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
-          button.classList.add("active");
-          document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
-          $(`view-${button.dataset.view}`).classList.remove("hidden");
-          if (button.dataset.view === "runs") loadRuns();
-        });
+        button.addEventListener("click", () => showView(button.dataset.view));
       });
 
       $("datasetFile").addEventListener("change", (event) => {

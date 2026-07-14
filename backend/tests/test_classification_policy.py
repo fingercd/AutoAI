@@ -96,6 +96,68 @@ def test_traditional_selection_uses_balanced_accuracy(monkeypatch):
     assert '"svm_c": 10.0' in selected_rows[0]["params_json"]
 
 
+def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_winner(monkeypatch):
+    import backend.app.training as training
+
+    candidates = [
+        training.TrainConfig(model_type="random_forest", random_forest_max_depth=3, random_forest_oob_score=True),
+        training.TrainConfig(model_type="random_forest", random_forest_max_depth=5, random_forest_oob_score=True),
+    ]
+    validation_calls = []
+
+    class FakeForest:
+        classes_ = np.asarray([0, 1])
+
+        def __init__(self, depth):
+            self.depth = depth
+            self.oob_decision_function_ = (
+                np.asarray([[0.9, 0.1], [0.8, 0.2], [0.1, 0.9], [0.2, 0.8]])
+                if depth == 3
+                else np.asarray([[0.1, 0.9], [0.2, 0.8], [0.9, 0.1], [0.8, 0.2]])
+            )
+
+        def fit(self, x, y):
+            return self
+
+    monkeypatch.setattr(training, "_traditional_candidate_configs", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(
+        training,
+        "build_traditional_model",
+        lambda config, y, class_count: FakeForest(config.random_forest_max_depth),
+    )
+
+    def fake_evaluate(model, x, y, indices, labels):
+        validation_calls.append(model.depth)
+        return {
+            "accuracy": 0.2,
+            "balanced_accuracy": 0.2,
+            "macro_f1": 0.2,
+            "true": [0, 1],
+            "pred": [1, 0],
+            "probabilities": [[0.1, 0.9], [0.9, 0.1]],
+        }
+
+    monkeypatch.setattr(training, "_evaluate_traditional_model", fake_evaluate)
+    selection = training._select_traditional_config(
+        training.TrainConfig(model_type="random_forest"),
+        "random_forest",
+        np.zeros((4, 3), dtype=np.float32),
+        np.asarray([0, 0, 1, 1]),
+        np.zeros((2, 3), dtype=np.float32),
+        np.asarray([0, 1]),
+        ["A", "B"],
+    )
+
+    assert selection.config.random_forest_max_depth == 3
+    assert validation_calls == [3]
+    selected = [row for row in selection.search_rows if row["is_selected"]]
+    assert len(selected) == 1
+    assert selected[0]["selection_metric"] == "oob_balanced_accuracy"
+    assert selected[0]["selection_score"] == pytest.approx(1.0)
+    assert selected[0]["valid_balanced_accuracy"] == pytest.approx(0.2)
+    assert all(row["valid_balanced_accuracy"] is None for row in selection.search_rows if not row["is_selected"])
+
+
 def test_final_traditional_fit_uses_only_train_and_valid(monkeypatch):
     import backend.app.training as training
 

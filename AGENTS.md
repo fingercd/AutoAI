@@ -25,7 +25,7 @@
 ## 预处理规则
 
 - 统一建模 CSV 固定为 `Index, Name, XXX, Intensity, Label, Repeat_index`。
-- 拉曼支持行号或 X 轴范围截取，并支持 `range_then_baseline` / `baseline_then_range` 两种基线校正顺序。
+- 拉曼支持行号或 X 轴范围截取，处理顺序固定为先选择数据范围，再执行基线校正。
 - HPLC 标准流程默认启用，顺序固定为：线性插值到共同时间轴、逐条减最小值消负、按真实时间轴面积归一化。
 - HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应曲线使用 `raw_y` + `processed_y`。
 

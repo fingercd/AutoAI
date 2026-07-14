@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -95,10 +96,43 @@ def cancel_run(run_id: str) -> dict[str, Any]:
     return project_status(get_run_dir(run_id), record)
 
 
+@router.delete('/api/training/runs/{run_id}')
+def delete_run(run_id: str) -> dict[str, object]:
+    repository = get_run_repository()
+    try:
+        record = repository.get(run_id)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail='run 不存在') from exc
+    if record.state in {'queued', 'running'}:
+        raise HTTPException(status_code=409, detail='run 当前状态不能删除')
+
+    run_dir = get_run_dir(run_id)
+    try:
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail='run 产物删除失败，训练记录已保留') from exc
+    try:
+        repository.delete_terminal(run_id)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail='run 不存在') from exc
+    except InvalidRunTransition as exc:
+        raise HTTPException(status_code=409, detail='run 当前状态不能删除') from exc
+    return {'run_id': run_id, 'deleted': True}
+
+
 @router.get('/api/training/runs/{run_id}/artifact/{name}')
 def get_run_artifact(run_id: str, name: str) -> FileResponse:
+    run_dir = get_run_dir(run_id)
     try:
-        path = RunArtifactWriter(get_run_dir(run_id)).resolve_download(name)
+        get_run_repository().get(run_id)
+    except RunNotFound as exc:
+        # 早期直接训练产物可能没有 SQLite 记录，仍保持只读兼容。
+        # 正式删除会同时移除 Run 目录，因此不会被此兼容路径恢复访问。
+        if not run_dir.is_dir():
+            raise HTTPException(status_code=404, detail='run 不存在') from exc
+    try:
+        path = RunArtifactWriter(run_dir).resolve_download(name)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail='不允许下载该文件') from exc
     except FileNotFoundError as exc:

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend.app.runs.repository import InvalidRunTransition, RunRepository
+from backend.app.runs.repository import InvalidRunTransition, RunNotFound, RunRepository
 
 
 def test_cancelled_run_cannot_be_reclaimed_or_completed(tmp_path):
@@ -33,3 +33,40 @@ def test_expired_lease_is_requeued_once_and_claimed_once(tmp_path):
     assert second is not None
     assert second.run_id == first.run_id
     assert second.claim_token != first.claim_token
+
+
+@pytest.mark.parametrize('state', ['succeeded', 'failed', 'cancelled'])
+def test_terminal_run_can_be_permanently_deleted(tmp_path, state):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    record = repo.import_legacy(
+        run_id=f'{state}-run',
+        state=state,
+        config={'model_type': 'pls_da'},
+        dataset_id=None,
+        legacy_data_path=None,
+    )
+
+    repo.delete_terminal(record.run_id)
+
+    assert not repo.exists(record.run_id)
+    with pytest.raises(RunNotFound):
+        repo.get(record.run_id)
+
+
+@pytest.mark.parametrize('state', ['queued', 'running'])
+def test_active_run_cannot_be_permanently_deleted(tmp_path, state):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    record = repo.import_legacy(
+        run_id=f'{state}-run',
+        state=state,
+        config={'model_type': 'pls_da'},
+        dataset_id=None,
+        legacy_data_path=None,
+    )
+
+    with pytest.raises(InvalidRunTransition):
+        repo.delete_terminal(record.run_id)
+
+    assert repo.exists(record.run_id)

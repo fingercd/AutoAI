@@ -141,6 +141,8 @@ Index, Name, XXX, Intensity, Label, Repeat_index
 
 预处理生成的 CSV 中 `Label` 和 `Repeat_index` 默认是空的。用户必须补完这两列后，才能上传到建模接口训练。
 
+为保证该 CSV 可以在 Excel 中填写标签，`XXX` 和 `Intensity` 使用 9 位有效数字的紧凑 JSON 输出，且单个字段不得超过 Excel 的 32,767 字符上限。输出不会为了满足限制而静默截断或降采样；如果所选范围点数过多，预处理接口返回 400，并提示缩小行号范围或 X 轴数值范围。
+
 ## 5. API 总览
 
 ### 5.1 健康检查
@@ -255,7 +257,6 @@ hplc
 | end_row | int | 否 | 空 | 按行号截取时使用，包含 Python 切片意义上的结束位置 |
 | x_min | float | 否 | 空 | 按 X 轴数值截取时的下限 |
 | x_max | float | 否 | 空 | 按 X 轴数值截取时的上限 |
-| baseline_order | string | 否 | range_then_baseline | 只对 raman 有意义 |
 | baseline_method | string | 否 | arPLS | 只对 raman 有意义 |
 | hplc_interpolate | bool | 否 | true | 只对 hplc 有意义，线性插值到共同时间轴 |
 | hplc_subtract_min | bool | 否 | true | 只对 hplc 有意义，逐条曲线减最小值 |
@@ -270,12 +271,7 @@ x_value  使用 x_min / x_max 按第一列 X 轴数值截取。
 
 `x_value` 模式下，`x_min` 和 `x_max` 至少填一个。两者都不填会返回 400。
 
-拉曼 `baseline_order` 可选值：
-
-```text
-range_then_baseline  先选范围，后基线校正
-baseline_then_range  先基线校正，后选范围
-```
+拉曼处理顺序固定为先按行号或 X 轴数值选择数据范围，再对截取后的片段执行基线校正；接口不再接收或返回 `baseline_order`。
 
 拉曼 `baseline_method` 默认：
 
@@ -295,7 +291,6 @@ arPLS
   "range_mode": "x_value",
   "x_min": 400.0,
   "x_max": 1800.0,
-  "baseline_order": "range_then_baseline",
   "baseline_method": "arPLS",
   "curves": [
     {
@@ -499,7 +494,7 @@ cancelled  -> paused
 3. `target_epochs` 保留请求配置值，但传统模型不是逐 epoch 优化；`actual_epochs` 对应已生成的每折历史行数，留一 CV 时可能大于 1。
 4. 每个传统模型历史行的 `train_loss` 是 `null`。
 5. 前端不要假设所有模型都有 loss 曲线。
-6. 传统模型会写入 `hyperparameter_search.csv`，记录每折候选参数和验证集表现。
+6. 传统模型会写入 `hyperparameter_search.csv`；随机森林记录 OOB 搜索指标，其他传统模型记录验证集搜索指标。
 
 深度学习模型的注意点：
 
@@ -547,13 +542,21 @@ POST /api/training/runs/{run_id}/cancel
 
 取消由 SQLite 事务执行；已取消 Run 的兼容状态为 `paused`。worker 使用 claim token 校验，不能用陈旧 claim 覆盖取消结果。
 
+### 5.10 删除训练记录
+
+```http
+DELETE /api/training/runs/{run_id}
+```
+
+只允许删除 `succeeded`、`failed` 或 `cancelled` Run；`queued` 和 `running` 返回 409。成功同时删除 SQLite 记录和 `storage/runs/{run_id}` 下的全部产物，不可恢复。
+
 本机启动独立 worker：
 
 ```powershell
 C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m backend.app.runs.worker
 ```
 
-### 5.10 下载预处理文件
+### 5.11 下载预处理文件
 
 ```http
 GET /api/files?path={absolute_server_path}
@@ -593,10 +596,8 @@ storage/preprocessed
   "dscarnet_pca_components": 30,
   "dscarnet_cluster_channels": 9,
   "pls_components": null,
-  "random_forest_n_estimators": 100,
-  "random_forest_max_depth": 3,
-  "random_forest_min_samples_leaf": 2,
-  "random_forest_max_features": "sqrt",
+  "random_forest_n_estimators": 200,
+  "random_forest_search_iterations": 10,
   "svm_kernel": "rbf",
   "svm_c": 1.0,
   "svm_gamma": 0.03,
@@ -639,7 +640,7 @@ dscarnet
 |---|---|---|---|
 | `pls_da` | `n_components=[1,2,3,5]`，上限 `min(5,n_train-2,p)` | `n_components=[1,2,3,5,8]`，上限 `min(8,n_train-2,p)` | `n_components=[1,2,3,5,8,10]`，上限 `min(10,n_train-2,p)` |
 | `svm` | 标准化后搜索 `linear` 与小范围 `rbf`，`C=[0.1,1,10]` | 优先 `linear`；`rbf` 只搜索 `gamma≈[0.1/p,1/p,10/p]` | 默认 `linear`，仅保留一个保守 `rbf` 候选 |
-| `random_forest` | `n_estimators=300`，`max_depth=[3,5,None]`，`max_features=['sqrt','log2',0.2]` | `n_estimators=500`，`max_depth=[3,5,8]`，`max_features=['sqrt','log2',0.1]` | `n_estimators=600`，`max_depth=[3,5]`，`max_features=['sqrt','log2',0.05]` |
+| `random_forest` | 从 18 组中随机抽 10 组，每组 200 棵树，按 OOB BA 选优 | 同左，`max_depth=[3,5,10]`、`min_samples_leaf=[2,5]` | 同左，`max_features=['sqrt','log2',0.1]` |
 | `xgboost` | 浅树：`max_depth=[2,3]`，`colsample=[0.6,1.0]`，`lambda=[1,5]` | 更强正则：`max_depth=[2,3]`，`colsample=[0.3,0.6]`，`min_child_weight=[3,5]` | 最保守：`max_depth=2`，`colsample=[0.2,0.3]`，`min_child_weight=[5,10]` |
 | `cnn1d` | Conv blocks 通道 `[16,32,64]`，kernel `7/5/3`，pool 后 GAP | Stem stride=2，通道 `[24,48,64,96]`，总压缩约 8 倍 | Stem stride=4 或两次 stride=2，通道 `[32,64,96]`，总压缩 8-16 倍 |
 | `transformer1d` | Patch `32`/stride `16`，`d_model=48`，2 heads，1-2 layers | Patch `64`/stride `32`，`d_model=64`，4 heads，2 layers | Patch `96`/stride `48`，`d_model=64-96`，4 heads，2 layers，token 控制不超过 256 |
@@ -817,7 +818,6 @@ async function preprocessRaman(files) {
   form.append("range_mode", "x_value");
   form.append("x_min", "400");
   form.append("x_max", "1800");
-  form.append("baseline_order", "range_then_baseline");
   form.append("baseline_method", "arPLS");
 
   const res = await fetch("/api/preprocess/raman", {
@@ -885,7 +885,7 @@ storage/runs/{run_id}/
 | history.csv | 每轮训练历史，传统模型只有一行 |
 | predictions.csv | 兼容预测文件，内容为当前评估口径的 test 预测 |
 | cv_predictions.csv | 每个 test 样本的真实标签、预测标签、概率和所属 `Repeat_index` |
-| hyperparameter_search.csv | 传统模型每折小范围参数搜索记录；深度模型通常为空或仅含固定配置 |
+| hyperparameter_search.csv | 传统模型每折参数搜索记录；含选择指标/分数，随机森林额外含 OOB accuracy 和 OOB balanced accuracy |
 | model.pt | 深度学习模型；留一 CV 时仅为最后一折模型，holdout 时为本次训练模型 |
 | model.pkl | 传统机器学习模型；留一 CV 时仅为最后一折模型，holdout 时为本次训练模型 |
 | feature_importance.json/csv | 聚合重要区间；传统及无卷积模型按真实类别等权聚合 Log-loss 增量 |

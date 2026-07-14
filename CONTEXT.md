@@ -21,7 +21,7 @@ AutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建�
 ## 预处理与接口事实
 
 - 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Repeat_index`。
-- 拉曼预处理支持 `range_mode=row/x_value`、`baseline_order=range_then_baseline/baseline_then_range` 和 `baseline_method`，默认 `arPLS`。
+- 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
 - HPLC 预处理按固定顺序执行：线性插值到共同时间轴、逐条曲线减最小值消负、按真实时间轴梯形积分做面积归一化。
 - HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应包含 `processed_y`、`common_time`，可能包含 `common_time_path`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。

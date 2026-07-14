@@ -267,19 +267,24 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
     for position, raw in enumerate(candidates):
         item = _mapping(raw)
         params = _mapping(item.get("best_params"))
+        selection_metric = str(item.get("selection_metric") or "balanced_accuracy")
         selection_score = _finite_float(item.get("selection_score"))
         split_metrics = _mapping(item.get("split_metrics"))
         valid_metrics = _mapping(split_metrics.get("valid"))
         valid_balanced_accuracy = _first_present(
-            selection_score if item.get("selection_metric") == "balanced_accuracy" else None,
             _finite_float(item.get("valid_balanced_accuracy")),
             _finite_float(valid_metrics.get("balanced_accuracy")),
+            selection_score if selection_metric == "balanced_accuracy" else None,
         )
-        if params or valid_balanced_accuracy is not None:
+        if selection_score is None and selection_metric == "balanced_accuracy":
+            selection_score = _finite_float(valid_balanced_accuracy)
+        if params or selection_score is not None or valid_balanced_accuracy is not None:
             entries.append(
                 {
                     "fold_index": item.get("fold_index", position),
                     "params": params,
+                    "selection_metric": selection_metric,
+                    "selection_score": selection_score,
                     "valid_balanced_accuracy": valid_balanced_accuracy,
                 }
             )
@@ -292,12 +297,18 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
             params = _mapping(json.loads(str(row.get("params_json") or "{}")))
         except json.JSONDecodeError:
             params = {}
+        selection_metric = str(row.get("selection_metric") or "balanced_accuracy")
+        selection_score = _finite_float(row.get("selection_score"))
         valid_balanced_accuracy = _finite_float(row.get("valid_balanced_accuracy"))
-        if params or valid_balanced_accuracy is not None:
+        if selection_score is None and selection_metric == "balanced_accuracy":
+            selection_score = valid_balanced_accuracy
+        if params or selection_score is not None or valid_balanced_accuracy is not None:
             entries.append(
                 {
                     "fold_index": row.get("fold_index", position),
                     "params": params,
+                    "selection_metric": selection_metric,
+                    "selection_score": selection_score,
                     "valid_balanced_accuracy": valid_balanced_accuracy,
                 }
             )
@@ -403,6 +414,8 @@ def build_training_status_projection(
             traditional: dict[str, Any] = {"hyperparameter_search_csv": search_csv}
             if selected:
                 traditional["best_params"] = selected["params"]
+                traditional["selection_metric"] = selected["selection_metric"]
+                traditional["selection_score"] = selected["selection_score"]
                 traditional["valid_balanced_accuracy"] = selected["valid_balanced_accuracy"]
             projection["traditional"] = traditional
         else:

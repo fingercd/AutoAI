@@ -18,6 +18,7 @@ ALLOWED_TRANSITIONS: dict[RunState, set[RunState]] = {
     'failed': set(),
     'cancelled': set(),
 }
+TERMINAL_STATES: set[RunState] = {'succeeded', 'failed', 'cancelled'}
 
 
 class InvalidRunTransition(RuntimeError):
@@ -317,6 +318,26 @@ class RunRepository:
         with self._connection() as connection:
             row = connection.execute('SELECT 1 FROM runs WHERE run_id = ?', (run_id,)).fetchone()
         return row is not None
+
+    def delete_terminal(self, run_id: str) -> None:
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT state FROM runs WHERE run_id = ?', (run_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise RunNotFound(run_id)
+            state: RunState = row['state']
+            if state not in TERMINAL_STATES:
+                connection.rollback()
+                raise InvalidRunTransition(f'cannot delete {state} run {run_id}')
+            changed = connection.execute(
+                'DELETE FROM runs WHERE run_id = ? AND state IN (\'succeeded\', \'failed\', \'cancelled\')',
+                (run_id,),
+            ).rowcount
+            if changed != 1:
+                connection.rollback()
+                raise InvalidRunTransition(f'cannot delete run {run_id}')
+            connection.commit()
 
     def import_legacy(
         self,

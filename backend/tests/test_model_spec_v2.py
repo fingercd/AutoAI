@@ -153,11 +153,17 @@ def test_traditional_candidate_grids_are_exact():
     assert {candidate.svm_kernel for candidate in svm} == {"linear"}
 
     random_forest = training._traditional_candidate_configs(config, "random_forest", 100, y_train)
-    assert len(random_forest) == 18
-    assert {candidate.random_forest_n_estimators for candidate in random_forest} == {500}
-    assert {candidate.random_forest_max_depth for candidate in random_forest} == {3, 5, 10}
-    assert {candidate.random_forest_min_samples_leaf for candidate in random_forest} == {2, 5}
-    assert {candidate.random_forest_max_features for candidate in random_forest} == {"sqrt", "log2", 0.1}
+    repeated_random_forest = training._traditional_candidate_configs(config, "random_forest", 100, y_train)
+    params = lambda candidate: (
+        candidate.random_forest_max_depth,
+        candidate.random_forest_min_samples_leaf,
+        candidate.random_forest_max_features,
+    )
+    assert len(random_forest) == 10
+    assert [params(candidate) for candidate in random_forest] == [params(candidate) for candidate in repeated_random_forest]
+    assert len({params(candidate) for candidate in random_forest}) == 10
+    assert {candidate.random_forest_n_estimators for candidate in random_forest} == {200}
+    assert all(candidate.random_forest_oob_score for candidate in random_forest)
 
     xgboost = training._traditional_candidate_configs(config, "xgboost", 100, y_train)
     assert len(xgboost) == 12
