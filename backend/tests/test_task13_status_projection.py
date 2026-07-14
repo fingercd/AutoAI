@@ -66,8 +66,20 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
     projection = build_training_status_projection(tmp_path)
 
     assert projection["traditional"]["best_params_by_fold"] == [
-        {"fold_index": 0, "params": {"pca_components": 8}, "valid_balanced_accuracy": 0.81},
-        {"fold_index": 1, "params": {"pca_components": 10}, "valid_balanced_accuracy": 0.91},
+        {
+            "fold_index": 0,
+            "params": {"pca_components": 8},
+            "selection_metric": "balanced_accuracy",
+            "selection_score": 0.81,
+            "valid_balanced_accuracy": 0.81,
+        },
+        {
+            "fold_index": 1,
+            "params": {"pca_components": 10},
+            "selection_metric": "balanced_accuracy",
+            "selection_score": 0.91,
+            "valid_balanced_accuracy": 0.91,
+        },
     ]
     assert projection["traditional"]["hyperparameter_search_csv"] == {
         "artifact": "hyperparameter_search.csv",
@@ -155,6 +167,42 @@ def test_projects_log_loss_occlusion_contract(tmp_path: Path) -> None:
     }
 
 
+def test_projects_random_forest_oob_selection_separately_from_validation(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path,
+        "config.json",
+        {"evaluation_strategy": "stratified_holdout", "model_type": "random_forest"},
+    )
+    _write_json(tmp_path, "status.json", {"model_family": "traditional_ml"})
+    _write_json(
+        tmp_path,
+        "cv_metrics.json",
+        {
+            "folds": [
+                {
+                    "fold_index": 1,
+                    "best_params": {"random_forest_max_depth": 5},
+                    "selection_metric": "oob_balanced_accuracy",
+                    "selection_score": 0.87,
+                    "split_metrics": {"valid": {"balanced_accuracy": 0.79}},
+                }
+            ]
+        },
+    )
+
+    projection = build_training_status_projection(tmp_path)
+
+    assert projection["traditional"]["best_params_by_fold"] == [
+        {
+            "fold_index": 1,
+            "params": {"random_forest_max_depth": 5},
+            "selection_metric": "oob_balanced_accuracy",
+            "selection_score": 0.87,
+            "valid_balanced_accuracy": 0.79,
+        }
+    ]
+
+
 def test_external_projection_never_exposes_cv_or_fold_fields_and_legacy_runs_are_safe(tmp_path: Path) -> None:
     _write_json(
         tmp_path,
@@ -234,6 +282,8 @@ def test_project_status_attaches_audit_without_reading_its_previous_status(tmp_p
     assert payload["training_audit"]["traditional"] == {
         "hyperparameter_search_csv": {"artifact": "hyperparameter_search.csv", "available": False},
         "best_params": {"svm_c": 1.0},
+        "selection_metric": "balanced_accuracy",
+        "selection_score": 0.88,
         "valid_balanced_accuracy": 0.88,
     }
     assert "deep_training" not in payload["training_audit"]

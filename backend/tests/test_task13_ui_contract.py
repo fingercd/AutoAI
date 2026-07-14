@@ -41,6 +41,8 @@ def test_official_ui_renders_training_audit_for_traditional_deep_and_explainabil
     assert '参数选择记录' in content
     assert '相同配置已自动合并' in content
     assert 'auditParamsForModel' in content
+    assert '"oob_balanced_accuracy"' in content
+    assert "平均 OOB BA" in content
     assert 'audit.deep_training' not in content
     assert '声明方法' not in content
     assert '产物方法' not in content
@@ -84,6 +86,32 @@ def test_training_spinner_is_stable_across_polling():
     assert 'if (pollingRunId === requestedRunId) return;' in content
     assert 'if (currentRunId === requestedRunId) renderRun(run);' in content
     assert 'background: conic-gradient' in content
+
+
+def test_official_ui_exposes_oob_random_forest_budget_and_terminal_run_delete():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'id="rfEstimators" type="number" value="200"' in content
+    assert 'id="rfSearchIterations" type="number" value="10"' in content
+    assert 'random_forest_search_iterations: Number($("rfSearchIterations").value)' in content
+    assert 'id="rfMaxDepth"' not in content
+    assert 'id="rfMinSamplesLeaf"' not in content
+    assert 'window.deleteRun = async (runId)' in content
+    assert 'method: "DELETE"' in content
+    assert '删除此训练记录' in content
+    assert '删除失败：${error.message}' in content
+    assert '模型、指标、预测结果和其他产物都将一并删除' in content
+    assert '["succeeded", "failed", "cancelled"].includes(run.state)' in content
+
+
+def test_modeling_view_refetches_run_before_redrawing_hidden_canvases():
+    content = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'if (rect.width < 1 || rect.height < 1) return;' in content
+    assert 'if (viewName === "modeling" && currentRunId)' in content
+    assert 'pollCurrentRun().catch((error) => window.alert(error.message));' in content
+    assert 'drawSampleFeatureImportanceCanvas(data, sample);' in content
+    assert 'button.addEventListener("click", () => showView(button.dataset.view));' in content
 
 
 def test_official_ui_only_renders_sample_feature_importance():

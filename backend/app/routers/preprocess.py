@@ -62,7 +62,6 @@ def preprocess(
     x_min: float | None = Form(None),
     x_max: float | None = Form(None),
     baseline_method: str = Form('arPLS'),
-    baseline_order: str = Form('range_then_baseline'),
     hplc_interpolate: bool = Form(True),
     hplc_subtract_min: bool = Form(True),
     hplc_normalize_area: bool = Form(True),
@@ -95,7 +94,6 @@ def preprocess(
                 x_min=x_min,
                 x_max=x_max,
                 baseline_method=baseline_method,
-                baseline_order=baseline_order,
                 display_names=original_names,
             )
         frame = result['frame']
@@ -115,7 +113,6 @@ def preprocess(
         if kind == 'hplc':
             response.update(
                 {
-                    'baseline_order': None,
                     'baseline_method': None,
                     'hplc_interpolate': hplc_interpolate,
                     'hplc_subtract_min': hplc_subtract_min,
@@ -128,9 +125,8 @@ def preprocess(
                 np.save(npy_path, np.array(result['common_time'], dtype=np.float32))
                 response['common_time_path'] = str(npy_path.resolve())
         elif kind == 'raman':
-            response.update({'baseline_order': baseline_order, 'baseline_method': baseline_method})
+            response['baseline_method'] = baseline_method
         else:
-            response['baseline_order'] = None
             response['baseline_method'] = None
         return response
     except Exception as exc:

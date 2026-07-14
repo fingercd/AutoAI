@@ -291,6 +291,7 @@ def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any
             getattr(config, "random_forest_max_features", "sqrt"),
             class_weight,
             config.seed,
+            getattr(config, "random_forest_oob_score", False),
         )
     if model_type == "svm":
         return build_svm(config.svm_c, config.svm_gamma, class_weight, config.seed, getattr(config, "svm_kernel", "rbf"))

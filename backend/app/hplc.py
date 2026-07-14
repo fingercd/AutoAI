@@ -11,14 +11,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
-from .parsers import _range_indexer, read_raw_spectrum
+from .parsers import (
+    _normalize_numeric_array,
+    _range_indexer,
+    _serialize_modeling_array,
+    read_raw_spectrum,
+)
 
 
 def compute_common_time_axis(x_axes: list[np.ndarray]) -> np.ndarray:
@@ -184,15 +188,21 @@ def preprocess_hplc_files_with_preview(
     # ---- 阶段 3: 组装输出 ----
     n_files = len(files)
     records = []
+    common_x_values, common_x_serialized = _serialize_modeling_array(
+        common_x, "XXX", names[0]
+    )
+    processed_values: list[list[float]] = []
     for i in range(n_files):
+        intensity_values, intensity_serialized = _serialize_modeling_array(
+            matrix[i], "Intensity", names[i]
+        )
+        processed_values.append(intensity_values)
         records.append(
             {
                 "Index": i + 1,
                 "Name": names[i],
-                "XXX": json.dumps(common_x.astype(float).tolist(), ensure_ascii=False),
-                "Intensity": json.dumps(
-                    matrix[i].astype(float).tolist(), ensure_ascii=False
-                ),
+                "XXX": common_x_serialized,
+                "Intensity": intensity_serialized,
                 "Label": "",
                 "Repeat_index": "",
             }
@@ -206,14 +216,14 @@ def preprocess_hplc_files_with_preview(
     for i in range(n_files):
         curve_data: dict = {
             "name": names[i],
-            "x": common_x.astype(float).tolist(),
-            "raw_y": raw_interpolated[i].astype(float).tolist(),
-            "processed_y": matrix[i].astype(float).tolist(),
+            "x": common_x_values,
+            "raw_y": _normalize_numeric_array(raw_interpolated[i], "raw_y"),
+            "processed_y": processed_values[i],
         }
         curves.append(curve_data)
 
     return {
         "frame": frame,
         "curves": curves,
-        "common_time": common_x.astype(float).tolist(),
+        "common_time": common_x_values,
     }

@@ -1,5 +1,6 @@
 from pathlib import Path
 import ast
+import csv
 import io
 import json
 
@@ -1230,7 +1231,7 @@ def test_user_raman_csv_trains_new_model_choices(tmp_path, monkeypatch, model_ty
     assert result["sample_count"] == 50
 
 
-def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):
+def test_raman_baseline_is_applied_after_range_selection(tmp_path, monkeypatch):
     import backend.app.parsers as parsers
 
     source = tmp_path / "raman.csv"
@@ -1238,27 +1239,25 @@ def test_raman_baseline_order_changes_processing_scope(tmp_path, monkeypatch):
     lines.extend(f"{idx},{idx * idx + 10}" for idx in range(1, 12))
     source.write_text("\n".join(lines), encoding="utf-8")
 
+    received = {}
+
     def fake_baseline_correct(x, y, method):
+        received["x"] = np.asarray(x).tolist()
+        received["y"] = np.asarray(y).tolist()
         return y + len(y) * 100
 
     monkeypatch.setattr(parsers, "_baseline_correct", fake_baseline_correct)
-    range_first = parsers.preprocess_raw_files(
+    result = parsers.preprocess_raw_files_with_preview(
         [source],
         kind="raman",
         start_row=2,
         end_row=3,
-        baseline_order="range_then_baseline",
-    )
-    baseline_first = parsers.preprocess_raw_files(
-        [source],
-        kind="raman",
-        start_row=2,
-        end_row=3,
-        baseline_order="baseline_then_range",
     )
 
-    assert ast.literal_eval(range_first.iloc[0]["Intensity"]) == [214.0, 219.0]
-    assert ast.literal_eval(baseline_first.iloc[0]["Intensity"]) == [1114.0, 1119.0]
+    assert received == {"x": [2.0, 3.0], "y": [14.0, 19.0]}
+    assert ast.literal_eval(result["frame"].iloc[0]["Intensity"]) == [214.0, 219.0]
+    assert result["curves"][0]["raw_y"] == [14.0, 19.0]
+    assert result["curves"][0]["corrected_y"] == [214.0, 219.0]
 
 
 def test_preprocess_x_value_range_selects_by_axis(tmp_path):
@@ -1280,6 +1279,79 @@ def test_preprocess_x_value_range_selects_by_axis(tmp_path):
     assert result["curves"][0]["x"] == [1.0, 1.5, 2.0]
     assert result["curves"][0]["raw_y"] == [20.0, 30.0, 40.0]
     assert ast.literal_eval(result["frame"].iloc[0]["XXX"]) == [1.0, 1.5, 2.0]
+
+
+def test_preprocess_csv_arrays_are_excel_safe_and_float32_lossless(tmp_path, monkeypatch):
+    from backend.app import parsers
+
+    source = tmp_path / "raman.csv"
+    x_values = np.round(180.91 + np.arange(2048) * 0.73, 2)
+    y_values = (np.arange(2048, dtype=np.float32) * np.float32(0.1234567)) - 100
+    source.write_text(
+        "RamanShift,Intensity\n"
+        + "\n".join(f"{x:.2f},{float(y):.9g}" for x, y in zip(x_values, y_values)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(parsers, "_baseline_correct", lambda x, y, method: y)
+
+    result = parsers.preprocess_raw_files_with_preview(
+        [source],
+        kind="raman",
+        start_row=100,
+        end_row=2000,
+    )
+    row = result["frame"].iloc[0]
+    serialized_x = json.loads(row["XXX"])
+    serialized_y = json.loads(row["Intensity"])
+    expected_x = x_values[99:2000]
+    expected_y = y_values[99:2000]
+
+    assert len(row["XXX"]) <= parsers.EXCEL_CELL_CHARACTER_LIMIT
+    assert len(row["Intensity"]) <= parsers.EXCEL_CELL_CHARACTER_LIMIT
+    assert "450.82000732421875" not in row["XXX"]
+    np.testing.assert_allclose(serialized_x, expected_x, rtol=1e-9, atol=1e-9)
+    assert np.array_equal(np.asarray(serialized_y, dtype=np.float32), expected_y)
+    assert result["curves"][0]["x"] == serialized_x
+    assert result["curves"][0]["corrected_y"] == serialized_y
+
+    output = tmp_path / "result.csv"
+    result["frame"].to_csv(output, index=False, encoding="utf-8-sig")
+    with output.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert len(rows) == 2
+    assert all(len(item) == 6 for item in rows)
+
+
+def test_preprocess_rejects_arrays_over_excel_cell_limit(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from backend.app import parsers
+    from backend.app.main import app
+    from backend.app.routers import preprocess as preprocess_router
+
+    source = tmp_path / "too_many_points.csv"
+    source.write_text(
+        "RamanShift,Intensity\n"
+        + "\n".join(f"{idx},{idx}" for idx in range(10000)),
+        encoding="utf-8",
+    )
+    uploads = tmp_path / "uploads"
+    outputs = tmp_path / "preprocessed"
+    monkeypatch.setattr(preprocess_router, "UPLOADS_DIR", uploads)
+    monkeypatch.setattr(preprocess_router, "PREPROCESSED_DIR", outputs)
+    monkeypatch.setattr(parsers, "_baseline_correct", lambda x, y, method: y)
+
+    client = TestClient(app)
+    with source.open("rb") as handle:
+        response = client.post(
+            "/api/preprocess/raman",
+            files=[("files", (source.name, handle, "text/csv"))],
+        )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "超过 Excel 单元格上限 32767" in detail
+    assert "请缩小行号范围或 X 轴数值范围" in detail
+    assert not outputs.exists() or not list(outputs.iterdir())
 
 
 def test_read_raw_spectrum_no_header_preserves_first_row(tmp_path):
@@ -1326,13 +1398,13 @@ def test_raman_preprocess_api_returns_curve_preview(tmp_path, monkeypatch):
             data={
                 "start_row": "2",
                 "end_row": "10",
-                "baseline_order": "range_then_baseline",
                 "baseline_method": "poly",
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
+    assert "baseline_order" not in payload
     assert payload["baseline_method"] == "poly"
     assert payload["curves"]
     assert set(payload["curves"][0]) == {"name", "x", "raw_y", "corrected_y"}
@@ -1362,7 +1434,6 @@ def test_preprocess_preserves_original_names_and_returns_all_curves(tmp_path):
             data={
                 "start_row": "2",
                 "end_row": "10",
-                "baseline_order": "range_then_baseline",
                 "baseline_method": "poly",
             },
         )
