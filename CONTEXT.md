@@ -9,14 +9,19 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 后端使用 FastAPI，前端静态页面由后端一起托管。
 - 入口脚本是 `run.py`。
 - 主要代码在 `backend/` 和 `static/`，主前端为 `static/index.html`。
-- 测试集中在 `backend/tests/test_smoke.py`。
+- 快速回归在 `backend/tests/test_smoke.py`；Run 结果、artifact、安全、前端纯函数和迁移另有专项测试，交付时运行整个 `backend/tests`。
 - 正式前端只有 `static/index.html` 与 `static/js/`；历史 UI 画廊和未跟踪候选不属于产品快照。
 - 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
-- `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
+- `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是 `run-result-v1` 结果结构；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
 - HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
-- 本地模式不接受 owner_id 或 tenant_id；未来身份只经服务端 Principal 注入。
+- 默认 local 模式只面向本机；server 模式必须配置 `AUTOAI_DEPLOYMENT_MODE=server` 与至少 32 字符的 `AUTOAI_API_TOKEN`，Bearer 身份只经服务端 Principal 注入。
+- server CORS 只接受 `AUTOAI_ALLOWED_ORIGINS` 的明确来源，禁止 `*`；浏览器令牌只进当前标签页 sessionStorage。
+- server Principal 只能访问同 owner/tenant 的 Dataset 与 Run；历史 owner 为空 Run 默认不可见，使用显式 migration dry-run/rebind。
 - Run 状态转换由 SQLite 事务、claim token 和 lease 控制；本机 worker 可用 `python -m backend.app.runs.worker` 独立启动。
-- Run 成功前必须先原子提交 `manifest.json`；Run 下载只允许 Manifest 声明的 downloadable artifact，`storage/runs` 不经 `/api/files` 暴露。
+- `run.py` 默认托管 worker，并在意外退出时有限退避重启；`/health` 返回匿名 worker 心跳摘要。
+- 独立结果页使用 `#/results?run_id=...`，刷新后从 `GET /api/training/runs/{run_id}/result` 恢复。
+- `run-result-v1` 明确区分 direct、pooled OOF、fold mean 与 fold std；传统模型不伪装成有 epoch history。
+- Run 成功前必须提交 Manifest；新 Manifest 使用显式 catalog 和 SHA-256/大小校验。模型 pickle/PT 和 joblib 私有；无路径 `config.json` 才可下载。
 
 ## 预处理与接口事实
 
@@ -25,6 +30,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - HPLC 预处理按固定顺序执行：线性插值到共同时间轴、逐条曲线减最小值消负、按真实时间轴梯形积分做面积归一化。
 - HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应包含 `processed_y`、`common_time`，可能包含 `common_time_path`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
+- server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
 
 ## 模型与可解释性
 
@@ -45,6 +51,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。全局结果先按真实类别分别求均值，再做类别等权聚合。
 - 前端优先展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条和中文色标；聚合产物仍通过 `feature_importance.json/csv` 下载。
 - DSCARNet 使用仅由当前训练折拟合的 AggMap/PCA 生成 SAR/CAR 2D 输入，额外写入 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。
+- 当前没有正式 ROC-AUC、ROC 曲线或 Precision-Recall 曲线产物；结果 API 明确返回 unavailable，前端不绘制虚假图表。
 - 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。
 
 ## 运行方式
@@ -64,8 +71,12 @@ C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:ap
 打开：
 
 - `http://127.0.0.1:8000/`
+- `http://127.0.0.1:8000/#/results?run_id=<Run ID>`
+- `http://127.0.0.1:8000/#/runs`
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/health`
+
+对外部署必须使用 `python run.py --server --host 0.0.0.0 --no-browser`，并由环境安全注入 token。SSH tunnel + `127.0.0.1` 可继续使用 local 模式。
 
 ## 验证方式
 
@@ -73,6 +84,7 @@ C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:ap
 Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
 $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
+& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
 ```
 
@@ -89,3 +101,4 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 
 - 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
 - 直接使用 uvicorn 不会启动训练 worker；本地一键入口 `run.py` 默认同时启动二者。
+- 服务器升级前先备份 `storage/`；历史绑定先执行 `python -m backend.app.runs.migration --dry-run --owner-id ... --tenant-id ... --rebind-unowned`，确认后去掉 `--dry-run`。

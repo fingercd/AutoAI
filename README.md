@@ -9,6 +9,7 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
 - 分类评估：分层 8:1:1、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
+- 每次训练使用唯一 Run ID；训练完成后进入可刷新、可复制链接的独立“建模结果”页，按层次展示概览、指标、混淆矩阵、训练/参数审计、解释性和逐项下载。
 - 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
@@ -111,11 +112,34 @@ python -m backend.app.runs.worker
 
 只启动 uvicorn 时，训练任务会停留在 queued，直到 worker 启动。
 
+### 服务器模式
+
+对外监听必须启用服务器安全模式，并提供至少 32 个字符的随机 Bearer 令牌。不要把令牌写入命令行参数、脚本、URL 或仓库文件；应由进程管理器、受限环境文件或 secret manager 注入。
+
+Linux 示例：
+
+```bash
+export AUTOAI_DEPLOYMENT_MODE=server
+export AUTOAI_API_TOKEN="$(< /secure/path/autoai_api_token)"
+export AUTOAI_PRINCIPAL_ID=server-admin
+export AUTOAI_TENANT_ID=default
+export AUTOAI_ALLOWED_ORIGINS=https://autoai.example.edu
+python run.py --server --host 0.0.0.0 --no-browser
+```
+
+`AUTOAI_ALLOWED_ORIGINS` 可用逗号分隔多个明确来源，禁止 `*`。同源部署不需要额外跨域来源。浏览器首次访问受保护 API 时会要求令牌，令牌只保存在当前标签页的 `sessionStorage` 中。
+
+如果通过 SSH tunnel 访问，推荐让服务继续监听 `127.0.0.1` 并使用 local 模式，无需将端口直接暴露到网络。
+
 ### 正式本地 URL
 
 - 主页面：<http://127.0.0.1:8000/>
+- 专属结果页：`http://127.0.0.1:8000/#/results?run_id=<Run ID>`
+- 训练记录：<http://127.0.0.1:8000/#/runs>
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/health>
+
+专属结果页从 `GET /api/training/runs/{run_id}/result` 读取 `run-result-v1`。留一 Sample_ID CV 的测试主指标使用 pooled OOF；折均值和标准差仅作审计。
 
 ## 分类模型 v2 契约
 
@@ -125,7 +149,7 @@ python -m backend.app.runs.worker
 
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。`cnn_mamba1d` 若未来依赖可用，也采用 Log-loss 窗口遮挡。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
+解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。`cnn_mamba1d` 若未来依赖可用，也采用 Log-loss 窗口遮挡。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 名称继续作为只读兼容；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
 ## 建模 CSV
 
@@ -146,8 +170,9 @@ Index, Name, XXX, Intensity, Label, Sample_ID
 2. 下载统一 CSV，补全 `Label` 与 `Sample_ID`。
 3. 将建模 CSV 上传到“AI 建模”。
 4. 选择模型与评估口径，创建 queued Run。
-5. worker 完成训练后查看 train/valid/test 指标、混淆矩阵、曲线和解释结果。
-6. 下载预测、指标和模型 artifact。
+5. worker 完成后可立即进入结果页，也会在 3 秒后自动跳转到该 Run 的专属结果 URL。
+6. 在结果页查看 train/valid/test 或 pooled OOF 指标、混淆矩阵、训练/参数审计和解释结果。
+7. 在每项真实产物旁下载对应 JSON/CSV；裸 `model.pkl`、`model.pt` 和内部 joblib 本轮不开放。
 
 仓库不附带真实 `data.csv`。本地验证数据、上传文件、模型和运行结果都位于 Git 管理范围之外。
 
@@ -167,9 +192,10 @@ run.py                       一键启动入口
 
 ## 验证
 
-安装开发依赖后，在仓库根目录运行：
+安装开发依赖后，可先跑快速 smoke，再执行交付门禁：
 
 ```bash
+python -m pytest backend/tests/test_smoke.py -q
 python -m pytest backend/tests -q
 python -m compileall backend/app -q
 python run.py --help
@@ -186,8 +212,21 @@ curl http://127.0.0.1:8000/health
 应返回：
 
 ```json
-{"status":"ok"}
+{
+  "status": "ok",
+  "deployment_mode": "local",
+  "worker": {
+    "available": true,
+    "live_count": 1,
+    "last_seen_at": "...",
+    "active_run_count": 0
+  }
+}
 ```
+
+`status="ok"` 表示 Web 可用；`worker.available=false` 表示当前没有近期心跳，训练会继续停在 queued。健康接口是匿名探针，只返回汇总，不暴露令牌、Principal 或 worker_id。
+
+前端改动还要抽取 `static/index.html` 的内联脚本并用 `node --check --input-type=commonjs` 检查，同时执行 `backend/tests/test_result_frontend_contract.py` 中的 Node 纯函数测试。没有 Playwright/JSDOM 时不强行增加依赖。
 
 ## 常见问题
 
@@ -207,7 +246,26 @@ curl http://127.0.0.1:8000/health
 
 ### 任务一直显示 queued
 
-确认独立 worker 正在运行，或改用默认会同时启动 worker 的 `python run.py`。
+先查看 `/health` 的 `worker.available`。如果为 `false`，确认独立 worker 正在运行，或改用默认会托管并监督 worker 的 `python run.py`。
+
+### 服务器页面提示需要访问令牌
+
+确认服务端使用 `AUTOAI_DEPLOYMENT_MODE=server`，并由管理员安全分发与 `AUTOAI_API_TOKEN` 相同的令牌。浏览器只把令牌保存在当前标签页；刷新可继续使用，关闭标签页后需要重新输入。不要把令牌放在结果链接中。
+
+### 升级到 server 模式后看不到历史 Run
+
+这是所有权隔离的预期行为。先备份 `storage/`，然后执行只读预览：
+
+```bash
+python -m backend.app.runs.migration --dry-run \
+  --owner-id server-admin --tenant-id default --rebind-unowned
+```
+
+确认数量正确后去掉 `--dry-run`。命令幂等，不移动或改写历史 Run 目录，也不会在服务启动时自动执行。owner/tenant 参数应与服务器进程的 `AUTOAI_PRINCIPAL_ID`、`AUTOAI_TENANT_ID` 一致。
+
+### 结果页显示“部分结果”或下载按钮禁用
+
+结果页会分别识别未生成、不适用、Manifest 缺失/损坏和文件完整性失败。不要手动猜下载 URL；保留 Run ID，检查页面原因、`/health` 和服务日志。ROC-AUC、ROC 与 Precision-Recall 当前没有正式训练产物，因此不会绘制虚假图表。
 
 ### 修改代码后浏览器仍显示旧行为
 
@@ -219,4 +277,4 @@ curl http://127.0.0.1:8000/health
 
 ## 协作与发布
 
-前后端契约见 `docs/frontend_backend_handoff.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。
+前后端契约见 `docs/frontend_backend_handoff.md`，结果结构见 `docs/run_result_contract.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。

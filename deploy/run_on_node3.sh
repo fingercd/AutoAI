@@ -5,10 +5,31 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/AutoAI}"
 ENV_NAME="${ENV_NAME:-autoai}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-6}"
 export CUDA_VISIBLE_DEVICES
+
+# SSH tunnel deployments remain loopback-only and need no shared browser token. Any
+# externally reachable bind is always forced into server mode. The token is supplied by
+# the process manager/environment and is deliberately never echoed or written to disk.
+case "$HOST" in
+  127.0.0.1|localhost|::1)
+    export AUTOAI_DEPLOYMENT_MODE="${AUTOAI_DEPLOYMENT_MODE:-local}"
+    ;;
+  *)
+    export AUTOAI_DEPLOYMENT_MODE="server"
+    ;;
+esac
+
+API_TOKEN_LENGTH=0
+if [ -n "${AUTOAI_API_TOKEN:-}" ]; then
+  API_TOKEN_LENGTH="${#AUTOAI_API_TOKEN}"
+fi
+if [ "$AUTOAI_DEPLOYMENT_MODE" = "server" ] && [ "$API_TOKEN_LENGTH" -lt 32 ]; then
+  echo "server mode requires AUTOAI_API_TOKEN with at least 32 characters" >&2
+  exit 1
+fi
 
 cd "$APP_DIR"
 

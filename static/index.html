@@ -120,34 +120,71 @@
       select[size] option {
         padding: 7px 8px;
       }
+      .button,
       button.primary,
       button.secondary,
-      button.danger {
+      button.danger,
+      a.primary,
+      a.secondary,
+      a.danger,
+      label.primary,
+      label.secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
         min-height: 38px;
         border: 0;
         border-radius: 6px;
         padding: 8px 13px;
         cursor: pointer;
         font-weight: 650;
+        font-size: 13px;
+        line-height: 1.2;
+        text-decoration: none;
       }
-      button.primary {
+      .button.primary,
+      button.primary,
+      a.primary,
+      label.primary {
         background: var(--brand);
         color: #fff;
       }
-      button.primary:hover {
+      .button.primary:hover,
+      button.primary:hover,
+      a.primary:hover,
+      label.primary:hover {
         background: var(--brand-dark);
       }
-      button.secondary {
+      .button.secondary,
+      button.secondary,
+      a.secondary,
+      label.secondary {
         background: #eef2f6;
         color: var(--ink);
       }
-      button.danger {
+      .button.danger,
+      button.danger,
+      a.danger {
         background: #fee4e2;
         color: var(--bad);
       }
-      button:disabled {
+      .button.compact {
+        min-height: 32px;
+        padding: 6px 9px;
+      }
+      button:disabled,
+      .button[aria-disabled="true"] {
         cursor: not-allowed;
         opacity: 0.55;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 3px solid rgba(15, 118, 110, 0.28);
+        outline-offset: 2px;
       }
       .row-actions {
         display: flex;
@@ -520,6 +557,378 @@
         background: #fff3d6;
         color: var(--warn);
       }
+      .status.warning,
+      .status.cancelled {
+        background: #fff3d6;
+        color: var(--warn);
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .page-help {
+        margin: 0 0 16px;
+        border: 1px solid #cde7e3;
+        border-radius: 8px;
+        background: #f2faf8;
+        padding: 10px 12px;
+      }
+      .page-help summary {
+        cursor: pointer;
+        color: var(--brand-dark);
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .page-help ol,
+      .page-help ul {
+        margin: 10px 0 2px;
+        padding-left: 22px;
+        color: #475467;
+        font-size: 13px;
+        line-height: 1.65;
+      }
+      .notice {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 14px;
+        background: #fbfcfe;
+      }
+      .notice > div:first-child {
+        min-width: 0;
+      }
+      .notice strong,
+      .notice span {
+        display: block;
+      }
+      .notice span {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .notice-success {
+        border-color: #b7e4ca;
+        background: #eefaf3;
+      }
+      .notice-error {
+        border-color: #f1b8b4;
+        background: #fff4f3;
+      }
+      .notice-warning,
+      .notice-loading {
+        border-color: #efd39e;
+        background: #fffaeb;
+      }
+      .notice-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        flex: 0 0 auto;
+      }
+      .notice-actions > strong {
+        color: var(--brand-dark);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .table-scroll {
+        width: 100%;
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+      }
+      .truncate-text {
+        display: inline-block;
+        max-width: 260px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+      }
+      .truncate-text:focus {
+        max-width: min(680px, 78vw);
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .sample-id-table-wrap.expanded {
+        max-height: 420px;
+        overflow: auto;
+        border-bottom: 1px solid var(--line);
+      }
+      .sample-id-text {
+        max-width: min(340px, 42vw);
+      }
+      .sample-id-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      .sample-id-render-status {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .result-shell {
+        display: grid;
+        gap: 16px;
+      }
+      .result-section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .result-section:empty {
+        display: none;
+      }
+      .result-heading,
+      .section-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .result-heading h2,
+      .section-heading h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+      .section-heading p,
+      .section-note,
+      .eyebrow {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .eyebrow {
+        margin: 0 0 3px;
+        color: var(--brand-dark);
+        font-weight: 650;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .overview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+        gap: 10px;
+        margin: 0;
+      }
+      .overview-item {
+        min-width: 0;
+        border: 1px solid #e4e8ef;
+        border-radius: 7px;
+        padding: 9px 10px;
+        background: #fbfcfe;
+      }
+      .overview-item dt {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .overview-item dd {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        margin: 4px 0 0;
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .result-warnings {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .result-metric-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .result-metric-card {
+        min-width: 0;
+        border: 1px solid #dfe5ec;
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfe;
+      }
+      .result-metric-card > span,
+      .result-metric-card > small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .result-metric-card strong {
+        display: block;
+        margin: 5px 0;
+        color: var(--brand-dark);
+        font-size: clamp(20px, 2vw, 28px);
+      }
+      .result-analysis-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .result-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        background: #fff;
+      }
+      .result-card h3,
+      .artifact-group h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      .audit-details > summary,
+      .artifact-group > summary {
+        cursor: pointer;
+        color: var(--brand-dark);
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .audit-details[open] > summary,
+      .artifact-group[open] > summary {
+        margin-bottom: 12px;
+      }
+      .audit-details h4 {
+        margin: 14px 0 8px;
+      }
+      .audit-metrics {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .wide-card {
+        grid-column: 1 / -1;
+      }
+      .result-chart {
+        height: 260px;
+      }
+      .distribution-list,
+      .importance-list {
+        display: grid;
+        gap: 9px;
+      }
+      .distribution-row {
+        display: grid;
+        grid-template-columns: minmax(90px, 0.7fr) minmax(120px, 1.5fr) auto;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .distribution-bars {
+        display: grid;
+        gap: 3px;
+      }
+      .distribution-bar {
+        display: block;
+        height: 7px;
+        border-radius: 99px;
+      }
+      .distribution-bar.actual {
+        background: var(--brand);
+      }
+      .distribution-bar.predicted {
+        background: var(--warn);
+      }
+      .importance-row {
+        display: grid;
+        grid-template-columns: minmax(130px, 1fr) minmax(100px, 1fr) 64px;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .importance-track {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #e7eef4;
+      }
+      .importance-track span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--brand);
+      }
+      .artifact-group + .artifact-group {
+        margin-top: 16px;
+      }
+      section.artifact-group {
+        padding: 0;
+      }
+      .artifact-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 10px;
+      }
+      .artifact-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border: 1px solid #e4e8ef;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fbfcfe;
+      }
+      .artifact-card strong,
+      .artifact-card span,
+      .artifact-card small {
+        display: block;
+      }
+      .artifact-card span,
+      .artifact-card small,
+      .download-message {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .result-run-form {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .result-run-form input {
+        max-width: 520px;
+      }
+      .auth-dialog {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: rgba(16, 24, 40, 0.56);
+      }
+      .auth-dialog.hidden {
+        display: none;
+      }
+      .auth-card {
+        width: min(460px, 100%);
+        border-radius: 10px;
+        padding: 20px;
+        background: #fff;
+        box-shadow: 0 16px 45px rgba(16, 24, 40, 0.22);
+      }
+      .auth-card h2 {
+        margin: 0 0 6px;
+        font-size: 18px;
+      }
+      .auth-card p {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .auth-error {
+        min-height: 18px;
+        color: var(--bad) !important;
+      }
       pre {
         white-space: pre-wrap;
         overflow: auto;
@@ -548,7 +957,7 @@
         background: #fff;
       }
       .hidden {
-        display: none;
+        display: none !important;
       }
       .wide {
         grid-column: 1 / -1;
@@ -560,12 +969,77 @@
         nav {
           border-right: 0;
           border-bottom: 1px solid var(--line);
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          padding: 10px 14px;
+        }
+        nav button {
+          width: auto;
+          flex: 0 0 auto;
+          white-space: nowrap;
         }
         .grid,
         .metrics,
         .chart-grid,
-        .hplc-options-panel {
+        .hplc-options-panel,
+        .result-analysis-grid {
           grid-template-columns: 1fr;
+        }
+        .result-metric-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .wide-card {
+          grid-column: auto;
+        }
+      }
+      @media (max-width: 600px) {
+        header,
+        section {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .header-actions {
+          width: 100%;
+          justify-content: flex-start;
+        }
+        .result-metric-grid {
+          grid-template-columns: 1fr;
+        }
+        .notice,
+        .artifact-card,
+        .result-heading,
+        .section-heading {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .notice-actions {
+          width: 100%;
+        }
+        .distribution-row,
+        .importance-row {
+          grid-template-columns: 1fr;
+        }
+        .truncate-text,
+        .sample-id-text {
+          max-width: 62vw;
+        }
+        .result-run-form {
+          align-items: stretch;
+          flex-direction: column;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
         }
       }
       @keyframes spin {
@@ -581,37 +1055,46 @@
         <h1>SpecAutoAI 谱学数据预处理及 AI 建模平台</h1>
         <button class="secondary" id="manualButton" type="button">使用说明</button>
       </div>
-      <span id="health" class="status">连接中</span>
+      <div class="header-actions">
+        <span id="authStatus" class="status hidden" aria-live="polite"></span>
+        <button id="authButton" class="secondary hidden" type="button">输入访问令牌</button>
+        <span id="health" class="status" aria-live="polite">连接中</span>
+      </div>
     </header>
     <main>
       <nav>
         <button class="active" data-view="raman">拉曼预处理</button>
         <button data-view="chromatography">色谱预处理</button>
         <button data-view="modeling">AI 建模</button>
+        <button data-view="results">建模结果</button>
         <button data-view="runs">训练记录</button>
       </nav>
       <section>
         <!-- AI 建模：数据集、配置、曲线预览与当前 Run 共用一个状态上下文。 -->
         <div id="view-modeling" class="view hidden">
+          <details class="page-help">
+            <summary>AI 建模操作说明</summary>
+            <ol>
+              <li>加载符合六列规范的数据集；有独立测试集时一并加载。</li>
+              <li>选择模型和评估方式。相同 Sample_ID 会整组进入同一数据分区。</li>
+              <li>提交后只创建排队任务，训练由独立 worker 执行；完成后可进入专属结果页。</li>
+            </ol>
+          </details>
           <div class="grid">
             <div class="panel">
               <h2>数据集</h2>
               <div class="actions">
-                <label class="primary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0;border-radius:6px;padding:8px 13px;font-weight:650;background:var(--brand);color:#fff">
-                  加载数据集
-                  <input id="datasetFile" type="file" accept=".csv" class="hidden" />
-                </label>
-                <label class="secondary" style="display:inline-flex;align-items:center;cursor:pointer;margin:0">
-                  加载独立测试集
-                  <input id="testDatasetFile" type="file" accept=".csv" class="hidden" />
-                </label>
+                <button class="primary" id="datasetFileTrigger" type="button">加载数据集</button>
+                <input id="datasetFile" type="file" accept=".csv" class="hidden" />
+                <button class="secondary" id="testDatasetFileTrigger" type="button">加载独立测试集</button>
+                <input id="testDatasetFile" type="file" accept=".csv" class="hidden" />
               </div>
               <div id="datasetInfo"></div>
               <div id="testDatasetInfo"></div>
             </div>
             <div class="panel">
               <h2>训练配置</h2>
-              <label>模型架构</label>
+              <label for="modelType">模型架构</label>
               <select id="modelType" aria-describedby="modelCatalogHint" disabled>
                 <option value="">正在加载模型目录…</option>
               </select>
@@ -642,46 +1125,46 @@
                 </p>
               </div>
               <div id="featureWindowOptions">
-                <label>重要性分段数</label>
+                <label for="featureWindowCount">重要性分段数</label>
                 <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
               </div>
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
               <div id="advancedOptions" class="hidden">
-                <label>标准化</label>
+                <label for="normalization">标准化</label>
                 <select id="normalization">
                   <option value="zscore">zscore</option>
                   <option value="minmax">minmax</option>
                   <option value="area">area</option>
                   <option value="none">none</option>
                 </select>
-                <label>类别不平衡</label>
+                <label for="classBalance">类别不平衡</label>
                 <select id="classBalance">
                   <option value="none">none</option>
                   <option value="class_weight">class_weight</option>
                 </select>
                 <div id="deepOptions">
-                  <label>Epoch</label>
+                  <label for="epochs">Epoch</label>
                   <input id="epochs" type="number" value="200" min="1" max="200" />
-                  <label>Batch size</label>
+                  <label for="batchSize">Batch size</label>
                   <input id="batchSize" type="number" value="8" min="1" max="256" />
-                  <label>Learning rate</label>
+                  <label for="learningRate">Learning rate</label>
                   <input id="learningRate" type="number" value="0.001" min="0.000001" max="1" step="0.0001" />
-                  <label>Early stopping patience</label>
+                  <label for="earlyStoppingPatience">Early stopping patience</label>
                   <input id="earlyStoppingPatience" type="number" value="20" min="0" max="100" />
-                  <label>Weight decay（文档固定）</label>
+                  <label for="weightDecay">Weight decay（文档固定）</label>
                   <input id="weightDecay" type="number" value="0.0001" readonly />
-                  <label>ReduceLROnPlateau（factor / patience / min lr）</label>
+                  <label for="schedulerDefaults">ReduceLROnPlateau（factor / patience / min lr）</label>
                   <input id="schedulerDefaults" type="text" value="0.5 / 10 / 0.000001" readonly />
-                  <label>Dropout（留空自动）</label>
+                  <label for="dropout">Dropout（留空自动）</label>
                   <input id="dropout" type="number" min="0" max="0.9" step="0.05" placeholder="auto" />
-                  <label>Hidden size</label>
+                  <label for="hiddenSize">Hidden size</label>
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
-                  <label>Transformer heads</label>
+                  <label for="transformerHeads">Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
                   <div id="dscarnetOptions" class="hidden">
-                    <label>DSCARNet 输入模式</label>
+                    <label for="dscarnetInputMode">DSCARNet 输入模式</label>
                     <select id="dscarnetInputMode">
                       <option value="dual">SAR + CAR</option>
                       <option value="sar">SAR</option>
@@ -691,34 +1174,34 @@
                 </div>
                 <div id="traditionalOptions" class="hidden">
                   <div id="randomForestOptions" class="hidden">
-                    <label>每组候选的树数量</label>
+                    <label for="rfEstimators">每组候选的树数量</label>
                     <input id="rfEstimators" type="number" value="200" min="50" max="1000" step="50" />
-                    <label>OOB 随机搜索候选数</label>
+                    <label for="rfSearchIterations">OOB 随机搜索候选数</label>
                     <input id="rfSearchIterations" type="number" value="10" min="1" max="18" />
                     <p class="hint">从 18 组结构参数中按训练种子随机抽取，以袋外 balanced accuracy 选择最佳配置。</p>
                   </div>
                   <div id="svmOptions" class="hidden">
-                    <label>SVM C</label>
+                    <label for="svmC">SVM C</label>
                     <input id="svmC" type="number" value="1" min="0.01" max="100" step="0.1" />
-                    <label>SVM gamma</label>
+                    <label for="svmGamma">SVM gamma</label>
                     <input id="svmGamma" type="text" value="0.03" placeholder="0.03 / scale / auto" />
                   </div>
                   <div id="xgboostOptions" class="hidden">
-                    <label>XGBoost 树数量</label>
+                    <label for="xgbEstimators">XGBoost 树数量</label>
                     <input id="xgbEstimators" type="number" value="50" min="10" max="1000" step="10" />
-                    <label>XGBoost 最大深度</label>
+                    <label for="xgbMaxDepth">XGBoost 最大深度</label>
                     <input id="xgbMaxDepth" type="number" value="2" min="1" max="12" />
-                    <label>XGBoost 学习率</label>
+                    <label for="xgbLearningRate">XGBoost 学习率</label>
                     <input id="xgbLearningRate" type="number" value="0.1" min="0.001" max="1" step="0.01" />
-                    <label>XGBoost subsample</label>
+                    <label for="xgbSubsample">XGBoost subsample</label>
                     <input id="xgbSubsample" type="number" value="0.9" min="0.1" max="1" step="0.05" />
-                    <label>XGBoost colsample_bytree</label>
+                    <label for="xgbColsample">XGBoost colsample_bytree</label>
                     <input id="xgbColsample" type="number" value="0.9" min="0.1" max="1" step="0.05" />
-                    <label>XGBoost L2 正则</label>
+                    <label for="xgbRegLambda">XGBoost L2 正则</label>
                     <input id="xgbRegLambda" type="number" value="2" min="0" max="50" step="0.1" />
                   </div>
                 </div>
-                <label>随机种子</label>
+                <label for="seed">随机种子</label>
                 <input id="seed" type="number" value="42" min="0" />
               </div>
               <div class="actions">
@@ -745,8 +1228,8 @@
             </div>
             <div class="panel wide">
               <h2>当前训练</h2>
-              <div id="runStatus" class="status">尚未开始</div>
-              <div id="trainingProgress"></div>
+              <div id="runStatus" class="status" aria-live="polite">尚未开始</div>
+              <div id="trainingProgress" aria-live="polite"></div>
               <div id="metrics" style="margin-top:14px"></div>
               <div id="trainingAudit"></div>
               <div id="trainingCharts"></div>
@@ -759,35 +1242,43 @@
 
         <!-- 拉曼预处理：后端固定先截取范围，再对截取片段做基线校正。 -->
         <div id="view-raman" class="view">
+          <details class="page-help">
+            <summary>拉曼预处理操作说明</summary>
+            <ol>
+              <li>上传一个或多个拉曼 CSV，并选择按行号或 X 轴范围截取。</li>
+              <li>系统固定先截取目标范围，再执行基线校正。</li>
+              <li>预览曲线无误后下载统一六列建模 CSV。</li>
+            </ol>
+          </details>
           <div class="grid">
             <div class="panel wide">
               <h2>拉曼预处理</h2>
-              <label>上传拉曼 CSV，可多选</label>
+              <label for="ramanFiles">上传拉曼 CSV，可多选</label>
               <input id="ramanFiles" type="file" multiple accept=".csv" />
-              <label>范围选择方式</label>
+              <label for="ramanRangeMode">范围选择方式</label>
               <select id="ramanRangeMode">
                 <option value="row">按行号范围</option>
                 <option value="x_value">按 X 轴数值范围</option>
               </select>
               <div id="ramanRowRange">
-                <label>起始行</label>
+                <label for="ramanStart">起始行</label>
                 <input id="ramanStart" type="number" value="1" min="1" />
-                <label>结束行</label>
+                <label for="ramanEnd">结束行</label>
                 <input id="ramanEnd" type="number" value="160" min="1" />
               </div>
               <div id="ramanValueRange" class="hidden">
-                <label>拉曼位移下限（留空不限制）</label>
+                <label for="ramanXMin">拉曼位移下限（留空不限制）</label>
                 <input id="ramanXMin" type="number" step="any" placeholder="例如 400" />
-                <label>拉曼位移上限（留空不限制）</label>
+                <label for="ramanXMax">拉曼位移上限（留空不限制）</label>
                 <input id="ramanXMax" type="number" step="any" placeholder="例如 1800" />
               </div>
-              <label>基线校正方法</label>
+              <label for="ramanBaselineMethodMode">基线校正方法</label>
               <select id="ramanBaselineMethodMode">
                 <option value="arPLS">默认 arPLS</option>
                 <option value="custom">自选方法</option>
               </select>
               <div id="ramanCustomMethodBox" class="hidden">
-                <label>自选方法名称</label>
+                <label for="ramanCustomMethod">自选方法名称</label>
                 <input id="ramanCustomMethod" type="text" value="poly" placeholder="例如 poly / als / drPLS / arPLS" />
               </div>
               <div class="actions">
@@ -803,26 +1294,34 @@
 
         <!-- 色谱主界面实际提交到 HPLC 三步管线；简单 chromatography 仅保留 API 兼容。 -->
         <div id="view-chromatography" class="view hidden">
+          <details class="page-help">
+            <summary>色谱预处理操作说明</summary>
+            <ol>
+              <li>上传一个或多个色谱 CSV，并选择需要的时间范围。</li>
+              <li>默认依次执行共同时间轴插值、逐条消负和真实时间轴面积归一化。</li>
+              <li>仅在数据确有特殊要求时展开并调整标准流程参数。</li>
+            </ol>
+          </details>
           <div class="grid">
             <div class="panel wide">
               <h2>色谱预处理</h2>
-              <label>上传色谱 CSV，可多选</label>
+              <label for="chromFiles">上传色谱 CSV，可多选</label>
               <input id="chromFiles" type="file" multiple accept=".csv" />
-              <label>范围选择方式</label>
+              <label for="chromRangeMode">范围选择方式</label>
               <select id="chromRangeMode">
                 <option value="row">按行号范围</option>
                 <option value="x_value">按 X 轴数值范围</option>
               </select>
               <div id="chromRowRange">
-                <label>起始行</label>
+                <label for="chromStart">起始行</label>
                 <input id="chromStart" type="number" value="1" min="1" />
-                <label>结束行</label>
+                <label for="chromEnd">结束行</label>
                 <input id="chromEnd" type="number" value="160" min="1" />
               </div>
               <div id="chromValueRange" class="hidden">
-                <label>时间下限（留空不限制）</label>
+                <label for="chromXMin">时间下限（留空不限制）</label>
                 <input id="chromXMin" type="number" step="any" placeholder="例如 0.5" />
-                <label>时间上限（留空不限制）</label>
+                <label for="chromXMax">时间上限（留空不限制）</label>
                 <input id="chromXMax" type="number" step="any" placeholder="例如 12" />
               </div>
               <div class="hplc-default-card">
@@ -860,66 +1359,81 @@
           </div>
         </div>
 
+        <div id="view-results" class="view hidden">
+          <details class="page-help">
+            <summary>建模结果查看说明</summary>
+            <ol>
+              <li>每次训练使用唯一 Run ID；复制当前链接即可稍后重新打开。</li>
+              <li>交叉验证任务的测试主指标使用合并 OOF 预测，折均值会单独标注。</li>
+              <li>下载按钮按真实产物清单生成；缺失、不适用或无权限的文件会说明原因。</li>
+            </ol>
+          </details>
+          <div class="result-shell">
+            <div id="resultPageState" aria-live="polite"></div>
+            <section id="resultOverview" class="result-section"></section>
+            <section id="resultMetrics" class="result-section"></section>
+            <section id="resultSplitMetrics" class="result-section"></section>
+            <section id="resultAnalysis" class="result-section"></section>
+            <section id="resultExplainability" class="result-section"></section>
+            <section id="resultArtifacts" class="result-section"></section>
+          </div>
+        </div>
+
         <div id="view-runs" class="view hidden">
+          <details class="page-help">
+            <summary>训练记录操作说明</summary>
+            <ol>
+              <li>从列表打开任一 Run 的进度或专属建模结果。</li>
+              <li>排队中和训练中的任务不可删除；终态删除会永久移除记录及产物。</li>
+              <li>失败时请复制 Run ID，便于服务器日志和诊断信息关联。</li>
+            </ol>
+          </details>
           <div class="panel">
             <h2>训练记录</h2>
             <div class="actions">
               <button class="secondary" id="refreshRuns">刷新</button>
             </div>
-            <div id="runsTable"></div>
+            <div id="runsTable" class="table-scroll"></div>
           </div>
         </div>
 
         <div id="view-manual" class="view hidden">
           <div class="panel">
-            <h2>使用手册</h2>
-            <h3>一、拉曼数据预处理</h3>
-            <p>上传多个拉曼 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是拉曼位移。系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Sample_ID。</p>
-            <p>系统固定先按行号或 X 轴数值截取目标范围，再对截取后的光谱片段执行基线校正，避免区间外强峰影响目标区间。</p>
-            <h3>二、色谱数据预处理</h3>
-            <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
-            <p><strong>HPLC 高级预处理：</strong>适合多份 HPLC 文件一起建模前使用，主要解决时间轴轻微错位、负强度和总响应量不同这三类问题。开启后系统按固定顺序处理：先把各文件插值到共同时间轴，再逐条曲线减去自身最小值让强度非负，最后按真实时间轴做梯形积分，把每条曲线总面积归一化为 1。</p>
-            <table>
-              <thead><tr><th>选项</th><th>处理含义</th><th>建议</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td>线性插值到统一时间轴</td>
-                  <td>取所有文件的重叠时间范围，按曲线长度中位数生成共同时间轴，并把每条曲线插值过去。</td>
-                  <td>多文件 Time 采样点或起止时间不完全一致时建议开启；关闭时要求所有文件时间轴一致。</td>
-                </tr>
-                <tr>
-                  <td>减最小值消除负值</td>
-                  <td>每条曲线减去自己的最小强度，抬高到非负区间，避免负基线影响后续面积计算。</td>
-                  <td>存在基线漂移、噪声负值或检测器扣背景后出现负数时建议开启。</td>
-                </tr>
-                <tr>
-                  <td>面积归一化</td>
-                  <td>用梯形积分计算每条曲线总面积，再用整条曲线除以该面积，使总面积为 1。</td>
-                  <td>希望模型比较峰形和相对峰面积时开启；如果绝对峰面积本身就是判别信息，可以关闭。</td>
-                </tr>
-              </tbody>
-            </table>
-            <p>如果将三个 HPLC 子选项全部关闭，色谱页面只按选择范围读取曲线并导出统一建模 CSV，不执行插值、消负和面积归一化。</p>
-            <h3>三、AI 建模</h3>
-            <p>进入 AI 建模页面后，可以上传已经补充 Label 和 Sample_ID 的统一格式 CSV。当前版本只支持分类任务；模型下拉由后端能力目录动态生成，目录固定包含 15 个目标分类模型，当前环境通常有 14 个可训练，CNN-Mamba 会因 mamba-ssm 依赖不可用而禁用。PLSR/SVR 为回归变体暂不启用。</p>
-            <p><strong>数据划分比例：</strong>默认 8:1:1，用户可以直接修改训练、验证、测试比例；加载独立测试集时，主数据使用训练/验证比例，独立测试集作为最终测试集，后端状态中会标记为 external_test_holdout。</p>
-            <p><strong>开启交叉验证：</strong>交叉验证作为单独开关，几个 Sample_ID 就跑几折，每折留 1 个独立样品组作为测试集，其余样品组按用户填写的训练/验证比例划分。</p>
-            <p><strong>Sample_ID 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Sample_ID 整组划分。同一个 Sample_ID 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
-            <p><strong>随机森林 OOB 搜索：</strong>默认从 18 组结构参数中按训练种子随机抽取 10 组，每组训练 200 棵树，以袋外 balanced accuracy 选优；验证集只用于报告胜出配置的表现。</p>
-            <p>所有标准化参数均只由当前折的训练集拟合标准化，并应用到同折验证集和测试集；Label 即使是数字也会按类别名编码，不作为连续回归值处理。</p>
-            <p>六个传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡，重要性为 masked_loss - original_loss = log(p_before / p_after)，正值表示遮挡后真实类别置信度受损；全局结果按真实类别等权聚合。1D-CNN、CNN-SE、ResNet、Inception 和 TCN 使用 1D Grad-CAM-like；DSCARNet 使用 SAR/CAR 二维 Grad-CAM 回投到原始一维特征。</p>
-            <h3>四、结果下载</h3>
-            <p>训练成功后，可下载 predictions.csv、cv_predictions.csv、metrics.json、cv_metrics.json、fold_metrics.csv 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl；开启交叉验证时模型文件只对应最后一折，最终报告指标以交叉验证汇总为准。</p>
+            <h2>全局使用说明</h2>
+            <p>各功能页顶部都提供与当前操作直接相关的简短说明。这里仅保留跨页面规则和故障排查入口。</p>
+            <h3>统一数据格式</h3>
+            <p>建模 CSV 固定使用 Index、Name、XXX、Intensity、Label、Sample_ID 六列。Label 始终按分类类别处理；相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合。</p>
+            <h3>训练与结果</h3>
+            <p>提交训练只会创建排队任务，独立 worker 负责执行。完成后使用唯一 Run ID 进入建模结果；结果页刷新或服务重启后仍可重新获取。</p>
+            <h3>服务器访问</h3>
+            <p>服务器模式会要求访问令牌。令牌仅保存在当前标签页会话存储中，不写入 URL、本地持久存储或下载文件。</p>
             <div class="actions">
               <button class="primary" data-view-shortcut="raman">开始预处理</button>
               <button class="secondary" data-view-shortcut="modeling">去建模</button>
+              <button class="secondary" data-view-shortcut="results">查看建模结果</button>
             </div>
           </div>
         </div>
       </section>
     </main>
 
+    <div id="authDialog" class="auth-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="authDialogTitle" aria-hidden="true">
+      <form id="authForm" class="auth-card">
+        <h2 id="authDialogTitle">服务器访问认证</h2>
+        <p>请输入管理员提供的访问令牌。令牌只保存在当前浏览器标签页的会话存储中。</p>
+        <label for="serverTokenInput">访问令牌</label>
+        <input id="serverTokenInput" type="password" autocomplete="off" spellcheck="false" />
+        <p id="authError" class="auth-error" role="alert"></p>
+        <div class="actions">
+          <button class="primary" type="submit">验证并继续</button>
+          <button class="secondary" id="authCancel" type="button">稍后再说</button>
+        </div>
+      </form>
+    </div>
+
+    <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
+    <script type="module" src="/static/js/run-results.js"></script>
     <script>
       // 页面级状态：数据集引用、当前 Run、轮询锁和曲线缓存都集中在这里。
       // 训练规范状态仍来自后端 SQLite；这些变量只管理当前浏览器会话的展示。
@@ -929,8 +1443,6 @@
       let testDatasetId = null;
       let currentRunId = null;
       let trainingRequestInFlight = false;
-      let poller = null;
-      let pollingRunId = null;
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
       let currentCurveSource = "train";
@@ -940,6 +1452,9 @@
       let lastPreprocessKind = "raman";
       let modelCatalogById = new Map();
       let apiBackedUiInitialized = false;
+      let loadedRunSummaries = [];
+      let runsNextCursor = null;
+      let resizeFrame = null;
 
       // 通用 DOM 与 API 辅助。模块未就绪时 api() 保留 fetch 兜底，确保健康检查
       // 和目录错误仍能给出可读 detail，而不是只显示 HTTP 状态码。
@@ -1013,6 +1528,15 @@
       function modelCatalogItem(modelType = $("modelType").value) {
         return modelCatalogById.get(modelType) || null;
       }
+      window.SpecAutoAIModelMeta = (modelType) => {
+        const item = modelCatalogItem(modelType);
+        return item ? {
+          id: item.id,
+          displayName: String(item.display_name || item.id),
+          family: item.family,
+          explainabilityMethod: item.explainability_method,
+        } : null;
+      };
 
       function renderModelCatalog(models, preferredModelId = $("modelType").value) {
         const select = $("modelType");
@@ -1053,6 +1577,7 @@
         select.disabled = !firstAvailable;
         $("modelCatalogHint").textContent = "模型目录已加载；模型按文档分类分组显示。";
         updateModelOptionVisibility();
+        window.dispatchEvent(new CustomEvent("specautoai:model-catalog-ready"));
       }
 
       function renderModelCatalogFallback(error) {
@@ -1098,6 +1623,7 @@
       // Canvas 绘图公共层：按 devicePixelRatio 扩大真实像素，CSS 尺寸保持不变。
       function setupHiDpiCanvas(canvas) {
         const rect = canvas.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) return null;
         const ratio = Math.max(window.devicePixelRatio || 1, 1);
         const width = Math.max(Math.round(rect.width), 1);
         const height = Math.max(Math.round(rect.height), 1);
@@ -1120,7 +1646,9 @@
       function drawCurves(curves) {
         const canvas = $("curveCanvas");
         if (!canvas || $("curvePreviewBody").classList.contains("hidden")) return;
-        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        const canvasState = setupHiDpiCanvas(canvas);
+        if (!canvasState) return;
+        const { ctx, width, height } = canvasState;
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
@@ -1161,7 +1689,13 @@
       function populateCurveSelect() {
         const curves = activeCurveList();
         $("curveSourceSelect").value = currentCurveSource;
-        $("curveSelect").innerHTML = curves.map((curve, index) => `<option value="${index}">${curveDisplayName(curve)}</option>`).join("");
+        const select = $("curveSelect");
+        select.replaceChildren(...curves.map((curve, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = curveDisplayName(curve);
+          return option;
+        }));
         drawSelectedCurve();
       }
 
@@ -1173,23 +1707,8 @@
       }
 
       function parseIndexExpression(input) {
-        const values = new Set();
-        input
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean)
-          .forEach((part) => {
-            if (part.includes("-")) {
-              const [start, end] = part.split("-").map((value) => Number(value.trim()));
-              if (Number.isFinite(start) && Number.isFinite(end)) {
-                for (let value = Math.min(start, end); value <= Math.max(start, end); value += 1) values.add(String(value));
-              }
-            } else {
-              const value = Number(part);
-              if (Number.isFinite(value)) values.add(String(value));
-            }
-          });
-        return values;
+        if (!window.SpecAutoAIUI?.parseCurveIndexExpression) throw new Error("曲线选择组件尚未加载");
+        return window.SpecAutoAIUI.parseCurveIndexExpression(input);
       }
 
       function drawCurvesByIndex() {
@@ -1219,7 +1738,9 @@
       function drawPreprocessComparison(curve, canvasId = "preprocessCurveCanvas", kind = "raman") {
         const canvas = $(canvasId);
         if (!canvas || !curve) return;
-        const { ctx, width, height } = setupHiDpiCanvas(canvas);
+        const canvasState = setupHiDpiCanvas(canvas);
+        if (!canvasState) return;
+        const { ctx, width, height } = canvasState;
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, width, height);
@@ -1272,36 +1793,67 @@
       function renderSummary(summary, options = {}) {
         const isTest = options.kind === "test";
         if (isTest) {
-          testDatasetPath = summary.path;
+          if (summary.path) testDatasetPath = summary.path;
           lastTestSummaryCurves = [...(summary.curves || [])].sort((a, b) => naturalCompare(a.sample_id ?? a.index, b.sample_id ?? b.index));
         } else {
-          datasetPath = summary.path;
+          if (summary.path) datasetPath = summary.path;
           lastSummaryCurves = [...(summary.curves || [])].sort((a, b) => naturalCompare(a.sample_id ?? a.index, b.sample_id ?? b.index));
         }
-        const labels = Object.entries(summary.label_counts)
-          .sort(([first], [second]) => naturalCompare(first, second))
-          .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
-          .join("");
         const sampleIds = summary.sample_id || {};
-        const sampleRows = [...(sampleIds.groups || [])]
-          .sort((a, b) => naturalCompare(a.sample_id, b.sample_id))
-          .map((row) => `<tr><td>${escapeHtml(row.sample_id)}</td><td>${escapeHtml(row.label)}</td><td>${row.count}</td></tr>`)
-          .join("");
         const target = isTest ? $("testDatasetInfo") : $("datasetInfo");
-        target.innerHTML = `
-          <h3>${isTest ? "测试集摘要" : "数据摘要"}</h3>
-          <div class="metrics summary-metrics">
-            <div class="metric">总数据<strong>${summary.samples}</strong></div>
-            <div class="metric">类别数<strong>${summary.classes}</strong></div>
-            <div class="metric">样本数<strong>${sampleIds.group_count ?? "-"}</strong></div>
-            <div class="metric">每组测量数<strong>${sampleIds.expected_repeats_per_group ?? "-"}</strong></div>
-            <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
-          </div>
-          <h3>Sample_ID 分组</h3>
-          <table><thead><tr><th>Sample_ID</th><th>Label</th><th>数量</th></tr></thead><tbody>${sampleRows}</tbody></table>
-          <h3>标签分布</h3>
-          <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
-        `;
+        const metricGrid = document.createElement("div");
+        metricGrid.className = "metrics summary-metrics";
+        [
+          ["总数据", summary.samples],
+          ["类别数", summary.classes],
+          ["样本数", sampleIds.group_count],
+          ["每组测量数", sampleIds.expected_repeats_per_group],
+          ["曲线长度", summary.curve_length],
+        ].forEach(([label, value]) => {
+          const card = document.createElement("div");
+          card.className = "metric";
+          card.append(document.createTextNode(label));
+          const strong = document.createElement("strong");
+          strong.textContent = value == null ? "-" : String(value);
+          card.append(strong);
+          metricGrid.append(card);
+        });
+        const summaryHeading = document.createElement("h3");
+        summaryHeading.textContent = isTest ? "测试集摘要" : "数据摘要";
+        const sampleHeading = document.createElement("h3");
+        sampleHeading.textContent = "Sample_ID 分组";
+        const sampleTarget = document.createElement("div");
+        const labelHeading = document.createElement("h3");
+        labelHeading.textContent = "标签分布";
+        const labelTable = document.createElement("table");
+        const labelHead = document.createElement("thead");
+        const labelHeadRow = document.createElement("tr");
+        ["Label", "Count"].forEach((text) => {
+          const th = document.createElement("th");
+          th.textContent = text;
+          labelHeadRow.append(th);
+        });
+        labelHead.append(labelHeadRow);
+        const labelBody = document.createElement("tbody");
+        Object.entries(summary.label_counts || {})
+          .sort(([first], [second]) => naturalCompare(first, second))
+          .forEach(([label, count]) => {
+            const row = document.createElement("tr");
+            const labelCell = document.createElement("td");
+            const countCell = document.createElement("td");
+            labelCell.textContent = String(label);
+            countCell.textContent = String(count);
+            row.append(labelCell, countCell);
+            labelBody.append(row);
+          });
+        labelTable.append(labelHead, labelBody);
+        target.replaceChildren(summaryHeading, metricGrid, sampleHeading, sampleTarget, labelHeading, document.createElement("div"));
+        target.lastElementChild.className = "table-scroll";
+        target.lastElementChild.append(labelTable);
+        if (!window.SpecAutoAIUI?.renderSampleIdList) throw new Error("Sample_ID 组件尚未加载");
+        window.SpecAutoAIUI.renderSampleIdList(sampleTarget, sampleIds.groups || [], {
+          listId: isTest ? "testSampleIdGroups" : "trainSampleIdGroups",
+        });
         if (isTest) currentCurveSource = "test";
         else currentCurveSource = "train";
         updateSplitOptionVisibility();
@@ -1310,9 +1862,16 @@
 
       async function loadHealth() {
         try {
-          await api("/health");
-          $("health").textContent = "后端正常";
+          const health = await api("/health");
+          window.SpecAutoAIHealth = health || {};
+          const workerAvailable = health?.worker?.available;
+          $("health").textContent = workerAvailable === true
+            ? "后端正常 · Worker 可用"
+            : workerAvailable === false
+              ? "后端正常 · Worker 未连接"
+              : "后端正常";
           $("health").className = "status success";
+          window.dispatchEvent(new CustomEvent("specautoai:health-ready", { detail: health }));
         } catch (err) {
           $("health").textContent = "后端异常";
           $("health").className = "status failed";
@@ -1384,7 +1943,7 @@
       // 后端 classification_policy 会再次校验，前端校验不能替代服务端约束。
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
-        const hasExternalTest = Boolean(testDatasetPath);
+        const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
         const cvEnabled = $("cvEnabled").checked;
         const splitMode = hasExternalTest ? "external_test_holdout" : "stratified_holdout";
         const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);
@@ -1433,10 +1992,6 @@
         return payload;
       }
 
-      function formatMetric(value) {
-        return Number.isFinite(Number(value)) ? Number(value).toFixed(3) : "-";
-      }
-
       function runTotalTargetEpochs(run) {
         if (Number.isFinite(Number(run.total_target_epochs))) return Number(run.total_target_epochs);
         const foldCount = Number(run.fold_count || 1);
@@ -1455,187 +2010,10 @@
         return "-";
       }
 
-      // 训练审计区：从规范投影或旧 status 嵌套字段读取选参记录，只用于展示。
-      function trainingAuditFor(run) {
-        const directAudit = run?.training_audit;
-        if (directAudit && typeof directAudit === "object") return directAudit;
-        const nestedStatus = run?.status;
-        return nestedStatus && typeof nestedStatus === "object" && nestedStatus.training_audit && typeof nestedStatus.training_audit === "object"
-          ? nestedStatus.training_audit
-          : {};
-      }
-
       function isExternalTestHoldout(run) {
-        const audit = trainingAuditFor(run);
-        const strategy = audit.evaluation_strategy || run?.evaluation_strategy || run?.config?.split_mode;
+        const strategy = run?.evaluation_strategy || run?.config?.evaluation_strategy || run?.config?.split_mode;
         return strategy === "external_test_holdout";
       }
-
-      const AUDIT_PARAM_LABELS = {
-        pls_components: "PLS 成分数",
-        pca_components: "PCA 成分数",
-        logistic_c: "正则化 C",
-        svm_kernel: "核函数",
-        svm_c: "惩罚系数 C",
-        svm_gamma: "Gamma",
-        random_forest_n_estimators: "树数量",
-        random_forest_max_depth: "最大深度",
-        random_forest_min_samples_leaf: "叶节点最少样本",
-        random_forest_max_features: "每棵树特征数",
-        xgboost_n_estimators: "迭代树数量",
-        xgboost_max_depth: "最大深度",
-        xgboost_learning_rate: "学习率",
-        xgboost_subsample: "样本采样比例",
-        xgboost_colsample_bytree: "特征采样比例",
-        xgboost_min_child_weight: "最小子节点权重",
-        xgboost_reg_lambda: "L2 正则",
-        xgboost_gamma: "分裂阈值 Gamma",
-      };
-
-      const AUDIT_MODEL_PARAM_KEYS = {
-        pls_da: ["pls_components"],
-        pca_lda: ["pca_components"],
-        logistic_regression: ["logistic_c"],
-        svm: ["svm_kernel", "svm_c", "svm_gamma"],
-        random_forest: [
-          "random_forest_n_estimators",
-          "random_forest_max_depth",
-          "random_forest_min_samples_leaf",
-          "random_forest_max_features",
-        ],
-        xgboost: [
-          "xgboost_n_estimators",
-          "xgboost_max_depth",
-          "xgboost_learning_rate",
-          "xgboost_subsample",
-          "xgboost_colsample_bytree",
-          "xgboost_min_child_weight",
-          "xgboost_reg_lambda",
-          "xgboost_gamma",
-        ],
-      };
-
-      function auditParamsForModel(params, modelType) {
-        const source = params && typeof params === "object" ? params : {};
-        const keys = AUDIT_MODEL_PARAM_KEYS[modelType] || Object.keys(source);
-        return Object.fromEntries(keys.filter((key) => key in source).map((key) => [key, source[key]]));
-      }
-
-      function auditParamsMarkup(params) {
-        const entries = params && typeof params === "object" ? Object.entries(params) : [];
-        if (!entries.length) return '<span class="empty-state">未提供参数</span>';
-        return entries.map(([key, value]) => `
-          <span class="audit-param">${escapeHtml(AUDIT_PARAM_LABELS[key] || key)}：<b>${escapeHtml(String(value ?? "-"))}</b></span>
-        `).join("");
-      }
-
-      function traditionalAuditCards(selections, modelType) {
-        const groups = new Map();
-        selections.forEach((entry) => {
-          const params = auditParamsForModel(entry?.params, modelType);
-          const key = JSON.stringify(params, Object.keys(params).sort());
-          if (!groups.has(key)) groups.set(key, { params, folds: [], scores: [], metrics: [] });
-          const group = groups.get(key);
-          if (entry.fold_index != null) group.folds.push(entry.fold_index);
-          const metric = entry.selection_metric || "balanced_accuracy";
-          const score = Number(entry.selection_score ?? entry.valid_balanced_accuracy);
-          group.metrics.push(metric);
-          if (Number.isFinite(score)) group.scores.push(score);
-        });
-        return Array.from(groups.values()).map((group, index) => {
-          const score = group.scores.length
-            ? group.scores.reduce((sum, value) => sum + value, 0) / group.scores.length
-            : null;
-          const foldLabel = group.folds.length ? `适用折：${group.folds.join("、")}` : "最终选定参数";
-          const scoreLabel = group.metrics.every((metric) => metric === "oob_balanced_accuracy")
-            ? "平均 OOB BA"
-            : "平均验证 BA";
-          return `
-            <div class="audit-config-card">
-              <div class="audit-config-title">
-                <span>配置 ${index + 1} · ${escapeHtml(foldLabel)}</span>
-                <span class="audit-score">${score == null ? "" : `${scoreLabel} ${formatMetric(score)}`}</span>
-              </div>
-              <div class="audit-param-list">${auditParamsMarkup(group.params)}</div>
-            </div>
-          `;
-        }).join("");
-      }
-
-      function traditionalAuditConfigCount(selections, modelType) {
-        return new Set(selections.map((entry) => JSON.stringify(auditParamsForModel(entry?.params, modelType)))).size;
-      }
-
-      function renderTrainingAudit(run) {
-        const target = $("trainingAudit");
-        const audit = trainingAuditFor(run);
-        if (!target || !audit || typeof audit !== "object") return;
-        const isExternal = isExternalTestHoldout(run);
-        const modelType = run.model_type || run.config?.model_type;
-        const sections = [];
-        const traditional = audit.traditional;
-        if (traditional && typeof traditional === "object") {
-          const search = traditional.hyperparameter_search_csv || {};
-          const searchArtifact = String(search.artifact || "hyperparameter_search.csv");
-          const searchHint = search.available && run.run_id
-            ? `<a class="secondary" href="/api/training/runs/${encodeURIComponent(run.run_id)}/artifact/${encodeURIComponent(searchArtifact)}">下载参数搜索 CSV</a>`
-            : `<span>参数搜索 CSV：${escapeHtml(searchArtifact)}（当前 Run 未提供下载）</span>`;
-          if (isExternal) {
-            const cards = traditionalAuditCards([{
-              params: traditional.best_params,
-              selection_metric: traditional.selection_metric,
-              selection_score: traditional.selection_score,
-              valid_balanced_accuracy: traditional.valid_balanced_accuracy,
-            }], modelType);
-            sections.push(`
-              <section class="audit-panel">
-                <div class="audit-header">
-                  <div><h3>参数选择记录</h3><p>记录验证集选出的最终配置，便于复核模型选择。</p></div>
-                  <span class="audit-badge">独立测试集</span>
-                </div>
-                <div class="audit-config-grid">${cards}</div>
-                <div class="actions">${searchHint}</div>
-              </section>
-            `);
-          } else {
-            const selections = Array.isArray(traditional.best_params_by_fold) ? traditional.best_params_by_fold : [];
-            const cards = traditionalAuditCards(selections, modelType);
-            sections.push(`
-              <section class="audit-panel">
-                <div class="audit-header">
-                  <div><h3>参数选择记录</h3><p>每折只显示当前模型真正参与搜索的参数；相同配置已自动合并。</p></div>
-                  <span class="audit-badge">${selections.length} 折 · ${traditionalAuditConfigCount(selections, modelType)} 种配置</span>
-                </div>
-                <div class="audit-config-grid">${cards || '<p class="empty-state">未提供参数选择明细。</p>'}</div>
-                <div class="actions">${searchHint}</div>
-              </section>
-            `);
-          }
-        }
-        target.innerHTML = sections.join("");
-      }
-
-      function inferValidMetricsFromHistory(history) {
-        const latestByFold = new Map();
-        (history || []).forEach((row) => {
-          const fold = Number(row.fold_index || 1);
-          const epoch = Number(row.epoch || 0);
-          const previous = latestByFold.get(fold);
-          if (!previous || epoch >= Number(previous.epoch || 0)) latestByFold.set(fold, row);
-        });
-        const rows = Array.from(latestByFold.values());
-        const average = (field) => {
-          const values = rows.map((row) => Number(row[field])).filter((value) => Number.isFinite(value));
-          return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
-        };
-        return { accuracy: average("valid_accuracy"), macro_f1: average("valid_macro_f1") };
-      }
-
-      function macroMetric(split, metric) {
-        if (!split || typeof split !== "object") return undefined;
-        return split[`macro_${metric}`] ?? split[metric];
-      }
-
       function formatTime(value) {
         if (!value) return "-";
         const date = new Date(value);
@@ -1645,25 +2023,17 @@
 
       // Run 生命周期：清空旧结果、创建 queued Run，并用单飞锁避免重复 POST。
       function resetTrainingPanel(message = "模型正在训练") {
+        window.SpecAutoAIResults?.cancelAutoRedirect();
+        window.SpecAutoAIResults?.stopTrainingWatch();
         $("runStatus").textContent = "准备开始";
         $("runStatus").className = "status pending";
-        $("trainingProgress").innerHTML = `
-          <div class="training-state">
-            <div class="spinner"></div>
-            <div><strong>${message}</strong><span>正在创建新的训练任务，旧结果已清空。</span></div>
-          </div>
-        `;
-        $("metrics").innerHTML = "";
-        $("trainingAudit").innerHTML = "";
-        $("trainingCharts").innerHTML = "";
-        $("featureImportance").innerHTML = "";
-        $("confusionMatrix").innerHTML = "";
-        $("downloads").innerHTML = "";
+        $("trainingProgress").replaceChildren(currentRunNotice("loading", message, "正在创建新的训练任务，旧结果已清空。"));
+        clearCurrentRunDetails();
       }
 
       async function startTrain() {
         if (trainingRequestInFlight) return;
-        if (!datasetPath) throw new Error("请先加载数据集");
+        if (!datasetId && !datasetPath) throw new Error("请先加载数据集");
         const startButton = $("startTrain");
         trainingRequestInFlight = true;
         startButton.disabled = true;
@@ -1676,761 +2046,160 @@
           else if (testDatasetPath) body.test_data_path = testDatasetPath;
           const result = await createRun(body);
           currentRunId = result.run_id;
-          pollCurrentRun();
-          clearInterval(poller);
-          poller = setInterval(pollCurrentRun, 1200);
+          window.SpecAutoAIResults?.markNewRun(currentRunId);
+          watchCurrentRun();
         } finally {
           trainingRequestInFlight = false;
           startButton.disabled = false;
         }
       }
 
-      // 训练曲线与混淆矩阵渲染。传统模型没有逐 epoch loss，调用方会跳过曲线区。
-      function drawLineChart(canvasId, series, options = {}) {
-        const canvas = $(canvasId);
-        if (!canvas) return;
-        const { ctx, width, height } = setupHiDpiCanvas(canvas);
-        ctx.clearRect(0, 0, width, height);
-        const pad = { left: 44, right: 18, top: 24, bottom: 34 };
-        const plotWidth = width - pad.left - pad.right;
-        const plotHeight = height - pad.top - pad.bottom;
-        const values = series.flatMap((item) => item.values).filter((value) => Number.isFinite(value));
-        if (!values.length) {
-          ctx.fillStyle = "#667085";
-          ctx.fillText("暂无曲线数据", pad.left, pad.top + 20);
-          return;
+      function clearCurrentRunDetails() {
+        ["metrics", "trainingAudit", "trainingCharts", "featureImportance", "confusionMatrix", "downloads"]
+          .forEach((id) => $(id).replaceChildren());
+      }
+
+      function currentRunNotice(kind, title, message, actions = []) {
+        const notice = document.createElement("div");
+        notice.className = `notice notice-${kind}`;
+        notice.setAttribute("role", kind === "error" ? "alert" : "status");
+        const content = document.createElement("div");
+        const strong = document.createElement("strong");
+        const span = document.createElement("span");
+        strong.textContent = title;
+        span.textContent = message;
+        content.append(strong, span);
+        notice.append(content);
+        if (actions.length) {
+          const actionWrap = document.createElement("div");
+          actionWrap.className = "notice-actions";
+          actionWrap.append(...actions);
+          notice.append(actionWrap);
         }
-        const minY = options.minY ?? Math.min(...values);
-        const maxY = options.maxY ?? Math.max(...values);
-        const ySpan = Math.max(maxY - minY, 1e-9);
-        const maxLen = Math.max(...series.map((item) => item.values.length), 1);
-        ctx.strokeStyle = "#d8dee8";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
-        ctx.fillStyle = "#667085";
-        ctx.font = "12px Segoe UI, Arial";
-        ctx.fillText(String((options.minY ?? minY).toFixed ? (options.minY ?? minY).toFixed(2) : minY), 8, pad.top + plotHeight);
-        ctx.fillText(String((options.maxY ?? maxY).toFixed ? (options.maxY ?? maxY).toFixed(2) : maxY), 8, pad.top + 4);
-        series.forEach((item, seriesIndex) => {
-          ctx.beginPath();
-          ctx.strokeStyle = item.color;
-          ctx.lineWidth = 2.1;
-          let hasPoint = false;
-          item.values.forEach((value, index) => {
-            if (!Number.isFinite(value)) return;
-            const x = pad.left + (index / Math.max(maxLen - 1, 1)) * plotWidth;
-            const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
-            if (!hasPoint) {
-              ctx.moveTo(x, y);
-              hasPoint = true;
-            }
-            else ctx.lineTo(x, y);
-          });
-          if (hasPoint) ctx.stroke();
-          ctx.fillStyle = item.color;
-          item.values.forEach((value, index) => {
-            if (!Number.isFinite(value)) return;
-            const x = pad.left + (index / Math.max(maxLen - 1, 1)) * plotWidth;
-            const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
-            ctx.beginPath();
-            ctx.arc(x, y, 3, 0, Math.PI * 2);
-            ctx.fill();
-          });
-          const legendX = pad.left + seriesIndex * 150;
-          ctx.fillStyle = item.color;
-          ctx.fillRect(legendX, 8, 12, 12);
-          ctx.fillStyle = "#344054";
-          ctx.fillText(item.label, legendX + 18, 18);
+        return notice;
+      }
+
+      function renderCurrentRunMetrics(items) {
+        const grid = document.createElement("div");
+        grid.className = "metrics";
+        items.forEach(([label, value]) => {
+          const card = document.createElement("div");
+          card.className = "metric";
+          card.append(document.createTextNode(label));
+          const strong = document.createElement("strong");
+          strong.textContent = value == null || value === "" ? "-" : String(value);
+          card.append(strong);
+          grid.append(card);
         });
+        $("metrics").replaceChildren(grid);
       }
 
-      function historyFoldOptions(history) {
-        return Array.from(
-          new Set((history || []).map((row) => Number(row.fold_index || 1)).filter((value) => Number.isFinite(value))),
-        ).sort((a, b) => a - b);
-      }
-
-      function selectedFoldHistory(history, foldIndex) {
-        return (history || [])
-          .filter((row) => Number(row.fold_index || 1) === Number(foldIndex))
-          .sort((a, b) => Number(a.epoch || 0) - Number(b.epoch || 0));
-      }
-
-      function historySeriesValues(rows, field) {
-        return rows.map((row) => {
-          const value = Number(row[field]);
-          return Number.isFinite(value) ? value : NaN;
-        });
-      }
-
-      function renderTrainingCharts(history, preferredFold = null) {
-        if (!history || !history.length) {
-          $("trainingCharts").innerHTML = "";
-          return;
-        }
-        const folds = historyFoldOptions(history);
-        const selectedFold = folds.includes(Number(preferredFold)) ? Number(preferredFold) : folds[0];
-        const foldRows = selectedFoldHistory(history, selectedFold);
-        const foldPicker = folds.length > 1
-          ? `
-            <div class="chart-toolbar">
-              <label for="historyFoldSelect">查看折数</label>
-              <select id="historyFoldSelect">
-                ${folds.map((fold) => `<option value="${fold}" ${fold === selectedFold ? "selected" : ""}>${fold}/${folds.length}</option>`).join("")}
-              </select>
-            </div>
-          `
-          : "";
-        $("trainingCharts").innerHTML = `
-          ${foldPicker}
-          <div class="chart-grid">
-            <div class="chart-card">
-              <h3>Loss 曲线</h3>
-              <canvas id="lossCanvas" width="900" height="260"></canvas>
-            </div>
-            <div class="chart-card">
-              <h3>验证指标变化</h3>
-              <canvas id="metricCanvas" width="900" height="260"></canvas>
-            </div>
-          </div>
-        `;
-        requestAnimationFrame(() => {
-          const select = $("historyFoldSelect");
-          if (select) select.addEventListener("change", () => renderTrainingCharts(history, Number(select.value)));
-          drawLineChart("lossCanvas", [{ label: "train loss", values: historySeriesValues(foldRows, "train_loss"), color: "#b45309" }]);
-          drawLineChart(
-            "metricCanvas",
-            [
-              { label: "valid acc", values: historySeriesValues(foldRows, "valid_accuracy"), color: "#0f766e" },
-              { label: "valid macro F1", values: historySeriesValues(foldRows, "valid_macro_f1"), color: "#475467" },
-              { label: "best F1", values: historySeriesValues(foldRows, "best_valid_macro_f1"), color: "#b42318" },
-            ],
-            { minY: 0, maxY: 1 },
-          );
-        });
-      }
-
-      function renderConfusionMatrix(run) {
-        const matrix = run.metrics?.test?.confusion_matrix || [];
-        if (!matrix.length) {
-          $("confusionMatrix").innerHTML = "";
-          return;
-        }
-        const labels = run.label_names || matrix.map((_, index) => `class_${index}`);
-        const header = labels.map((label) => `<th>${label}</th>`).join("");
-        const rows = matrix
-          .map((row, index) => `<tr><th>${labels[index]}</th>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`)
-          .join("");
-        $("confusionMatrix").innerHTML = `
-          <div class="matrix-card">
-            <h3>测试集混淆矩阵</h3>
-            <div class="matrix-wrap">
-              <table class="matrix-table">
-                <thead><tr><th>真实 \\ 预测</th>${header}</tr></thead>
-                <tbody>${rows}</tbody>
-              </table>
-            </div>
-          </div>
-        `;
-      }
-
-      // 可解释性渲染：同时兼容窗口 Log-loss、旧 F1 产物、1D Grad-CAM 与
-      // DSCARNet 二维回投；新 Run 以 Log-loss/Grad-CAM 方法为准。
-      function formatFeatureX(value) {
-        const num = Number(value);
-        if (!Number.isFinite(num)) return "-";
-        return Math.abs(num) >= 100 ? num.toFixed(1) : num.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
-      }
-
-      function primaryFeatureSegment(source) {
-        const isPositive = (item) => Number(item?.importance) > 1e-12;
-        if (source?.primary_segment && isPositive(source.primary_segment)) return source.primary_segment;
-        const segments = (source?.top_segments || []).filter(isPositive);
-        if (segments.length) return [...segments].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
-        const windows = (source?.windows || []).filter(isPositive);
-        if (windows.length) return [...windows].sort((a, b) => Number(a.rank || 999999) - Number(b.rank || 999999))[0];
-        return null;
-      }
-
-      function featureSegmentKind(segment) {
-        const start = Number(segment?.start_index);
-        const end = Number(segment?.end_index);
-        return Number.isFinite(start) && Number.isFinite(end) && start === end ? "特征点" : "重要区间";
-      }
-
-      function featureSegmentRange(segment) {
-        if (featureSegmentKind(segment) === "特征点") return formatFeatureX(segment.start_x);
-        return `${formatFeatureX(segment.start_x)} - ${formatFeatureX(segment.end_x)}`;
-      }
-
-      function sampleXAxis(data, sample, curveLength) {
-        const sampleAxis = (sample.sample_x_axis || []).map(Number);
-        if (sampleAxis.length === curveLength && sampleAxis.every((value) => Number.isFinite(value))) return sampleAxis;
-        return (data.x_axis || []).map(Number);
-      }
-
-      function makeFeatureIndexToX(xAxis, curveLength, left, width) {
-        const axisValid = xAxis.length === curveLength
-          && xAxis.every((value) => Number.isFinite(value))
-          && Math.abs(xAxis[curveLength - 1] - xAxis[0]) > 1e-12;
-        if (!axisValid) {
-          return (index) => left + (index / Math.max(curveLength - 1, 1)) * width;
-        }
-        const start = xAxis[0];
-        const span = xAxis[curveLength - 1] - start;
-        return (index) => {
-          const clamped = Math.max(0, Math.min(curveLength - 1, Number(index)));
-          return left + ((xAxis[clamped] - start) / span) * width;
-        };
-      }
-
-      function mixColor(a, b, t) {
-        const ratio = Math.max(0, Math.min(1, t));
-        const values = [0, 1, 2].map((idx) => Math.round(a[idx] + (b[idx] - a[idx]) * ratio));
-        return `rgb(${values[0]}, ${values[1]}, ${values[2]})`;
-      }
-
-      function clamp01(value) {
-        return Math.max(0, Math.min(1, Number(value)));
-      }
-
-      function importanceHeatmapColor(value) {
-        const ratio = Number.isFinite(Number(value)) ? clamp01(value) : 0;
-        const stops = [
-          { at: 0, color: [30, 64, 175] },
-          { at: 0.42, color: [6, 182, 212] },
-          { at: 0.72, color: [250, 204, 21] },
-          { at: 1, color: [185, 28, 28] },
-        ];
-        for (let idx = 1; idx < stops.length; idx += 1) {
-          if (ratio <= stops[idx].at) {
-            const prev = stops[idx - 1];
-            const span = Math.max(stops[idx].at - prev.at, 1e-9);
-            return mixColor(prev.color, stops[idx].color, (ratio - prev.at) / span);
-          }
-        }
-        return mixColor(stops[stops.length - 1].color, stops[stops.length - 1].color, 1);
-      }
-
-      function sampleImportanceDomain(sample) {
-        const values = (sample.windows || [])
-          .map((window) => Number(window.importance))
-          .filter((value) => Number.isFinite(value));
-        if (!values.length) return { min: 0, max: 0 };
-        return { min: Math.min(...values), max: Math.max(...values) };
-      }
-
-      function normalizedImportanceValue(item, domain) {
-        const raw = Number(item?.importance);
-        const span = Number(domain?.max) - Number(domain?.min);
-        if (Number.isFinite(raw) && Number.isFinite(span) && span <= 1e-12) return 0;
-        const normalized = Number(item?.normalized_importance);
-        if (Number.isFinite(normalized)) return clamp01(normalized);
-        if (!Number.isFinite(raw) || !Number.isFinite(span) || span <= 1e-12) return 0;
-        return clamp01((raw - Number(domain.min)) / span);
-      }
-
-      function isLogLossOcclusionImportance(data) {
-        return data?.method === "sample_occlusion_log_loss"
-          || data?.importance_metric === "masked_true_class_log_loss_minus_original_true_class_log_loss";
-      }
-
-      function divergentImportanceColor(value, maxAbs) {
-        const raw = Number(value);
-        const scale = Number(maxAbs);
-        if (!Number.isFinite(raw) || !Number.isFinite(scale) || scale <= 1e-12 || Math.abs(raw) <= 1e-12) {
-          return "rgb(203, 213, 225)";
-        }
-        const ratio = clamp01(Math.abs(raw) / scale);
-        return raw > 0
-          ? mixColor([254, 226, 226], [185, 28, 28], ratio)
-          : mixColor([219, 234, 254], [30, 64, 175], ratio);
-      }
-
-      function drawFeatureHeatmap(ctx, source, indexToX, curveLength, plotBottom, height, options = {}) {
-        const windows = source.windows || [];
-        const importanceDomain = sampleImportanceDomain(source);
-        const logLossImportance = isLogLossOcclusionImportance(source);
-        const maxAbsImportance = Math.max(
-          Math.abs(Number(importanceDomain.min) || 0),
-          Math.abs(Number(importanceDomain.max) || 0),
-        );
-        const heatmapY = Number.isFinite(options.heatmapY) ? options.heatmapY : plotBottom + 34;
-        const heatmapHeight = 22;
-        const stripLeft = indexToX(0);
-        const stripRight = indexToX(curveLength - 1);
-        const stripWidth = Math.max(1, stripRight - stripLeft);
-        const boundaryX = (index, side) => {
-          const clamped = Math.max(0, Math.min(curveLength - 1, Number(index)));
-          if (side === "start") {
-            return clamped <= 0 ? stripLeft : (indexToX(clamped - 1) + indexToX(clamped)) / 2;
-          }
-          return clamped >= curveLength - 1 ? stripRight : (indexToX(clamped) + indexToX(clamped + 1)) / 2;
-        };
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        ctx.fillStyle = "#f2f4f7";
-        ctx.fillRect(stripLeft, heatmapY, stripWidth, heatmapHeight);
-        windows.forEach((window) => {
-          const start = Math.max(0, Number(window.start_index));
-          const end = Math.min(curveLength - 1, Number(window.end_index));
-          const x0 = Math.floor(boundaryX(start, "start"));
-          const x1 = Math.ceil(boundaryX(end, "end"));
-          ctx.fillStyle = logLossImportance
-            ? divergentImportanceColor(window.importance, maxAbsImportance)
-            : importanceHeatmapColor(normalizedImportanceValue(window, importanceDomain));
-          ctx.fillRect(x0, heatmapY, Math.max(1, x1 - x0), heatmapHeight);
-        });
-        ctx.strokeStyle = "#d8dee8";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(stripLeft, heatmapY, stripWidth, heatmapHeight);
-
-        const legendWidth = 18;
-        const legendHeight = 72;
-        const legendX = stripLeft;
-        const legendY = Number.isFinite(options.legendY)
-          ? options.legendY
-          : Math.min(height - 94, heatmapY + 44);
-        const gradient = ctx.createLinearGradient(0, legendY, 0, legendY + legendHeight);
-        if (logLossImportance) {
-          gradient.addColorStop(0, divergentImportanceColor(1, 1));
-          gradient.addColorStop(0.5, divergentImportanceColor(0, 1));
-          gradient.addColorStop(1, divergentImportanceColor(-1, 1));
-        } else {
-          gradient.addColorStop(0, importanceHeatmapColor(1));
-          gradient.addColorStop(0.28, importanceHeatmapColor(0.72));
-          gradient.addColorStop(0.58, importanceHeatmapColor(0.42));
-          gradient.addColorStop(1, importanceHeatmapColor(0));
-        }
-        ctx.fillStyle = gradient;
-        ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
-        ctx.strokeStyle = "#d8dee8";
-        ctx.strokeRect(legendX, legendY, legendWidth, legendHeight);
-        ctx.fillStyle = "#475467";
-        ctx.font = '13px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(
-          logLossImportance ? "正值（遮挡后损失增大）" : "重要性高（关键特征）",
-          legendX + legendWidth + 12,
-          legendY + 13,
-        );
-        ctx.fillText(
-          logLossImportance ? "负值（遮挡后表现改善）" : "重要性低（贡献小）",
-          legendX + legendWidth + 12,
-          legendY + legendHeight - 2,
-        );
-        ctx.restore();
-      }
-
-      function drawSampleFeatureImportanceCanvas(data, sample) {
-        const canvas = $("sampleFeatureImportanceCanvas");
-        if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        if (rect.width < 1 || rect.height < 1) return;
-        const { ctx, width, height } = setupHiDpiCanvas(canvas);
-        ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, width, height);
-        const curve = (sample.curve || []).map(Number);
-        const xAxis = sampleXAxis(data, sample, curve.length);
-        if (!curve.length) {
-          ctx.fillStyle = "#667085";
-          ctx.fillText("暂无样品曲线数据", 44, 44);
-          return;
-        }
-        const pad = { left: 50, right: 18, top: 24, bottom: 176 };
-        const plotWidth = width - pad.left - pad.right;
-        const plotHeight = height - pad.top - pad.bottom;
-        const values = curve.filter((value) => Number.isFinite(value));
-        const minY = Math.min(...values);
-        const maxY = Math.max(...values);
-        const ySpan = Math.max(maxY - minY, 1e-9);
-        const indexToX = makeFeatureIndexToX(xAxis, curve.length, pad.left, plotWidth);
-        ctx.strokeStyle = "#d8dee8";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(pad.left, pad.top, plotWidth, plotHeight);
-        const segment = primaryFeatureSegment(sample);
-        if (segment) {
-          const x0 = indexToX(Math.max(0, Number(segment.start_index)));
-          const x1 = indexToX(Math.min(curve.length - 1, Number(segment.end_index)));
-          ctx.fillStyle = "rgba(220, 38, 38, 0.22)";
-          ctx.fillRect(x0, pad.top, Math.max(2, x1 - x0), plotHeight);
-          ctx.fillStyle = "#991b1b";
-          ctx.fillText("#1", x0 + 4, pad.top + 14);
-        }
-        ctx.beginPath();
-        ctx.strokeStyle = "#0f766e";
-        ctx.lineWidth = 2;
-        curve.forEach((value, index) => {
-          if (!Number.isFinite(value)) return;
-          const x = indexToX(index);
-          const y = pad.top + plotHeight - ((value - minY) / ySpan) * plotHeight;
-          if (index === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-        ctx.fillStyle = "#667085";
-        const plotBottom = pad.top + plotHeight;
-        ctx.fillText(formatFeatureX(xAxis[0] ?? 0), pad.left, plotBottom + 20);
-        ctx.fillText(formatFeatureX(xAxis[xAxis.length - 1] ?? curve.length - 1), width - pad.right - 68, plotBottom + 20);
-        drawFeatureHeatmap(ctx, sample, indexToX, curve.length, plotBottom, height);
-      }
-
-      function featureSampleLabel(sample) {
-        const sampleName = sample.name || sample.index || sample.sample_id || sample.result_id;
-        const state = sample.correct ? "预测正确" : "预测不一致";
-        const fold = sample.fold_index ? `第 ${sample.fold_index} 折 · ` : "";
-        return `${fold}${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
-      }
-
-      function isLossOcclusionImportance(data) {
-        return data?.method === "sample_occlusion_importance" || isLogLossOcclusionImportance(data);
-      }
-
-      function isF1WindowImportance(data) {
-        return data?.method === "cv_macro_f1_window_importance"
-          || data?.importance_metric === "baseline_macro_f1_minus_perturbed_macro_f1";
-      }
-
-      function isDscarnetDualAttribution(data) {
-        return data?.method === "dscarnet_dual_2d_gradcam";
-      }
-
-      function featureMethodLabel(method) {
-        const labels = {
-          gradcam_1d: "Grad-CAM",
-          input_gradient_attribution: "输入梯度",
-          dscarnet_dual_2d_gradcam: "DSCARNet 双通路",
-          sample_occlusion_importance: "窗口遮挡",
-          sample_occlusion_log_loss: "窗口遮挡 Log-loss",
-          interval_permutation_importance: "窗口置乱",
-          cv_macro_f1_window_importance: "窗口置乱",
-          mean_gradcam_1d: "平均 Grad-CAM",
-          mean_input_gradient_attribution: "平均输入梯度",
-          mean_dscarnet_dual_2d_gradcam: "平均 DSCARNet 双通路",
-          mean_interval_permutation_importance: "平均窗口置乱",
-          mean_sample_occlusion_importance: "平均窗口遮挡",
-          mean_sample_feature_importance: "平均样品归因",
-        };
-        return labels[method] || method || "-";
-      }
-
-      function featureMetricLabel(metric) {
-        const labels = {
-          gradcam_activation: "Grad-CAM",
-          absolute_gradient_x_input: "梯度×强度",
-          sar_gradcam_plus_car_pca_backprojection: "双通路回投",
-          baseline_macro_f1_minus_perturbed_macro_f1: "F1 下降",
-          masked_loss_minus_original_loss: "Loss 增量",
-          masked_true_class_log_loss_minus_original_true_class_log_loss: "真实类别 Log-loss 增量",
-        };
-        return labels[metric] || metric || "-";
-      }
-
-      function importanceDetailLabel(data) {
-        if (isLossOcclusionImportance(data)) return "Loss 增量";
-        if (isF1WindowImportance(data)) return "F1 下降";
-        if (isDscarnetDualAttribution(data)) return "DSCARNet 双通路";
-        return featureMethodLabel(data?.method);
-      }
-
-      function importanceDetailMeaning(data) {
-        return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
-          ? "扰动后指标变化越大，说明该区间越关键。"
-          : "归因值最高的位置作为当前样品的关键特征。";
-      }
-
-      function importanceEmptyMessage(data) {
-        if (isDscarnetDualAttribution(data)) {
-          return "SAR/CAR 双通路归因值没有明显高于其他位置。";
-        }
-        if (isLogLossOcclusionImportance(data)) {
-          return "遮挡各窗口后，真实类别 Log-loss 没有增加；当前结果不指定第一重要区间。";
-        }
-        return (isLossOcclusionImportance(data) || isF1WindowImportance(data))
-          ? "遮挡或置乱各窗口后，评估指标没有明显下降。"
-          : "各位置的梯度归因值没有明显高于其他位置。";
-      }
-
-      function featureMethodMetaHtml(data) {
-        return `
-          <div>解释方法<strong>${escapeHtml(featureMethodLabel(data.method))}</strong></div>
-          <div>重要性指标<strong>${escapeHtml(featureMetricLabel(data.importance_metric))}</strong></div>
-          <div>窗口数<strong>${escapeHtml(String(data.window_count ?? "-"))}</strong></div>
-        `;
-      }
-
-      function renderSampleFeatureDetails(data, sample, jsonUrl, csvUrl) {
-        const target = $("featureSampleDetails");
-        if (!target || !sample) return;
-        const segment = primaryFeatureSegment(sample);
-        const importanceDomain = sampleImportanceDomain(sample);
-        const detailWindow = segment
-          ? (sample.windows || []).find((window) => Number(window.rank) === Number(segment.rank)) || segment
-          : null;
-        const probabilityDetails = isLogLossOcclusionImportance(data) && detailWindow
-          ? `
-              <div>真实类别概率：${formatMetric(sample.true_probability)} → ${formatMetric(detailWindow.masked_true_probability)}</div>
-              <div>概率下降：${formatMetric(detailWindow.true_probability_drop)}</div>
-              <div>Log-loss：${formatMetric(detailWindow.original_loss)} → ${formatMetric(detailWindow.masked_loss)}</div>
-            `
-          : "";
-        const chips = segment
-          ? `
-              <div class="feature-chip">
-                <strong>第 1 重要${featureSegmentKind(segment)}：${featureSegmentRange(segment)}</strong>
-                <div>归一化重要性：${formatMetric(normalizedImportanceValue(segment, importanceDomain))}</div>
-                <div>${importanceDetailLabel(data)}：${formatMetric(segment.importance)}</div>
-                ${probabilityDetails}
-              </div>
-            `
-          : `<div class="feature-chip"><strong>未发现明显正贡献区间</strong>${importanceEmptyMessage(data)}</div>`;
-        target.innerHTML = `
-          <div class="feature-meta">
-            <div>真实标签<strong>${escapeHtml(sample.true_label)}</strong></div>
-            <div>预测标签<strong>${escapeHtml(sample.pred_label)}</strong></div>
-            <div>预测状态<strong style="color:${sample.correct ? "var(--ok)" : "var(--bad)"}">${sample.correct ? "正确" : "不一致"}</strong></div>
-            <div>真实类别概率<strong>${formatMetric(sample.true_probability)}</strong></div>
-            ${featureMethodMetaHtml(data)}
-          </div>
-          <canvas id="sampleFeatureImportanceCanvas" class="sample-feature-canvas" width="1000" height="460"></canvas>
-          <div class="feature-list">${chips}</div>
-          <div class="actions">
-            <a class="secondary" href="${jsonUrl}">下载单样品特征 JSON</a>
-            <a class="secondary" href="${csvUrl}">下载单样品特征 CSV</a>
-          </div>
-        `;
-        drawSampleFeatureImportanceCanvas(data, sample);
-      }
-
-      async function renderSampleFeatureImportance(run, summary, target = $("featureImportance")) {
-        const jsonArtifact = summary.artifact || "sample_feature_importance.json";
-        const csvArtifact = summary.csv_artifact || "sample_feature_importance.csv";
-        const jsonUrl = `/api/training/runs/${run.run_id}/artifact/${jsonArtifact}`;
-        const csvUrl = `/api/training/runs/${run.run_id}/artifact/${csvArtifact}`;
-        if (summary.status !== "ready") {
-          target.innerHTML = `
-            <div class="chart-card feature-card">
-              <h3>重要特征区间</h3>
-              <div class="training-state">
-                <div><strong>暂不可用</strong><span>${escapeHtml(summary.reason || "当前训练结果没有可展示的单样品重要区间。")}</span></div>
-              </div>
-              <div class="actions">
-                <a class="secondary" href="${jsonUrl}">下载单样品特征 JSON</a>
-                <a class="secondary" href="${csvUrl}">下载单样品特征 CSV</a>
-              </div>
-            </div>
-          `;
-          return;
-        }
-        const data = await api(jsonUrl);
-        const samples = data.samples || [];
-        if (!samples.length) {
-          target.innerHTML = `
-            <div class="chart-card feature-card">
-              <h3>重要特征区间</h3>
-              <div class="training-state">
-                <div><strong>暂不可用</strong><span>当前训练结果没有可切换的样品解释。</span></div>
-              </div>
-            </div>
-          `;
-          return;
-        }
-        const options = samples.map((sample, index) => `
-          <option value="${escapeHtml(sample.result_id || String(index))}">${escapeHtml(featureSampleLabel(sample))}</option>
-        `).join("");
-        target.innerHTML = `
-          <div class="chart-card feature-card">
-            <h3>重要特征区间</h3>
-            <div class="feature-toolbar">
-              <label for="featureSampleSelect">样品</label>
-              <select id="featureSampleSelect">${options}</select>
-            </div>
-            <div id="featureSampleDetails"></div>
-          </div>
-        `;
-        const select = $("featureSampleSelect");
-        const renderSelected = () => {
-          const selected = samples.find((sample, index) => (sample.result_id || String(index)) === select.value) || samples[0];
-          renderSampleFeatureDetails(data, selected, jsonUrl, csvUrl);
-        };
-        select.addEventListener("change", renderSelected);
-        renderSelected();
-      }
-
-      async function renderFeatureImportance(run) {
-        const target = $("featureImportance");
-        const sampleSummary = run.sample_feature_importance;
-        if (sampleSummary?.artifact) {
-          await renderSampleFeatureImportance(run, sampleSummary, target);
-          return;
-        }
-        target.innerHTML = `
-          <div class="training-state">
-            <div><strong>暂无单样本重要性</strong><span>${escapeHtml(sampleSummary?.reason || "当前训练结果没有单样本重要性产物。")}</span></div>
-          </div>
-        `;
-      }
-
-      // 把 queued/running/succeeded/failed/cancelled 的规范状态投影成旧 UI 文案。
+      // 建模页只呈现任务进度和完成跳转；完整指标统一放到独立结果页。
       function renderRun(run) {
-        const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "paused" ? "训练已暂停" : run.status === "running" ? "训练中" : "等待训练";
+        if (!run || String(run.run_id || "") !== String(currentRunId || "")) return;
+        const canonicalState = String(run.state || run.status || "pending").toLowerCase();
+        const statusText = ["succeeded", "success"].includes(canonicalState)
+          ? "训练完成"
+          : canonicalState === "failed"
+            ? "训练失败"
+            : ["cancelled", "paused"].includes(canonicalState)
+              ? "训练已取消"
+              : canonicalState === "running" ? "训练中" : "等待训练";
+        const statusClass = ["succeeded", "success"].includes(canonicalState)
+          ? "success"
+          : canonicalState === "failed" ? "failed" : ["cancelled", "paused"].includes(canonicalState) ? "cancelled" : canonicalState === "running" ? "running" : "pending";
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
-        $("runStatus").className = `status ${run.status || ""}`;
-        if (run.status === "paused") {
-          clearInterval(poller);
-          $("trainingProgress").innerHTML = `
-            <div class="training-state">
-              <div>
-                <strong>训练已暂停</strong>
-                <span>此任务已被新任务 ${escapeHtml(run.replaced_by || "-")} 替换，不再继续训练。</span>
-              </div>
-            </div>
-          `;
-          $("metrics").innerHTML = `
-            <div class="metrics">
-              <div class="metric">当前状态<strong>paused</strong></div>
-              <div class="metric">替换任务<strong>${escapeHtml(run.replaced_by || "-")}</strong></div>
-              <div class="metric">暂停原因<strong>${escapeHtml(run.pause_reason || "-")}</strong></div>
-              <div class="metric">暂停时间<strong>${formatTime(run.paused_at)}</strong></div>
-            </div>
-          `;
-          $("trainingCharts").innerHTML = "";
-          $("trainingAudit").innerHTML = "";
-          $("featureImportance").innerHTML = "";
-          $("confusionMatrix").innerHTML = "";
-          $("downloads").innerHTML = "";
-          loadRuns().catch(() => {});
-          return;
-        }
-        if (run.status === "pending" || run.status === "running") {
+        $("runStatus").className = `status ${statusClass}`;
+
+        if (["pending", "queued", "running"].includes(canonicalState)) {
           const traditionalModel = run.model_family === "traditional_ml" || isTraditionalModel(run.model_type || run.config?.model_type);
           const totalTargetEpochs = runTotalTargetEpochs(run);
           const foldProgress = runFoldProgressText(run);
           const isExternal = isExternalTestHoldout(run);
-          const progressMarkup = isExternal
-            ? `<div class="metric">评估模式<strong>独立测试集最终评估</strong></div>`
-            : `
-                <div class="metric">交叉验证进度<strong>${foldProgress}</strong></div>
-                <div class="metric">已完成折数<strong>${run.completed_folds ?? "-"}</strong></div>
-              `;
           const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
           const trainingDetail = traditionalModel
             ? `${(run.model_type || run.config?.model_type) === "random_forest" ? "正在进行 OOB 随机参数搜索" : "正在进行参数搜索与模型拟合"} · ${progressText}`
             : `最多 ${totalTargetEpochs} Epoch · ${progressText}`;
-          const epochMetric = traditionalModel
-            ? ""
-            : `<div class="metric">最多 Epoch<strong>${totalTargetEpochs}</strong></div>`;
-          const detailText = `${run.model_type || run.config?.model_type || "1D-CNN"} · ${trainingDetail} · 开始时间 ${formatTime(run.started_at || run.created_at)}`;
+          const detailText = `${run.model_type || run.config?.model_type || "分类模型"} · ${trainingDetail} · 开始时间 ${formatTime(run.started_at || run.created_at)}`;
           const activeState = $("trainingProgress").querySelector("[data-active-training-run]");
           if (activeState?.dataset.activeTrainingRun === String(run.run_id || "")) {
             activeState.querySelector("span").textContent = detailText;
           } else {
-            $("trainingProgress").innerHTML = `
-              <div class="training-state" data-active-training-run="${escapeHtml(String(run.run_id || ""))}">
-                <div class="spinner"></div>
-                <div><strong>模型正在训练</strong><span>${escapeHtml(detailText)}</span></div>
-              </div>
-            `;
+            const state = document.createElement("div");
+            state.className = "training-state";
+            state.dataset.activeTrainingRun = String(run.run_id || "");
+            const spinner = document.createElement("div");
+            spinner.className = "spinner";
+            const content = document.createElement("div");
+            const strong = document.createElement("strong");
+            const span = document.createElement("span");
+            strong.textContent = canonicalState === "running" ? "模型正在训练" : "任务正在排队";
+            span.textContent = detailText;
+            content.append(strong, span);
+            state.append(spinner, content);
+            $("trainingProgress").replaceChildren(state);
           }
-          $("metrics").innerHTML = `
-            <div class="metrics">
-              <div class="metric">当前状态<strong>${statusText}</strong></div>
-              ${progressMarkup}
-              ${epochMetric}
-              <div class="metric">模型<strong style="font-size:16px">${run.config?.model_type || run.model_type || "cnn1d"}</strong></div>
-              <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
-            </div>
-          `;
-          $("trainingAudit").innerHTML = "";
-          $("featureImportance").innerHTML = "";
+          const metrics = [
+            ["当前状态", statusText],
+            ["评估进度", progressText],
+            ["模型", run.config?.model_type || run.model_type || "-"],
+            ["数据量", run.sample_count],
+          ];
+          if (!traditionalModel) metrics.splice(2, 0, ["最多 Epoch", totalTargetEpochs]);
+          renderCurrentRunMetrics(metrics);
+          $("trainingAudit").replaceChildren();
+          $("featureImportance").replaceChildren();
           return;
         }
-        if (run.status === "success") {
-          clearInterval(poller);
-          const test = run.metrics?.test || run.metrics || {};
-          const valid = run.metrics?.valid || inferValidMetricsFromHistory(run.history);
-          const train = run.metrics?.train || {};
-          const traditionalModel = run.model_family === "traditional_ml" || isTraditionalModel(run.model_type || run.config?.model_type);
-          const epochMetric = traditionalModel
-            ? ""
-            : `<div class="metric">实际训练 Epoch<strong>${run.actual_epochs || "-"}</strong></div>`;
-          const preferredFold = null;
-          $("trainingProgress").innerHTML = "";
-          $("metrics").innerHTML = `
-            <div class="metrics">
-              <div class="metric">Train Macro Precision<strong>${formatMetric(macroMetric(train, "precision"))}</strong></div>
-              <div class="metric">Train Macro Recall<strong>${formatMetric(macroMetric(train, "recall"))}</strong></div>
-              <div class="metric">Train Macro F1<strong>${formatMetric(train.macro_f1)}</strong></div>
-              <div class="metric">Valid Macro Precision<strong>${formatMetric(macroMetric(valid, "precision"))}</strong></div>
-              <div class="metric">Valid Macro Recall<strong>${formatMetric(macroMetric(valid, "recall"))}</strong></div>
-              <div class="metric">Valid Macro F1<strong>${formatMetric(valid.macro_f1)}</strong></div>
-              <div class="metric">Test Macro Precision<strong>${formatMetric(macroMetric(test, "precision"))}</strong></div>
-              <div class="metric">Test Macro Recall<strong>${formatMetric(macroMetric(test, "recall"))}</strong></div>
-              <div class="metric">Test Macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
-              ${epochMetric}
-              <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
-              <div class="metric">模型<strong style="font-size:16px">${run.model_type || run.config?.model_type || "-"}</strong></div>
-              <div class="metric">完成时间<strong style="font-size:14px">${formatTime(run.completed_at)}</strong></div>
-            </div>
-          `;
-          renderTrainingAudit(run);
-          if (run.model_family === "traditional_ml") {
-            $("trainingCharts").innerHTML = "";
-          } else {
-            renderTrainingCharts(run.history || [], preferredFold);
+
+        clearCurrentRunDetails();
+        if (["succeeded", "success"].includes(canonicalState)) {
+          const handled = window.SpecAutoAIResults?.showNewRunSuccess(run);
+          if (!handled) {
+            const link = document.createElement("a");
+            link.className = "button primary";
+            link.href = window.SpecAutoAIResults?.buildResultHash(run.run_id) || `#/results?run_id=${encodeURIComponent(run.run_id)}`;
+            link.textContent = "查看建模结果";
+            $("trainingProgress").replaceChildren(currentRunNotice("success", "训练已完成", "完整指标和下载已移至专属建模结果页。", [link]));
           }
-          renderConfusionMatrix(run);
-          renderFeatureImportance(run).catch((err) => {
-            $("featureImportance").innerHTML = `
-              <div class="chart-card feature-card">
-                <h3>重要特征区间</h3>
-                <div class="training-state">
-                  <div><strong style="color:var(--bad)">加载失败</strong><span>${escapeHtml(err.message)}</span></div>
-                </div>
-              </div>
-            `;
-          });
-          const modelArtifact = run.model_artifact || (run.model_family === "traditional_ml" ? "model.pkl" : "model.pt");
-          const modelLabel = modelArtifact.endsWith(".pkl") ? "下载模型 PKL" : "下载模型";
-          $("downloads").innerHTML = `
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/predictions.csv">下载预测结果</a>
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/metrics.json">下载指标</a>
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/history.csv">下载训练曲线 CSV</a>
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/status.json">下载完整 JSON</a>
-            <a class="secondary" href="/api/training/runs/${run.run_id}/artifact/${modelArtifact}">${modelLabel}</a>
-            <button class="danger" type="button" onclick="window.deleteRun('${run.run_id}')">删除此训练记录</button>
-          `;
+          loadRuns().catch(() => {});
+          return;
         }
-        if (run.status === "failed") {
-          clearInterval(poller);
-          $("trainingProgress").innerHTML = "";
-          $("trainingCharts").innerHTML = "";
-          $("trainingAudit").innerHTML = "";
-          $("featureImportance").innerHTML = "";
-          $("confusionMatrix").innerHTML = "";
-          $("downloads").innerHTML = "";
-          $("metrics").innerHTML = `<div class="training-state"><div><strong style="color:var(--bad)">训练失败</strong><span>${run.error || "请查看后台日志"}</span></div></div>`;
+        if (canonicalState === "failed") {
+          const errorMessage = typeof run.error === "object" ? run.error.message : run.error;
+          $("trainingProgress").replaceChildren(currentRunNotice("error", "训练失败", errorMessage || "请使用 Run ID 查看服务器日志。"));
+          return;
+        }
+        if (["cancelled", "paused"].includes(canonicalState)) {
+          const message = run.pause_reason || (run.replaced_by ? `任务已被 ${run.replaced_by} 替换。` : "此任务不会继续执行。")
+          $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练已取消", message));
         }
       }
 
       async function pollCurrentRun() {
         if (!currentRunId) return;
         const requestedRunId = currentRunId;
-        if (pollingRunId === requestedRunId) return;
-        pollingRunId = requestedRunId;
-        try {
-          const run = await fetchRun(requestedRunId);
-          if (currentRunId === requestedRunId) renderRun(run);
-        } finally {
-          if (pollingRunId === requestedRunId) pollingRunId = null;
-        }
+        const run = await fetchRun(requestedRunId);
+        if (currentRunId === requestedRunId) renderRun(run);
       }
 
-      window.openRun = (runId) => {
-        currentRunId = runId;
-        pollCurrentRun().catch((err) => alert(err.message));
-        document.querySelector('[data-view=modeling]').click();
-      };
+      function watchCurrentRun() {
+        if (!currentRunId) return;
+        if (window.SpecAutoAIResults?.watchTrainingRun) {
+          window.SpecAutoAIResults.watchTrainingRun(
+            currentRunId,
+            (run, requestedRunId) => {
+              if (currentRunId === requestedRunId) renderRun(run);
+            },
+            (error, requestedRunId) => {
+              if (currentRunId !== requestedRunId) return;
+              $("trainingProgress").replaceChildren(currentRunNotice("warning", "连接暂时中断", `${error.message}，系统会自动退避重试。`));
+            },
+          );
+        } else pollCurrentRun().catch((error) => $("trainingProgress").replaceChildren(currentRunNotice("error", "任务查询失败", error.message)));
+      }
+
+      window.openRun = (runId) => window.SpecAutoAIResults?.navigateToResult(runId);
 
       // 预处理表单编排：色谱 UI 固定映射到 hplc，三个布尔值按用户开关提交。
       function selectedRamanBaselineMethod() {
@@ -2490,9 +2259,6 @@
         }
         const result = await api(`/api/preprocess/${effectiveKind}`, { method: "POST", body: form });
         const hasCurves = result.curves && result.curves.length;
-        const curveOptions = hasCurves
-          ? result.curves.map((curve, index) => `<option value="${index}">${curve.name}</option>`).join("")
-          : "";
         const curveSelectSize = hasCurves ? Math.min(result.curves.length, 10) : 1;
         const resultTarget = kind === "raman" ? $("preprocessResult") : $("chromPreprocessResult");
         const selectId = `${kind}PreprocessCurveSelect`;
@@ -2502,27 +2268,76 @@
           : kind === "chromatography"
             ? "原始色谱曲线"
             : "原始拉曼光谱与基线校正后光谱";
-        const infoLines = effectiveKind === "hplc" && result.common_time
-          ? `<p style="color:#667085;font-size:12px">统一时间轴: ${result.common_time.length} 点, 步长 ${((result.common_time[1]-result.common_time[0])*60).toFixed(3)} 秒</p>`
-          : "";
-        resultTarget.innerHTML = `
-          <div class="metrics">
-            <div class="metric">样本数<strong>${result.rows}</strong></div>
-            <div class="metric">结果文件<strong style="font-size:14px">已生成</strong></div>
-          </div>
-          <div class="actions"><a class="secondary" href="${result.download_url}">下载整理 CSV</a></div>
-          ${infoLines}
-          ${
-            hasCurves
-              ? `<h3>${title}</h3>
-                 <label>预览文件</label>
-                 <select id="${selectId}" size="${curveSelectSize}">${curveOptions}</select>
-                 <canvas id="${canvasId}" width="1000" height="320"></canvas>`
-              : ""
+        const metricGrid = document.createElement("div");
+        metricGrid.className = "metrics";
+        [["样本数", result.rows], ["结果文件", "已生成"]].forEach(([label, value]) => {
+          const card = document.createElement("div");
+          card.className = "metric";
+          card.append(document.createTextNode(label));
+          const strong = document.createElement("strong");
+          strong.textContent = value == null ? "-" : String(value);
+          card.append(strong);
+          metricGrid.append(card);
+        });
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const downloadButton = document.createElement("button");
+        downloadButton.className = "secondary";
+        downloadButton.type = "button";
+        downloadButton.textContent = "下载整理 CSV";
+        downloadButton.addEventListener("click", async () => {
+          const original = downloadButton.textContent;
+          downloadButton.disabled = true;
+          downloadButton.textContent = "下载中…";
+          try {
+            if (!window.SpecAutoAIDownload) throw new Error("下载模块尚未加载");
+            const downloaded = await window.SpecAutoAIDownload(result.download_url);
+            const objectUrl = URL.createObjectURL(downloaded.blob);
+            const anchor = document.createElement("a");
+            anchor.href = objectUrl;
+            anchor.download = downloaded.filename || `${effectiveKind}_preprocessed.csv`;
+            document.body.append(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+          } catch (error) {
+            window.alert(`下载失败：${error.message}`);
+          } finally {
+            downloadButton.disabled = false;
+            downloadButton.textContent = original;
           }
-        `;
+        });
+        actions.append(downloadButton);
+        resultTarget.replaceChildren(metricGrid, actions);
+        if (effectiveKind === "hplc" && result.common_time?.length) {
+          const info = document.createElement("p");
+          info.className = "section-note";
+          const step = result.common_time.length > 1 ? (Number(result.common_time[1]) - Number(result.common_time[0])) * 60 : 0;
+          info.textContent = `统一时间轴：${result.common_time.length} 点，步长 ${Number.isFinite(step) ? step.toFixed(3) : "-"} 秒`;
+          resultTarget.append(info);
+        }
         if (hasCurves) {
-          const select = $(selectId);
+          const heading = document.createElement("h3");
+          heading.textContent = title;
+          const label = document.createElement("label");
+          label.htmlFor = selectId;
+          label.textContent = "预览文件";
+          const select = document.createElement("select");
+          select.id = selectId;
+          select.size = curveSelectSize;
+          result.curves.forEach((curve, index) => {
+            const option = document.createElement("option");
+            option.value = String(index);
+            option.textContent = String(curve.name || `曲线 ${index + 1}`);
+            select.append(option);
+          });
+          const canvas = document.createElement("canvas");
+          canvas.id = canvasId;
+          canvas.width = 1000;
+          canvas.height = 320;
+          canvas.setAttribute("role", "img");
+          canvas.setAttribute("aria-label", title);
+          resultTarget.append(heading, label, select, canvas);
           const renderSelected = () => {
             lastPreprocessCurve = result.curves[Number(select.value || 0)];
             lastPreprocessCanvasId = canvasId;
@@ -2535,66 +2350,151 @@
       }
 
       // 历史 Run 列表与终态删除。queued/running 禁止删除，避免破坏 worker 状态机。
-      async function loadRuns() {
-        const runs = await api("/api/training/runs");
-        const rows = runs
-          .map((run) => {
-            const datasetName = run.dataset_name || run.config?.dataset_name || "-";
-            const trainF1 = run.metrics?.train?.macro_f1;
-            const validF1 = run.metrics?.valid?.macro_f1;
-            const testF1 = run.metrics?.test?.macro_f1 ?? run.metrics?.macro_f1;
-            const terminal = ["succeeded", "failed", "cancelled"].includes(run.state)
-              || ["success", "failed", "paused"].includes(run.status);
-            const deleteButton = terminal
-              ? `<button class="danger" onclick="window.deleteRun('${run.run_id}')">删除</button>`
-              : `<button class="secondary" disabled title="排队中或运行中的任务不能删除">删除</button>`;
-            return `
-              <tr>
-                <td>${formatTime(run.completed_at || run.started_at || run.created_at)}</td>
-                <td><span title="${escapeHtml(datasetName)}">${escapeHtml(datasetName)}</span></td>
-                <td>${run.model_type || run.config?.model_type || "-"}</td>
-                <td>${formatMetric(trainF1)}</td>
-                <td>${formatMetric(validF1)}</td>
-                <td>${formatMetric(testF1)}</td>
-                <td><span class="status ${run.status || ""}">${run.status || "unknown"}</span></td>
-                <td><div class="row-actions"><button class="secondary" onclick="window.openRun('${run.run_id}')">查看</button>${deleteButton}</div></td>
-              </tr>
-            `;
-          })
-          .join("");
-        $("runsTable").innerHTML = `
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>上传的数据集名</th>
-                <th>模型</th>
-                <th>Train Macro F1</th>
-                <th>Valid Macro F1</th>
-                <th>Test Macro F1</th>
-                <th>状态</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>${rows || `<tr><td colspan="8" class="empty-state">暂无训练记录</td></tr>`}</tbody>
-          </table>
-        `;
+      async function loadRuns(options = {}) {
+        const append = options.append === true;
+        const cursor = append ? runsNextCursor : null;
+        let response;
+        try {
+          const query = new URLSearchParams({ projection: "summary", limit: "50" });
+          if (cursor) query.set("cursor", cursor);
+          response = await api(`/api/training/runs?${query.toString()}`);
+        } catch (error) {
+          if (append) throw error;
+          response = await api("/api/training/runs");
+        }
+        const page = Array.isArray(response) ? response : response.items || [];
+        loadedRunSummaries = append ? [...loadedRunSummaries, ...page] : page;
+        runsNextCursor = Array.isArray(response) ? null : response.next_cursor || null;
+        const runs = loadedRunSummaries;
+        const table = document.createElement("table");
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        ["时间", "Run ID", "上传的数据集名", "模型", "状态", ""].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headRow.append(th);
+        });
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        runs.forEach((run) => {
+          const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");
+          const modelId = run.model_type || run.config?.model_type;
+          const modelName = String(window.SpecAutoAIModelMeta?.(modelId)?.displayName || modelId || "-");
+          const canonicalState = String(run.state || run.status || "unknown").toLowerCase();
+          const terminal = ["succeeded", "success", "failed", "cancelled", "paused"].includes(canonicalState);
+          const row = document.createElement("tr");
+          const values = [
+            formatTime(run.completed_at || run.finished_at || run.started_at || run.created_at),
+            run.run_id || "-",
+            datasetName,
+            modelName,
+          ];
+          values.forEach((value, index) => {
+            const cell = document.createElement(index === 1 ? "th" : "td");
+            const span = document.createElement("span");
+            span.className = index === 1 || index === 2 ? "truncate-text" : "";
+            span.textContent = String(value);
+            span.title = String(value);
+            cell.append(span);
+            row.append(cell);
+          });
+          const statusCell = document.createElement("td");
+          const status = document.createElement("span");
+          status.className = `status ${["running", "pending", "failed", "success"].includes(run.status) ? run.status : terminal && canonicalState === "succeeded" ? "success" : ""}`;
+          status.textContent = run.status || canonicalState;
+          statusCell.append(status);
+          row.append(statusCell);
+          const actionCell = document.createElement("td");
+          const actionWrap = document.createElement("div");
+          actionWrap.className = "row-actions";
+          const viewButton = document.createElement("button");
+          viewButton.className = "secondary";
+          viewButton.type = "button";
+          viewButton.textContent = terminal ? "查看结果" : "查看进度";
+          viewButton.addEventListener("click", () => window.openRun(run.run_id));
+          const copy = document.createElement("button");
+          copy.className = "secondary";
+          copy.type = "button";
+          copy.textContent = "复制 ID";
+          copy.addEventListener("click", async () => {
+            try { await navigator.clipboard.writeText(String(run.run_id)); copy.textContent = "已复制"; }
+            catch (_) { copy.textContent = "复制失败"; }
+          });
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.textContent = "删除";
+          deleteButton.className = terminal ? "danger" : "secondary";
+          deleteButton.disabled = !terminal;
+          deleteButton.title = terminal ? "永久删除该训练记录及产物" : "排队中或运行中的任务不能删除";
+          if (terminal) deleteButton.addEventListener("click", () => window.deleteRun(run.run_id));
+          actionWrap.append(viewButton, copy, deleteButton);
+          actionCell.append(actionWrap);
+          row.append(actionCell);
+          body.append(row);
+        });
+        if (!runs.length) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 6;
+          cell.className = "empty-state";
+          cell.textContent = "暂无训练记录";
+          row.append(cell);
+          body.append(row);
+        }
+        table.append(head, body);
+        $("runsTable").replaceChildren(table);
+        if (runsNextCursor) {
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const more = document.createElement("button");
+          more.className = "secondary";
+          more.type = "button";
+          more.textContent = "加载更多训练记录";
+          more.addEventListener("click", async () => {
+            more.disabled = true;
+            try { await loadRuns({ append: true }); }
+            catch (error) { window.alert(`加载更多失败：${error.message}`); }
+            finally { more.disabled = false; }
+          });
+          actions.append(more);
+          $("runsTable").append(actions);
+        }
       }
 
       function clearDeletedRunPanel(runId) {
-        clearInterval(poller);
+        window.SpecAutoAIResults?.stopTrainingWatch();
         currentRunId = null;
-        pollingRunId = null;
         $("runStatus").textContent = `${runId} 记录已删除`;
         $("runStatus").className = "status";
-        $("trainingProgress").innerHTML = `<div class="empty-state">该训练记录及全部产物已永久删除。</div>`;
-        $("metrics").innerHTML = "";
-        $("trainingAudit").innerHTML = "";
-        $("trainingCharts").innerHTML = "";
-        $("featureImportance").innerHTML = "";
-        $("confusionMatrix").innerHTML = "";
-        $("downloads").innerHTML = "";
+        $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练记录已删除", "该记录及全部产物已永久删除。"));
+        clearCurrentRunDetails();
       }
+
+      window.SpecAutoAIClearSessionUi = () => {
+        datasetPath = null;
+        testDatasetPath = null;
+        datasetId = null;
+        testDatasetId = null;
+        currentRunId = null;
+        lastSummaryCurves = [];
+        lastTestSummaryCurves = [];
+        lastPreprocessCurve = null;
+        loadedRunSummaries = [];
+        runsNextCursor = null;
+        $("datasetFile").value = "";
+        $("testDatasetFile").value = "";
+        $("datasetInfo").replaceChildren();
+        $("testDatasetInfo").replaceChildren();
+        $("runsTable").replaceChildren();
+        $("preprocessResult").replaceChildren();
+        $("chromPreprocessResult").replaceChildren();
+        $("runStatus").textContent = "尚未开始";
+        $("runStatus").className = "status";
+        $("trainingProgress").replaceChildren();
+        clearCurrentRunDetails();
+        populateCurveSelect();
+        updateSplitOptionVisibility();
+      };
 
       window.deleteRun = async (runId) => {
         const confirmed = window.confirm(
@@ -2625,7 +2525,7 @@
       }
 
       function updateSplitOptionVisibility() {
-        const hasExternalTest = Boolean(testDatasetPath);
+        const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
         let cvEnabled = $("cvEnabled").checked;
         if (hasExternalTest) {
           applySplitPreset("external");
@@ -2649,21 +2549,31 @@
       }
 
       function showView(viewName) {
-        document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
-        const navButton = document.querySelector(`nav button[data-view="${viewName}"]`);
-        if (navButton) navButton.classList.add("active");
-        document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
-        $(`view-${viewName}`).classList.remove("hidden");
-        if (viewName === "runs") loadRuns();
-        if (viewName === "modeling" && currentRunId) {
-          pollCurrentRun().catch((error) => window.alert(error.message));
+        const targetView = $(`view-${viewName}`) ? viewName : "raman";
+        document.querySelectorAll("nav button").forEach((item) => {
+          item.classList.remove("active");
+          item.removeAttribute("aria-current");
+        });
+        const navButton = document.querySelector(`nav button[data-view="${targetView}"]`);
+        if (navButton) {
+          navButton.classList.add("active");
+          navButton.setAttribute("aria-current", "page");
         }
+        document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
+        $(`view-${targetView}`).classList.remove("hidden");
+        if (targetView === "runs") loadRuns().catch((error) => window.alert(`训练记录加载失败：${error.message}`));
       }
+      window.SpecAutoAIShowView = showView;
 
       document.querySelectorAll("nav button").forEach((button) => {
-        button.addEventListener("click", () => showView(button.dataset.view));
+        button.addEventListener("click", () => {
+          if (window.SpecAutoAIResults?.navigateToView) window.SpecAutoAIResults.navigateToView(button.dataset.view);
+          else showView(button.dataset.view);
+        });
       });
 
+      $("datasetFileTrigger").addEventListener("click", () => $("datasetFile").click());
+      $("testDatasetFileTrigger").addEventListener("click", () => $("testDatasetFile").click());
       $("datasetFile").addEventListener("change", (event) => {
         const file = event.target.files[0];
         if (file) uploadDataset(file).catch((err) => alert(err.message));
@@ -2686,7 +2596,10 @@
       });
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
-      $("manualButton").addEventListener("click", () => showView("manual"));
+      $("manualButton").addEventListener("click", () => {
+        if (window.SpecAutoAIResults?.navigateToView) window.SpecAutoAIResults.navigateToView("manual");
+        else showView("manual");
+      });
       $("modelType").addEventListener("change", updateModelOptionVisibility);
       $("cvEnabled").addEventListener("change", updateSplitOptionVisibility);
       $("advancedToggle").addEventListener("click", () => {
@@ -2705,14 +2618,21 @@
       $("chromRangeMode").addEventListener("change", () => updatePreprocessRangeMode("chromatography"));
       $("hplcOptionsToggle").addEventListener("click", toggleHplcOptionDetails);
       document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
-        button.addEventListener("click", () => showView(button.dataset.viewShortcut));
+        button.addEventListener("click", () => {
+          if (window.SpecAutoAIResults?.navigateToView) window.SpecAutoAIResults.navigateToView(button.dataset.viewShortcut);
+          else showView(button.dataset.viewShortcut);
+        });
       });
       document.querySelectorAll("[data-preprocess]").forEach((button) => {
         button.addEventListener("click", () => preprocessEnhanced(button.dataset.preprocess).catch((err) => alert(err.message)));
       });
       window.addEventListener("resize", () => {
-        if (lastSummaryCurves.length || lastTestSummaryCurves.length) redrawCurrentCurvePreview();
-        if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
+        if (resizeFrame != null) return;
+        resizeFrame = requestAnimationFrame(() => {
+          resizeFrame = null;
+          if (lastSummaryCurves.length || lastTestSummaryCurves.length) redrawCurrentCurvePreview();
+          if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
+        });
       });
 
       if (window.SpecAutoAIRequest && window.SpecAutoAITrainingStore) initializeApiBackedUi();

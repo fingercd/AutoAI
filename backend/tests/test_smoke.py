@@ -1566,19 +1566,17 @@ def test_obsolete_ui_variant_assets_are_not_served():
 
 def test_main_ui_prefers_sample_feature_importance_panel():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert "sample_feature_importance" in content
-    assert "featureSampleSelect" in content
+    assert 'id="resultExplainability"' in content
+    assert "sample_feature_importance" in results
+    assert "function renderSampleImportance" in results
+    assert "resultSampleExplanationSelect" in results
+    assert "加载单样品解释" in results
+    assert "sample.top_segments" in results
+    assert "normalized_importance" in results
     assert "renderGlobalFeatureImportance" not in content
     assert "run.feature_importance" not in content
-    assert "暂无单样本重要性" in content
-    assert "function primaryFeatureSegment" in content
-    assert "visibleFeatureSegments(data.top_segments).forEach" not in content
-    assert "visibleFeatureSegments(sample.top_segments).forEach" not in content
-    assert "const segment = primaryFeatureSegment(sample)" in content
-    assert "function drawFeatureHeatmap" in content
-    assert "source.windows" in content
-    assert "normalized_importance" in content
     assert 'id="featureWindowOptions"' in content
     assert "featureWindowCount" in content
     assert 'value="100"' in content
@@ -1588,7 +1586,6 @@ def test_main_ui_prefers_sample_feature_importance_panel():
     assert 'if (usesFeatureWindowCount(payload.model_type)) {' in content
     assert 'payload.feature_window_count = Number($("featureWindowCount").value);' in content
     assert 'feature_window_count: Number($("featureWindowCount").value)' not in content
-    assert 'height="460"' in content
 
 
 def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
@@ -1627,46 +1624,31 @@ def test_main_ui_uses_documented_deep_training_defaults():
     assert 'value = $("trainTime").value === "deep" ? "100" : "50"' not in content
 
 
-def test_main_ui_renders_paused_runs_and_single_primary_feature_segment():
+def test_main_ui_handles_cancelled_runs_and_bounds_explainability_lists():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert 'run.status === "paused"' in content
-    assert "训练已暂停" in content
-    assert "replaced_by" in content
-    assert "fold_index" in content
-    assert "第 ${sample.fold_index} 折" in content
-    assert "primary_segment" in content
-    assert "primaryFeatureSegment" in content
-    assert "segments.map((segment)" not in content
-    assert "boundaryX" in content
-    assert "legendHeight = 72" in content
-    assert "重要性高（关键特征）" in content
-    assert "重要性低（贡献小）" in content
-    assert "归一化重要性" in content
-    assert "importanceDetailLabel" in content
-    assert "F1 下降" in content
-    assert "Grad-CAM" in content
-    assert "输入梯度" in content
-    assert "梯度×强度" in content
-    assert "DSCARNet 双通路" in content
-    assert "SAR 原始谱图通路" not in content
-    assert "CAR PCA 成分通路" not in content
-    assert "sample.sample_x_axis" in content
-    assert "featureSegmentKind" in content
-    assert "特征点" in content
-    assert "Grad-CAM 与输入梯度归因差异较大" not in content
+    assert '["cancelled", "paused"].includes(canonicalState)' in content
+    assert "训练已取消" in content
+    assert "run.pause_reason" in content
+    assert "run.replaced_by" in content
+    assert "sample?.fold_index" in results
+    assert "第 ${sample.fold_index} 折" in results
+    assert ".filter(Boolean).slice(0, 8)" in results
+    assert "sample.top_segments" in results
+    assert "解释方法随模型而异" in results
+    assert "primaryFeatureSegment" not in content
     assert "renderIntensitySummary" not in content
     assert 'id="intensitySummary"' not in content
-    assert "强度点数" not in content
-    assert "强度已生成" not in content
 
 
 def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert '<div class="metric">总数据<strong>${summary.samples}</strong></div>' in content
-    assert '<div class="metric">样本数<strong>${sampleIds.group_count ?? "-"}</strong></div>' in content
-    assert '<div class="metric">样品种类<strong>' not in content
+    assert '["总数据", summary.samples]' in content
+    assert '["样本数", sampleIds.group_count]' in content
+    assert '["样品种类",' not in content
     assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
     assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
     assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
@@ -1679,35 +1661,31 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert "几个 Sample_ID 就跑几折" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content
-    assert "function historyFoldOptions" in content
-    assert "function selectedFoldHistory" in content
-    assert 'id="historyFoldSelect"' in content
-    assert 'renderTrainingCharts(run.history || [], preferredFold);' in content
+    assert "function historyRows(result)" in results
+    assert "function renderHistory(result)" in results
+    assert "resultHistoryFoldSelect" in results
+    assert "drawHistoryChart" in results
     assert "fold_progress_text" in content
     assert "completed_folds" in content
     assert "total_target_epochs" in content
-    assert "run.metrics?.test || run.metrics || {}" in content
+    assert "result.metrics?.primary || result.metrics?.splits?.test" in results
     assert "坐标提示" not in content
     assert "归因提示" not in content
     assert "红色标记为" not in content
     assert "含义：" not in content
 
 
-def test_training_records_show_dataset_name_and_three_split_macro_f1_values():
+def test_training_records_use_summary_projection_and_result_page_owns_split_metrics():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert "<th>上传的数据集名</th>" in content
-    assert "<th>Train Macro F1</th>" in content
-    assert "<th>Valid Macro F1</th>" in content
-    assert "<th>Test Macro F1</th>" in content
-    assert "<th>Run ID</th>" not in content
-    assert "<th>数据量</th>" not in content
-    assert "<th>训练准确率</th>" not in content
-    assert "<th>测试准确率</th>" not in content
-    assert "const datasetName = run.dataset_name || run.config?.dataset_name || \"-\";" in content
-    assert "const trainF1 = run.metrics?.train?.macro_f1;" in content
-    assert "const validF1 = run.metrics?.valid?.macro_f1;" in content
-    assert "const testF1 = run.metrics?.test?.macro_f1 ?? run.metrics?.macro_f1;" in content
+    assert '["时间", "Run ID", "上传的数据集名", "模型", "状态", ""]' in content
+    assert 'new URLSearchParams({ projection: "summary", limit: "50" })' in content
+    assert 'const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");' in content
+    assert "const splits = result.metrics?.splits || {};" in results
+    assert "const rows = ['train', 'valid', 'test']" in results
+    assert "'Macro F1'" in results
+    assert "result.evaluation?.primary_aggregation" in results
 
 
 def test_product_brand_is_specautoai_in_ui_and_openapi():
@@ -1723,6 +1701,7 @@ def test_product_brand_is_specautoai_in_ui_and_openapi():
 def test_main_ui_manual_explains_sample_id_group_split():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
+    assert "AI 建模操作说明" in content
     assert "数据划分比例" in content
     assert "开启交叉验证" in content
     assert "外层留一交叉验证" not in content
@@ -1730,21 +1709,22 @@ def test_main_ui_manual_explains_sample_id_group_split():
     assert "external_test_holdout" in content
     assert "加载独立测试集" in content
     assert "已停用" not in content
-    assert "不是按单条曲线随机划分" in content
-    assert "训练集拟合标准化" in content
-    assert "PLSR/SVR 为回归变体暂不启用" in content
+    assert "相同 Sample_ID 会整组进入同一数据分区" in content
+    assert "相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合" in content
+    assert "几个 Sample_ID 就跑几折" in content
 
 
 def test_main_ui_manual_explains_hplc_advanced_preprocessing():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-    assert "HPLC 高级预处理" in content
+    assert "色谱预处理操作说明" in content
+    assert "HPLC 标准流程" in content
     assert "共同时间轴" in content
-    assert "重叠时间范围" in content
-    assert "逐条曲线减去自身最小值" in content
-    assert "梯形积分" in content
+    assert "逐条消负" in content
+    assert "逐条曲线减最小值" in content
+    assert "真实时间轴面积归一化" in content
     assert "总面积归一化为 1" in content
-    assert "绝对峰面积本身就是判别信息" in content
+    assert 'id="hplcOptionsToggle"' in content
 
 
 def test_chromatography_ui_uses_hplc_by_default():

@@ -7,6 +7,7 @@ worker 轮询 queued Run、事务性 claim，然后用独立心跳线程续租�
 from __future__ import annotations
 
 import argparse
+import logging
 import socket
 import time
 import uuid
@@ -15,7 +16,41 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 from typing import Any
 
+from .contracts import public_error_message
 from .repository import InvalidRunTransition, RunRepository
+
+
+logger = logging.getLogger(__name__)
+
+
+def _error_details(exc: Exception) -> dict[str, Any]:
+    """把 worker 异常收敛为可供结果页稳定展示的非敏感诊断。"""
+    error_type = type(exc).__name__
+    message = public_error_message(exc)
+    if error_type == 'DatasetIntegrityError':
+        code = 'dataset_changed'
+        stage = 'dataset_validation'
+        retryable = False
+    elif isinstance(exc, (FileNotFoundError, PermissionError)):
+        code = 'dataset_unavailable'
+        stage = 'dataset_resolution'
+        retryable = False
+        message = '训练数据文件不可用，请重新上传或检查服务器存储'
+    elif isinstance(exc, ValueError):
+        code = 'invalid_training_data_or_config'
+        stage = 'training_validation'
+        retryable = False
+    else:
+        code = 'training_failed'
+        stage = 'training'
+        retryable = False
+    return {
+        'code': code,
+        'stage': stage,
+        'message': message,
+        'type': error_type,
+        'retryable': retryable,
+    }
 
 
 class LeaseGuard:
@@ -26,12 +61,14 @@ class LeaseGuard:
         repository: RunRepository,
         run_id: str,
         claim_token: str,
+        worker_id: str,
         now: Callable[[], datetime],
         heartbeat_seconds: float,
     ) -> None:
         self.repository = repository
         self.run_id = run_id
         self.claim_token = claim_token
+        self.worker_id = worker_id
         self.now = now
         self.heartbeat_seconds = heartbeat_seconds
         self.stop = Event()
@@ -46,6 +83,11 @@ class LeaseGuard:
                         self.run_id,
                         claim_token=self.claim_token,
                         now=self.now(),
+                    )
+                    self.repository.record_worker_heartbeat(
+                        worker_id=self.worker_id,
+                        now=self.now(),
+                        active_run_id=self.run_id,
                     )
                 except InvalidRunTransition:
                     self.lost.set()
@@ -81,6 +123,7 @@ class RunWorker:
         self.project_status = project_status
 
     def run_once(self) -> bool:
+        self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
         self.repository.requeue_expired(now=self.now())
         run = self.repository.claim_next(worker_id=self.worker_id, now=self.now())
         if run is None:
@@ -90,9 +133,15 @@ class RunWorker:
                 repository=self.repository,
                 run_id=run.run_id,
                 claim_token=run.claim_token or '',
+                worker_id=self.worker_id,
                 now=self.now,
                 heartbeat_seconds=self.heartbeat_seconds,
             ):
+                self.repository.record_worker_heartbeat(
+                    worker_id=self.worker_id,
+                    now=self.now(),
+                    active_run_id=run.run_id,
+                )
                 result = self.execute(run)
             finished = self.repository.finish_success(
                 run.run_id,
@@ -102,18 +151,23 @@ class RunWorker:
             )
             if self.project_status is not None:
                 self.project_status(finished)
+            self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
         except InvalidRunTransition:
             return True
         except Exception as exc:
             try:
+                logger.exception('Run %s failed during worker execution', run.run_id)
+                details = _error_details(exc)
                 failed = self.repository.finish_failure(
                     run.run_id,
                     claim_token=run.claim_token or '',
                     now=self.now(),
-                    error=str(exc),
+                    error=str(details['message']),
+                    error_details=details,
                 )
                 if self.project_status is not None:
                     self.project_status(failed)
+                self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
             except InvalidRunTransition:
                 pass
         return True

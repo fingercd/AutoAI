@@ -15,12 +15,15 @@
 
 - 后端是 FastAPI，入口为 `run.py` 或 `backend.app.main:app`。
 - 前端主入口是 `static/index.html`，由后端静态托管；正式快照不包含历史 UI 画廊或候选方案。
-- 主要回归测试在 `backend/tests/test_smoke.py`。
+- 快速回归在 `backend/tests/test_smoke.py`；结果接口、artifact、安全、前端纯函数、迁移和启动器另有专项测试，交付前运行整个 `backend/tests`。
 - 推荐本机 Python 为 `C:\Users\lenovo\anaconda3\envs\pytorch\python.exe`。
-- `docs/frontend_backend_handoff.md` 是当前前后端接口契约；`AutoAI_开发计划.md` 是历史开发计划，不能把里面的 React/Vite、Redis/RQ、SQLite 等早期路线当成当前实现。
+- `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是结果页契约；`AutoAI_开发计划.md` 是历史开发计划，不能把里面的 React/Vite、Redis/RQ、SQLite 等早期路线当成当前实现。
 - 色谱主界面默认使用 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 只作为简单截取兼容接口保留。
 - 训练 HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
-- 本地模式不接受 owner_id 或 tenant_id；未来身份只经服务端 Principal 注入。
+- local 模式只面向本机；server 模式必须配置 `AUTOAI_DEPLOYMENT_MODE=server`、至少 32 字符的 `AUTOAI_API_TOKEN` 和明确 CORS 来源。请求体不接受 owner_id/tenant_id，身份只经服务端 Principal 注入。
+- server 模式训练只接受 `dataset_id`/`test_dataset_id`，不接受浏览器传入 data_path，也不回退根目录 `data.csv`。浏览器 token 只能进当前标签页 sessionStorage，不得写入 URL、localStorage、日志或仓库。
+- Run 读取、取消、删除和下载必须按 Principal scope；历史 owner 为空 Run 在 server 默认不可见，只能通过显式 migration dry-run/rebind。
+- 前端使用原生 Hash 路由；专属结果 URL 为 `#/results?run_id=...`，导航顺序固定为“AI 建模 → 建模结果 → 训练记录”。不引入 React/Vue/Vite。
 
 ## 预处理规则
 
@@ -42,6 +45,9 @@
 - 六个传统机器学习模型及 `pca_mlp`、`cnn_transformer1d`（以及未来可用的 `cnn_mamba1d`）使用窗口遮挡后的真实类别 Log-loss 增量做重要性分析：`masked_loss - original_loss = log(p_before / p_after)`；全局结果按真实类别等权聚合，正值表示遮挡后真实类别置信度受损。
 - 传统模型和无卷积深度模型同时生成 `feature_importance.json/csv` 与 `sample_feature_importance.json/csv`；当前正式前端优先展示单样品结果，旧下载接口保持可用。
 - DSCARNet 会额外写入 `dscarnet_mapping.json` 和 AggMap/PCA joblib 文件；当前 artifact 下载白名单不开放这些 joblib 文件，除非同步更新接口和测试。
+- 结果页以 `GET /api/training/runs/{run_id}/result` 的 `run-result-v1` 为准；CV 必须明确区分 pooled OOF、fold mean 和 fold std。
+- 新 Manifest 使用显式 catalog 与 SHA-256/大小校验；`model.pkl`、`model.pt`、joblib 和 `status.json` 不在新结果页下载白名单。`config.json` 只有在不含服务器路径时才可下载。
+- 当前没有正式 ROC-AUC、ROC 或 Precision-Recall 产物；不得在前端伪造指标或空图。
 
 ## 验证命令
 
@@ -51,6 +57,7 @@
 Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
 $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
+& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
 ```
 

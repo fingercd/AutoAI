@@ -17,7 +17,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from .contracts import RunRecord
+from .contracts import RunRecord, public_error_message
 
 
 def _atomic_json_write(path: Path, payload: object) -> None:
@@ -52,11 +52,28 @@ def project_status(run_dir: Path, record: RunRecord, **fields: Any) -> dict[str,
         'state': record.state,
         'version': record.version,
         'dataset_id': record.dataset_id,
+        'created_at': record.created_at,
+        'started_at': record.started_at,
+        'completed_at': record.finished_at,
     })
+    if record.dataset_snapshot:
+        payload.update(
+            {
+                key: value
+                for key, value in record.dataset_snapshot.items()
+                if key in {'curve_count', 'sample_id_count', 'class_count', 'feature_count', 'test_curve_count'}
+            }
+        )
     if record.error:
-        payload['error'] = record.error
+        payload['error'] = public_error_message(record.error)
+        if record.error_details:
+            payload['error_details'] = {
+                **record.error_details,
+                'message': public_error_message(record.error_details.get('message') or record.error),
+            }
     else:
         payload.pop('error', None)
+        payload.pop('error_details', None)
     if record.manifest_name:
         payload['manifest_name'] = record.manifest_name
     payload.update(fields)

@@ -59,10 +59,15 @@ def _dataset_repository() -> DatasetRepository:
 
 def resolve_training_data_reference(payload: TrainingRunRequest, *, principal: Principal) -> TrainingDataReference:
     """校验互斥引用并解析一次训练所需的主数据和可选测试数据。"""
+    server_scoped = principal.owner_id is not None or principal.tenant_id is not None
     if payload.dataset_id and payload.data_path:
         raise HTTPException(status_code=422, detail='dataset_id 与 data_path 不能同时提供')
     if payload.test_dataset_id and payload.test_data_path:
         raise HTTPException(status_code=422, detail='test_dataset_id 与 test_data_path 不能同时提供')
+    if server_scoped and (payload.data_path or not payload.dataset_id):
+        raise HTTPException(status_code=422, detail='服务器模式必须使用上传接口返回的 dataset_id')
+    if server_scoped and payload.test_data_path:
+        raise HTTPException(status_code=422, detail='服务器模式的独立测试集必须使用 test_dataset_id')
 
     datasets = _dataset_repository()
     if payload.dataset_id:

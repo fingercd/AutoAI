@@ -5,7 +5,7 @@ SpecAutoAI 一键启动脚本
     python run.py                # 默认 127.0.0.1:8000，自动打开浏览器
     python run.py --port 9000    # 自定义端口
     python run.py --no-browser   # 不自动打开浏览器
-    python run.py --host 0.0.0.0 # 允许局域网访问
+    python run.py --server --host 0.0.0.0 # 受令牌保护的服务器模式
 
 PyCharm 使用:
     右键 run.py → Run / Debug 即可启动，浏览器会自动打开。
@@ -14,14 +14,73 @@ PyCharm 使用:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import threading
+import time
 import webbrowser
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+class WorkerSupervisor:
+    """有限退避重启由本启动器托管的独立 worker 子进程。"""
+
+    def __init__(self, command: list[str], *, max_fast_restarts: int = 5) -> None:
+        self.command = list(command)
+        self.max_fast_restarts = max_fast_restarts
+        self._process: subprocess.Popen[bytes] | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+        self._fast_restarts = 0
+
+    def _spawn(self) -> None:
+        self._process = subprocess.Popen(self.command)
+        self._started_at = time.monotonic()
+
+    def start(self) -> None:
+        self._spawn()
+
+        def monitor() -> None:
+            while not self._stop.wait(1.0):
+                process = self._process
+                if process is None or process.poll() is None:
+                    continue
+                lived_seconds = time.monotonic() - self._started_at
+                if lived_seconds >= 60:
+                    self._fast_restarts = 0
+                else:
+                    self._fast_restarts += 1
+                if self._fast_restarts > self.max_fast_restarts:
+                    print('\n  ⚠️ 训练 worker 连续退出，已停止自动重启；请检查日志和 /health。\n')
+                    self._process = None
+                    return
+                delay = min(2 ** max(self._fast_restarts - 1, 0), 10)
+                print(f'\n  ⚠️ 训练 worker 已退出，{delay} 秒后尝试重新启动。\n')
+                if self._stop.wait(delay):
+                    return
+                self._spawn()
+
+        self._thread = threading.Thread(target=monitor, name='autoai-worker-supervisor', daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        process = self._process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        if self._thread is not None:
+            self._thread.join(timeout=2)
 
 
 def main() -> None:
@@ -32,11 +91,30 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--reload", action="store_true", help="开启热重载（开发用）")
     parser.add_argument("--no-worker", action="store_true", help="不启动本地训练 worker")
+    parser.add_argument(
+        "--server",
+        action="store_true",
+        help="启用服务器安全模式（必须通过环境变量设置 AUTOAI_API_TOKEN）",
+    )
     args = parser.parse_args()
+
+    if args.server:
+        os.environ['AUTOAI_DEPLOYMENT_MODE'] = 'server'
+    deployment_mode = os.environ.get('AUTOAI_DEPLOYMENT_MODE', 'local').strip().lower()
+    from backend.app.http.security import is_loopback_host, load_security_settings
+
+    if not is_loopback_host(args.host) and deployment_mode != 'server':
+        parser.error('对外绑定必须同时启用 --server，并通过环境变量配置访问令牌')
+    # 在创建 worker 或 Web 服务前验证设置；异常不会包含 token 内容。
+    try:
+        security_settings = load_security_settings()
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
     import uvicorn
 
-    url = f"http://{args.host}:{args.port}"
+    browser_host = '127.0.0.1' if args.host in {'0.0.0.0', '::'} else args.host
+    url = f"http://{browser_host}:{args.port}"
 
     if not args.no_browser:
         # 在另一个线程打开浏览器，避免阻塞 uvicorn 启动
@@ -58,15 +136,17 @@ def main() -> None:
   ║  API 文档: {url}/docs                      ║
   ║  健康检查: {url}/health                    ║
   ║                                              ║
+  ║  部署模式: {security_settings.mode:<34}║
   ║  按 Ctrl+C 停止服务                          ║
   ╚══════════════════════════════════════════════╝
 """)
 
-    worker = None
+    worker: WorkerSupervisor | None = None
     if not args.no_worker:
         # Web 只负责创建 queued Run；训练能力依赖这个独立子进程。使用当前
         # 解释器可确保 worker 与 uvicorn 共享同一虚拟环境和依赖集。
-        worker = subprocess.Popen([sys.executable, "-m", "backend.app.runs.worker"])
+        worker = WorkerSupervisor([sys.executable, "-m", "backend.app.runs.worker"])
+        worker.start()
     try:
         uvicorn.run(
             "backend.app.main:app",
@@ -77,9 +157,8 @@ def main() -> None:
     finally:
         # 无论正常退出还是 Ctrl+C，都回收由本启动器创建的 worker，避免残留
         # 进程继续领取新 Run。外部独立托管的 worker 不受这里影响。
-        if worker is not None and worker.poll() is None:
-            worker.terminate()
-            worker.wait(timeout=10)
+        if worker is not None:
+            worker.stop()
 
 
 if __name__ == "__main__":
