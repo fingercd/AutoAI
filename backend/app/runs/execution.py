@@ -65,6 +65,24 @@ class TrainingExecution:
             test_data_path=test_data_path,
         )
         self.cancel_check(record)
+        snapshot = dict(record.dataset_snapshot)
+        for source, target in (
+            ('curve_count', 'curve_count'),
+            ('sample_count', 'curve_count'),
+            ('sample_id_count', 'sample_id_count'),
+            ('class_count', 'class_count'),
+            ('feature_count', 'feature_count'),
+            ('test_sample_count', 'test_curve_count'),
+        ):
+            if result.get(source) is not None and snapshot.get(target) is None:
+                snapshot[target] = result[source]
+        if snapshot != record.dataset_snapshot and hasattr(self.repository, 'update_dataset_snapshot'):
+            self.repository.update_dataset_snapshot(
+                record.run_id,
+                claim_token=record.claim_token or '',
+                now=datetime.now(timezone.utc),
+                dataset_snapshot=snapshot,
+            )
         writer.write_run_result(result)
         self.cancel_check(record)
         result_fields = {
@@ -90,11 +108,17 @@ def execute_claimed_run(record: RunRecord, *, repository: Any) -> dict[str, str]
     dataset_repository = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
     dataset_repository.initialize()
     dataset = dataset_repository.resolve_system(record.dataset_id, legacy_path=record.legacy_data_path)
+    expected_sha256 = record.dataset_snapshot.get('sha256') if record.dataset_snapshot else None
+    dataset_repository.verify_integrity(dataset, expected_sha256=expected_sha256)
     test_dataset_id = record.config.get('test_dataset_id')
     test_legacy_path = record.config.get('test_data_path')
     test_dataset = None
     if test_dataset_id or test_legacy_path:
         test_dataset = dataset_repository.resolve_system(test_dataset_id, legacy_path=test_legacy_path)
+        dataset_repository.verify_integrity(
+            test_dataset,
+            expected_sha256=record.config.get('test_dataset_sha256'),
+        )
     execution = TrainingExecution(repository=repository, run_dir=RUNS_DIR / record.run_id)
     return execution.execute(
         record,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Literal
 
 RunState = Literal['queued', 'running', 'succeeded', 'failed', 'cancelled']
@@ -14,6 +15,21 @@ LEGACY_STATUS: dict[RunState, str] = {
     'failed': 'failed',
     'cancelled': 'paused',
 }
+
+_ABSOLUTE_PATH_PATTERN = re.compile(
+    r'(?:[A-Za-z]:[\\/])|(?:^|\s)/(?:[^/\s]+/)+',
+    flags=re.IGNORECASE,
+)
+
+
+def public_error_message(message: object) -> str:
+    """阻止旧错误字符串把服务器绝对路径带入 API/状态投影。"""
+    text = str(message or '').strip()
+    if not text:
+        return '训练失败'
+    if _ABSOLUTE_PATH_PATTERN.search(text):
+        return '训练失败；详细路径信息仅记录在服务器日志中'
+    return text
 
 
 @dataclass(frozen=True)
@@ -38,6 +54,14 @@ class RunRecord:
     lease_expires_at: str | None = None
     manifest_name: str | None = None
     error: str | None = None
+    error_details: dict[str, Any] = field(default_factory=dict)
+    dataset_snapshot: dict[str, Any] = field(default_factory=dict)
+    owner_id: str | None = None
+    tenant_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
 
     @property
     def legacy_status(self) -> str:

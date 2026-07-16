@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from ..parsers import summarize_modeling_csv
@@ -140,9 +141,39 @@ def index() -> FileResponse:
 
 
 @router.get('/health')
-def health() -> dict[str, str]:
-    """无外部依赖的轻量进程存活检查。"""
-    return {'status': 'ok'}
+def health(request: Request) -> dict[str, object]:
+    """报告 Web 存活与独立训练 worker 的最近心跳摘要。"""
+
+    from ..paths import RUNS_DATABASE
+    from ..runs.repository import RunRepository
+
+    worker_summary: dict[str, object]
+    try:
+        repository = RunRepository(RUNS_DATABASE)
+        repository.initialize()
+        worker_health = repository.worker_health(now=datetime.now(timezone.utc))
+        workers = list(worker_health.get('workers') or [])
+        live_workers = [item for item in workers if item.get('live')]
+        worker_summary = {
+            'available': bool(worker_health.get('available')),
+            'live_count': len(live_workers),
+            'last_seen_at': workers[0].get('last_seen_at') if workers else None,
+            'active_run_count': sum(1 for item in live_workers if item.get('active_run_id')),
+        }
+    except Exception:
+        # 健康检查不能把数据库路径或底层异常公开给未认证的探针。
+        worker_summary = {
+            'available': False,
+            'live_count': 0,
+            'last_seen_at': None,
+            'active_run_count': 0,
+            'diagnostic': 'unavailable',
+        }
+    return {
+        'status': 'ok',
+        'deployment_mode': request.app.state.security_settings.mode,
+        'worker': worker_summary,
+    }
 
 
 @router.get('/api/models')

@@ -10,7 +10,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from ..datasets.repository import DatasetRepository
 from ..http.principal import get_principal
@@ -22,7 +22,11 @@ router = APIRouter()
 
 
 @router.post('/api/datasets/upload')
-def upload_dataset(file: UploadFile = File(...), principal: Principal = Depends(get_principal)) -> dict[str, object]:
+def upload_dataset(
+    request: Request,
+    file: UploadFile = File(...),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, object]:
     """保存并校验一个建模 CSV，返回稳定 ID 与前端摘要。"""
     suffix = Path(file.filename or 'upload.csv').suffix or '.csv'
     target = UPLOADS_DIR / f'{uuid.uuid4().hex}{suffix}'
@@ -37,9 +41,16 @@ def upload_dataset(file: UploadFile = File(...), principal: Principal = Depends(
     except Exception as exc:
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
+    public_summary = dict(summary)
+    response: dict[str, object] = {
         'dataset_id': dataset.dataset_id,
         'dataset_name': dataset.original_name,
-        'dataset_path': str(dataset.path),
-        'summary': summary,
+        'summary': public_summary,
     }
+    # 旧本机前端仍可使用受控路径兼容字段；服务器模式只公开稳定 ID，避免把
+    # 主机目录结构带入浏览器或结果页面。
+    if request.app.state.security_settings.mode == 'local':
+        response['dataset_path'] = str(dataset.path)
+    else:
+        public_summary.pop('path', None)
+    return response

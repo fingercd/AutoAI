@@ -30,32 +30,32 @@ def test_official_ui_preserves_catalog_ids_and_explains_unavailable_models():
 
 
 def test_official_ui_renders_training_audit_for_traditional_deep_and_explainability():
-    content = Path("static/index.html").read_text(encoding="utf-8")
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
-    assert 'id="trainingAudit"' in content
-    assert 'function trainingAuditFor(run)' in content
-    assert 'function renderTrainingAudit(run)' in content
-    assert 'traditional.best_params_by_fold' in content
-    assert 'valid_balanced_accuracy' in content
-    assert 'hyperparameter_search_csv' in content
-    assert '参数选择记录' in content
-    assert '相同配置已自动合并' in content
-    assert 'auditParamsForModel' in content
-    assert '"oob_balanced_accuracy"' in content
-    assert "平均 OOB BA" in content
-    assert 'audit.deep_training' not in content
-    assert '声明方法' not in content
-    assert '产物方法' not in content
+    assert 'id="resultAnalysis"' in html
+    assert 'function renderTrainingAudit(result)' in results
+    assert 'result.analysis?.training_audit' in results
+    assert 'const traditional = audit.traditional;' in results
+    assert 'const deep = audit.deep_training;' in results
+    assert 'traditional.best_params_by_fold' in results
+    assert 'traditional.valid_balanced_accuracy' in results
+    assert '完整参数搜索 CSV 如已生成' in results
+    assert '最佳验证 Loss' in results
+    assert '实际训练 Epoch' in results
+    assert 'function renderTrainingAudit(run)' not in html
 
 
 def test_official_ui_external_audit_never_renders_cv_or_fold_progress():
-    content = Path("static/index.html").read_text(encoding="utf-8")
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
-    assert 'function isExternalTestHoldout(run)' in content
-    assert 'const isExternal = isExternalTestHoldout(run);' in content
-    assert '独立测试集最终评估' in content
-    assert 'const progressMarkup = isExternal' in content
-    assert 'renderTrainingAudit(run);' in content
+    assert "external_test_holdout: '独立测试集最终评估'" in results
+    assert "leave_one_sample_id_cv: '按 Sample_ID 留一交叉验证'" in results
+    assert "pooled_oof: '合并 OOF 预测'" in results
+    assert 'result.evaluation?.primary_aggregation' in results
+    assert 'result.metrics?.splits' in results
+    assert 'const progressMarkup = isExternal' not in html
 
 
 def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
@@ -71,20 +71,28 @@ def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
 
 def test_official_ui_hides_mamba_and_traditional_epoch_progress():
     content = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
     assert 'const HIDDEN_MODEL_IDS = new Set(["cnn_mamba1d"])' in content
     assert '!HIDDEN_MODEL_IDS.has(model.id)' in content
-    assert 'const epochMetric = traditionalModel' in content
+    assert 'const epochMetric = traditionalModel' not in content
     assert '训练 Epoch<strong>${run.actual_epochs || "-"}/' not in content
-    assert '实际训练 Epoch' in content
+    assert 'result.analysis?.history?.reason' in results
+    assert '该模型不产生逐 Epoch 训练曲线。' in results
+    assert '实际训练 Epoch' in results
 
 
 def test_training_spinner_is_stable_across_polling():
     content = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
     assert 'data-active-training-run' in content
-    assert 'if (pollingRunId === requestedRunId) return;' in content
     assert 'if (currentRunId === requestedRunId) renderRun(run);' in content
+    assert 'export class RunPollController' in results
+    assert 'this.controller = new AbortController();' in results
+    assert 'if (generation !== this.generation)' in results
+    assert 'this.baseDelay * (2 ** Math.min(this.failures, 4))' in results
+    assert 'window.SpecAutoAIResults.watchTrainingRun(' in content
     assert 'background: conic-gradient' in content
 
 
@@ -98,24 +106,33 @@ def test_official_ui_exposes_oob_random_forest_budget_and_terminal_run_delete():
     assert 'id="rfMinSamplesLeaf"' not in content
     assert 'window.deleteRun = async (runId)' in content
     assert 'method: "DELETE"' in content
-    assert '删除此训练记录' in content
+    assert '确定永久删除训练记录' in content
     assert '删除失败：${error.message}' in content
     assert '模型、指标、预测结果和其他产物都将一并删除' in content
-    assert '["succeeded", "failed", "cancelled"].includes(run.state)' in content
+    assert '["succeeded", "success", "failed", "cancelled", "paused"].includes(canonicalState)' in content
 
 
-def test_modeling_view_refetches_run_before_redrawing_hidden_canvases():
-    content = Path("static/index.html").read_text(encoding="utf-8")
+def test_modeling_completion_uses_refreshable_dedicated_result_route():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
-    assert 'if (rect.width < 1 || rect.height < 1) return;' in content
-    assert 'if (viewName === "modeling" && currentRunId)' in content
-    assert 'pollCurrentRun().catch((error) => window.alert(error.message));' in content
-    assert 'drawSampleFeatureImportanceCanvas(data, sample);' in content
-    assert 'button.addEventListener("click", () => showView(button.dataset.view));' in content
+    assert 'data-view="results"' in html
+    assert 'id="view-results"' in html
+    assert 'id="resultMetrics"' in html
+    assert 'id="resultAnalysis"' in html
+    assert 'id="resultArtifacts"' in html
+    assert 'window.SpecAutoAIResults?.showNewRunSuccess(run)' in html
+    assert 'export const AUTO_REDIRECT_DELAY_MS = 3000;' in results
+    assert "text: '立即查看结果'" in results
+    assert 'window.location.hash = destination;' in results
+    assert 'return await request(`/api/training/runs/${encoded}/result`, { signal });' in results
+    assert "if (route.view === 'results') loadResult(route.runId);" in results
+    assert 'window.SpecAutoAIResults.navigateToView(button.dataset.view)' in html
 
 
 def test_official_ui_only_renders_sample_feature_importance():
     content = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
     assert "async function renderGlobalFeatureImportance" not in content
     assert "function drawFeatureImportanceCanvas" not in content
@@ -124,12 +141,12 @@ def test_official_ui_only_renders_sample_feature_importance():
     assert 'data-feature-view="sample"' not in content
     assert "combinedLogLossView" not in content
     assert "run.feature_importance" not in content
-    assert "暂无单样本重要性" in content
-    assert "await renderSampleFeatureImportance(run, sampleSummary, target);" in content
-    assert 'id="sampleFeatureImportanceCanvas" class="sample-feature-canvas"' in content
-    assert 'id="featureSampleSelect"' in content
-    assert 'const windows = source.windows || [];' in content
-    assert 'span <= 1e-12) return 0;' in content
-    assert 'function divergentImportanceColor' in content
-    assert 'sample_occlusion_log_loss' in content
-    assert 'const windows = (source?.windows || []).filter(isPositive);' in content
+    assert 'function renderExplainability(result)' in results
+    assert '加载单样品解释' in results
+    assert "const samplePayload = await explainabilityPayload(result, 'samples', generation);" in results
+    assert 'if (generation !== resultRenderGeneration) return;' in results
+    assert 'id: \'resultSampleExplanationSelect\'' in results
+    assert 'function triggerArtifactDownload' in results
+    assert 'artifact.suggested_filename || response.filename' in results
+    assert 'artifact?.downloadable === true' in results
+    assert 'safeDownloadUrl(artifact?.download_url)' in results

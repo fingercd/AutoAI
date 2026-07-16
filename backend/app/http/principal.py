@@ -1,14 +1,25 @@
 """请求身份注入边界。
 
-当前是单机模式，因此所有请求都得到空身份。未来接入认证时应只改这个服务端
-边界，不能重新允许客户端在 JSON 中声明 owner_id 或 tenant_id。
+身份只由认证中间件和服务端环境配置生成。客户端不能在 JSON 中声明
+``owner_id`` 或 ``tenant_id``。
 """
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from ..runs.contracts import Principal
 
 
-def get_principal(_: Request) -> Principal:
-    """返回当前请求的服务端 Principal；本地模式故意不区分租户。"""
-    return Principal(owner_id=None, tenant_id=None)
+def get_principal(request: Request) -> Principal:
+    """返回认证中间件注入的服务端 Principal。"""
+
+    principal = getattr(request.state, 'principal', None)
+    if isinstance(principal, Principal):
+        return principal
+    settings = getattr(request.app.state, 'security_settings', None)
+    if settings is not None and settings.mode == 'local':
+        return Principal()
+    raise HTTPException(
+        status_code=401,
+        detail={'code': 'authentication_required', 'message': '需要有效的服务器访问令牌'},
+        headers={'WWW-Authenticate': 'Bearer'},
+    )

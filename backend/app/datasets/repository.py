@@ -27,6 +27,10 @@ class DatasetRecord:
     tenant_id: str | None
 
 
+class DatasetIntegrityError(ValueError):
+    """数据文件内容与 Run 创建时保存的哈希快照不一致。"""
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as handle:
@@ -147,6 +151,21 @@ class DatasetRepository:
             owner_id=None,
             tenant_id=None,
         )
+
+    @staticmethod
+    def verify_integrity(record: DatasetRecord, *, expected_sha256: str | None = None) -> str:
+        """重新计算文件哈希，并同时校验注册记录和可选 Run 快照。"""
+        actual = _sha256(record.path)
+        expected = expected_sha256 or record.sha256
+        if expected and actual != expected:
+            raise DatasetIntegrityError(
+                f'dataset {record.dataset_id or record.original_name} 内容已变化；请重新上传后创建 Run'
+            )
+        if record.sha256 and actual != record.sha256:
+            raise DatasetIntegrityError(
+                f'dataset {record.dataset_id or record.original_name} 与注册哈希不一致'
+            )
+        return actual
 
     def _is_controlled_path(self, path: Path) -> bool:
         allowed_roots = (
