@@ -1,4 +1,4 @@
-# AutoAI 谱学数据预处理与自动建模平台开发计划（历史路线）
+# SpecAutoAI 谱学数据预处理与自动建模平台开发计划（历史路线）
 
 > **历史文档，不作为当前实现或安装说明。** 本文件保留早期需求与技术路线原文，其中 React/Vite、BackgroundTasks、Redis/RQ、旧模型清单和旧命令均可能已经失效。当前事实以 `README.md`、`CONTEXT.md`、`AGENTS.md` 和 `docs/frontend_backend_handoff.md` 为准；维护者不得据此直接修改正式主线。
 
@@ -6,8 +6,8 @@
 
 - 当前没有独立 `frontend/` 主链路，正式页面是 `static/index.html`，由 FastAPI 同源托管；历史 UI 画廊已移除。
 - 训练 HTTP 请求只创建 SQLite 中的 queued Run，由独立 worker 通过 claim token 和 lease 执行；FastAPI `BackgroundTasks` 不承担训练。
-- 分类评估支持分层 8:1:1、`Repeat_index` 留一交叉验证和独立测试集 holdout。
-- 正式模型固定为 4 个传统分类模型和 6 个深度分类模型，准确清单见 `README.md`。
+- 分类评估支持分层 8:1:1、`Sample_ID` 留一交叉验证和独立测试集 holdout。
+- 当前能力目录有 15 个目标分类模型，其中本机基线可训练 14 个；准确清单与可用性见 `README.md`。
 - 训练产物包含常规配置、指标、预测结果、模型文件和解释性 JSON/CSV；DSCARNet 额外写入 AggMap/PCA 映射元数据与 joblib 文件。
 - 下面 1-9 步保留原始规划语境，出现 React/Vite、BackgroundTasks、Redis/RQ、旧模型或旧命令时，均按历史计划理解。
 
@@ -36,7 +36,7 @@
    - 数据预览：样本总数、每类样本数。
    - 默认分层划分训练集、验证集、测试集，比例 8:1:1。
    - 如已有独立测试集，默认训练集/验证集按 8:2 划分。
-   - 支持基于 `Repeat_index` 的留一法交叉训练验证。
+   - 支持基于 `Sample_ID` 的留一法交叉训练验证。
    - 第一阶段以 1D-CNN 分类模型为主。
    - 支持未来加载新模型算法。
    - 支持轻量自动超参数。
@@ -49,7 +49,7 @@
 `data.csv` 字段：
 
 ```text
-Index, Name, XXX, Intensity, Label, Repeat_index
+Index, Name, XXX, Intensity, Label, Sample_ID
 ```
 
 已检查结果：
@@ -59,7 +59,7 @@ Index, Name, XXX, Intensity, Label, Repeat_index
 标签类别：Fe 45 条，Si 45 条
 每条曲线长度：160
 XXX 与 Intensity 均为数组字符串
-Repeat_index：每个重复编号约 3 条记录
+Sample_ID：每个样品编号约 3 条记录
 解析错误：0
 ```
 
@@ -262,12 +262,12 @@ python -m pytest backend/tests/test_config.py
 - 每个文件整理为一条样本记录：
 
 ```text
-Index, Name, XXX, Intensity, Label, Repeat_index
+Index, Name, XXX, Intensity, Label, Sample_ID
 ```
 
 - `Name` 默认来自文件名。
 - `Label` 默认空。
-- `Repeat_index` 支持前端手动填或自动从文件名规则推断。
+- `Sample_ID` 支持前端手动填或自动从文件名规则推断。
 
 #### 3.2 拉曼预处理
 
@@ -353,8 +353,8 @@ storage/runs/{run_id}/
 
 - 默认分层 8:1:1。
 - 支持已有独立测试集字段，若后续数据包含 `Split` 或用户上传测试集，则训练/验证按 8:2。
-- 支持 `Repeat_index` 留一法：
-  - 每轮一个 `Repeat_index` 做测试。
+- 支持 `Sample_ID` 留一法：
+  - 每轮一个 `Sample_ID` 做测试。
   - 剩余样本再分训练/验证。
 
 #### 4.3 模型策略
@@ -381,7 +381,7 @@ python -m pytest backend/tests/test_train_smoke.py
 - `predictions.csv` 格式满足需求：
 
 ```text
-dataset,index,Repeat_index,true_label,pred_label,prob_Fe,prob_Si,...
+dataset,index,Sample_ID,true_label,pred_label,prob_Fe,prob_Si,...
 ```
 
 - `label_map.json` 中类别顺序固定。
@@ -514,7 +514,7 @@ http://127.0.0.1:8000/docs
 - 显示样本总数、类别分布、曲线长度。
 - 训练配置表单：
   - 模型：Auto / 1D-CNN。
-  - 划分方式：分层划分 / Repeat_index 留一法。
+  - 划分方式：分层划分 / Sample_ID 留一法。
   - epoch。
   - batch size。
   - learning rate。
@@ -670,7 +670,7 @@ report.md
 ```text
 第1列：dataset，train/valid/test
 第2列：index
-第3列：Repeat_index
+第3列：Sample_ID
 第4列：true_label
 第5列：pred_label
 第6到N列：各类别预测概率
@@ -822,7 +822,7 @@ http://服务器内网IP/
 
 避免：
 
-- 支持基于 `Repeat_index` 的留一法。
+- 支持基于 `Sample_ID` 的留一法。
 - 默认划分时记录 `split.json`。
 - 对同一来源文件名或同一重复编号做分组检查。
 

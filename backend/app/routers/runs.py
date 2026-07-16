@@ -1,3 +1,10 @@
+"""训练 Run 的创建、查询、取消、删除与 artifact 下载路由。
+
+SQLite RunRecord 是规范状态；status.json 只补充旧前端字段。创建接口只写入 queued
+Run，取消和删除均通过仓库状态机校验。成功 Run 的下载必须通过 manifest 条目，
+不会把整个 storage/runs 目录暴露给通用文件接口。
+"""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from ..contracts import TrainingRunRequest, TrainingSpec
+from ..datasets.repository import DatasetRepository
 from ..http.principal import get_principal
+from ..paths import DATASETS_DATABASE, STORAGE_DIR
 from ..runs.artifacts import RunArtifactWriter
 from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import InvalidRunTransition, RunNotFound
@@ -20,7 +29,25 @@ from .deps import get_run_dir, get_run_repository, resolve_training_data_referen
 router = APIRouter()
 
 
+def _dataset_name_for_record(record: RunRecord) -> str | None:
+    """优先读取 Run 快照，并为升级前的 Run 回查原始上传文件名。"""
+    configured = record.config.get('dataset_name')
+    if configured:
+        return str(configured)
+    if record.dataset_id:
+        try:
+            repository = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
+            repository.initialize()
+            return repository.resolve_system(record.dataset_id, legacy_path=None).original_name
+        except (FileNotFoundError, PermissionError, OSError):
+            pass
+    if record.legacy_data_path:
+        return Path(record.legacy_data_path).name
+    return None
+
+
 def _projection(record: RunRecord) -> dict[str, Any]:
+    """合并规范 RunRecord、兼容 status.json 和可恢复的 artifact 摘要。"""
     status_file = get_run_dir(record.run_id) / 'status.json'
     payload: dict[str, Any] = {}
     if status_file.is_file():
@@ -31,6 +58,7 @@ def _projection(record: RunRecord) -> dict[str, Any]:
         except json.JSONDecodeError:
             payload = {}
     payload = recover_status_from_artifacts(status_file.parent, payload)
+    dataset_name = _dataset_name_for_record(record)
     payload.update(
         {
             'run_id': record.run_id,
@@ -38,6 +66,7 @@ def _projection(record: RunRecord) -> dict[str, Any]:
             'state': record.state,
             'version': record.version,
             'dataset_id': record.dataset_id,
+            'dataset_name': dataset_name,
             'config': record.config,
             **record.progress,
         }
@@ -54,12 +83,16 @@ def _projection(record: RunRecord) -> dict[str, Any]:
 @router.post('/api/training/runs', status_code=202)
 @router.post('/api/train', status_code=202)
 def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_principal)) -> dict[str, object]:
+    """持久化 queued Run；本请求绝不直接调用训练器。"""
     data_ref = resolve_training_data_reference(payload, principal=principal)
     config = TrainingSpec.from_legacy(payload.config).to_legacy_dict()
+    config['dataset_name'] = data_ref.dataset_name
     if data_ref.test_dataset_id:
         config['test_dataset_id'] = data_ref.test_dataset_id
     if data_ref.test_legacy_path:
         config['test_data_path'] = data_ref.test_legacy_path
+    if data_ref.test_dataset_name:
+        config['test_dataset_name'] = data_ref.test_dataset_name
     repository = get_run_repository()
     record = repository.create_queued(
         dataset_id=data_ref.dataset_id,
@@ -72,11 +105,13 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
 
 @router.get('/api/training/runs')
 def get_runs() -> list[dict[str, Any]]:
+    """按仓库顺序返回所有 Run 的前端兼容投影。"""
     return [_projection(record) for record in get_run_repository().list()]
 
 
 @router.get('/api/training/runs/{run_id}')
 def get_run(run_id: str) -> dict[str, Any]:
+    """返回单个 Run 的规范状态与兼容训练结果投影。"""
     try:
         record = get_run_repository().get(run_id)
     except RunNotFound as exc:
@@ -86,6 +121,7 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 @router.post('/api/training/runs/{run_id}/cancel')
 def cancel_run(run_id: str) -> dict[str, Any]:
+    """事务性取消 queued/running Run，并生成兼容 paused 投影。"""
     repository = get_run_repository()
     try:
         record = repository.cancel(run_id, now=datetime.now(timezone.utc))
@@ -98,6 +134,7 @@ def cancel_run(run_id: str) -> dict[str, Any]:
 
 @router.delete('/api/training/runs/{run_id}')
 def delete_run(run_id: str) -> dict[str, object]:
+    """只删除终态 Run；同时移除数据库记录和对应产物目录。"""
     repository = get_run_repository()
     try:
         record = repository.get(run_id)
@@ -123,6 +160,7 @@ def delete_run(run_id: str) -> dict[str, object]:
 
 @router.get('/api/training/runs/{run_id}/artifact/{name}')
 def get_run_artifact(run_id: str, name: str) -> FileResponse:
+    """仅返回 Manifest 中存在且标为 downloadable 的单个产物。"""
     run_dir = get_run_dir(run_id)
     try:
         get_run_repository().get(run_id)

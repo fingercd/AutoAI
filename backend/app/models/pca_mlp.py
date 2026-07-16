@@ -1,3 +1,8 @@
+"""把训练折拟合的 PCA 固化为首层投影的 MLP 分类器。
+
+PCA 均值与成分注册为 buffer，因此随 model.pt 保存但不参与梯度更新。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -7,6 +12,7 @@ from torch import nn
 
 
 class PCAMLPClassifier(nn.Module):
+    """先执行固定训练折 PCA 投影，再通过两层 MLP 输出 logits。"""
     def __init__(
         self,
         pca_mean,

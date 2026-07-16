@@ -75,11 +75,11 @@ def test_model_catalog_initialization_has_module_and_dom_ready_paths():
     content = Path('static/index.html').read_text(encoding='utf-8')
     fallback = content.split('function renderModelCatalogFallback', 1)[1].split('async function loadModelCatalog', 1)[0]
 
-    assert 'window.addEventListener("autoai:modules-ready", initializeApiBackedUi' in content
+    assert 'window.addEventListener("specautoai:modules-ready", initializeApiBackedUi' in content
     assert 'apiBackedUiInitialized' in content
     assert 'window.setTimeout(initializeApiBackedUi, 1000)' in content
     assert 'apiWithTimeout("/api/models", 30000)' in content
-    assert 'window.AutoAIRequest && window.AutoAITrainingStore' in content
+    assert 'window.SpecAutoAIRequest && window.SpecAutoAITrainingStore' in content
     assert 'select.replaceChildren()' in fallback
     assert 'select.disabled = true' in fallback
     assert '<option value="pls_da">PLS-DA</option>' not in content
@@ -95,4 +95,4 @@ def test_model_option_visibility_tolerates_removed_optional_blocks():
 def test_training_store_announces_module_readiness():
     content = Path('static/js/training-store.js').read_text(encoding='utf-8')
 
-    assert "window.dispatchEvent(new CustomEvent('autoai:modules-ready'))" in content
+    assert "window.dispatchEvent(new CustomEvent('specautoai:modules-ready'))" in content

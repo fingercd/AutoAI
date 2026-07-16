@@ -1,3 +1,10 @@
+"""上传数据集的 SQLite 元数据仓库。
+
+数据文件保存在受控 storage 目录，数据库只保存稳定 dataset_id、绝对路径、
+原文件名、内容哈希和服务端身份范围。读取记录时会同时验证路径仍位于允许根目录，
+防止数据库内容被利用为任意文件读取入口。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,6 +18,7 @@ from ..runs.contracts import Principal
 
 @dataclass(frozen=True)
 class DatasetRecord:
+    """一个已持久化、可被训练 Run 稳定引用的数据集。"""
     dataset_id: str
     path: Path
     sha256: str
@@ -32,6 +40,7 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 class DatasetRepository:
+    """管理 dataset schema、注册、按 Principal 查询与路径约束。"""
     def __init__(self, database_path: Path, *, storage_root: Path) -> None:
         self.database_path = Path(database_path)
         self.storage_root = Path(storage_root).resolve()

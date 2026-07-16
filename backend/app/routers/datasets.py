@@ -1,3 +1,9 @@
+"""建模 CSV 上传路由。
+
+上传文件先落到随机命名的受控目录，再做完整解析校验，最后注册稳定 dataset_id。
+失败时删除本次临时上传，避免无效文件进入可引用的数据集目录。
+"""
+
 from __future__ import annotations
 
 import shutil
@@ -17,6 +23,7 @@ router = APIRouter()
 
 @router.post('/api/datasets/upload')
 def upload_dataset(file: UploadFile = File(...), principal: Principal = Depends(get_principal)) -> dict[str, object]:
+    """保存并校验一个建模 CSV，返回稳定 ID 与前端摘要。"""
     suffix = Path(file.filename or 'upload.csv').suffix or '.csv'
     target = UPLOADS_DIR / f'{uuid.uuid4().hex}{suffix}'
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -30,4 +37,9 @@ def upload_dataset(file: UploadFile = File(...), principal: Principal = Depends(
     except Exception as exc:
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {'dataset_id': dataset.dataset_id, 'dataset_path': str(dataset.path), 'summary': summary}
+    return {
+        'dataset_id': dataset.dataset_id,
+        'dataset_name': dataset.original_name,
+        'dataset_path': str(dataset.path),
+        'summary': summary,
+    }

@@ -1,3 +1,5 @@
+"""带概率输出的 SVM 分类器构造器。"""
+
 from __future__ import annotations
 
 from sklearn.svm import SVC
@@ -10,6 +12,7 @@ def build_svm(
     seed: int = 42,
     kernel: str = "rbf",
 ) -> SVC:
+    """构造带概率校准的 linear/rbf SVC，并防御非法 kernel。"""
     if isinstance(gamma, str) and gamma not in {"scale", "auto"}:
         gamma = float(gamma)
     safe_kernel = kernel if kernel in {"linear", "rbf"} else "rbf"

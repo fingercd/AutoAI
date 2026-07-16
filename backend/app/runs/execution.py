@@ -1,3 +1,9 @@
+"""把训练函数包装进可取消、可校验 claim 的 Run 执行边界。
+
+执行期间在训练前、写产物前和提交 Manifest 前多次确认 claim 仍有效，因此已取消
+或 lease 已被回收的旧 worker 不能用迟到的成功结果覆盖最新状态。
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -11,6 +17,7 @@ from .status_projection import project_status
 
 
 class TrainingExecution:
+    """协调一次已 claim Run 的训练、artifact 写入和状态投影。"""
     def __init__(self, *, repository: Any, run_dir: Path) -> None:
         self.repository = repository
         self.run_dir = Path(run_dir)
@@ -76,6 +83,7 @@ class TrainingExecution:
 
 
 def execute_claimed_run(record: RunRecord, *, repository: Any) -> dict[str, str]:
+    """执行一个已 claim 的 Run，并在 Manifest 提交后返回完成信息。"""
     from ..datasets.repository import DatasetRepository
     from ..paths import DATASETS_DATABASE, RUNS_DIR, STORAGE_DIR
 

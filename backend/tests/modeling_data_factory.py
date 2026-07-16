@@ -33,7 +33,7 @@ def write_grouped_classification_csv(
                         "XXX": json.dumps(x_axis.tolist()),
                         "Intensity": json.dumps(signal.tolist()),
                         "Label": label,
-                        "Repeat_index": str(group_id),
+                        "Sample_ID": str(group_id),
                     }
                 )
                 row_index += 1

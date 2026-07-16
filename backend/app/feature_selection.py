@@ -1,3 +1,11 @@
+"""生成全局与单样品光谱特征重要性 artifact。
+
+窗口遮挡把特征轴解析成最接近请求数量且能整除长度的等宽窗口，并用训练集均值
+替换窗口。重要性定义为真实类别 ``masked_loss - original_loss``，也就是
+``log(p_before / p_after)``；全局结果先按真实类别求均值，再做类别等权聚合。
+卷积模型走 1D Grad-CAM，DSCARNet 走二维分支归因后回投到原始一维特征。
+"""
+
 from __future__ import annotations
 
 import json
@@ -38,13 +46,13 @@ FEATURE_COLUMNS = [
 
 SAMPLE_FEATURE_COLUMNS = [
     "importance_metric",
+    "result_id",
     "sample_id",
     "fold_index",
     "dataset",
     "source_index",
     "index",
     "name",
-    "repeat_index",
     "true_label",
     "pred_label",
     "correct",
@@ -72,6 +80,7 @@ SAMPLE_FEATURE_LOSS_COLUMNS = [
 ]
 
 
+# 窗口几何与结果分段：所有窗口必须等宽且完整覆盖特征轴。
 def resolve_equal_width_window_count(n_features: int, window_count: int) -> int:
     """Choose the closest requested window count that divides the feature axis."""
     if n_features <= 0:
@@ -208,6 +217,7 @@ def unavailable_feature_importance(
     mean_curve: np.ndarray | list[float] | None = None,
     method: str = "interval_permutation_importance",
 ) -> dict[str, Any]:
+    """构造结构稳定的不可用摘要，使前端和下载接口无需猜测缺失字段。"""
     return {
         "status": "unavailable",
         "reason": reason,
@@ -219,6 +229,7 @@ def unavailable_feature_importance(
     }
 
 
+# 全局/单样品窗口扰动。现行单样品方法直接比较真实类别概率对应的 Log-loss。
 def interval_permutation_importance(
     x: np.ndarray,
     y: np.ndarray,
@@ -461,12 +472,12 @@ def sample_occlusion_importance(
         top_segments = merge_ranked_windows(top_windows)
         samples.append(
             {
-                "sample_id": f"{split_name}:{source_idx}",
+                "result_id": f"{split_name}:{source_idx}",
+                "sample_id": str(sample_meta.get("sample_id", "")),
                 "dataset": split_name,
                 "source_index": int(source_idx),
                 "index": sample_meta.get("index", int(source_idx)),
                 "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-                "repeat_index": str(sample_meta.get("repeat_index", "")),
                 "true_class_id": true_class_id,
                 "pred_class_id": pred_class_id,
                 "true_label": _label_at(label_names, true_class_id),
@@ -498,6 +509,7 @@ def sample_occlusion_importance(
     }
 
 
+# 深度模型归因：1D 网络直接归因，DSCARNet 在二维分支生成 CAM 后回投。
 def sample_deep_attribution_importance(
     model: nn.Module,
     x: np.ndarray,
@@ -587,12 +599,12 @@ def sample_deep_attribution_importance(
             top_k=top_limit,
         )
         sample_payload = {
-            "sample_id": f"{split_name}:{source_idx}",
+            "result_id": f"{split_name}:{source_idx}",
+            "sample_id": str(sample_meta.get("sample_id", "")),
             "dataset": split_name,
             "source_index": int(source_idx),
             "index": sample_meta.get("index", int(source_idx)),
             "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-            "repeat_index": str(sample_meta.get("repeat_index", "")),
             "true_class_id": true_class_id,
             "pred_class_id": pred_class_id,
             "true_label": _label_at(label_names, true_class_id),
@@ -652,6 +664,7 @@ def sample_dscarnet_single_2d_gradcam_importance(
     metadata: list[dict[str, Any]] | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
+    """为 SAR 或 CAR 单分支生成 2D Grad-CAM，并回投到一维特征轴。"""
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
     mode = str(mode).lower()
@@ -679,9 +692,10 @@ def sample_dscarnet_single_2d_gradcam_importance(
         sample_axis = _sample_x_axis_array(sample_meta, x_axis_array)
         rows, top_segments = _attribution_windows(attributions[local_idx], x_axis_array=sample_axis, top_k=max(1, int(top_k)))
         samples.append({
-            "sample_id": f"{split_name}:{source_idx}", "dataset": split_name, "source_index": int(source_idx),
+            "result_id": f"{split_name}:{source_idx}", "sample_id": str(sample_meta.get("sample_id", "")),
+            "dataset": split_name, "source_index": int(source_idx),
             "index": sample_meta.get("index", int(source_idx)), "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-            "repeat_index": str(sample_meta.get("repeat_index", "")), "true_class_id": int(true_class),
+            "true_class_id": int(true_class),
             "pred_class_id": pred_class, "true_label": _label_at(label_names, int(true_class)),
             "pred_label": _label_at(label_names, pred_class), "correct": pred_class == int(true_class),
             "true_probability": float(scores[local_idx, int(true_class)]), "pred_probability": float(scores[local_idx, pred_class]),
@@ -791,12 +805,12 @@ def sample_dscarnet_dual_2d_gradcam_importance(
         )
         samples.append(
             {
-                "sample_id": f"{split_name}:{source_idx}",
+                "result_id": f"{split_name}:{source_idx}",
+                "sample_id": str(sample_meta.get("sample_id", "")),
                 "dataset": split_name,
                 "source_index": int(source_idx),
                 "index": sample_meta.get("index", int(source_idx)),
                 "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-                "repeat_index": str(sample_meta.get("repeat_index", "")),
                 "true_class_id": true_class_id,
                 "pred_class_id": pred_class_id,
                 "true_label": _label_at(label_names, true_class_id),
@@ -830,7 +844,9 @@ def sample_dscarnet_dual_2d_gradcam_importance(
     }
 
 
+# 聚合、序列化与 CSV 展开。全局聚合按真实类别等权，避免多数类主导。
 def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any]:
+    """把单样品重要性先按真实类别平均，再做类别等权全局聚合。"""
     samples = result.get("samples", [])
     if result.get("status") != "ready" or not samples:
         unavailable = unavailable_feature_importance(
@@ -945,6 +961,7 @@ def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any
 
 
 def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, Any]) -> dict[str, Any]:
+    """写出全局重要性的 JSON/Excel 友好 CSV，并返回状态摘要。"""
     run_path = Path(run_dir)
     json_path = run_path / "feature_importance.json"
     csv_path = run_path / "feature_importance.csv"
@@ -978,6 +995,7 @@ def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, An
 
 
 def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[str, Any]) -> dict[str, Any]:
+    """写出逐样品、逐窗口的解释性 JSON/CSV，并返回状态摘要。"""
     run_path = Path(run_dir)
     json_path = run_path / "sample_feature_importance.json"
     csv_path = run_path / "sample_feature_importance.csv"
@@ -988,13 +1006,13 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
     for sample in result.get("samples", []):
         base = {
             "importance_metric": importance_metric,
+            "result_id": sample.get("result_id"),
             "sample_id": sample.get("sample_id"),
             "fold_index": sample.get("fold_index"),
             "dataset": sample.get("dataset"),
             "source_index": sample.get("source_index"),
             "index": sample.get("index"),
             "name": sample.get("name"),
-            "repeat_index": sample.get("repeat_index"),
             "true_label": sample.get("true_label"),
             "pred_label": sample.get("pred_label"),
             "correct": sample.get("correct"),
@@ -1028,6 +1046,7 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
     }
 
 
+# 以下辅助函数负责坐标防御、sanity check、AggMap 像素回投和 Grad-CAM hook。
 def _safe_x_axis(x_axis: np.ndarray | list[float], n_features: int) -> np.ndarray:
     values = np.asarray(x_axis, dtype=np.float32).reshape(-1)
     if len(values) == n_features:
@@ -1359,10 +1378,12 @@ def _aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str
 
 
 def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """汇总普通深度模型归因的非零、边缘与重叠 sanity 指标。"""
     return _aggregate_attribution_sanity(samples)
 
 
 def aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """汇总 DSCARNet SAR/CAR 分支是否实际产生有效归因。"""
     return _aggregate_dscarnet_branch_sanity(samples)
 
 

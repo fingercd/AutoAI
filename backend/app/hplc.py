@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from .parsers import (
+    MODELING_COLUMNS,
     _normalize_numeric_array,
     _range_indexer,
     _serialize_modeling_array,
@@ -37,6 +38,7 @@ def compute_common_time_axis(x_axes: list[np.ndarray]) -> np.ndarray:
     """
     if len(x_axes) == 1:
         return x_axes[0].astype(np.float32).copy()
+    # 只在所有曲线共同覆盖的交集内插值，避免 np.interp 在边界做常数外推。
     starts = [x.min() for x in x_axes]
     ends = [x.max() for x in x_axes]
     start = max(starts)
@@ -46,6 +48,7 @@ def compute_common_time_axis(x_axes: list[np.ndarray]) -> np.ndarray:
             f"各文件时间轴无重叠区域: 起始范围 [{min(starts):.6f}, {max(starts):.6f}], "
             f"结束范围 [{min(ends):.6f}, {max(ends):.6f}]"
         )
+    # 中位数长度不被单个异常长/短文件主导，同时保持与原采样密度接近。
     lengths = [len(x) for x in x_axes]
     n_points = int(np.median(lengths))
     return np.linspace(start, end, n_points, dtype=np.float32)
@@ -204,12 +207,12 @@ def preprocess_hplc_files_with_preview(
                 "XXX": common_x_serialized,
                 "Intensity": intensity_serialized,
                 "Label": "",
-                "Repeat_index": "",
+                "Sample_ID": "",
             }
         )
 
     frame = pd.DataFrame.from_records(
-        records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"]
+        records, columns=MODELING_COLUMNS
     )
 
     curves = []

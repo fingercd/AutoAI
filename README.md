@@ -1,14 +1,14 @@
-# AutoAI-v2
+# SpecAutoAI
 
-AutoAI-v2 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
+SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
 
 当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
 
 ## 正式功能
 
-- 拉曼：按行号或 X 轴范围截取，支持基线校正及两种“截取/校正”顺序。
+- 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
-- 分类评估：分层 8:1:1、按 `Repeat_index` 留一交叉验证、独立测试集 holdout。
+- 分类评估：分层 8:1:1、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
 - 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
@@ -72,9 +72,9 @@ python -m pip install -r backend/requirements-dscarnet.txt -c backend/constraint
 python -m pip install aggmap==1.2.1 --no-deps
 ```
 
-AutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
+SpecAutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
 
-AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目不使用的 `tensorflow-gpu`、`lapjv` 和 `shap`。因此按上述方式安装后，`pip check` 仍会报告 AggMap 的已知元数据冲突；这不表示 AutoAI 使用的 SAR/CAR 映射链路缺少依赖。核心环境不安装 AggMap 时不受此问题影响。
+AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目不使用的 `tensorflow-gpu`、`lapjv` 和 `shap`。因此按上述方式安装后，`pip check` 仍会报告 AggMap 的已知元数据冲突；这不表示 SpecAutoAI 使用的 SAR/CAR 映射链路缺少依赖。核心环境不安装 AggMap 时不受此问题影响。
 
 ## 启动
 
@@ -119,11 +119,11 @@ python -m backend.app.runs.worker
 
 ## 分类模型 v2 契约
 
-当前能力目录公开 **15 个目标分类模型，其中 14 个可用**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 当前可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Repeat_index` 不改名并等同文档中的 Sample_ID。
+当前能力目录公开 **15 个目标分类模型，其中 14 个可用**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 当前可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
 
 新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
 
-评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_repeat_index_cv` 每次留一个 `Repeat_index` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
+评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
 解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。`cnn_mamba1d` 若未来依赖可用，也采用 Log-loss 窗口遮挡。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 和 `model.pt/model.pkl` 下载名继续兼容。
 
@@ -132,18 +132,18 @@ python -m backend.app.runs.worker
 建模文件固定需要以下字段：
 
 ```text
-Index, Name, XXX, Intensity, Label, Repeat_index
+Index, Name, XXX, Intensity, Label, Sample_ID
 ```
 
 - `XXX` 与 `Intensity` 是等长数值数组。
 - `Label` 必填并始终作为分类类别。
-- `Repeat_index` 表示同一样品的重复测量组；同组不得混入多个 `Label`。
+- `Sample_ID` 表示同一样品的重复测量组；同组不得混入多个 `Label`。
 - 不同样品的重复次数应一致。
 
 最小工作流程：
 
 1. 在网页上传拉曼/色谱原始 CSV 并完成预处理。
-2. 下载统一 CSV，补全 `Label` 与 `Repeat_index`。
+2. 下载统一 CSV，补全 `Label` 与 `Sample_ID`。
 3. 将建模 CSV 上传到“AI 建模”。
 4. 选择模型与评估口径，创建 queued Run。
 5. worker 完成训练后查看 train/valid/test 指标、混淆矩阵、曲线和解释结果。
@@ -193,17 +193,17 @@ curl http://127.0.0.1:8000/health
 
 ### 安装了 CUDA 驱动但 PyTorch 仍使用 CPU
 
-检查 `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`。若为 `False`，按 PyTorch 官方渠道重新安装与驱动/CUDA 匹配的 wheel，然后再安装 AutoAI 其余依赖。
+检查 `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`。若为 `False`，按 PyTorch 官方渠道重新安装与驱动/CUDA 匹配的 wheel，然后再安装 SpecAutoAI 其余依赖。
 
 ### AggMap 安装时尝试拉取 tensorflow-gpu
 
 不要直接执行普通的 `pip install aggmap`。先安装 `requirements-dscarnet.txt`，再执行 `python -m pip install aggmap==1.2.1 --no-deps`。
 
-安装后执行 `pip check` 会按 AggMap 1.2.1 的旧元数据报告 `tensorflow-gpu`、`lapjv`、`shap` 和若干固定旧版本冲突，这是当前兼容安装方式的已知现象。AutoAI 不调用 AggMap 的 TensorFlow AggModel，并为所用映射路径提供 SciPy `lapjv` 兼容层。
+安装后执行 `pip check` 会按 AggMap 1.2.1 的旧元数据报告 `tensorflow-gpu`、`lapjv`、`shap` 和若干固定旧版本冲突，这是当前兼容安装方式的已知现象。SpecAutoAI 不调用 AggMap 的 TensorFlow AggModel，并为所用映射路径提供 SciPy `lapjv` 兼容层。
 
 ### pandas 提示 numexpr 版本过低
 
-`numexpr` 不是 AutoAI 的必需依赖。如果环境中已经安装旧版并触发 pandas 警告，可升级到 pandas 提示的最低版本，或在不被其他项目使用时卸载旧版 `numexpr`；不要仅为消除警告改动 AutoAI 的核心依赖集合。
+`numexpr` 不是 SpecAutoAI 的必需依赖。如果环境中已经安装旧版并触发 pandas 警告，可升级到 pandas 提示的最低版本，或在不被其他项目使用时卸载旧版 `numexpr`；不要仅为消除警告改动 SpecAutoAI 的核心依赖集合。
 
 ### 任务一直显示 queued
 
@@ -213,9 +213,9 @@ curl http://127.0.0.1:8000/health
 
 未使用 `--reload` 的服务不会自动加载新代码。停止旧进程并重启，然后刷新浏览器。
 
-### 上传后提示 Label 或 Repeat_index 无效
+### 上传后提示 Label 或 Sample_ID 无效
 
-检查六个必需字段、空值、数组长度，以及同一 `Repeat_index` 是否只对应一个标签。
+检查六个必需字段、空值、数组长度，以及同一 `Sample_ID` 是否只对应一个标签。
 
 ## 协作与发布
 

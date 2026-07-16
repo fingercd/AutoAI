@@ -1,3 +1,10 @@
+"""Run artifact 的原子写入、Manifest 发布和安全下载解析。
+
+所有文件先写同目录临时文件、fsync 后再 os.replace。Run 只有在 Manifest 完成后
+才能成功；下载时重新检查 Manifest、downloadable 标记、路径边界和文件存在性。
+joblib 映射对象默认私有，避免把内部拟合对象当成公共 API。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -27,6 +34,7 @@ def _sha256(path: Path) -> str:
 
 
 class RunArtifactWriter:
+    """在单个 Run 目录内安全写入并最终发布一组产物。"""
     def __init__(self, run_dir: Path) -> None:
         self.run_dir = Path(run_dir).resolve()
         self._private_names: set[str] = set()

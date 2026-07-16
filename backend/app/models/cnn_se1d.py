@@ -1,9 +1,11 @@
+"""在文档版 1D CNN 上加入 squeeze-and-excitation 通道门控。"""
+
 from __future__ import annotations
 
 import torch
 from torch import nn
 
-from .cnn1d_v2 import (
+from .cnn1d import (
     CNN1DProfile,
     CNNProfile,
     _DocumentCNN1D,

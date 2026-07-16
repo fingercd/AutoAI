@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -21,6 +22,24 @@ def _record(*, state: str = 'running', version: int = 2) -> RunRecord:
         worker_id='worker-1' if state == 'running' else None,
         lease_expires_at=None,
     )
+
+
+def test_dataset_name_for_pre_snapshot_run_is_recovered_from_dataset_repository(monkeypatch):
+    class Repository:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def initialize(self):
+            return None
+
+        def resolve_system(self, dataset_id, *, legacy_path):
+            assert dataset_id == 'ds-1'
+            assert legacy_path is None
+            return SimpleNamespace(original_name='teacher_dataset.csv')
+
+    monkeypatch.setattr(runs_router, 'DatasetRepository', Repository)
+
+    assert runs_router._dataset_name_for_record(_record()) == 'teacher_dataset.csv'
 
 
 def test_project_status_preserves_result_fields_while_record_state_stays_authoritative(tmp_path):

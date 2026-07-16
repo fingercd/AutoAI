@@ -1,7 +1,15 @@
+"""建模 CSV 与原始拉曼/色谱 CSV 的解析和统一导出。
+
+统一建模行固定为 ``Index, Name, XXX, Intensity, Label, Sample_ID``。
+数组序列化采用紧凑 JSON，并在写出前检查 Excel 32,767 字符单元格上限；超限时
+明确拒绝，绝不静默截断或降采样。拉曼流程固定先选择范围，再执行基线校正。
+"""
+
 from __future__ import annotations
 
 import ast
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -10,18 +18,21 @@ import numpy as np
 import pandas as pd
 
 
-REQUIRED_MODELING_COLUMNS = {"Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"}
+MODELING_COLUMNS = ("Index", "Name", "XXX", "Intensity", "Label", "Sample_ID")
+REQUIRED_MODELING_COLUMNS = set(MODELING_COLUMNS)
+LEGACY_SAMPLE_ID_COLUMN = "Repeat_index"
 EXCEL_CELL_CHARACTER_LIMIT = 32_767
-OUTPUT_SIGNIFICANT_DIGITS = 9
+OUTPUT_DECIMAL_PLACES = 5
 
 
 @dataclass
 class ModelingDataset:
+    """解析后的表格元数据、二维强度矩阵和逐行 X 轴。"""
     frame: pd.DataFrame
     x_axis: list[list[float]]
     intensity: np.ndarray
     labels: list[str]
-    repeat_index: list[str]
+    sample_id: list[str]
 
 
 def _parse_array(value: object, field: str, row_number: int) -> list[float]:
@@ -40,9 +51,28 @@ def _parse_array(value: object, field: str, row_number: int) -> list[float]:
         raise ValueError(f"第 {row_number} 行 {field} 含有非数字值") from exc
 
 
+def _normalise_sample_id_column(frame: pd.DataFrame) -> pd.DataFrame:
+    """把旧分组列收敛为 Sample_ID；冲突双列拒绝猜测。"""
+    has_current = "Sample_ID" in frame.columns
+    has_legacy = LEGACY_SAMPLE_ID_COLUMN in frame.columns
+    if has_current and has_legacy:
+        current = frame["Sample_ID"].astype("string").fillna("").str.strip()
+        legacy = frame[LEGACY_SAMPLE_ID_COLUMN].astype("string").fillna("").str.strip()
+        mismatch = current.ne(legacy)
+        if bool(mismatch.any()):
+            rows = ", ".join(str(int(index) + 2) for index in frame.index[mismatch][:5])
+            raise ValueError(f"Sample_ID 与旧分组列内容不一致，请检查第 {rows} 行")
+        return frame.drop(columns=[LEGACY_SAMPLE_ID_COLUMN])
+    if has_legacy:
+        return frame.rename(columns={LEGACY_SAMPLE_ID_COLUMN: "Sample_ID"})
+    return frame
+
+
 def load_modeling_csv(path: str | Path) -> ModelingDataset:
+    """解析并严格校验统一建模 CSV，返回可直接训练的数据结构。"""
     path = Path(path)
     frame = _read_csv_flexible(path)
+    frame = _normalise_sample_id_column(frame)
     if "Index" not in frame.columns and REQUIRED_MODELING_COLUMNS.difference({"Index"}).issubset(frame.columns):
         frame = frame.rename(columns={frame.columns[0]: "Index"})
     missing = REQUIRED_MODELING_COLUMNS.difference(frame.columns)
@@ -52,7 +82,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     x_axis: list[list[float]] = []
     y_values: list[list[float]] = []
     labels: list[str] = []
-    repeat_indices: list[str] = []
+    sample_ids: list[str] = []
     for idx, row in frame.iterrows():
         row_number = idx + 2
         x = _parse_array(row["XXX"], "XXX", row_number)
@@ -62,13 +92,13 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         label = str(row["Label"]).strip()
         if not label or label.lower() == "nan":
             raise ValueError(f"第 {row_number} 行 Label 为空，建模前请补充标签")
-        repeat = str(row["Repeat_index"]).strip()
-        if not repeat or repeat.lower() == "nan":
-            raise ValueError(f"第 {row_number} 行 Repeat_index 为空，建模前请补充样品分组编号")
+        sample_id = str(row["Sample_ID"]).strip()
+        if not sample_id or sample_id.lower() == "nan":
+            raise ValueError(f"第 {row_number} 行 Sample_ID 为空，建模前请补充样品编号")
         x_axis.append(x)
         y_values.append(y)
         labels.append(label)
-        repeat_indices.append(repeat)
+        sample_ids.append(sample_id)
 
     lengths = {len(values) for values in y_values}
     if len(lengths) != 1:
@@ -76,29 +106,49 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
 
     frame = frame.copy()
     frame["Label"] = labels
-    frame["Repeat_index"] = repeat_indices
-    repeat_summary = _repeat_index_summary(frame)
-    if repeat_summary["inconsistent_labels"]:
-        details = ", ".join(f"{item['repeat_index']}={item['labels']}" for item in repeat_summary["inconsistent_labels"])
-        raise ValueError(f"同一个 Repeat_index 内出现多个 Label，请检查: {details}")
-    if repeat_summary["incomplete_groups"]:
-        expected = repeat_summary["expected_repeats_per_group"]
-        details = ", ".join(f"{item['repeat_index']}={item['count']}" for item in repeat_summary["incomplete_groups"])
-        raise ValueError(f"Repeat_index 重复测量次数不一致，期望每组 {expected} 条，异常分组: {details}")
+    frame["Sample_ID"] = sample_ids
+    sample_summary = _sample_id_summary(frame)
+    if sample_summary["inconsistent_labels"]:
+        details = ", ".join(f"{item['sample_id']}={item['labels']}" for item in sample_summary["inconsistent_labels"])
+        raise ValueError(f"同一个 Sample_ID 内出现多个 Label，请检查: {details}")
+    if sample_summary["incomplete_groups"]:
+        expected = sample_summary["expected_repeats_per_group"]
+        details = ", ".join(f"{item['sample_id']}={item['count']}" for item in sample_summary["incomplete_groups"])
+        raise ValueError(f"Sample_ID 重复测量次数不一致，期望每组 {expected} 条，异常分组: {details}")
 
-    return ModelingDataset(frame=frame, x_axis=x_axis, intensity=np.asarray(y_values, dtype=np.float32), labels=labels, repeat_index=repeat_indices)
+    return ModelingDataset(
+        frame=frame,
+        x_axis=x_axis,
+        intensity=np.asarray(y_values, dtype=np.float32),
+        labels=labels,
+        sample_id=sample_ids,
+    )
 
 
-def _repeat_index_summary(frame: pd.DataFrame) -> dict:
-    grouped = frame.groupby("Repeat_index", sort=True)
+def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
+    """生成稳定自然排序键，使 2 排在 10 前，并兼容 S2/S10。"""
+    parts = re.split(r"(\d+)", str(value).strip())
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in parts
+        if part
+    )
+
+
+def _sample_id_summary(frame: pd.DataFrame) -> dict:
+    grouped = frame.groupby("Sample_ID", sort=False)
     group_rows = []
     inconsistent_labels = []
-    for repeat, group in grouped:
-        labels = sorted(str(item) for item in group["Label"].dropna().astype(str).unique())
+    for sample_id in sorted(grouped.groups, key=natural_sort_key):
+        group = grouped.get_group(sample_id)
+        labels = sorted(
+            (str(item) for item in group["Label"].dropna().astype(str).unique()),
+            key=natural_sort_key,
+        )
         count = int(len(group))
-        group_rows.append({"repeat_index": str(repeat), "count": count, "label": labels[0] if len(labels) == 1 else " / ".join(labels)})
+        group_rows.append({"sample_id": str(sample_id), "count": count, "label": labels[0] if len(labels) == 1 else " / ".join(labels)})
         if len(labels) > 1:
-            inconsistent_labels.append({"repeat_index": str(repeat), "labels": labels})
+            inconsistent_labels.append({"sample_id": str(sample_id), "labels": labels})
 
     counts = [item["count"] for item in group_rows]
     expected = int(pd.Series(counts).mode().iloc[0]) if counts else 0
@@ -113,16 +163,17 @@ def _repeat_index_summary(frame: pd.DataFrame) -> dict:
 
 
 def summarize_modeling_csv(path: str | Path) -> dict:
+    """生成前端所需的类别、Sample_ID、长度与曲线预览摘要。"""
     dataset = load_modeling_csv(path)
     labels = pd.Series(dataset.labels)
     lengths = [len(item) for item in dataset.x_axis]
-    repeat_summary = _repeat_index_summary(dataset.frame)
+    sample_summary = _sample_id_summary(dataset.frame)
     return {
         "path": str(Path(path).resolve()),
         "samples": int(len(dataset.labels)),
         "classes": int(labels.nunique()),
         "label_counts": {str(k): int(v) for k, v in labels.value_counts().sort_index().items()},
-        "repeat_index": repeat_summary,
+        "sample_id": sample_summary,
         "curve_length": int(lengths[0]) if lengths else 0,
         "curve_lengths": {str(k): int(v) for k, v in pd.Series(lengths).value_counts().sort_index().items()},
         "columns": list(dataset.frame.columns),
@@ -132,7 +183,7 @@ def summarize_modeling_csv(path: str | Path) -> dict:
                 "index": int(dataset.frame.iloc[i]["Index"]) if str(dataset.frame.iloc[i]["Index"]).isdigit() else str(dataset.frame.iloc[i]["Index"]),
                 "name": str(dataset.frame.iloc[i]["Name"]),
                 "label": dataset.labels[i],
-                "repeat_index": dataset.repeat_index[i],
+                "sample_id": dataset.sample_id[i],
                 "x": dataset.x_axis[i],
                 "y": dataset.intensity[i].astype(float).tolist(),
             }
@@ -164,6 +215,7 @@ def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
 
 
 def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarray]:
+    """兼容常见编码/表头读取单个拉曼、色谱或 HPLC 二列文件。"""
     path = Path(path)
     frame = _read_csv_no_header_flexible(path)
     numeric = frame.apply(pd.to_numeric, errors="coerce")
@@ -183,12 +235,19 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
 
 
 def _normalize_numeric_array(values: np.ndarray, field_name: str) -> list[float]:
-    array = np.asarray(values)
+    array = np.asarray(values, dtype=np.float64)
     if array.ndim != 1:
         raise ValueError(f"{field_name} 必须是一维数组")
     if not np.all(np.isfinite(array)):
         raise ValueError(f"{field_name} 含有 NaN 或无穷值")
-    return [float(format(float(value), f".{OUTPUT_SIGNIFICANT_DIGITS}g")) for value in array]
+    rounded = np.round(array, decimals=OUTPUT_DECIMAL_PLACES)
+    rounded[rounded == 0.0] = 0.0
+    if array.size > 1 and float(np.ptp(array)) > 0.0 and float(np.ptp(rounded)) == 0.0:
+        raise ValueError(
+            f"{field_name} 保留 {OUTPUT_DECIMAL_PLACES} 位小数后失去全部有效变化；"
+            "请缩小数值缩放范围，或改用更高精度后重试"
+        )
+    return rounded.astype(float).tolist()
 
 
 def _serialize_modeling_array(
@@ -273,6 +332,7 @@ def preprocess_raw_files(
     baseline_method: str = "arPLS",
     display_names: list[str] | None = None,
 ) -> pd.DataFrame:
+    """批量处理原始文件并生成 Excel 可编辑的统一建模表。"""
     records = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
@@ -294,10 +354,10 @@ def preprocess_raw_files(
                 "XXX": x_serialized,
                 "Intensity": y_serialized,
                 "Label": "",
-                "Repeat_index": "",
+                "Sample_ID": "",
             }
         )
-    return pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
+    return pd.DataFrame.from_records(records, columns=MODELING_COLUMNS)
 
 
 def preprocess_raw_files_with_preview(
@@ -311,6 +371,7 @@ def preprocess_raw_files_with_preview(
     baseline_method: str = "arPLS",
     display_names: list[str] | None = None,
 ) -> dict:
+    """在统一表之外返回前端曲线预览和实际范围元数据。"""
     records = []
     curves = []
     for index, file_path in enumerate(files, start=1):
@@ -338,7 +399,7 @@ def preprocess_raw_files_with_preview(
                 "XXX": x_serialized,
                 "Intensity": corrected_serialized,
                 "Label": "",
-                "Repeat_index": "",
+                "Sample_ID": "",
             }
         )
         curves.append(
@@ -355,5 +416,5 @@ def preprocess_raw_files_with_preview(
                 "raw_y": raw_values,
             })
         )
-    frame = pd.DataFrame.from_records(records, columns=["Index", "Name", "XXX", "Intensity", "Label", "Repeat_index"])
+    frame = pd.DataFrame.from_records(records, columns=MODELING_COLUMNS)
     return {"frame": frame, "curves": curves}

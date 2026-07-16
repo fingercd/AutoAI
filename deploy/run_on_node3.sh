@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Web-only cluster launcher. This script does not start the training worker; queued Runs
+# require a separately managed `python -m backend.app.runs.worker` process.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/AutoAI}"
@@ -25,4 +27,6 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$ENV_NAME"
 
 mkdir -p "$APP_DIR/storage/logs"
+# exec keeps the shell PID equal to uvicorn's PID so persistent/SGE process managers can
+# stop and observe the real Web process without an intermediate shell.
 exec python -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT"

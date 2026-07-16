@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AutoAI 谱学建模平台</title>
+    <title>SpecAutoAI 谱学建模平台</title>
     <style>
       :root {
         color-scheme: light;
@@ -578,7 +578,7 @@
   <body>
     <header>
       <div class="title-row">
-        <h1>AutoAI 谱学数据预处理及 AI 建模平台</h1>
+        <h1>SpecAutoAI 谱学数据预处理及 AI 建模平台</h1>
         <button class="secondary" id="manualButton" type="button">使用说明</button>
       </div>
       <span id="health" class="status">连接中</span>
@@ -591,6 +591,7 @@
         <button data-view="runs">训练记录</button>
       </nav>
       <section>
+        <!-- AI 建模：数据集、配置、曲线预览与当前 Run 共用一个状态上下文。 -->
         <div id="view-modeling" class="view hidden">
           <div class="grid">
             <div class="panel">
@@ -637,7 +638,7 @@
                   开启交叉验证
                 </label>
                 <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                  几个 Repeat_index 就跑几折，折数不可调。
+                  几个 Sample_ID 就跑几折，折数不可调。
                 </p>
               </div>
               <div id="featureWindowOptions">
@@ -756,6 +757,7 @@
           </div>
         </div>
 
+        <!-- 拉曼预处理：后端固定先截取范围，再对截取片段做基线校正。 -->
         <div id="view-raman" class="view">
           <div class="grid">
             <div class="panel wide">
@@ -799,6 +801,7 @@
           </div>
         </div>
 
+        <!-- 色谱主界面实际提交到 HPLC 三步管线；简单 chromatography 仅保留 API 兼容。 -->
         <div id="view-chromatography" class="view hidden">
           <div class="grid">
             <div class="panel wide">
@@ -871,7 +874,7 @@
           <div class="panel">
             <h2>使用手册</h2>
             <h3>一、拉曼数据预处理</h3>
-            <p>上传多个拉曼 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是拉曼位移。系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Repeat_index。</p>
+            <p>上传多个拉曼 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是拉曼位移。系统会导出统一格式 CSV：Index、Name、XXX、Intensity、Label、Sample_ID。</p>
             <p>系统固定先按行号或 X 轴数值截取目标范围，再对截取后的光谱片段执行基线校正，避免区间外强峰影响目标区间。</p>
             <h3>二、色谱数据预处理</h3>
             <p>上传多个色谱 CSV 后，可以按行号范围截取，也可以按 X 轴数值范围截取。X 轴通常是 Time。系统默认第一列为 Time，第二列为 Intensity，并整理为统一建模格式。</p>
@@ -896,15 +899,15 @@
                 </tr>
               </tbody>
             </table>
-            <p>不勾选 HPLC 高级预处理时，色谱页面只按选择范围读取曲线并导出统一建模 CSV，不执行插值、消负和面积归一化。</p>
+            <p>如果将三个 HPLC 子选项全部关闭，色谱页面只按选择范围读取曲线并导出统一建模 CSV，不执行插值、消负和面积归一化。</p>
             <h3>三、AI 建模</h3>
-            <p>进入 AI 建模页面后，可以直接加载项目根目录的 data.csv，也可以上传已经补充 Label 和 Repeat_index 的统一格式 CSV。当前版本只支持分类任务，模型列表固定为 PLS-DA、SVM、Random Forest、XGBoost、1D-CNN、1D-Transformer、1D-ResNet、1D-Inception、1D-TCN、DSCARNet；PLSR/SVR 为回归变体暂不启用。</p>
+            <p>进入 AI 建模页面后，可以上传已经补充 Label 和 Sample_ID 的统一格式 CSV。当前版本只支持分类任务；模型下拉由后端能力目录动态生成，目录固定包含 15 个目标分类模型，当前环境通常有 14 个可训练，CNN-Mamba 会因 mamba-ssm 依赖不可用而禁用。PLSR/SVR 为回归变体暂不启用。</p>
             <p><strong>数据划分比例：</strong>默认 8:1:1，用户可以直接修改训练、验证、测试比例；加载独立测试集时，主数据使用训练/验证比例，独立测试集作为最终测试集，后端状态中会标记为 external_test_holdout。</p>
-            <p><strong>开启交叉验证：</strong>交叉验证作为单独开关，几个 Repeat_index 就跑几折，每折留 1 个独立样品组作为测试集，其余样品组按用户填写的训练/验证比例划分。</p>
-            <p><strong>Repeat_index 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Repeat_index 整组划分。同一个 Repeat_index 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
+            <p><strong>开启交叉验证：</strong>交叉验证作为单独开关，几个 Sample_ID 就跑几折，每折留 1 个独立样品组作为测试集，其余样品组按用户填写的训练/验证比例划分。</p>
+            <p><strong>Sample_ID 整组划分：</strong>训练、验证、测试集不是按单条曲线随机划分，而是按 Sample_ID 整组划分。同一个 Sample_ID 下的重复测量会全部进入同一个集合，避免同一样品同时出现在训练集和测试集里造成指标虚高。</p>
             <p><strong>随机森林 OOB 搜索：</strong>默认从 18 组结构参数中按训练种子随机抽取 10 组，每组训练 200 棵树，以袋外 balanced accuracy 选优；验证集只用于报告胜出配置的表现。</p>
             <p>所有标准化参数均只由当前折的训练集拟合标准化，并应用到同折验证集和测试集；Label 即使是数字也会按类别名编码，不作为连续回归值处理。</p>
-            <p>无卷积的传统模型使用遮挡/置乱窗口后的 macro-F1 变化做重要性分析，计算方式为 baseline_macro_f1 - perturbed_macro_f1；正值越大表示遮挡该区间后 F1 下降越多，该区间越重要。卷积模型和 Transformer 继续使用原有的梯度、Grad-CAM 或 DSCARNet 双通路归因。</p>
+            <p>六个传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡，重要性为 masked_loss - original_loss = log(p_before / p_after)，正值表示遮挡后真实类别置信度受损；全局结果按真实类别等权聚合。1D-CNN、CNN-SE、ResNet、Inception 和 TCN 使用 1D Grad-CAM-like；DSCARNet 使用 SAR/CAR 二维 Grad-CAM 回投到原始一维特征。</p>
             <h3>四、结果下载</h3>
             <p>训练成功后，可下载 predictions.csv、cv_predictions.csv、metrics.json、cv_metrics.json、fold_metrics.csv 和模型文件。深度学习模型为 model.pt，传统机器学习模型为 model.pkl；开启交叉验证时模型文件只对应最后一折，最终报告指标以交叉验证汇总为准。</p>
             <div class="actions">
@@ -918,6 +921,8 @@
 
     <script type="module" src="/static/js/training-store.js"></script>
     <script>
+      // 页面级状态：数据集引用、当前 Run、轮询锁和曲线缓存都集中在这里。
+      // 训练规范状态仍来自后端 SQLite；这些变量只管理当前浏览器会话的展示。
       let datasetPath = null;
       let testDatasetPath = null;
       let datasetId = null;
@@ -936,7 +941,11 @@
       let modelCatalogById = new Map();
       let apiBackedUiInitialized = false;
 
+      // 通用 DOM 与 API 辅助。模块未就绪时 api() 保留 fetch 兜底，确保健康检查
+      // 和目录错误仍能给出可读 detail，而不是只显示 HTTP 状态码。
       const $ = (id) => document.getElementById(id);
+      const naturalCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+      const naturalCompare = (first, second) => naturalCollator.compare(String(first ?? ""), String(second ?? ""));
       const escapeHtml = (value) => String(value ?? "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
@@ -945,7 +954,7 @@
         .replaceAll("'", "&#39;");
 
       const api = async (url, options = {}) => {
-        if (window.AutoAIRequest) return window.AutoAIRequest(url, options);
+        if (window.SpecAutoAIRequest) return window.SpecAutoAIRequest(url, options);
         const response = await fetch(url, options);
         if (!response.ok) {
           const body = await response.json().catch(() => ({}));
@@ -965,9 +974,11 @@
           window.clearTimeout(timer);
         }
       };
-      const createRun = (...args) => window.AutoAITrainingStore.createRun(...args);
-      const fetchRun = (...args) => window.AutoAITrainingStore.pollRun(...args);
+      const createRun = (...args) => window.SpecAutoAITrainingStore.createRun(...args);
+      const fetchRun = (...args) => window.SpecAutoAITrainingStore.pollRun(...args);
 
+      // 模型目录由 /api/models 驱动。分组只控制展示顺序，不决定后端可训练能力；
+      // available=false 的模型由 option.disabled 明确呈现。
       const MODEL_CATALOG_GROUPS = [
         { id: "traditional", label: "传统模型" },
         { id: "basic_deep", label: "基础深度模型" },
@@ -1079,11 +1090,12 @@
         loadHealth();
         loadModelCatalog().catch(() => undefined);
       }
-      window.addEventListener("autoai:modules-ready", initializeApiBackedUi, { once: true });
+      window.addEventListener("specautoai:modules-ready", initializeApiBackedUi, { once: true });
       window.addEventListener("DOMContentLoaded", () => {
         window.setTimeout(initializeApiBackedUi, 1000);
       }, { once: true });
 
+      // Canvas 绘图公共层：按 devicePixelRatio 扩大真实像素，CSS 尺寸保持不变。
       function setupHiDpiCanvas(canvas) {
         const rect = canvas.getBoundingClientRect();
         const ratio = Math.max(window.devicePixelRatio || 1, 1);
@@ -1133,7 +1145,7 @@
           });
           ctx.stroke();
           ctx.fillStyle = colors[ci % colors.length];
-          const legend = `${curve.index ?? ""} ${curve.name} / ${curve.label} / R${curve.repeat_index ?? ""}`;
+          const legend = `${curve.index ?? ""} ${curve.name} / ${curve.label} / Sample_ID ${curve.sample_id ?? ""}`;
           ctx.fillText(legend.slice(0, 90), pad + 8, pad + 18 + ci * 18);
         });
       }
@@ -1143,7 +1155,7 @@
       }
 
       function curveDisplayName(curve) {
-        return `${curve.index ?? ""} | ${curve.name} | ${curve.label} | R${curve.repeat_index ?? ""}`;
+        return `${curve.index ?? ""} | ${curve.name} | ${curve.label} | Sample_ID ${curve.sample_id ?? ""}`;
       }
 
       function populateCurveSelect() {
@@ -1256,21 +1268,24 @@
         ctx.fillText(curve.name || "", pad + 8, height - 14);
       }
 
+      // 数据集摘要与上传：稳定 dataset_id 优先用于创建 Run，绝对路径仅作本地兼容。
       function renderSummary(summary, options = {}) {
         const isTest = options.kind === "test";
         if (isTest) {
           testDatasetPath = summary.path;
-          lastTestSummaryCurves = summary.curves || [];
+          lastTestSummaryCurves = [...(summary.curves || [])].sort((a, b) => naturalCompare(a.sample_id ?? a.index, b.sample_id ?? b.index));
         } else {
           datasetPath = summary.path;
-          lastSummaryCurves = summary.curves || [];
+          lastSummaryCurves = [...(summary.curves || [])].sort((a, b) => naturalCompare(a.sample_id ?? a.index, b.sample_id ?? b.index));
         }
         const labels = Object.entries(summary.label_counts)
+          .sort(([first], [second]) => naturalCompare(first, second))
           .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
           .join("");
-        const repeat = summary.repeat_index || {};
-        const repeatRows = (repeat.groups || [])
-          .map((row) => `<tr><td>${row.repeat_index}</td><td>${row.label}</td><td>${row.count}</td></tr>`)
+        const sampleIds = summary.sample_id || {};
+        const sampleRows = [...(sampleIds.groups || [])]
+          .sort((a, b) => naturalCompare(a.sample_id, b.sample_id))
+          .map((row) => `<tr><td>${escapeHtml(row.sample_id)}</td><td>${escapeHtml(row.label)}</td><td>${row.count}</td></tr>`)
           .join("");
         const target = isTest ? $("testDatasetInfo") : $("datasetInfo");
         target.innerHTML = `
@@ -1278,12 +1293,12 @@
           <div class="metrics summary-metrics">
             <div class="metric">总数据<strong>${summary.samples}</strong></div>
             <div class="metric">类别数<strong>${summary.classes}</strong></div>
-            <div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>
-            <div class="metric">每组测量数<strong>${repeat.expected_repeats_per_group ?? "-"}</strong></div>
+            <div class="metric">样本数<strong>${sampleIds.group_count ?? "-"}</strong></div>
+            <div class="metric">每组测量数<strong>${sampleIds.expected_repeats_per_group ?? "-"}</strong></div>
             <div class="metric">曲线长度<strong>${summary.curve_length}</strong></div>
           </div>
-          <h3>Repeat_index 分组</h3>
-          <table><thead><tr><th>Repeat_index</th><th>Label</th><th>数量</th></tr></thead><tbody>${repeatRows}</tbody></table>
+          <h3>Sample_ID 分组</h3>
+          <table><thead><tr><th>Sample_ID</th><th>Label</th><th>数量</th></tr></thead><tbody>${sampleRows}</tbody></table>
           <h3>标签分布</h3>
           <table><thead><tr><th>Label</th><th>Count</th></tr></thead><tbody>${labels}</tbody></table>
         `;
@@ -1365,6 +1380,8 @@
         $("splitTest").value = "1";
       }
 
+      // 将表单转换成后端 TrainConfig。三种评估模式在这里先做互斥和比例校验，
+      // 后端 classification_policy 会再次校验，前端校验不能替代服务端约束。
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetPath);
@@ -1387,7 +1404,7 @@
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),
+          split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),
           split_train: splitTrain,
           split_valid: splitValid,
           split_test: splitTest,
@@ -1438,6 +1455,7 @@
         return "-";
       }
 
+      // 训练审计区：从规范投影或旧 status 嵌套字段读取选参记录，只用于展示。
       function trainingAuditFor(run) {
         const directAudit = run?.training_audit;
         if (directAudit && typeof directAudit === "object") return directAudit;
@@ -1613,6 +1631,11 @@
         return { accuracy: average("valid_accuracy"), macro_f1: average("valid_macro_f1") };
       }
 
+      function macroMetric(split, metric) {
+        if (!split || typeof split !== "object") return undefined;
+        return split[`macro_${metric}`] ?? split[metric];
+      }
+
       function formatTime(value) {
         if (!value) return "-";
         const date = new Date(value);
@@ -1620,6 +1643,7 @@
         return date.toLocaleString("zh-CN", { hour12: false });
       }
 
+      // Run 生命周期：清空旧结果、创建 queued Run，并用单飞锁避免重复 POST。
       function resetTrainingPanel(message = "模型正在训练") {
         $("runStatus").textContent = "准备开始";
         $("runStatus").className = "status pending";
@@ -1661,6 +1685,7 @@
         }
       }
 
+      // 训练曲线与混淆矩阵渲染。传统模型没有逐 epoch loss，调用方会跳过曲线区。
       function drawLineChart(canvasId, series, options = {}) {
         const canvas = $(canvasId);
         if (!canvas) return;
@@ -1809,6 +1834,8 @@
         `;
       }
 
+      // 可解释性渲染：同时兼容窗口 Log-loss、旧 F1 产物、1D Grad-CAM 与
+      // DSCARNet 二维回投；新 Run 以 Log-loss/Grad-CAM 方法为准。
       function formatFeatureX(value) {
         const num = Number(value);
         if (!Number.isFinite(num)) return "-";
@@ -2049,7 +2076,7 @@
       }
 
       function featureSampleLabel(sample) {
-        const sampleName = sample.name || sample.index || sample.sample_id;
+        const sampleName = sample.name || sample.index || sample.sample_id || sample.result_id;
         const state = sample.correct ? "预测正确" : "预测不一致";
         const fold = sample.fold_index ? `第 ${sample.fold_index} 折 · ` : "";
         return `${fold}${sample.dataset} · ${sampleName} · 真实 ${sample.true_label} · 预测 ${sample.pred_label} · ${state}`;
@@ -2209,7 +2236,7 @@
           return;
         }
         const options = samples.map((sample, index) => `
-          <option value="${escapeHtml(sample.sample_id || String(index))}">${escapeHtml(featureSampleLabel(sample))}</option>
+          <option value="${escapeHtml(sample.result_id || String(index))}">${escapeHtml(featureSampleLabel(sample))}</option>
         `).join("");
         target.innerHTML = `
           <div class="chart-card feature-card">
@@ -2223,7 +2250,7 @@
         `;
         const select = $("featureSampleSelect");
         const renderSelected = () => {
-          const selected = samples.find((sample, index) => (sample.sample_id || String(index)) === select.value) || samples[0];
+          const selected = samples.find((sample, index) => (sample.result_id || String(index)) === select.value) || samples[0];
           renderSampleFeatureDetails(data, selected, jsonUrl, csvUrl);
         };
         select.addEventListener("change", renderSelected);
@@ -2244,6 +2271,7 @@
         `;
       }
 
+      // 把 queued/running/succeeded/failed/cancelled 的规范状态投影成旧 UI 文案。
       function renderRun(run) {
         const statusText = run.status === "success" ? "训练完成" : run.status === "failed" ? "训练失败" : run.status === "paused" ? "训练已暂停" : run.status === "running" ? "训练中" : "等待训练";
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
@@ -2330,10 +2358,15 @@
           $("trainingProgress").innerHTML = "";
           $("metrics").innerHTML = `
             <div class="metrics">
-              <div class="metric">Train accuracy<strong>${formatMetric(train.accuracy)}</strong></div>
-              <div class="metric">Valid accuracy<strong>${formatMetric(valid.accuracy)}</strong></div>
-              <div class="metric">Test accuracy<strong>${formatMetric(test.accuracy)}</strong></div>
-              <div class="metric">Test macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
+              <div class="metric">Train Macro Precision<strong>${formatMetric(macroMetric(train, "precision"))}</strong></div>
+              <div class="metric">Train Macro Recall<strong>${formatMetric(macroMetric(train, "recall"))}</strong></div>
+              <div class="metric">Train Macro F1<strong>${formatMetric(train.macro_f1)}</strong></div>
+              <div class="metric">Valid Macro Precision<strong>${formatMetric(macroMetric(valid, "precision"))}</strong></div>
+              <div class="metric">Valid Macro Recall<strong>${formatMetric(macroMetric(valid, "recall"))}</strong></div>
+              <div class="metric">Valid Macro F1<strong>${formatMetric(valid.macro_f1)}</strong></div>
+              <div class="metric">Test Macro Precision<strong>${formatMetric(macroMetric(test, "precision"))}</strong></div>
+              <div class="metric">Test Macro Recall<strong>${formatMetric(macroMetric(test, "recall"))}</strong></div>
+              <div class="metric">Test Macro F1<strong>${formatMetric(test.macro_f1)}</strong></div>
               ${epochMetric}
               <div class="metric">数据量<strong>${run.sample_count || "-"}</strong></div>
               <div class="metric">模型<strong style="font-size:16px">${run.model_type || run.config?.model_type || "-"}</strong></div>
@@ -2399,6 +2432,7 @@
         document.querySelector('[data-view=modeling]').click();
       };
 
+      // 预处理表单编排：色谱 UI 固定映射到 hplc，三个布尔值按用户开关提交。
       function selectedRamanBaselineMethod() {
         if ($("ramanBaselineMethodMode").value === "custom") {
           return $("ramanCustomMethod").value.trim() || "arPLS";
@@ -2500,12 +2534,15 @@
         }
       }
 
+      // 历史 Run 列表与终态删除。queued/running 禁止删除，避免破坏 worker 状态机。
       async function loadRuns() {
         const runs = await api("/api/training/runs");
         const rows = runs
           .map((run) => {
-            const trainAcc = run.metrics?.train?.accuracy;
-            const testAcc = run.metrics?.test?.accuracy ?? run.metrics?.accuracy;
+            const datasetName = run.dataset_name || run.config?.dataset_name || "-";
+            const trainF1 = run.metrics?.train?.macro_f1;
+            const validF1 = run.metrics?.valid?.macro_f1;
+            const testF1 = run.metrics?.test?.macro_f1 ?? run.metrics?.macro_f1;
             const terminal = ["succeeded", "failed", "cancelled"].includes(run.state)
               || ["success", "failed", "paused"].includes(run.status);
             const deleteButton = terminal
@@ -2514,11 +2551,11 @@
             return `
               <tr>
                 <td>${formatTime(run.completed_at || run.started_at || run.created_at)}</td>
-                <td>${run.run_id}</td>
+                <td><span title="${escapeHtml(datasetName)}">${escapeHtml(datasetName)}</span></td>
                 <td>${run.model_type || run.config?.model_type || "-"}</td>
-                <td>${run.sample_count || "-"}</td>
-                <td>${formatMetric(trainAcc)}</td>
-                <td>${formatMetric(testAcc)}</td>
+                <td>${formatMetric(trainF1)}</td>
+                <td>${formatMetric(validF1)}</td>
+                <td>${formatMetric(testF1)}</td>
                 <td><span class="status ${run.status || ""}">${run.status || "unknown"}</span></td>
                 <td><div class="row-actions"><button class="secondary" onclick="window.openRun('${run.run_id}')">查看</button>${deleteButton}</div></td>
               </tr>
@@ -2530,11 +2567,11 @@
             <thead>
               <tr>
                 <th>时间</th>
-                <th>Run ID</th>
+                <th>上传的数据集名</th>
                 <th>模型</th>
-                <th>数据量</th>
-                <th>训练准确率</th>
-                <th>测试准确率</th>
+                <th>Train Macro F1</th>
+                <th>Valid Macro F1</th>
+                <th>Test Macro F1</th>
                 <th>状态</th>
                 <th></th>
               </tr>
@@ -2573,6 +2610,7 @@
         }
       };
 
+      // 视图派生状态与事件绑定集中在脚本末尾，避免业务函数注册重复监听器。
       function updateModelOptionVisibility() {
         const modelType = $("modelType").value;
         const traditional = isTraditionalModel(modelType);
@@ -2604,7 +2642,7 @@
         if (hasExternalTest) {
           $("splitModeHint").textContent = "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
         } else if (cvEnabled) {
-          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Repeat_index 作测试，其余固定按 8:2 训练/验证。";
+          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余固定按 8:2 训练/验证。";
         } else {
           $("splitModeHint").textContent = "默认 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
         }
@@ -2677,7 +2715,7 @@
         if (lastPreprocessCurve) drawPreprocessComparison(lastPreprocessCurve, lastPreprocessCanvasId, lastPreprocessKind);
       });
 
-      if (window.AutoAIRequest && window.AutoAITrainingStore) initializeApiBackedUi();
+      if (window.SpecAutoAIRequest && window.SpecAutoAITrainingStore) initializeApiBackedUi();
       updateModelOptionVisibility();
       updateSplitOptionVisibility();
       updatePreprocessRangeMode("raman");

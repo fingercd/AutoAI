@@ -6,7 +6,7 @@ from backend.app.classification_policy import resolve_evaluation_policy
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
 
 
-def test_grouped_data_factory_preserves_repeat_index_groups(tmp_path):
+def test_grouped_data_factory_preserves_sample_id_groups(tmp_path):
     path = write_grouped_classification_csv(
         tmp_path / "grouped.csv",
         groups_per_class=5,
@@ -14,7 +14,7 @@ def test_grouped_data_factory_preserves_repeat_index_groups(tmp_path):
         feature_count=12,
     )
     dataset = load_modeling_csv(path)
-    assert dataset.frame["Repeat_index"].nunique() == 10
+    assert dataset.frame["Sample_ID"].nunique() == 10
     assert set(dataset.labels) == {"A", "B"}
 
 
@@ -34,7 +34,7 @@ def test_internal_policy_defaults_to_eight_one_one():
 def test_external_policy_rejects_cross_validation():
     with pytest.raises(ValueError, match="独立测试集.*交叉验证"):
         resolve_evaluation_policy(
-            {"split_mode": "leave_one_repeat_index_cv"},
+            {"split_mode": "leave_one_sample_id_cv"},
             has_external_test=True,
         )
 

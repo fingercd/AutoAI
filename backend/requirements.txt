@@ -1,4 +1,4 @@
-# AutoAI core runtime (Python 3.12 verified).
+# SpecAutoAI core runtime (Python 3.12 verified).
 # For a fully reproducible install, add: -c backend/constraints-verified.txt
 
 # Web/API

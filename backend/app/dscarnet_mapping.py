@@ -1,3 +1,10 @@
+"""将一维光谱拟合并转换为 DSCARNet 的 SAR/CAR 二维输入。
+
+SAR 使用 AggMap 对原始特征建立二维布局；CAR 先在当前训练折拟合 PCA，再对主成分
+建立 AggMap。所有映射对象只由 train 数据拟合并复用于 valid/test，避免信息泄漏。
+模块同时隔离 AggMap 1.2.1 的旧依赖兼容问题，并把 joblib 映射对象作为私有产物。
+"""
+
 from __future__ import annotations
 
 import io
@@ -26,6 +33,7 @@ _LAPJV_BACKEND = "lapjv"
 
 @dataclass
 class DSCARNetMappedInputs:
+    """一折 train/valid/test 的映射张量、拟合对象与可审计元数据。"""
     x_sar: np.ndarray | None
     x_car: np.ndarray | None
     pca: PCA | None
@@ -84,6 +92,7 @@ def _install_legacy_collections_aliases() -> None:
 
 
 def scipy_lapjv_compat(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """用 SciPy 线性分配模拟 AggMap 所需的 lapjv 返回格式。"""
     from scipy.optimize import linear_sum_assignment
 
     cost = np.asarray(cost_matrix, dtype=np.float64)
@@ -179,6 +188,7 @@ def fit_dscarnet_2d_mapping(
     aggmap_factory: Any | None = None,
     mode: str = "dual",
 ) -> DSCARNetMappedInputs:
+    """仅在 train 上拟合 SAR/CAR 映射，再转换三组输入为 NCHW 张量。"""
     x = np.asarray(x, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         raise ValueError("DSCARNet 需要非空二维特征矩阵")
@@ -247,6 +257,7 @@ def fit_dscarnet_2d_mapping(
 
 
 def save_dscarnet_mapping_artifacts(run_dir: str | Path, mapped: DSCARNetMappedInputs) -> dict[str, Any]:
+    """保存公开映射元数据和私有 PCA/AggMap joblib 对象。"""
     run_path = Path(run_dir)
     writer = RunArtifactWriter(run_path)
     metadata = dict(mapped.metadata)

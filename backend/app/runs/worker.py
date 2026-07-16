@@ -1,3 +1,9 @@
+"""单并发本地训练 worker 与 lease 心跳守护。
+
+worker 轮询 queued Run、事务性 claim，然后用独立心跳线程续租。训练完成时仍必须
+携带原 claim token；取消、lease 丢失或其他 worker 接管后，旧执行结果不能提交。
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -13,6 +19,7 @@ from .repository import InvalidRunTransition, RunRepository
 
 
 class LeaseGuard:
+    """在训练执行期间周期续租，并记录首次心跳异常。"""
     def __init__(
         self,
         *,
@@ -55,6 +62,7 @@ class LeaseGuard:
 
 
 class RunWorker:
+    """按单并发循环领取 queued Run，并把执行结果提交回仓库。"""
     def __init__(
         self,
         *,
@@ -112,10 +120,12 @@ class RunWorker:
 
 
 def utc_now() -> datetime:
+    """提供可在测试中替换的 UTC 时钟。"""
     return datetime.now(timezone.utc)
 
 
 def main() -> None:
+    """解析轮询/lease 参数并持续运行 worker，直到进程被终止。"""
     parser = argparse.ArgumentParser()
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--poll-seconds', type=float, default=0.5)

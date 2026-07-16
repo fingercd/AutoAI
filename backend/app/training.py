@@ -1,3 +1,13 @@
+"""SpecAutoAI 分类训练、评估、模型选择与 artifact 编排主模块。
+
+核心不变量：所有标准化、PCA、AggMap 和超参数选择只能查看当前训练折；传统模型
+在 valid/OOB 选定参数后用 train+valid 重训；深度模型以最低 validation loss
+保存最佳权重。每折 test 只用于最终指标和解释性分析，不参与拟合或早停。
+
+本模块可以被 worker 调用，也保留直接 ``train_model`` 兼容入口。真正的 Run 状态
+迁移和 Manifest 原子发布由 ``runs.execution`` / ``runs.artifacts`` 负责。
+"""
+
 from __future__ import annotations
 
 import json
@@ -36,7 +46,7 @@ from .feature_selection import (
 )
 from .models import ARCHITECTURE_VERSION, build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
 from .models.profiles import build_dscarnet_profile, build_model_profile, model_range_warnings
-from .parsers import load_modeling_csv
+from .parsers import load_modeling_csv, natural_sort_key
 from .paths import RUNS_DIR
 from .runs.contracts import RunRecord
 from .runs.artifacts import RunArtifactWriter
@@ -51,6 +61,11 @@ class TrainingRunReplaced(RuntimeError):
 
 @dataclass
 class TrainConfig:
+    """训练请求的完整内部配置，包括兼容字段与运行时解析字段。
+
+    ``resolved_*`` 字段由每个训练折覆盖，用于记录真正参与构造模型的 N/L，
+    不能直接相信客户端传入值。
+    """
     epochs: int = DEEP_TRAINING_DEFAULTS.epochs
     batch_size: int = DEEP_TRAINING_DEFAULTS.batch_size
     learning_rate: float = DEEP_TRAINING_DEFAULTS.learning_rate
@@ -110,6 +125,7 @@ class TrainConfig:
 
 @dataclass
 class TraditionalSelection:
+    """传统模型一次候选搜索的胜出配置、模型和审计记录。"""
     config: TrainConfig
     valid_balanced_accuracy: float
     valid_macro_f1: float
@@ -118,6 +134,7 @@ class TraditionalSelection:
     valid_eval: dict[str, Any]
 
 
+# status.json 兼容辅助：仅用于旧“新任务替换旧任务”入口，不是 Run 状态机来源。
 def _read_status_file(status_file: Path) -> dict[str, Any]:
     if not status_file.exists():
         return {}
@@ -133,6 +150,7 @@ def _write_status_file(status_file: Path, payload: dict[str, Any]) -> None:
 
 
 def run_is_replaced(run_id: str, *, runs_dir: Path | None = None) -> bool:
+    """兼容判断旧 status 投影是否因新 Run 替换而 paused。"""
     status = _read_status_file((runs_dir or RUNS_DIR) / run_id / "status.json")
     return status.get("status") == "paused" and bool(status.get("replaced_by"))
 
@@ -145,6 +163,7 @@ def _raise_if_run_replaced(status_file: Path) -> None:
     raise TrainingRunReplaced(f"训练任务 {status.get('run_id') or status_file.parent.name} 已被新任务 {replaced_by} 替换")
 
 
+# 数据划分与归一化：所有 group split 都以 Sample_ID 为不可拆分单位。
 def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
     ratios = (int(policy.split_train), int(policy.split_valid), int(policy.split_test))
     if any(value < 0 for value in ratios):
@@ -153,7 +172,7 @@ def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
         if ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
             raise ValueError("独立测试集模式要求主数据训练/验证比例相加必须等于 10，且内部测试比例为 0")
         return
-    if policy.strategy == "leave_one_repeat_index_cv":
+    if policy.strategy == "leave_one_sample_id_cv":
         if not policy.cv_allowed or ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
             raise ValueError("留一交叉验证要求训练/验证比例相加必须等于 10，且内部测试比例为 0")
         return
@@ -176,7 +195,7 @@ def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
     return ((x - means) / np.maximum(stds, 1e-8)).astype(np.float32), {"mode": "zscore"}
 
 
-def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> dict[str, list[int]]:
+def _split_indices(labels: np.ndarray, sample_id: np.ndarray, config: TrainConfig) -> dict[str, list[int]]:
     ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
     if any(value < 0 for value in ratios):
         raise ValueError("划分比例必须是非负整数")
@@ -188,16 +207,16 @@ def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainCo
     if ratios[0] <= 0:
         raise ValueError("训练集比例必须大于 0")
 
-    group_values = np.asarray(sorted(np.unique(repeat_index).tolist()))
+    group_values = np.asarray(sorted(np.unique(sample_id).tolist(), key=natural_sort_key))
     nonzero_splits = sum(1 for value in ratios if value > 0)
     if len(group_values) < nonzero_splits:
-        raise ValueError(f"当前只有 {len(group_values)} 个 Repeat_index 分组，无法划分为 {nonzero_splits} 个非空集合")
+        raise ValueError(f"当前只有 {len(group_values)} 个 Sample_ID 分组，无法划分为 {nonzero_splits} 个非空集合")
 
     group_to_label: dict[str, int] = {}
     for group in group_values:
-        group_labels = np.unique(labels[repeat_index == group])
+        group_labels = np.unique(labels[sample_id == group])
         if len(group_labels) != 1:
-            raise ValueError(f"Repeat_index={group} 内存在多个 Label，无法按组划分")
+            raise ValueError(f"Sample_ID={group} 内存在多个 Label，无法按组划分")
         group_to_label[str(group)] = int(group_labels[0])
 
     ratio_denominator = ratios[0] + ratios[1] if ratios[2] == 0 else 10
@@ -213,7 +232,7 @@ def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainCo
             valid_count -= 1
             overflow -= 1
         if overflow > 0:
-            raise ValueError("Repeat_index 分组数量太少，无法完成当前比例划分")
+            raise ValueError("Sample_ID 分组数量太少，无法完成当前比例划分")
     train_count = len(group_values) - valid_count - test_count
 
     rng = np.random.default_rng(config.seed)
@@ -239,7 +258,7 @@ def _split_indices(labels: np.ndarray, repeat_index: np.ndarray, config: TrainCo
     train_groups = {group for groups in label_to_groups.values() for group in groups}
     split_groups = {"train": train_groups, "valid": valid_groups, "test": test_groups}
     return {
-        split: np.where(np.isin(repeat_index, list(groups)))[0].tolist()
+        split: np.where(np.isin(sample_id, list(groups)))[0].tolist()
         for split, groups in split_groups.items()
     }
 
@@ -331,6 +350,7 @@ def _single_2d_loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_si
     return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
 
 
+# 模型评估适配：统一把单 logit 二分类和多 logit 多分类转换为概率矩阵。
 def _evaluate_deep_loss(
     model: nn.Module,
     loader: DataLoader,
@@ -455,6 +475,7 @@ def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indice
     }
 
 
+# 解释性入口：按模型方法分派窗口遮挡、1D Grad-CAM 或 DSCARNet 2D 回投。
 def _compute_feature_importance(
     *,
     run_dir: Path,
@@ -749,6 +770,7 @@ def _compute_deep_explainability(
     )
 
 
+# 训练折公共准备：样品元数据、scaler、Sample_ID 分组和 fold 构造。
 def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: int) -> list[dict[str, Any]]:
     rows = []
     for position, (_, row) in enumerate(frame.iterrows()):
@@ -759,7 +781,7 @@ def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: in
             {
                 "index": index_value,
                 "name": str(row.get("Name", "")),
-                "repeat_index": str(row.get("Repeat_index", "")),
+                "sample_id": str(row.get("Sample_ID", "")),
                 "sample_x_axis": _axis_to_float_list(axis, n_features),
             }
         )
@@ -814,12 +836,12 @@ def _dimension_band(n_features: int) -> str:
     return "6000-10000"
 
 
-def _group_label_map(y: np.ndarray, repeat_index: np.ndarray) -> dict[str, int]:
+def _group_label_map(y: np.ndarray, sample_id: np.ndarray) -> dict[str, int]:
     mapping: dict[str, int] = {}
-    for group in sorted(np.unique(repeat_index).tolist()):
-        labels = np.unique(y[repeat_index == group])
+    for group in sorted(np.unique(sample_id).tolist(), key=natural_sort_key):
+        labels = np.unique(y[sample_id == group])
         if len(labels) != 1:
-            raise ValueError(f"Repeat_index={group} 内存在多个 Label，无法按组划分")
+            raise ValueError(f"Sample_ID={group} 内存在多个 Label，无法按组划分")
         mapping[str(group)] = int(labels[0])
     return mapping
 
@@ -845,15 +867,15 @@ def _choose_valid_groups(
         if len(selected) >= valid_count:
             break
     if not selected:
-        raise ValueError("Repeat_index 分组数量太少，无法在每个交叉验证折中保留包含全部类别的训练集")
+        raise ValueError("Sample_ID 分组数量太少，无法在每个交叉验证折中保留包含全部类别的训练集")
     return sorted(selected, key=lambda item: train_valid_groups.index(item))
 
 
-def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, config: TrainConfig) -> list[dict[str, Any]]:
-    groups = [str(item) for item in sorted(np.unique(repeat_index).tolist())]
+def _leave_one_sample_id_folds(y: np.ndarray, sample_id: np.ndarray, config: TrainConfig) -> list[dict[str, Any]]:
+    groups = [str(item) for item in sorted(np.unique(sample_id).tolist(), key=natural_sort_key)]
     if len(groups) < 3:
-        raise ValueError("交叉验证至少需要 3 个 Repeat_index 分组")
-    group_to_label = _group_label_map(y, repeat_index)
+        raise ValueError("交叉验证至少需要 3 个 Sample_ID 分组")
+    group_to_label = _group_label_map(y, sample_id)
     label_count = int(np.unique(y).size)
     train_valid_total = max(1, int(config.split_train) + int(config.split_valid))
     valid_ratio = max(0.0, min(1.0, float(config.split_valid) / train_valid_total))
@@ -861,7 +883,7 @@ def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, confi
     for fold_index, test_group in enumerate(groups, start=1):
         train_valid_groups = [group for group in groups if group != test_group]
         if len(set(group_to_label[group] for group in train_valid_groups)) < label_count:
-            raise ValueError(f"Repeat_index={test_group} 留作测试后训练集缺少类别，无法完成分类评估")
+            raise ValueError(f"Sample_ID={test_group} 留作测试后训练集缺少类别，无法完成分类评估")
         valid_groups = _choose_valid_groups(
             train_valid_groups=train_valid_groups,
             group_to_label=group_to_label,
@@ -873,19 +895,20 @@ def _leave_one_repeat_index_folds(y: np.ndarray, repeat_index: np.ndarray, confi
         folds.append(
             {
                 "fold_index": fold_index,
-                "test_repeat_index": test_group,
-                "train_repeat_indices": train_groups,
-                "valid_repeat_indices": valid_groups,
+                "test_sample_id": test_group,
+                "train_sample_ids": train_groups,
+                "valid_sample_ids": valid_groups,
                 "splits": {
-                    "train": np.where(np.isin(repeat_index, train_groups))[0].tolist(),
-                    "valid": np.where(np.isin(repeat_index, valid_groups))[0].tolist(),
-                    "test": np.where(repeat_index == test_group)[0].tolist(),
+                    "train": np.where(np.isin(sample_id, train_groups))[0].tolist(),
+                    "valid": np.where(np.isin(sample_id, valid_groups))[0].tolist(),
+                    "test": np.where(sample_id == test_group)[0].tolist(),
                 },
             }
         )
     return folds
 
 
+# 指标汇总与模型候选生成。test 指标只在候选已经锁定后计算。
 def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, label_names: list[str]) -> dict[str, Any]:
     labels = list(range(len(label_names)))
     report = classification_report(
@@ -938,7 +961,7 @@ def _scalar_metric_std(metric_rows: list[dict[str, Any]]) -> dict[str, float | N
 def _aggregate_split_metrics(
     split_evals: list[dict[str, Any]],
     label_names: list[str],
-) -> tuple[dict[str, Any], dict[str, float | None]]:
+) -> tuple[dict[str, Any], dict[str, float | None], dict[str, float | None]]:
     metric_rows = [_metrics_from_eval(item, label_names) for item in split_evals]
     all_true = [int(value) for item in split_evals for value in item["true"]]
     all_pred = [int(value) for item in split_evals for value in item["pred"]]
@@ -947,10 +970,51 @@ def _aggregate_split_metrics(
         np.asarray(all_pred, dtype=np.int64),
         label_names,
     )
-    payload = {**pooled, **_scalar_metric_summary(metric_rows)}
-    for key in METRIC_SCALAR_KEYS:
-        payload[f"pooled_{key}"] = pooled[key]
-    return payload, _scalar_metric_std(metric_rows)
+    return pooled, _scalar_metric_summary(metric_rows), _scalar_metric_std(metric_rows)
+
+
+def _build_metrics_payload(
+    fold_split_evals: list[dict[str, dict[str, Any]]],
+    label_names: list[str],
+    evaluation_strategy: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """构造 UI 主指标与 CV 审计指标，Test 主值固定使用 pooled OOF。"""
+    aggregates: dict[str, dict[str, Any]] = {}
+    fold_mean: dict[str, dict[str, float | None]] = {}
+    fold_std: dict[str, dict[str, float | None]] = {}
+    for split_name in ("train", "valid", "test"):
+        pooled, mean, std = _aggregate_split_metrics(
+            [fold_eval[split_name] for fold_eval in fold_split_evals],
+            label_names,
+        )
+        aggregates[split_name] = pooled
+        fold_mean[split_name] = mean
+        fold_std[split_name] = std
+
+    is_cv = evaluation_strategy == "leave_one_sample_id_cv"
+    split_metrics: dict[str, dict[str, Any]] = {}
+    for split_name in ("train", "valid"):
+        primary = dict(aggregates[split_name])
+        primary.update(fold_mean[split_name])
+        primary["aggregation"] = "fold_mean" if is_cv else "direct_holdout"
+        for key in METRIC_SCALAR_KEYS:
+            primary[f"pooled_{key}"] = aggregates[split_name][key]
+        split_metrics[split_name] = primary
+
+    test_metrics = dict(aggregates["test"])
+    test_metrics["aggregation"] = "pooled_out_of_fold" if is_cv else "direct_holdout"
+    split_metrics["test"] = test_metrics
+
+    metrics = {**test_metrics, **split_metrics}
+    cv_summary = {
+        "strategy": evaluation_strategy,
+        "fold_count": len(fold_split_evals),
+        "primary_test_aggregation": "pooled_out_of_fold" if is_cv else "direct_holdout",
+        "pooled_test": aggregates["test"],
+        "fold_mean": fold_mean,
+        "fold_std": fold_std,
+    }
+    return metrics, cv_summary
 
 
 def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
@@ -1231,6 +1295,7 @@ def _select_random_forest_config(
     )
 
 
+# 单折拟合：传统模型先选参再重训；深度模型按 validation loss 早停。
 def _fit_traditional_fold(
     config: TrainConfig,
     model_type: str,
@@ -1436,6 +1501,7 @@ def _fit_deep_fold(
     return model, history, dscarnet_mapped, dscarnet_mapping_metadata
 
 
+# 兼容与现行窗口重要性实现。新 Run 使用真实类别 Log-loss 增量路径。
 def _cv_f1_window_importance(
     *,
     fold_artifacts: list[dict[str, Any]],
@@ -1554,15 +1620,22 @@ def _traditional_fold_log_loss_importance(
     return result
 
 
+# 把三种评估口径转换成统一 fold 描述，供主训练循环顺序执行。
 def _canonical_evaluation_strategy(config: TrainConfig, has_external_test: bool) -> str:
     if has_external_test:
         return "external_test_holdout"
     mode = str(config.split_mode or "stratified_holdout").strip().lower()
-    if mode in {"leave_one_repeat_index_cv", "outer_leave_one_repeat_index_cv", "loocv", "loo"}:
-        return "leave_one_repeat_index_cv"
+    if mode in {
+        "leave_one_sample_id_cv",
+        "leave_one_repeat_index_cv",
+        "outer_leave_one_repeat_index_cv",
+        "loocv",
+        "loo",
+    }:
+        return "leave_one_sample_id_cv"
     if mode in {"stratified", "stratified_holdout", "holdout"}:
         return "stratified_holdout"
-    raise ValueError("split_mode 必须是 stratified_holdout、leave_one_repeat_index_cv 或 outer_leave_one_repeat_index_cv")
+    raise ValueError("split_mode 必须是 stratified_holdout 或 leave_one_sample_id_cv")
 
 
 def _validate_required_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str], required: tuple[str, ...]) -> None:
@@ -1575,19 +1648,19 @@ def _validate_required_splits(splits: dict[str, list[int]], y: np.ndarray, label
         raise ValueError(f"训练集中缺少类别: {', '.join(missing)}。请增加样品种类或调整划分比例")
 
 
-def _repeat_indices_for_split(repeat_index: np.ndarray, indices: list[int]) -> list[str]:
+def _sample_ids_for_split(sample_id: np.ndarray, indices: list[int]) -> list[str]:
     if not indices:
         return []
-    return [str(item) for item in sorted(np.unique(repeat_index[indices]).tolist())]
+    return [str(item) for item in sorted(np.unique(sample_id[indices]).tolist(), key=natural_sort_key)]
 
 
-def _holdout_fold(splits: dict[str, list[int]], repeat_index: np.ndarray, *, strategy: str) -> dict[str, Any]:
+def _holdout_fold(splits: dict[str, list[int]], sample_id: np.ndarray, *, strategy: str) -> dict[str, Any]:
     return {
         "fold_index": 1,
-        "test_repeat_index": "holdout",
-        "train_repeat_indices": _repeat_indices_for_split(repeat_index, splits["train"]),
-        "valid_repeat_indices": _repeat_indices_for_split(repeat_index, splits["valid"]),
-        "test_repeat_indices": _repeat_indices_for_split(repeat_index, splits.get("test", [])),
+        "test_sample_id": "holdout",
+        "train_sample_ids": _sample_ids_for_split(sample_id, splits["train"]),
+        "valid_sample_ids": _sample_ids_for_split(sample_id, splits["valid"]),
+        "test_sample_ids": _sample_ids_for_split(sample_id, splits.get("test", [])),
         "splits": splits,
         "strategy": strategy,
     }
@@ -1596,16 +1669,16 @@ def _holdout_fold(splits: dict[str, list[int]], repeat_index: np.ndarray, *, str
 def _external_test_fold(
     *,
     splits: dict[str, list[int]],
-    repeat_index: np.ndarray,
+    sample_id: np.ndarray,
     external_test_indices: list[int],
-    external_repeat_index: np.ndarray,
+    external_sample_id: np.ndarray,
 ) -> dict[str, Any]:
     return {
         "fold_index": 1,
-        "test_repeat_index": "external_test",
-        "train_repeat_indices": _repeat_indices_for_split(repeat_index, splits["train"]),
-        "valid_repeat_indices": _repeat_indices_for_split(repeat_index, splits["valid"]),
-        "test_repeat_indices": _repeat_indices_for_split(external_repeat_index, list(range(len(external_repeat_index)))),
+        "test_sample_id": "external_test",
+        "train_sample_ids": _sample_ids_for_split(sample_id, splits["train"]),
+        "valid_sample_ids": _sample_ids_for_split(sample_id, splits["valid"]),
+        "test_sample_ids": _sample_ids_for_split(external_sample_id, list(range(len(external_sample_id)))),
         "internal_splits": {**splits, "test": []},
         "external_test_indices": external_test_indices,
         "splits": {**splits, "test": external_test_indices},
@@ -1621,6 +1694,11 @@ def _run_legacy_training(
     repository: RunRepository | None = None,
     record: RunRecord | None = None,
 ) -> dict[str, Any]:
+    """执行完整训练闭环并写出一组可由 Manifest 发布的 Run 产物。
+
+    名称保留 ``legacy`` 是为了兼容既有调用者；函数内部执行的是当前
+    classification-v2 模型、三种评估策略和现行解释性契约。
+    """
     raw_config = dict(config_data or {})
     test_data_path = raw_config.get("test_data_path")
     policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
@@ -1669,38 +1747,38 @@ def _run_legacy_training(
     label_names = sorted(set(dataset.labels))
     label_to_id = {label: idx for idx, label in enumerate(label_names)}
     y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
-    repeat_index = dataset.frame["Repeat_index"].astype(str).to_numpy()
+    sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
     test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
     test_sample_count = 0
     if test_dataset is not None:
         _validate_external_test_dataset(label_names, x_raw.shape[1], test_dataset)
         test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
         test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
-        test_repeat_index = test_dataset.frame["Repeat_index"].astype(str).to_numpy()
+        test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()
         test_sample_count = int(len(test_y))
         x_model_raw = np.vstack([x_raw, test_x_raw])
         y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, repeat_index, config)
+        internal_splits = _split_indices(y, sample_id, config)
         _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
         external_indices = list(range(len(y), len(y_model)))
         folds = [
             _external_test_fold(
                 splits=internal_splits,
-                repeat_index=repeat_index,
+                sample_id=sample_id,
                 external_test_indices=external_indices,
-                external_repeat_index=test_repeat_index,
+                external_sample_id=test_sample_id,
             )
         ]
         metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
     else:
         x_model_raw = x_raw
         y_model = y
-        if evaluation_strategy == "leave_one_repeat_index_cv":
-            folds = _leave_one_repeat_index_folds(y, repeat_index, config)
+        if evaluation_strategy == "leave_one_sample_id_cv":
+            folds = _leave_one_sample_id_folds(y, sample_id, config)
         else:
-            splits = _split_indices(y, repeat_index, config)
+            splits = _split_indices(y, sample_id, config)
             _validate_required_splits(splits, y, label_names, ("train", "valid", "test"))
-            folds = [_holdout_fold(splits, repeat_index, strategy=evaluation_strategy)]
+            folds = [_holdout_fold(splits, sample_id, strategy=evaluation_strategy)]
         metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
     feature_x_axis = dataset.x_axis[0] if dataset.x_axis else list(range(x_raw.shape[1]))
     combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
@@ -1743,7 +1821,7 @@ def _run_legacy_training(
                 run_dir,
                 updated,
                 **progress,
-                current_fold_repeat_index=fold.get("test_repeat_index"),
+                current_fold_sample_id=fold.get("test_sample_id"),
                 model_type=model_type,
                 evaluation_strategy=evaluation_strategy,
             )
@@ -1766,7 +1844,7 @@ def _run_legacy_training(
                 "current_fold": fold_index,
                 "completed_folds": completed_folds,
                 "fold_progress_text": f"{fold_index}/{fold_count}",
-                "current_fold_repeat_index": fold.get("test_repeat_index"),
+                "current_fold_sample_id": fold.get("test_sample_id"),
                 "total_target_epochs": int(fold_count * config.epochs),
                 "evaluation_strategy": evaluation_strategy,
                 "started_at": started_at,
@@ -1920,26 +1998,35 @@ def _run_legacy_training(
         fold_metric_rows.append(
             {
                 "fold_index": fold_index,
-                "test_repeat_index": fold["test_repeat_index"],
+                "test_sample_id": fold["test_sample_id"],
                 "accuracy": fold_metrics["accuracy"],
                 "balanced_accuracy": fold_metrics["balanced_accuracy"],
                 "macro_f1": fold_metrics["macro_f1"],
                 "weighted_f1": fold_metrics["weighted_f1"],
                 "train_accuracy": split_metrics["train"]["accuracy"],
                 "train_balanced_accuracy": split_metrics["train"]["balanced_accuracy"],
+                "train_macro_precision": split_metrics["train"]["macro_precision"],
+                "train_macro_recall": split_metrics["train"]["macro_recall"],
+                "train_macro_f1": split_metrics["train"]["macro_f1"],
                 "valid_accuracy": split_metrics["valid"]["accuracy"],
                 "valid_balanced_accuracy": split_metrics["valid"]["balanced_accuracy"],
+                "valid_macro_precision": split_metrics["valid"]["macro_precision"],
+                "valid_macro_recall": split_metrics["valid"]["macro_recall"],
+                "valid_macro_f1": split_metrics["valid"]["macro_f1"],
                 "test_accuracy": fold_metrics["accuracy"],
                 "test_balanced_accuracy": fold_metrics["balanced_accuracy"],
+                "test_macro_precision": fold_metrics["macro_precision"],
+                "test_macro_recall": fold_metrics["macro_recall"],
+                "test_macro_f1": fold_metrics["macro_f1"],
             }
         )
         cv_fold_payloads.append(
             {
                 "fold_index": fold_index,
-                "test_repeat_index": fold["test_repeat_index"],
-                "train_repeat_indices": fold["train_repeat_indices"],
-                "valid_repeat_indices": fold["valid_repeat_indices"],
-                "test_repeat_indices": fold.get("test_repeat_indices", []),
+                "test_sample_id": fold["test_sample_id"],
+                "train_sample_ids": fold["train_sample_ids"],
+                "valid_sample_ids": fold["valid_sample_ids"],
+                "test_sample_ids": fold.get("test_sample_ids", []),
                 "final_fit_indices": fold_final_fit_indices.tolist() if fold_final_fit_indices is not None else [],
                 "best_params": fold_best_params,
                 "selection_metric": fold_selection_metric,
@@ -1958,7 +2045,7 @@ def _run_legacy_training(
                 "dataset": "external_test" if evaluation_strategy == "external_test_holdout" else "test",
                 "fold_index": fold_index,
                 "index": source_metadata["index"],
-                "Repeat_index": source_metadata["repeat_index"],
+                "Sample_ID": source_metadata["sample_id"],
                 "true_label": label_names[test_eval["true"][local_idx]],
                 "pred_label": label_names[test_eval["pred"][local_idx]],
             }
@@ -1968,25 +2055,7 @@ def _run_legacy_training(
         check_run_active()
         write_progress(fold_index, fold_index, fold)
 
-    pooled_test_metrics = _classification_metrics_payload(np.asarray(all_true, dtype=np.int64), np.asarray(all_pred, dtype=np.int64), label_names)
-    split_metrics_payload: dict[str, dict[str, Any]] = {}
-    split_metric_std: dict[str, dict[str, float | None]] = {}
-    for split_name in ("train", "valid", "test"):
-        split_metrics_payload[split_name], split_metric_std[split_name] = _aggregate_split_metrics(
-            [fold_eval[split_name] for fold_eval in fold_split_evals],
-            label_names,
-        )
-    metrics = {**pooled_test_metrics, **split_metrics_payload}
-    cv_summary = {
-        "strategy": evaluation_strategy,
-        "fold_count": len(folds),
-        "pooled_test": pooled_test_metrics,
-        "fold_mean": {
-            split_name: _scalar_metric_summary([fold["split_metrics"][split_name] for fold in cv_fold_payloads])
-            for split_name in ("train", "valid", "test")
-        },
-        "fold_std": split_metric_std,
-    }
+    metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
     cv_metrics = {
         "strategy": evaluation_strategy,
         "fold_count": len(folds),
@@ -2134,10 +2203,10 @@ def _run_legacy_training(
         "model_artifact": last_model_artifact,
         "model_artifact_note": (
             "最后一个交叉验证折模型，仅作下载参考，不用于汇报的交叉验证指标"
-            if evaluation_strategy == "leave_one_repeat_index_cv"
+            if evaluation_strategy == "leave_one_sample_id_cv"
             else "本次 holdout 训练得到的模型，用于对应测试指标"
         ),
-        "not_used_for_reported_cv_metrics": evaluation_strategy == "leave_one_repeat_index_cv",
+        "not_used_for_reported_cv_metrics": evaluation_strategy == "leave_one_sample_id_cv",
         "feature_importance": feature_summary,
         "sample_feature_importance": sample_feature_summary,
         "x_axis_warning": x_axis_warning,
@@ -2150,7 +2219,7 @@ def _run_legacy_training(
         "current_fold": len(folds),
         "completed_folds": len(folds),
         "fold_progress_text": f"{len(folds)}/{len(folds)}",
-        "current_fold_repeat_index": folds[-1].get("test_repeat_index") if folds else None,
+        "current_fold_sample_id": folds[-1].get("test_sample_id") if folds else None,
         "best_valid_macro_f1": max((row.get("best_valid_macro_f1") or 0.0 for row in history_rows), default=None),
         "best_valid_balanced_accuracy": max((row.get("valid_balanced_accuracy") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
@@ -2165,7 +2234,9 @@ def _run_legacy_training(
     return {**status_payload, "run_dir": str(run_dir.resolve())}
 
 
+# 直接调用兼容 API：worker 正式路径会额外使用 TrainingExecution 做 claim/cancel 校验。
 def train_model(data_path: str | Path, config_data: dict[str, Any] | None = None, run_id: str | None = None) -> dict[str, Any]:
+    """直接执行训练并发布 Manifest；正式 HTTP 路径应由 worker 调用。"""
     return run_legacy_training_compatibility(data_path=data_path, config_data=config_data, run_id=run_id)
 
 
@@ -2175,6 +2246,7 @@ def run_legacy_training_compatibility(
     config_data: dict[str, Any] | None,
     run_id: str | None,
 ) -> dict[str, Any]:
+    """从旧参数形态执行当前训练器，并允许注入 RunRepository 取消检查。"""
     result = _run_legacy_training(data_path=Path(data_path), config_data=config_data or {}, run_id=run_id)
     run_dir = Path(result["run_dir"])
     if not (run_dir / "manifest.json").is_file():
@@ -2190,6 +2262,7 @@ def run_legacy_training_compatibility(
 
 
 def list_runs() -> list[dict[str, Any]]:
+    """列出本地 Run 目录中可解析的 status.json，供旧调用方使用。"""
     runs = []
     for path in sorted(RUNS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         status_file = path / "status.json"

@@ -1,5 +1,5 @@
 """
-AutoAI 一键启动脚本
+SpecAutoAI 一键启动脚本
 
 用法:
     python run.py                # 默认 127.0.0.1:8000，自动打开浏览器
@@ -25,7 +25,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AutoAI 谱学建模平台启动器")
+    """解析本地启动参数，并在同一生命周期管理 Web 服务与可选 worker。"""
+    parser = argparse.ArgumentParser(description="SpecAutoAI 谱学建模平台启动器")
     parser.add_argument("--host", default="127.0.0.1", help="绑定地址 (默认 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="绑定端口 (默认 8000)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
@@ -51,7 +52,7 @@ def main() -> None:
 
     print(f"""
   ╔══════════════════════════════════════════════╗
-  ║        🧪 AutoAI 谱学建模平台                 ║
+  ║       🧪 SpecAutoAI 谱学建模平台              ║
   ║                                              ║
   ║  本地访问: {url}                     ║
   ║  API 文档: {url}/docs                      ║
@@ -63,6 +64,8 @@ def main() -> None:
 
     worker = None
     if not args.no_worker:
+        # Web 只负责创建 queued Run；训练能力依赖这个独立子进程。使用当前
+        # 解释器可确保 worker 与 uvicorn 共享同一虚拟环境和依赖集。
         worker = subprocess.Popen([sys.executable, "-m", "backend.app.runs.worker"])
     try:
         uvicorn.run(
@@ -72,6 +75,8 @@ def main() -> None:
             reload=args.reload,
         )
     finally:
+        # 无论正常退出还是 Ctrl+C，都回收由本启动器创建的 worker，避免残留
+        # 进程继续领取新 Run。外部独立托管的 worker 不受这里影响。
         if worker is not None and worker.poll() is None:
             worker.terminate()
             worker.wait(timeout=10)

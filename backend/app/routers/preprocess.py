@@ -1,3 +1,9 @@
+"""拉曼、简单色谱和 HPLC 预处理 HTTP 路由。
+
+该层只负责 multipart 参数、上传落盘、算法分派和下载 URL 组装。拉曼与 HPLC
+数学处理分别位于 parsers.py 和 hplc.py；主色谱界面默认使用 hplc 分支。
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -15,6 +21,7 @@ router = APIRouter()
 
 
 def _save_upload(file: UploadFile) -> Path:
+    """把单个 UploadFile 复制到随机命名的受控上传目录。"""
     suffix = Path(file.filename or 'upload.csv').suffix or '.csv'
     target = UPLOADS_DIR / f'{uuid.uuid4().hex}{suffix}'
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +73,7 @@ def preprocess(
     hplc_subtract_min: bool = Form(True),
     hplc_normalize_area: bool = Form(True),
 ) -> dict[str, Any]:
+    """校验 kind 与范围参数，执行对应管线并返回预览及下载地址。"""
     if kind not in {'raman', 'chromatography', 'hplc'}:
         raise HTTPException(status_code=400, detail='kind 必须是 raman、chromatography 或 hplc')
     original_names = [Path(file.filename or f'sample_{idx}').stem for idx, file in enumerate(files, start=1)]

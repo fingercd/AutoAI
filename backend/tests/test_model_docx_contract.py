@@ -134,7 +134,7 @@ def test_word_tcn_feature_boundaries_are_exact(feature_count, stem, pool, dilati
 
 
 def test_word_resnet_has_only_three_document_pools_and_plain_projection_shortcuts():
-    from backend.app.models.resnet1d_v2 import ResNet1DDocumentV2
+    from backend.app.models.resnet1d import ResNet1DDocumentV2
 
     model = ResNet1DDocumentV2(input_length=3000, class_count=3, sample_count=300)
 

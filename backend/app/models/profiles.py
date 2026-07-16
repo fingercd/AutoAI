@@ -1,3 +1,9 @@
+"""按训练样本数 N 与特征长度 L 解析模型 profile。
+
+profile 决定网络宽度、卷积核、池化、dropout 或传统模型候选范围，但不改变模型 ID。
+分档只使用当前训练折的规模，最终解析值会写进 Run 元数据以便复核。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +13,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ModelProfile:
+    """一次训练折实际采用的样本/特征分档与参数集合。"""
     model_type: str
     train_sample_count: int
     feature_count: int
@@ -79,14 +86,17 @@ _LONG_RANGE_VALUES = {
 
 
 def sample_band(n: int) -> str:
+    """把当前训练折样本数 N 分成 small/medium/large。"""
     return "small" if int(n) <= 100 else ("medium" if int(n) < 300 else "large")
 
 
 def feature_band(length: int) -> str:
+    """把特征长度 L 分成 short/medium/long。"""
     return "short" if int(length) <= 1000 else ("medium" if int(length) < 3000 else "long")
 
 
 def default_dropout(n: int) -> float:
+    """小样本使用更强 dropout，降低深度模型过拟合风险。"""
     return {"small": 0.5, "medium": 0.4, "large": 0.3}[sample_band(n)]
 
 
@@ -96,6 +106,7 @@ def build_model_profile(
     train_sample_count: int,
     feature_count: int,
 ) -> ModelProfile:
+    """解析非 DSCARNet 模型在当前训练折实际使用的 profile。"""
     model_key = str(model_type or "").strip().lower()
     model_key = {"transformer": "cnn_transformer1d", "transformer1d": "cnn_transformer1d"}.get(model_key, model_key)
     if model_key not in PROFILE_MODEL_TYPES:
@@ -183,6 +194,7 @@ def build_model_profile(
 
 
 def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> dict[str, Any]:
+    """解析 DSCARNet 的 PCA 数量、聚类通道和网络容量。"""
     n = int(train_sample_count)
     length = int(feature_count)
     n_band = sample_band(n)
@@ -209,6 +221,7 @@ def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> di
 
 
 def model_range_warnings(*, train_sample_count: int, feature_count: int) -> list[str]:
+    """报告超出文档验证范围的 N/L，但不擅自拒绝可运行输入。"""
     warnings: list[str] = []
     if not 50 <= int(train_sample_count) <= 1000:
         warnings.append(f"训练样本数 N={train_sample_count} 超出文档适用范围 50-1000")

@@ -1,3 +1,5 @@
+"""用 one-hot PLSRegression 响应实现 PLS-DA 分类概率接口。"""
+
 from __future__ import annotations
 
 import numpy as np
@@ -5,6 +7,7 @@ from sklearn.cross_decomposition import PLSRegression
 
 
 class PLSDAClassifier:
+    """把 PLS 连续响应归一化成 sklearn 风格分类概率。"""
     def __init__(self, n_components: int = 2) -> None:
         self.n_components = max(1, int(n_components))
         self.model = PLSRegression(n_components=self.n_components, scale=False, max_iter=500, tol=1e-6)
@@ -39,4 +42,5 @@ class PLSDAClassifier:
 
 
 def build_pls_da(n_components: int = 2) -> PLSDAClassifier:
+    """构造指定潜变量数量的 PLS-DA 分类器。"""
     return PLSDAClassifier(n_components=n_components)

@@ -2,9 +2,9 @@ import pytest
 import torch
 from torch import nn
 
-from backend.app.models.inception1d_v2 import Inception1DDocumentV2
-from backend.app.models.resnet1d_v2 import ResNet1DDocumentV2
-from backend.app.models.tcn1d_v2 import TCN1DDocumentV2
+from backend.app.models.inception1d import Inception1DDocumentV2
+from backend.app.models.resnet1d import ResNet1DDocumentV2
+from backend.app.models.tcn1d import TCN1DDocumentV2
 
 
 @pytest.mark.parametrize("model_class", [ResNet1DDocumentV2, Inception1DDocumentV2, TCN1DDocumentV2])

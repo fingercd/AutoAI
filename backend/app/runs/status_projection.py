@@ -1,3 +1,9 @@
+"""把规范 RunRecord 投影成旧前端可读取的状态 JSON。
+
+投影可以合并训练结果与 artifact 摘要，但不会反向驱动 SQLite 状态机。恢复函数只在
+兼容目录缺少数据库字段时提取可展示信息，不把不完整文件推断成成功 Run。
+"""
+
 from __future__ import annotations
 
 import csv
@@ -30,6 +36,7 @@ def _atomic_json_write(path: Path, payload: object) -> None:
 
 
 def project_status(run_dir: Path, record: RunRecord, **fields: Any) -> dict[str, Any]:
+    """原子写入一个由规范 RunRecord 派生的 status.json 兼容投影。"""
     status_path = run_dir / 'status.json'
     payload: dict[str, Any] = {}
     if status_path.is_file():
@@ -108,8 +115,10 @@ def _recover_sample_count(config: dict[str, Any]) -> int | None:
     try:
         with path.open('r', encoding='utf-8-sig', newline='') as handle:
             reader = csv.DictReader(handle)
-            required = ('Index', 'Name', 'Label', 'Repeat_index')
-            if not reader.fieldnames or not all(name in reader.fieldnames for name in required):
+            fieldnames = reader.fieldnames or []
+            group_field = 'Sample_ID' if 'Sample_ID' in fieldnames else 'Repeat_index'
+            required = ('Index', 'Name', 'Label', group_field)
+            if not all(name in fieldnames for name in required):
                 return None
             samples = {tuple(row.get(name, '') for name in required) for row in reader}
     except (OSError, csv.Error):
@@ -118,6 +127,7 @@ def _recover_sample_count(config: dict[str, Any]) -> int | None:
 
 
 def recover_status_from_artifacts(run_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """从已有 artifact 补齐旧投影缺失的展示字段，不改变规范状态。"""
     if payload.get('status') != 'success' and payload.get('state') != 'succeeded':
         return payload
     recovered = dict(payload)
@@ -232,6 +242,15 @@ def _finite_float(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return numeric if isfinite(numeric) else None
+
+
+def _canonical_evaluation_strategy(value: object) -> object:
+    if str(value or "").strip().lower() in {
+        "leave_one_repeat_index_cv",
+        "outer_leave_one_repeat_index_cv",
+    }:
+        return "leave_one_sample_id_cv"
+    return value
 
 
 def _history_rows(run_dir: Path, status: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -377,8 +396,8 @@ def build_training_status_projection(
     )
     metadata_payload = _merged_file_mapping(run_path / "model_metadata.json", model_metadata)
 
-    evaluation_strategy = _first_present(
-        status_payload.get("evaluation_strategy"), config_payload.get("evaluation_strategy")
+    evaluation_strategy = _canonical_evaluation_strategy(
+        _first_present(status_payload.get("evaluation_strategy"), config_payload.get("evaluation_strategy"))
     )
     model_type = _first_present(
         status_payload.get("model_type"), metadata_payload.get("model_type"), config_payload.get("model_type")
