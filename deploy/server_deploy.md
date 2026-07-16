@@ -1,4 +1,6 @@
-# AutoAI-v2 服务器部署说明
+# SpecAutoAI 服务器部署说明
+
+> 最近核对：2026-07-15。仓库内 node3 脚本仍只管理 Web 进程，生产训练必须另行托管 `backend.app.runs.worker`。
 
 目标是在校园集群中运行 FastAPI Web 服务和独立训练 worker，并通过 SSH 隧道从本地访问。当前已验证的解释器是 Python 3.12.12；集群 GPU/CUDA 组合必须按实际驱动选择 PyTorch。
 

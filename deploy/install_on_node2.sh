@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Legacy cluster bootstrap helper. Defaults target the historical AutoAI directory and
+# Python 3.11 environment; review APP_DIR/ENV_NAME and prefer server_deploy.md for v2.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/AutoAI}"
@@ -6,6 +8,8 @@ ENV_NAME="${ENV_NAME:-autoai}"
 
 cd "$APP_DIR"
 
+# Cluster login shells do not always initialize Conda, so locate its base explicitly
+# before sourcing conda.sh.
 if command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base)"
 elif [ -x "$HOME/miniconda3/bin/conda" ]; then
@@ -32,5 +36,5 @@ import importlib
 mods = ["fastapi", "uvicorn", "pandas", "numpy", "sklearn", "torch", "rampy", "multipart"]
 for mod in mods:
     importlib.import_module(mod)
-print("AutoAI dependency check OK")
+print("SpecAutoAI dependency check OK")
 PY

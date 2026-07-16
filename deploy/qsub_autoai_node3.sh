@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SGE template for the Web service only. Submit/manage the Run worker separately.
 #$ -N autoai_web
 #$ -cwd
 #$ -j y

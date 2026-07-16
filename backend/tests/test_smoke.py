@@ -29,7 +29,7 @@ def test_data_csv_summary(tmp_path):
 def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     source = tmp_path / "gbk_modeling.csv"
     frame = (
-        "AutoAI 谱学建模平台,Name,XXX,Intensity,Label,Repeat_index\n"
+        "SpecAutoAI 谱学建模平台,Name,XXX,Intensity,Label,Repeat_index\n"
         '1,s1,"[1, 2, 3]","[4, 5, 6]",A,1\n'
         '2,s2,"[1, 2, 3]","[6, 5, 4]",B,2\n'
     )
@@ -41,10 +41,36 @@ def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     assert summary["classes"] == 2
     assert summary["curve_length"] == 3
     assert summary["columns"][0] == "Index"
+    assert "Sample_ID" in summary["columns"]
+    assert "Repeat_index" not in summary["columns"]
+
+
+def test_sample_id_summary_uses_natural_numeric_order(tmp_path):
+    source = tmp_path / "natural_order.csv"
+    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
+    for index, sample_id in enumerate(("1", "10", "11", "2", "3"), start=1):
+        rows.append(f'{index},s{sample_id},"[1,2]","[{index},{index + 1}]",A,{sample_id}')
+    source.write_text("\n".join(rows), encoding="utf-8")
+
+    summary = summarize_modeling_csv(source)
+
+    assert [item["sample_id"] for item in summary["sample_id"]["groups"]] == ["1", "2", "3", "10", "11"]
+
+
+def test_modeling_csv_rejects_conflicting_sample_id_and_legacy_column(tmp_path):
+    source = tmp_path / "conflicting_sample_id.csv"
+    source.write_text(
+        "Index,Name,XXX,Intensity,Label,Sample_ID,Repeat_index\n"
+        '1,s1,"[1,2]","[3,4]",A,1,2\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Sample_ID.*不一致"):
+        load_modeling_csv(source)
 
 
 def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int = 2, curve_length: int = 4) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
     index = 1
     x_axis = list(range(curve_length))
     for group in range(1, group_count + 1):
@@ -59,7 +85,7 @@ def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int 
 
 
 def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
     x_axis = list(range(40))
     index = 1
     for group in range(1, group_count + 1):
@@ -78,7 +104,7 @@ def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 
 
 
 def _write_inconsistent_axis_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Repeat_index"]
+    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
     index = 1
     for group in range(1, group_count + 1):
         label = "A" if group <= group_count // 2 else "B"
@@ -230,8 +256,8 @@ def test_sample_occlusion_importance_finds_true_label_signal_window():
         score_fn=score,
         mean_indices=[0],
         metadata=[
-            {"index": 1, "name": "sample_a", "repeat_index": "1"},
-            {"index": 2, "name": "sample_b", "repeat_index": "2"},
+            {"index": 1, "name": "sample_a", "sample_id": "1"},
+            {"index": 2, "name": "sample_b", "sample_id": "2"},
         ],
         window_count=4,
         top_k=2,
@@ -273,7 +299,7 @@ def test_sample_occlusion_importance_allows_no_positive_segments():
         label_names=["A"],
         score_fn=lambda values: np.ones((values.shape[0], 1), dtype=np.float32),
         mean_indices=[0],
-        metadata=[{"index": 1, "name": "flat", "repeat_index": "1"}],
+        metadata=[{"index": 1, "name": "flat", "sample_id": "1"}],
         window_count=3,
         top_k=2,
     )
@@ -391,8 +417,8 @@ def test_sample_feature_csv_columns_follow_importance_method(tmp_path):
     x = np.asarray([[0.0, 0.1, 0.2, 0.3], [0.3, 0.2, 0.1, 0.0]], dtype=np.float32)
     y = np.asarray([0, 1], dtype=np.int64)
     metadata = [
-        {"index": 1, "name": "train", "repeat_index": "1"},
-        {"index": 2, "name": "test", "repeat_index": "2"},
+        {"index": 1, "name": "train", "sample_id": "1"},
+        {"index": 2, "name": "test", "sample_id": "2"},
     ]
 
     occlusion = sample_occlusion_importance(
@@ -471,9 +497,9 @@ def test_deep_gradcam_records_sample_axis_and_auxiliary_sanity():
     )
     y = np.asarray([0, 1, 0], dtype=np.int64)
     metadata = [
-        {"index": 1, "name": "train", "repeat_index": "1", "sample_x_axis": [0, 1, 2, 3, 4]},
-        {"index": 2, "name": "sample_a", "repeat_index": "2", "sample_x_axis": [10, 11, 12, 13, 99]},
-        {"index": 3, "name": "sample_b", "repeat_index": "3", "sample_x_axis": [20, 21, 22, 23, 199]},
+        {"index": 1, "name": "train", "sample_id": "1", "sample_x_axis": [0, 1, 2, 3, 4]},
+        {"index": 2, "name": "sample_a", "sample_id": "2", "sample_x_axis": [10, 11, 12, 13, 99]},
+        {"index": 3, "name": "sample_b", "sample_id": "3", "sample_x_axis": [20, 21, 22, 23, 199]},
     ]
 
     result = sample_deep_attribution_importance(
@@ -689,17 +715,17 @@ def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, 
     assert (run_dir / "dscarnet_car_aggmap.joblib").exists()
 
 
-def test_repeat_index_summary_and_incomplete_group_error(tmp_path):
+def test_sample_id_summary_and_incomplete_group_error(tmp_path):
     source = tmp_path / "bad_repeat.csv"
     _write_grouped_modeling_csv(source, group_count=4, repeats=2)
     text = source.read_text(encoding="utf-8")
     source.write_text("\n".join(text.splitlines()[:-1]), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Repeat_index 重复测量次数不一致"):
+    with pytest.raises(ValueError, match="Sample_ID 重复测量次数不一致"):
         load_modeling_csv(source)
 
 
-def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
+def test_outer_leave_one_cv_uses_each_sample_id_once(tmp_path, monkeypatch):
     import backend.app.training as training
 
     source = tmp_path / "grouped.csv"
@@ -710,7 +736,7 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
         source,
         {
             "model_type": "pls_da",
-            "split_mode": "leave_one_repeat_index_cv",
+            "split_mode": "leave_one_sample_id_cv",
             "normalization": "zscore",
             "feature_selection_enabled": False,
         },
@@ -719,30 +745,69 @@ def test_outer_leave_one_cv_uses_each_repeat_index_once(tmp_path, monkeypatch):
     predictions = pd.read_csv(Path(result["run_dir"]) / "cv_predictions.csv")
     frame = load_modeling_csv(source).frame
 
-    assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
-    assert cv_payload["fold_count"] == frame["Repeat_index"].nunique()
+    assert result["evaluation_strategy"] == "leave_one_sample_id_cv"
+    assert cv_payload["fold_count"] == frame["Sample_ID"].nunique()
     assert result["total_target_epochs"] == result["fold_count"] * result["target_epochs"]
     assert result["current_fold"] == result["fold_count"]
     assert result["completed_folds"] == result["fold_count"]
     assert result["fold_progress_text"] == f'{result["fold_count"]}/{result["fold_count"]}'
-    assert result["current_fold_repeat_index"]
+    assert result["current_fold_sample_id"]
     assert result["metrics"]["test"]["accuracy"] == pytest.approx(
+        result["cv_summary"]["pooled_test"]["accuracy"]
+    )
+    assert result["metrics"]["test"]["macro_f1"] == pytest.approx(
+        result["cv_summary"]["pooled_test"]["macro_f1"]
+    )
+    assert result["metrics"]["test"]["aggregation"] == "pooled_out_of_fold"
+    assert result["cv_summary"]["primary_test_aggregation"] == "pooled_out_of_fold"
+    assert result["cv_summary"]["fold_mean"]["test"]["accuracy"] == pytest.approx(
         float(pd.read_csv(Path(result["run_dir"]) / "fold_metrics.csv")["accuracy"].mean())
     )
-    assert result["cv_summary"]["fold_mean"]["test"]["accuracy"] == result["metrics"]["test"]["accuracy"]
     assert "accuracy" in result["metrics"]
-    assert sorted(item["test_repeat_index"] for item in cv_payload["folds"]) == sorted(frame["Repeat_index"].astype(str).unique())
-    assert predictions["Repeat_index"].astype(str).nunique() == frame["Repeat_index"].nunique()
+    assert sorted((item["test_sample_id"] for item in cv_payload["folds"]), key=int) == sorted(
+        frame["Sample_ID"].astype(str).unique(), key=int
+    )
+    assert predictions["Sample_ID"].astype(str).nunique() == frame["Sample_ID"].nunique()
     assert set(predictions["dataset"]) == {"test"}
     for fold in cv_payload["folds"]:
-        assert fold["test_repeat_index"] not in fold["train_repeat_indices"]
-        assert fold["test_repeat_index"] not in fold["valid_repeat_indices"]
-        assert set(fold["train_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
-        assert set(fold["test_repeat_indices"]).isdisjoint(fold["train_repeat_indices"])
-        assert set(fold["test_repeat_indices"]).isdisjoint(fold["valid_repeat_indices"])
+        assert fold["test_sample_id"] not in fold["train_sample_ids"]
+        assert fold["test_sample_id"] not in fold["valid_sample_ids"]
+        assert set(fold["train_sample_ids"]).isdisjoint(fold["valid_sample_ids"])
+        assert set(fold["test_sample_ids"]).isdisjoint(fold["train_sample_ids"])
+        assert set(fold["test_sample_ids"]).isdisjoint(fold["valid_sample_ids"])
         assert len(fold["splits"]["train"]) == 8
         assert len(fold["splits"]["valid"]) == 2
         assert len(fold["splits"]["test"]) == 2
+
+
+def test_cv_primary_test_macro_metrics_use_pooled_out_of_fold_predictions():
+    import backend.app.training as training
+
+    perfect_binary_split = {"true": [0, 1], "pred": [0, 1]}
+    fold_split_evals = [
+        {
+            "train": perfect_binary_split,
+            "valid": perfect_binary_split,
+            "test": {"true": [0, 0], "pred": [0, 0]},
+        },
+        {
+            "train": perfect_binary_split,
+            "valid": perfect_binary_split,
+            "test": {"true": [1, 1], "pred": [1, 1]},
+        },
+    ]
+
+    metrics, cv_summary = training._build_metrics_payload(
+        fold_split_evals,
+        ["A", "B"],
+        "leave_one_sample_id_cv",
+    )
+
+    assert cv_summary["fold_mean"]["test"]["macro_f1"] == pytest.approx(0.5)
+    assert metrics["test"]["macro_precision"] == pytest.approx(1.0)
+    assert metrics["test"]["macro_recall"] == pytest.approx(1.0)
+    assert metrics["test"]["macro_f1"] == pytest.approx(1.0)
+    assert metrics["test"]["aggregation"] == "pooled_out_of_fold"
 
 
 def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
@@ -806,10 +871,10 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert len(split_payload[0]["splits"]["train"]) == 16
     assert len(split_payload[0]["splits"]["valid"]) == 4
     assert len(split_payload[0]["external_test_indices"]) == 8
-    train_groups = set(split_payload[0]["train_repeat_indices"])
-    valid_groups = set(split_payload[0]["valid_repeat_indices"])
+    train_groups = set(split_payload[0]["train_sample_ids"])
+    valid_groups = set(split_payload[0]["valid_sample_ids"])
     assert train_groups.isdisjoint(valid_groups)
-    assert set(split_payload[0]["test_repeat_indices"]) == {"1", "2", "3", "4"}
+    assert set(split_payload[0]["test_sample_ids"]) == {"1", "2", "3", "4"}
     assert set(predictions["dataset"]) == {"external_test"}
 
 
@@ -817,7 +882,7 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     "strategy, with_external_test",
     [
         ("stratified_holdout", False),
-        ("leave_one_repeat_index_cv", False),
+        ("leave_one_sample_id_cv", False),
         ("external_test_holdout", True),
     ],
 )
@@ -905,7 +970,7 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
             {
                 "model_type": "svm",
                 "normalization": "none",
-                "split_mode": "leave_one_repeat_index_cv",
+                "split_mode": "leave_one_sample_id_cv",
                 "split_train": 8,
                 "split_valid": 2,
                 "split_test": 0,
@@ -988,7 +1053,7 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
             "epochs": 1,
             "batch_size": 8,
             "model_type": model_type,
-            "split_mode": "leave_one_repeat_index_cv",
+            "split_mode": "leave_one_sample_id_cv",
             "early_stopping_patience": 5,
             "hidden_size": 32,
             "transformer_heads": 4,
@@ -1001,7 +1066,7 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     assert result["status"] == "success"
     expected_model_type = "cnn_transformer1d" if model_type == "transformer1d" else model_type
     assert result["model_type"] == expected_model_type
-    assert result["evaluation_strategy"] == "leave_one_repeat_index_cv"
+    assert result["evaluation_strategy"] == "leave_one_sample_id_cv"
     assert result["fold_count"] == 6
     run_dir = tmp_path / result["run_id"]
     if result.get("model_family") == "traditional_ml":
@@ -1089,7 +1154,7 @@ def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp
         source,
         {
             "model_type": "transformer1d",
-            "split_mode": "leave_one_repeat_index_cv",
+            "split_mode": "leave_one_sample_id_cv",
             "epochs": 1,
             "batch_size": 16,
             "feature_top_k": 3,
@@ -1129,6 +1194,7 @@ def test_create_run_persists_independent_queued_runs(tmp_path):
         files={"file": (source.name, source.read_bytes(), "text/csv")},
     )
     assert uploaded.status_code == 200
+    assert uploaded.json()["dataset_name"] == source.name
     dataset_id = uploaded.json()["dataset_id"]
 
     first_response = client.post(
@@ -1146,6 +1212,10 @@ def test_create_run_persists_independent_queued_runs(tmp_path):
     assert first_response.json()["state"] == "queued"
     assert second_response.json()["status"] == "pending"
     assert second_response.json()["state"] == "queued"
+    first_run = client.get(f'/api/training/runs/{first_response.json()["run_id"]}')
+    assert first_run.status_code == 200
+    assert first_run.json()["dataset_name"] == source.name
+    assert first_run.json()["config"]["dataset_name"] == source.name
 
 
 def test_train_model_stops_when_status_is_replaced_mid_loop(tmp_path, monkeypatch):
@@ -1191,7 +1261,7 @@ def test_train_model_stops_when_status_is_replaced_mid_loop(tmp_path, monkeypatc
             source,
             {
                 "model_type": "pls_da",
-                "split_mode": "leave_one_repeat_index_cv",
+                "split_mode": "leave_one_sample_id_cv",
                 "feature_selection_enabled": False,
             },
             run_id=run_id,
@@ -1281,7 +1351,7 @@ def test_preprocess_x_value_range_selects_by_axis(tmp_path):
     assert ast.literal_eval(result["frame"].iloc[0]["XXX"]) == [1.0, 1.5, 2.0]
 
 
-def test_preprocess_csv_arrays_are_excel_safe_and_float32_lossless(tmp_path, monkeypatch):
+def test_preprocess_csv_arrays_are_excel_safe_and_rounded_to_five_decimals(tmp_path, monkeypatch):
     from backend.app import parsers
 
     source = tmp_path / "raman.csv"
@@ -1310,7 +1380,7 @@ def test_preprocess_csv_arrays_are_excel_safe_and_float32_lossless(tmp_path, mon
     assert len(row["Intensity"]) <= parsers.EXCEL_CELL_CHARACTER_LIMIT
     assert "450.82000732421875" not in row["XXX"]
     np.testing.assert_allclose(serialized_x, expected_x, rtol=1e-9, atol=1e-9)
-    assert np.array_equal(np.asarray(serialized_y, dtype=np.float32), expected_y)
+    np.testing.assert_allclose(serialized_y, np.round(expected_y.astype(np.float64), 5), rtol=0, atol=1e-12)
     assert result["curves"][0]["x"] == serialized_x
     assert result["curves"][0]["corrected_y"] == serialized_y
 
@@ -1322,28 +1392,26 @@ def test_preprocess_csv_arrays_are_excel_safe_and_float32_lossless(tmp_path, mon
     assert all(len(item) == 6 for item in rows)
 
 
-def test_preprocess_rejects_arrays_over_excel_cell_limit(tmp_path, monkeypatch):
+def test_preprocess_rejects_9000_point_arrays_over_excel_cell_limit(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from backend.app import parsers
     from backend.app.main import app
     from backend.app.routers import preprocess as preprocess_router
 
-    source = tmp_path / "too_many_points.csv"
+    source = tmp_path / "chromatography_9000_points.csv"
     source.write_text(
-        "RamanShift,Intensity\n"
-        + "\n".join(f"{idx},{idx}" for idx in range(10000)),
+        "Time,Intensity\n"
+        + "\n".join(f"{idx},{idx}" for idx in range(9000)),
         encoding="utf-8",
     )
     uploads = tmp_path / "uploads"
     outputs = tmp_path / "preprocessed"
     monkeypatch.setattr(preprocess_router, "UPLOADS_DIR", uploads)
     monkeypatch.setattr(preprocess_router, "PREPROCESSED_DIR", outputs)
-    monkeypatch.setattr(parsers, "_baseline_correct", lambda x, y, method: y)
 
     client = TestClient(app)
     with source.open("rb") as handle:
         response = client.post(
-            "/api/preprocess/raman",
+            "/api/preprocess/chromatography",
             files=[("files", (source.name, handle, "text/csv"))],
         )
 
@@ -1597,18 +1665,18 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
     assert '<div class="metric">总数据<strong>${summary.samples}</strong></div>' in content
-    assert '<div class="metric">样本数<strong>${repeat.group_count ?? "-"}</strong></div>' in content
+    assert '<div class="metric">样本数<strong>${sampleIds.group_count ?? "-"}</strong></div>' in content
     assert '<div class="metric">样品种类<strong>' not in content
     assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
     assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
     assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
     assert 'const cvEnabled = $("cvEnabled").checked;' in content
-    assert 'split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_repeat_index_cv" : splitMode),' in content
+    assert 'split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
     assert "开启交叉验证" in content
-    assert "几个 Repeat_index 就跑几折" in content
+    assert "几个 Sample_ID 就跑几折" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content
     assert "function historyFoldOptions" in content
@@ -1625,7 +1693,34 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert "含义：" not in content
 
 
-def test_main_ui_manual_explains_repeat_index_group_split():
+def test_training_records_show_dataset_name_and_three_split_macro_f1_values():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "<th>上传的数据集名</th>" in content
+    assert "<th>Train Macro F1</th>" in content
+    assert "<th>Valid Macro F1</th>" in content
+    assert "<th>Test Macro F1</th>" in content
+    assert "<th>Run ID</th>" not in content
+    assert "<th>数据量</th>" not in content
+    assert "<th>训练准确率</th>" not in content
+    assert "<th>测试准确率</th>" not in content
+    assert "const datasetName = run.dataset_name || run.config?.dataset_name || \"-\";" in content
+    assert "const trainF1 = run.metrics?.train?.macro_f1;" in content
+    assert "const validF1 = run.metrics?.valid?.macro_f1;" in content
+    assert "const testF1 = run.metrics?.test?.macro_f1 ?? run.metrics?.macro_f1;" in content
+
+
+def test_product_brand_is_specautoai_in_ui_and_openapi():
+    from backend.app.main import app
+
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "<title>SpecAutoAI 谱学建模平台</title>" in content
+    assert "<h1>SpecAutoAI 谱学数据预处理及 AI 建模平台</h1>" in content
+    assert app.title == "SpecAutoAI"
+
+
+def test_main_ui_manual_explains_sample_id_group_split():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "数据划分比例" in content
@@ -1993,7 +2088,7 @@ def test_hplc_csv_downloadable(tmp_path):
     download_url = resp.json()["download_url"]
     dl_resp = client.get(download_url)
     assert dl_resp.status_code == 200
-    assert "Index,Name,XXX,Intensity,Label,Repeat_index" in dl_resp.text
+    assert "Index,Name,XXX,Intensity,Label,Sample_ID" in dl_resp.text
     downloaded = pd.read_csv(io.StringIO(dl_resp.text))
     x_values = ast.literal_eval(downloaded.iloc[0]["XXX"])
     intensity = ast.literal_eval(downloaded.iloc[0]["Intensity"])

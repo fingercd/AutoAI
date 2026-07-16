@@ -1,4 +1,4 @@
-# AutoAI development/test dependencies. Core runtime is inherited below.
+# SpecAutoAI development/test dependencies. Core runtime is inherited below.
 -r requirements.txt
 
 pytest>=8,<10

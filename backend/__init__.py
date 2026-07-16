@@ -1,1 +1,1 @@
-"""AutoAI backend package."""
+"""SpecAutoAI backend package."""

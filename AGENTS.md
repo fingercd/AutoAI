@@ -1,4 +1,4 @@
-# AutoAI Agent 工作规则
+# SpecAutoAI Agent 工作规则
 
 ## 默认协作规则
 
@@ -24,7 +24,7 @@
 
 ## 预处理规则
 
-- 统一建模 CSV 固定为 `Index, Name, XXX, Intensity, Label, Repeat_index`。
+- 统一建模 CSV 固定为 `Index, Name, XXX, Intensity, Label, Sample_ID`。
 - 拉曼支持行号或 X 轴范围截取，处理顺序固定为先选择数据范围，再执行基线校正。
 - HPLC 标准流程默认启用，顺序固定为：线性插值到共同时间轴、逐条减最小值消负、按真实时间轴面积归一化。
 - HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应曲线使用 `raw_y` + `processed_y`。
@@ -32,16 +32,15 @@
 ## 建模与可解释性规则
 
 - 当前建模任务仅支持分类；`Label` 即使为数字也按类别名编码，不作为连续回归目标。`PLSR`、`SVR` 是回归变体，本版训练入口不启用。
-- 当前 10 类分类模型固定为：`pls_da`、`svm`、`random_forest`、`xgboost`、`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet`。
-- 当前稳定可训练模型固定为正式基线已有的 10 个分类模型；新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
-- 支持三种分类评估口径：无独立测试集时可选 `stratified_holdout`（按标签比例 8:1:1 划分 train/valid/test）或 `leave_one_repeat_index_cv`（每折留 1 个 `Repeat_index` 作 test，其余按 8:2 划分 train/valid）；有独立测试集时使用 `external_test_holdout`（主数据 8:2 划分 train/valid，独立测试集作最终 test）。
+- 分类模型 v2 的能力目录固定公开 15 个目标模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。
+- 当前环境稳定可训练其中 14 个；`cnn_mamba1d` 因 `mamba-ssm` 依赖不可用，只在能力目录中返回 `available=false`，不得用近似网络静默替代。新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
+- 支持三种分类评估口径：无独立测试集时可选 `stratified_holdout`（按标签比例 8:1:1 划分 train/valid/test）或 `leave_one_sample_id_cv`（每折留 1 个 `Sample_ID` 作 test，其余按 8:2 划分 train/valid）；有独立测试集时使用 `external_test_holdout`（主数据 8:2 划分 train/valid，独立测试集作最终 test）。交叉验证测试集的主指标必须用所有折 OOF 预测合并计算。
 - 所有标准化参数只由当前训练集拟合，并应用于同一评估口径下的验证集和测试集。
-- 深度学习模型：`cnn1d`、`transformer1d`、`resnet1d`、`inception1d`、`tcn1d`、`dscarnet` 支持 test 集单样品可解释性分析。
-- `cnn1d`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM / Grad-CAM-like。
+- 当前可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`，均支持 test 集单样品可解释性分析；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
+- `cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM / Grad-CAM-like，并保留输入梯度 sanity check。
 - 其中 `dscarnet` 当前实际使用 AggMap/PCA 的 SAR/CAR 双通路 2D 映射，再用双通路 2D Grad-CAM 回投到 1D 特征；不要把它当普通 1D CNN 解释。
-- `transformer1d` 使用输入梯度归因，避免直接套标准 CNN Grad-CAM。
-- 六个传统机器学习模型及 `pca_mlp`、`cnn_transformer1d` 使用窗口遮挡后的真实类别 Log-loss 增量做重要性分析：`masked_loss - original_loss = log(p_before / p_after)`；全局结果按真实类别等权聚合，正值表示遮挡后真实类别置信度受损。
-- 传统模型和无卷积深度模型同时生成 `feature_importance.json/csv` 与 `sample_feature_importance.json/csv`，前端默认展示全局并允许切换单样品。旧下载接口应保持可用。
+- 六个传统机器学习模型及 `pca_mlp`、`cnn_transformer1d`（以及未来可用的 `cnn_mamba1d`）使用窗口遮挡后的真实类别 Log-loss 增量做重要性分析：`masked_loss - original_loss = log(p_before / p_after)`；全局结果按真实类别等权聚合，正值表示遮挡后真实类别置信度受损。
+- 传统模型和无卷积深度模型同时生成 `feature_importance.json/csv` 与 `sample_feature_importance.json/csv`；当前正式前端优先展示单样品结果，旧下载接口保持可用。
 - DSCARNet 会额外写入 `dscarnet_mapping.json` 和 AggMap/PCA joblib 文件；当前 artifact 下载白名单不开放这些 joblib 文件，除非同步更新接口和测试。
 
 ## 验证命令

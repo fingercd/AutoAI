@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 
-from backend.app.models.cnn1d_v2 import CNN1DDocumentV2
+from backend.app.models.cnn1d import CNN1DDocumentV2
 from backend.app.models.cnn_se1d import CNNSE1DDocumentV2, SEBlock1D
 
 

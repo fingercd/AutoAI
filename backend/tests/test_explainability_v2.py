@@ -79,7 +79,7 @@ def test_pca_mlp_log_loss_occlusion_keeps_original_feature_axis():
         splits={"train": [0, 1], "valid": [], "test": [2, 3]},
         x_axis_warning={"status": "consistent"},
         label_names=["A", "B"],
-        metadata=[{"index": idx, "name": str(idx), "repeat_index": str(idx)} for idx in range(4)],
+        metadata=[{"index": idx, "name": str(idx), "sample_id": str(idx)} for idx in range(4)],
     )
 
     assert result["method"] == "sample_occlusion_log_loss"
@@ -91,7 +91,7 @@ def test_document_cnn_uses_explicit_gradcam_target_and_original_axis():
     import torch
 
     from backend.app.feature_selection import sample_deep_attribution_importance
-    from backend.app.models.cnn1d_v2 import CNN1DDocumentV2
+    from backend.app.models.cnn1d import CNN1DDocumentV2
 
     model = CNN1DDocumentV2(input_length=32, class_count=2, sample_count=16)
     x = np.random.default_rng(42).normal(size=(4, 32)).astype(np.float32)

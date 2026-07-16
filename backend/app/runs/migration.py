@@ -1,3 +1,9 @@
+"""将只有 status.json 的历史 Run 幂等导入 SQLite 仓库。
+
+历史 running 状态不能证明仍有活跃 worker，因此导入为 queued，由现行 lease/claim
+机制重新领取；终态则按兼容映射保留。
+"""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +22,7 @@ STATE_FROM_LEGACY = {
 
 
 def import_legacy_runs(*, run_root: Path, repository: RunRepository) -> int:
+    """扫描历史目录并导入尚不存在的 Run，返回新增数量。"""
     imported = 0
     for status_path in sorted(run_root.glob('*/status.json')):
         payload = json.loads(status_path.read_text(encoding='utf-8'))

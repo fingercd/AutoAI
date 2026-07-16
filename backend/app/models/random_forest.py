@@ -1,3 +1,5 @@
+"""Random Forest 分类器构造器；搜索与 OOB 选优由 training.py 编排。"""
+
 from __future__ import annotations
 
 from sklearn.ensemble import RandomForestClassifier
@@ -12,6 +14,7 @@ def build_random_forest(
     seed: int = 42,
     oob_score: bool = False,
 ) -> RandomForestClassifier:
+    """构造支持 OOB 审计和类别权重的随机森林。"""
     return RandomForestClassifier(
         n_estimators=n_estimators,
         max_depth=max_depth,

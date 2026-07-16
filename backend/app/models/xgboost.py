@@ -1,3 +1,5 @@
+"""延迟导入 XGBoost 并按二分类/多分类配置目标函数。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,6 +21,7 @@ def build_xgboost(
     min_child_weight: float = 1.0,
     gamma: float = 0.0,
 ) -> Any:
+    """按类别数量与 class_balance 构造 XGBClassifier。"""
     try:
         from xgboost import XGBClassifier
     except Exception as exc:

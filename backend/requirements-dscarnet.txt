@@ -7,7 +7,7 @@
 #   python -m pip install -r backend/requirements-dscarnet.txt
 #   python -m pip install aggmap==1.2.1 --no-deps
 #
-# AutoAI supplies a SciPy linear-assignment compatibility layer for lapjv
+# SpecAutoAI supplies a SciPy linear-assignment compatibility layer for lapjv
 # and uses AggMap only for SAR/CAR mapping, not its TensorFlow AggModel.
 
 -r requirements.txt

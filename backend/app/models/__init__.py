@@ -1,3 +1,5 @@
+"""分类模型 registry、profile 和当前模型类的公共导出。"""
+
 from .registry import (
     ARCHITECTURE_VERSION,
     DEEP_MODEL_TYPES,
@@ -15,13 +17,13 @@ from .registry import (
     model_family,
 )
 from .pca_mlp import PCAMLPClassifier
-from .cnn1d_v2 import CNN1DDocumentV2
+from .cnn1d import CNN1DDocumentV2
 from .cnn_se1d import CNNSE1DDocumentV2
 from .cnn_transformer1d import CNNTransformer1D
 from .cnn_mamba1d import ModelDependencyError, mamba_available
-from .inception1d_v2 import Inception1DDocumentV2
-from .resnet1d_v2 import ResNet1DDocumentV2
-from .tcn1d_v2 import TCN1DDocumentV2
+from .inception1d import Inception1DDocumentV2
+from .resnet1d import ResNet1DDocumentV2
+from .tcn1d import TCN1DDocumentV2
 
 __all__ = [
     "ARCHITECTURE_VERSION",

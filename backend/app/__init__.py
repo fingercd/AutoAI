@@ -1,1 +1,1 @@
-"""FastAPI application and ML services for AutoAI."""
+"""FastAPI application and ML services for SpecAutoAI."""

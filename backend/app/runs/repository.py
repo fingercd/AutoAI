@@ -1,3 +1,10 @@
+"""SQLite Run 状态机与 worker claim/lease 仓库。
+
+所有关键迁移在 ``BEGIN IMMEDIATE`` 事务内校验当前 state、claim token 和 version。
+queued Run 只能被一个 worker claim；运行 lease 过期后可回队列；终态不可逆。
+这些数据库约束是并发正确性的来源，status.json 不参与状态决策。
+"""
+
 from __future__ import annotations
 
 import json
@@ -22,10 +29,12 @@ TERMINAL_STATES: set[RunState] = {'succeeded', 'failed', 'cancelled'}
 
 
 class InvalidRunTransition(RuntimeError):
+    """请求的状态迁移违反当前状态、claim 或版本约束。"""
     pass
 
 
 class RunNotFound(KeyError):
+    """请求的 run_id 在当前仓库和 Principal 范围内不存在。"""
     pass
 
 
@@ -42,6 +51,7 @@ def _decode_json(value: str | None, default: object) -> object:
 
 
 class RunRepository:
+    """提供 Run CRUD、合法迁移、claim、续租和过期回收操作。"""
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,10 @@
+"""分类模型 ID、别名、能力集合和构造器的权威注册表。
+
+`TARGET_MODEL_TYPES` 是 15 项能力目录，`TRADITIONAL_MODEL_TYPES` 与
+`DEEP_MODEL_TYPES` 是当前可训练集合。可选 Mamba 依赖不可用时必须抛出明确错误，
+不能静默换成近似模型；旧模型类仅用于兼容读取，不进入 v2 新 Run。
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,20 +13,20 @@ import numpy as np
 from sklearn.decomposition import PCA
 from torch import nn
 
-from .cnn1d_v2 import CNN1DDocumentV2
+from .cnn1d import CNN1DDocumentV2
 from .cnn_se1d import CNNSE1DDocumentV2
 from .cnn_transformer1d import CNNTransformer1D
 from .dscarnet import dual_dscarnet, single_dscarnet
-from .inception1d_v2 import Inception1DDocumentV2
+from .inception1d import Inception1DDocumentV2
 from .pls_da import build_pls_da
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
 from .pca_mlp import PCAMLPClassifier
 from .profiles import build_dscarnet_profile, build_model_profile
 from .random_forest import build_random_forest
-from .resnet1d_v2 import ResNet1DDocumentV2
+from .resnet1d import ResNet1DDocumentV2
 from .svm import build_svm
-from .tcn1d_v2 import TCN1DDocumentV2
+from .tcn1d import TCN1DDocumentV2
 from .xgboost import build_xgboost
 
 
@@ -115,12 +122,16 @@ ARCHITECTURE_VERSION = "docx-classification-v2"
 
 
 class ModelNotImplementedForVersion(ValueError):
+    """目标目录中存在、但当前依赖或版本尚不能构造的模型。"""
     pass
 
 
 def canonical_model_type(model_type: str) -> str:
+    """解析别名、拒绝回归/退役模型，并返回 v2 规范模型 ID。"""
     key = str(model_type or "cnn1d").strip().lower()
     if key in RETIRED_OR_REGRESSION_MODEL_TYPES:
+        # “10 类模型”是旧客户端依赖的错误文本，契约测试暂时保持原样；实际
+        # 能力集合必须读取 TARGET_MODEL_TYPES/SUPPORTED_MODEL_TYPES。
         raise ValueError("当前仅支持分类任务的 10 类模型；KNN/MLP/UNet 已移除，PLSR/SVR 是回归变体暂不启用")
     canonical = MODEL_ALIASES.get(key, key)
     if canonical in TARGET_MODEL_TYPES and canonical not in SUPPORTED_MODEL_TYPES:
@@ -131,6 +142,7 @@ def canonical_model_type(model_type: str) -> str:
 
 
 def model_family(model_type: str) -> str:
+    """返回状态与前端使用的 traditional_ml/deep_learning 家族名。"""
     return "traditional_ml" if canonical_model_type(model_type) in TRADITIONAL_MODEL_TYPES else "deep_learning"
 
 
@@ -142,6 +154,7 @@ def build_deep_model(
     *,
     x_train: np.ndarray | None = None,
 ) -> nn.Module:
+    """按规范 ID、当前折 N/L profile 和二分类输出契约构造深度模型。"""
     model_type = canonical_model_type(config.model_type)
     output_dim = 1 if int(class_count) == 2 else int(class_count)
     if model_type == "pca_mlp":
@@ -237,6 +250,7 @@ def build_dscarnet_model(
     input_shape2: tuple[int, ...] | None,
     class_count: int,
 ) -> nn.Module:
+    """按 sar/car/dual 模式和映射张量形状构造二维 DSCARNet。"""
     output_dim = 1 if int(class_count) == 2 else int(class_count)
     mode = str(getattr(config, "dscarnet_input_mode", "dual") or "dual").lower()
     profile = build_dscarnet_profile(
@@ -269,12 +283,14 @@ def build_dscarnet_model(
 
 
 def parse_optional_int(value: Any) -> int | None:
+    """把表单/JSON 中的空值或 none 文本归一化为 None。"""
     if value in {None, "", "none", "None"}:
         return None
     return int(value)
 
 
 def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any:
+    """根据已锁定 TrainConfig 构造一个传统分类模型实例。"""
     model_type = canonical_model_type(config.model_type)
     class_weight = "balanced" if config.class_balance == "class_weight" else None
     if model_type == "pls_da":

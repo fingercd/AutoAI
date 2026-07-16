@@ -1,3 +1,9 @@
+"""首页、健康检查、本地样例摘要和模型能力目录路由。
+
+模型目录始终返回 15 个目标 ID，并用 capability 字段表达可选依赖是否可用；
+前端据此禁用模型，而不是维护另一份硬编码清单。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -12,6 +18,7 @@ from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
 
 router = APIRouter()
 
+# 顺序同时决定前端目录的稳定展示顺序；新增模型需同步 registry 与契约测试。
 _MODEL_CATALOG: tuple[tuple[str, str, str], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml"),
     ("pca_lda", "PCA-LDA", "traditional_ml"),
@@ -38,11 +45,11 @@ _MODEL_MODULES = {
     "random_forest": "backend.app.models.random_forest",
     "xgboost": "backend.app.models.xgboost",
     "pca_mlp": "backend.app.models.pca_mlp",
-    "cnn1d": "backend.app.models.cnn1d_v2",
+    "cnn1d": "backend.app.models.cnn1d",
     "cnn1d_se": "backend.app.models.cnn_se1d",
-    "resnet1d": "backend.app.models.resnet1d_v2",
-    "inception1d": "backend.app.models.inception1d_v2",
-    "tcn1d": "backend.app.models.tcn1d_v2",
+    "resnet1d": "backend.app.models.resnet1d",
+    "inception1d": "backend.app.models.inception1d",
+    "tcn1d": "backend.app.models.tcn1d",
     "cnn_transformer1d": "backend.app.models.cnn_transformer1d",
 }
 
@@ -87,7 +94,7 @@ def _dscarnet_capability() -> tuple[bool, str | None]:
             return False, "DSCARNet/AggMap 不可用：缺少 aggmap"
 
         # Use the same compatibility path as training. AggMap 1.2.1 imports
-        # lapjv eagerly, while AutoAI supplies a SciPy implementation when
+        # lapjv eagerly, while SpecAutoAI supplies a SciPy implementation when
         # the obsolete native dependency is absent.
         from ..dscarnet_mapping import _load_aggmap_class
 
@@ -128,17 +135,19 @@ def _curve_intensity_summary(curves: list[dict[str, object]]) -> list[dict[str, 
 
 @router.get('/')
 def index() -> FileResponse:
+    """返回正式静态前端入口。"""
     return FileResponse(STATIC_DIR / 'index.html')
 
 
 @router.get('/health')
 def health() -> dict[str, str]:
+    """无外部依赖的轻量进程存活检查。"""
     return {'status': 'ok'}
 
 
 @router.get('/api/models')
 def get_models_catalog() -> dict[str, list[dict[str, object]]]:
-    """Report model import/build capability without starting a training run."""
+    """返回稳定的 15 项模型目录及当前环境 capability，不启动训练。"""
 
     from ..training_explainability import explainability_method
 
@@ -160,6 +169,7 @@ def get_models_catalog() -> dict[str, list[dict[str, object]]]:
 
 @router.get('/api/sample/summary')
 def sample_summary() -> dict[str, object]:
+    """读取可选根目录 data.csv，仅供本地兼容与人工验证。"""
     if not DEFAULT_DATA.exists():
         raise HTTPException(status_code=404, detail='项目根目录未找到 data.csv')
     return summarize_modeling_csv(DEFAULT_DATA)
@@ -167,6 +177,7 @@ def sample_summary() -> dict[str, object]:
 
 @router.get('/api/files')
 def get_file(path: str) -> FileResponse:
+    """下载 uploads/preprocessed 内文件；Run 产物不经过此接口。"""
     target = Path(path).resolve()
     roots = [UPLOADS_DIR.resolve(), PREPROCESSED_DIR.resolve()]
     if not any(target == root or root in target.parents for root in roots):

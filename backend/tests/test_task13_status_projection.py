@@ -15,7 +15,7 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
     _write_json(
         tmp_path,
         "config.json",
-        {"evaluation_strategy": "leave_one_repeat_index_cv", "model_type": "pca_lda"},
+        {"evaluation_strategy": "leave_one_sample_id_cv", "model_type": "pca_lda"},
     )
     _write_json(
         tmp_path,
