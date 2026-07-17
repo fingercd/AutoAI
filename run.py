@@ -7,6 +7,10 @@ SpecAutoAI 一键启动脚本
     python run.py --no-browser   # 不自动打开浏览器
     python run.py --server --host 0.0.0.0 # 受令牌保护的服务器模式
 
+本地前端快捷入口:
+    python run_classic.py        # 启动服务并打开经典前端
+    python run_v2.py             # 启动服务并打开 v2 工作台
+
 PyCharm 使用:
     右键 run.py → Run / Debug 即可启动，浏览器会自动打开。
 """
@@ -25,6 +29,16 @@ from pathlib import Path
 # 确保项目根目录在 sys.path 中
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+CLASSIC_FRONTEND_PATH = "/"
+V2_FRONTEND_PATH = "/v2"
+
+
+def build_frontend_url(base_url: str, frontend_path: str) -> str:
+    """将受支持的前端入口拼到同一个 FastAPI 服务地址上。"""
+    if frontend_path not in {CLASSIC_FRONTEND_PATH, V2_FRONTEND_PATH}:
+        raise ValueError(f"不支持的前端入口: {frontend_path}")
+    return f"{base_url.rstrip('/')}{frontend_path}"
 
 
 class WorkerSupervisor:
@@ -83,7 +97,7 @@ class WorkerSupervisor:
             self._thread.join(timeout=2)
 
 
-def main() -> None:
+def main(*, frontend_path: str = CLASSIC_FRONTEND_PATH) -> None:
     """解析本地启动参数，并在同一生命周期管理 Web 服务与可选 worker。"""
     parser = argparse.ArgumentParser(description="SpecAutoAI 谱学建模平台启动器")
     parser.add_argument("--host", default="127.0.0.1", help="绑定地址 (默认 127.0.0.1)")
@@ -115,7 +129,8 @@ def main() -> None:
     import uvicorn
 
     browser_host = '127.0.0.1' if args.host in {'0.0.0.0', '::'} else args.host
-    url = f"http://{browser_host}:{args.port}"
+    base_url = f"http://{browser_host}:{args.port}"
+    frontend_url = build_frontend_url(base_url, frontend_path)
 
     if not args.no_browser:
         # 在另一个线程打开浏览器，避免阻塞 uvicorn 启动
@@ -124,8 +139,8 @@ def main() -> None:
         def _open_browser() -> None:
             import time
             time.sleep(1.5)  # 等 uvicorn 启动
-            webbrowser.open(url)
-            print(f"\n  🌐 浏览器已打开: {url}\n")
+            webbrowser.open(frontend_url)
+            print(f"\n  🌐 浏览器已打开: {frontend_url}\n")
 
         threading.Thread(target=_open_browser, daemon=True).start()
 
@@ -133,9 +148,9 @@ def main() -> None:
   ╔══════════════════════════════════════════════╗
   ║       🧪 SpecAutoAI 谱学建模平台              ║
   ║                                              ║
-  ║  本地访问: {url}                     ║
-  ║  API 文档: {url}/docs                      ║
-  ║  健康检查: {url}/health                    ║
+  ║  前端入口: {frontend_url:<34}║
+  ║  API 文档: {base_url + '/docs':<34}║
+  ║  健康检查: {base_url + '/health':<34}║
   ║                                              ║
   ║  部署模式: {security_settings.mode:<34}║
   ║  结果契约: {WORKER_CONTRACT_VERSION:<34}║

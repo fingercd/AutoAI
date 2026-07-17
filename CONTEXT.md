@@ -7,7 +7,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 ## 当前状态
 
 - 后端使用 FastAPI，前端静态页面由后端一起托管。
-- 入口脚本是 `run.py`。
+- 公共启动器是 `run.py`；本地使用 `run_classic.py` 打开经典前端，使用 `run_v2.py` 打开 v2 工作台。
 - 主要代码在 `backend/` 和 `static/`；经典前端为 `static/index.html`，并行 v2 工作台为 `static/v2/index.html`。
 - 快速回归在 `backend/tests/test_smoke.py`；Run 结果、artifact、安全、前端纯函数和迁移另有专项测试，交付时运行整个 `backend/tests`。
 - 正式产品包含经典前端与 v2 独立工作台。两者均使用原生 Hash 路由、共享 `static/js/api-client.js`、同一 FastAPI API 与 `run-result-v1`；v2 不覆盖经典入口。
@@ -59,8 +59,11 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 推荐本机启动：
 
 ```powershell
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run.py
+C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_classic.py
+C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_v2.py
 ```
+
+二选一运行即可；两者共享端口、后端和 worker，不能同时占用默认 `8000` 端口。服务已启动时直接访问 `/` 与 `/v2` 切换。
 
 等效手动启动：
 

@@ -6,7 +6,7 @@
 
 - 经典前端入口为 `/`（`static/index.html`），v2 独立工作台入口为 `/v2`（重定向到 `static/v2/index.html`）。两者都使用原生 HTML/CSS/JavaScript，不引入 React、Vue 或 Vite。
 - 两套前端共享 `static/js/api-client.js`、Principal 鉴权、Dataset/Run API、artifact 规则和 `run-result-v1`；v2 是并行正式入口，不改变经典前端 URL。
-- FastAPI 同源托管网页和 API，入口为 `run.py` 或 `backend.app.main:app`。
+- FastAPI 同源托管网页和 API，公共启动器为 `run.py`；`run_classic.py` 与 `run_v2.py` 仅分别选择自动打开 `/` 或 `/v2`，后端和 worker 生命周期完全复用。手动入口仍为 `backend.app.main:app`。
 - `POST /api/training/runs` 只创建 SQLite 中的 `queued` Run；训练由独立 `backend.app.runs.worker` 进程执行。
 - FastAPI BackgroundTasks 不承担训练执行。
 - SQLite `RunRepository` 是任务状态权威；`status.json` 只是历史兼容投影。
