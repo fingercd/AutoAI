@@ -26,9 +26,54 @@ from ..runs.contracts import Principal, RunRecord, public_error_message
 from ..runs.repository import InvalidRunTransition, RunNotFound
 from ..runs.result_projection import project_run_result
 from ..runs.status_projection import project_status, recover_status_from_artifacts
+from ..version import WORKER_CONTRACT_VERSION
 from .deps import get_run_dir, get_run_repository, resolve_training_data_reference
 
 router = APIRouter()
+
+
+def _read_status_payload(run_id: str) -> dict[str, Any]:
+    """只读解析兼容 status.json；损坏或缺失时返回空对象。"""
+    status_file = get_run_dir(run_id) / 'status.json'
+    if not status_file.is_file():
+        return {}
+    try:
+        loaded = json.loads(status_file.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _timestamp_value(value: Any) -> str | None:
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def _record_times(record: RunRecord, status: dict[str, Any] | None = None) -> tuple[str | None, str | None, str | None]:
+    """优先使用数据库时间，并只从历史状态文件恢复确有记录的时间。"""
+    payload = status if status is not None else _read_status_payload(record.run_id)
+    created_at = record.created_at or _timestamp_value(payload.get('created_at'))
+    started_at = record.started_at or _timestamp_value(payload.get('started_at'))
+    finished_at = (
+        record.finished_at
+        or _timestamp_value(payload.get('finished_at'))
+        or _timestamp_value(payload.get('completed_at'))
+    )
+    return created_at, started_at, finished_at
+
+
+def _duration_seconds(started_at: str | None, finished_at: str | None) -> float | None:
+    if not started_at or not finished_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+        finished = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return max(0.0, (finished - started).total_seconds())
 
 
 def _without_server_paths(value: Any) -> Any:
@@ -64,16 +109,10 @@ def _dataset_name_for_record(record: RunRecord) -> str | None:
 def _projection(record: RunRecord) -> dict[str, Any]:
     """合并规范 RunRecord、兼容 status.json 和可恢复的 artifact 摘要。"""
     status_file = get_run_dir(record.run_id) / 'status.json'
-    payload: dict[str, Any] = {}
-    if status_file.is_file():
-        try:
-            loaded = json.loads(status_file.read_text(encoding='utf-8'))
-            if isinstance(loaded, dict):
-                payload.update(loaded)
-        except json.JSONDecodeError:
-            payload = {}
+    payload = _read_status_payload(record.run_id)
     payload = recover_status_from_artifacts(status_file.parent, payload)
     dataset_name = _dataset_name_for_record(record)
+    created_at, started_at, finished_at = _record_times(record, payload)
     payload.update(
         {
             'run_id': record.run_id,
@@ -83,9 +122,9 @@ def _projection(record: RunRecord) -> dict[str, Any]:
             'dataset_id': record.dataset_id,
             'dataset_name': dataset_name,
             'config': record.config,
-            'created_at': record.created_at,
-            'started_at': record.started_at,
-            'completed_at': record.finished_at,
+            'created_at': created_at,
+            'started_at': started_at,
+            'completed_at': finished_at,
             **record.progress,
         }
     )
@@ -122,6 +161,7 @@ def _dataset_snapshot_for_reference(
 
 def _summary_projection(record: RunRecord) -> dict[str, Any]:
     snapshot = record.dataset_snapshot
+    created_at, started_at, finished_at = _record_times(record)
     result_state = {
         'queued': 'pending',
         'running': 'running',
@@ -150,13 +190,32 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
         'result_state': result_state,
         'model_type': record.config.get('model_type'),
         'dataset_id': record.dataset_id,
-        'dataset_name': snapshot.get('name') or record.config.get('dataset_name'),
-        'created_at': record.created_at,
-        'started_at': record.started_at,
-        'finished_at': record.finished_at,
+        'dataset_name': snapshot.get('name') or _dataset_name_for_record(record),
+        'created_at': created_at,
+        'started_at': started_at,
+        'finished_at': finished_at,
+        'duration_seconds': _duration_seconds(started_at, finished_at),
         'progress': _without_server_paths(record.progress),
         'error': public_error_message(record.error) if record.error else None,
     }
+
+
+def _assert_worker_contract_compatible(repository: Any) -> None:
+    """已发现活跃旧 Worker 时拒绝创建 Run，避免它抢占并生成旧格式产物。"""
+    health = repository.worker_health(
+        now=datetime.now(timezone.utc),
+        expected_contract_version=WORKER_CONTRACT_VERSION,
+    )
+    if health.get('available') and not health.get('compatible'):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'code': 'worker_contract_mismatch',
+                'message': '训练 Worker 版本与当前 Web 不兼容，请同时重启 Web 和 Worker',
+                'expected_contract_version': WORKER_CONTRACT_VERSION,
+                'actual_contract_version': health.get('contract_version'),
+            },
+        )
 
 
 @router.post('/api/training/runs', status_code=202)
@@ -173,6 +232,8 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
             status_code=422,
             detail={'code': 'invalid_training_config', 'message': str(exc)},
         ) from exc
+    repository = get_run_repository()
+    _assert_worker_contract_compatible(repository)
     config = spec.to_legacy_dict()
     config['dataset_name'] = data_ref.dataset_name
     if data_ref.test_dataset_id:
@@ -193,7 +254,6 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
             dataset_name=data_ref.test_dataset_name,
         )
         config['test_dataset_sha256'] = test_snapshot['sha256']
-    repository = get_run_repository()
     record = repository.create_queued(
         dataset_id=data_ref.dataset_id,
         legacy_data_path=data_ref.legacy_path,

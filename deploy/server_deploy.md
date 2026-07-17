@@ -89,6 +89,8 @@ conda activate autoai-v2
 python -m backend.app.runs.worker
 ```
 
+Web 与 Worker 必须来自同一提交/部署包。升级时先停止二者，再更新代码并同时启动；不能只替换静态文件或只重启 Web。
+
 ### 对外监听与认证
 
 直接监听 `0.0.0.0` 前，先把随机令牌存入受权限保护的 secret 文件或进程管理器，不要写入仓库、命令行参数或日志。例如：
@@ -159,20 +161,22 @@ curl -H "Authorization: Bearer $AUTOAI_API_TOKEN" \
 
 验收清单：
 
-1. `/health` 返回 `status=ok`、`deployment_mode` 和匿名 worker 摘要；`worker.available=true` 表示近期存在 worker 心跳。
+1. `/health` 返回 `status=ok`、`deployment_mode`、`contracts.run_result=run-result-v1`、`contracts.artifact_manifest=run-artifact-manifest-v2`；`worker.available=true` 且 `worker.compatible=true`。
 2. local 模式首页和 `/docs` 可访问；server 模式 `/docs` 无 token 为 401、有效 token 为 200。
 3. 上传一份本地建模 CSV，返回数据摘要和稳定 `dataset_id`；server 响应不暴露 `dataset_path`。
 4. 创建训练任务后，状态从 queued/running 进入 succeeded；如果一直 queued，检查 `/health` 和独立 worker。
 5. 训练完成后进入 `/#/results?run_id=...`，刷新和 Web 重启后仍能恢复同一结果。
-6. 页面显示直接 Test 或 pooled OOF 主指标、混淆矩阵、训练/参数审计和解释性；当前不显示虚假 ROC/AUC/PR。
+6. 页面显示直接 Test 或 pooled OOF 主指标，以及 Train/Valid/Test 三组混淆矩阵、各类别指标、预测分布和单样品解释；传统模型没有训练曲线，当前不显示虚假 ROC/AUC/PR。
 7. 能逐项下载 catalog 允许的 predictions、metrics、无路径 config 等文件；模型 pickle/PT 和 joblib 保持私有。
 8. 拉曼与 HPLC 预处理能下载统一 CSV；HPLC 曲线同时包含 `raw_y` 与 `processed_y`。
+
+如果创建训练返回 503 `worker_contract_mismatch`，说明至少一个活跃 Worker 没有当前契约版本。停止所有旧 Worker，并与 Web 从同一版本重新启动；不要绕过门禁直接写 queued Run。
 
 不要依赖固定的样本数、类别名、GPU 编号或模型文件扩展名作为部署成功标准。
 
 ## 8. 持久化与备份
 
-运行状态位于 `storage/`，包括上传、SQLite 数据库、日志和 Run artifacts；该目录不进 Git。升级代码前应单独备份所需数据，并确保 Web 与 worker 停止或使用一致版本。不要把 `storage/` 复制回 Git 仓库。
+运行状态位于 `storage/`，包括上传、SQLite 数据库、日志和 Run artifacts；该目录不进 Git。升级代码前应单独备份所需数据，并停止 Web 与所有 Worker；升级后先通过 `/health` 确认契约一致，再允许创建训练。不要把 `storage/` 复制回 Git 仓库。
 
 从旧 local 版本切换 server 前，先在停止 Web/worker 且完成备份后预览历史绑定：
 

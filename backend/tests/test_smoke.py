@@ -184,57 +184,6 @@ def test_build_feature_windows_uses_nearest_equal_width_divisor():
     assert TrainConfig().feature_window_count == 100
 
 
-def test_interval_permutation_importance_finds_signal_window():
-    from backend.app.feature_selection import interval_permutation_importance
-
-    rng = np.random.default_rng(42)
-    x = rng.normal(0, 0.01, size=(24, 60)).astype(np.float32)
-    y = np.asarray([0] * 12 + [1] * 12, dtype=np.int64)
-    x[y == 1, 20:30] += 2.0
-
-    def predict(values):
-        return (values[:, 25] > 1.0).astype(np.int64)
-
-    result = interval_permutation_importance(
-        x,
-        y,
-        x_axis=np.arange(60, dtype=np.float32),
-        eval_indices=list(range(24)),
-        mean_indices=list(range(24)),
-        predict_fn=predict,
-        window_count=6,
-        top_k=2,
-        n_repeats=3,
-        seed=7,
-    )
-
-    assert result["status"] == "ready"
-    assert len(result["windows"]) == 6
-    assert result["top_segments"]
-    assert result["primary_segment"] == result["top_segments"][0]
-    assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in result["top_segments"])
-
-
-def test_interval_permutation_importance_unavailable_for_one_class():
-    from backend.app.feature_selection import interval_permutation_importance
-
-    x = np.zeros((4, 20), dtype=np.float32)
-    y = np.zeros(4, dtype=np.int64)
-
-    result = interval_permutation_importance(
-        x,
-        y,
-        x_axis=np.arange(20, dtype=np.float32),
-        eval_indices=[0, 1, 2, 3],
-        mean_indices=[0, 1, 2, 3],
-        predict_fn=lambda values: np.zeros(values.shape[0], dtype=np.int64),
-        window_count=5,
-    )
-
-    assert result["status"] == "unavailable"
-    assert "一个类别" in result["reason"]
-
-
 def test_sample_occlusion_importance_finds_true_label_signal_window():
     from backend.app.feature_selection import sample_occlusion_importance
 
@@ -340,41 +289,6 @@ def test_log_loss_importance_detects_probability_changes_without_label_flip():
     assert windows[0]["masked_true_probability"] == pytest.approx(0.80)
     assert windows[1]["masked_true_probability"] == pytest.approx(0.89)
     assert windows[0]["importance"] > windows[1]["importance"] > 0
-
-
-def test_log_loss_global_importance_uses_macro_class_mean():
-    from backend.app.feature_selection import aggregate_sample_feature_importance
-
-    def sample(class_id, importance):
-        return {
-            "true_class_id": class_id,
-            "windows": [{
-                "window_index": 0,
-                "start_index": 0,
-                "end_index": 0,
-                "start_x": 0.0,
-                "end_x": 0.0,
-                "importance": importance,
-                "original_loss": 0.1,
-                "masked_loss": 0.1 + importance,
-                "true_probability_drop": importance / 10,
-                "rank": 1,
-            }],
-        }
-
-    result = aggregate_sample_feature_importance({
-        "status": "ready",
-        "method": "sample_occlusion_log_loss",
-        "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
-        "top_k": 1,
-        "x_axis": [0.0],
-        "baseline_curve": [1.0],
-        "samples": [sample(0, 1.0), sample(0, 3.0), sample(1, 10.0)],
-    })
-
-    assert result["windows"][0]["importance"] == pytest.approx(6.0)
-    assert result["aggregation"] == "macro_class_mean"
-    assert result["aggregation_class_count"] == 2
 
 
 def test_log_loss_occlusion_caps_perturbed_inference_batches():
@@ -687,22 +601,20 @@ def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, 
 
     run_dir = Path(result["run_dir"])
     sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
     mapping_payload = json.loads((run_dir / "dscarnet_mapping.json").read_text(encoding="utf-8"))
 
     assert result["status"] == "success"
     assert result["sample_feature_importance"]["method"] == "dscarnet_dual_2d_gradcam"
     assert result["sample_feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-    assert result["feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert "feature_importance" not in result
+    assert not (run_dir / "feature_importance.json").exists()
+    assert not (run_dir / "feature_importance.csv").exists()
     assert sample_payload["method"] == "dscarnet_dual_2d_gradcam"
     assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-    assert feature_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
     assert sample_payload["window_count"] == 40
     assert sample_payload["samples"]
-    assert feature_payload["primary_segment"]
     assert all(sample["primary_segment"] for sample in sample_payload["samples"])
     assert sample_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
-    assert feature_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
     assert all(len(sample["windows"]) == 40 for sample in sample_payload["samples"])
     assert all("sar_top_segments" in sample and "car_top_segments" in sample for sample in sample_payload["samples"])
     assert all(
@@ -942,11 +854,11 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert (run_dir / "cv_metrics.json").exists()
     assert (run_dir / "fold_metrics.csv").exists()
     assert (run_dir / "cv_predictions.csv").exists()
-    assert (run_dir / "feature_importance.json").exists()
-    assert (run_dir / "feature_importance.csv").exists()
+    assert not (run_dir / "feature_importance.json").exists()
+    assert not (run_dir / "feature_importance.csv").exists()
     assert (run_dir / "sample_feature_importance.json").exists()
     assert (run_dir / "sample_feature_importance.csv").exists()
-    assert result["feature_importance"]["artifact"] == "feature_importance.json"
+    assert "feature_importance" not in result
     assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
     assert result["evaluation_strategy"] == "stratified_holdout"
     assert "classification_report" in result["metrics"]
@@ -954,7 +866,7 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert result["total_target_epochs"] == result["target_epochs"]
 
 
-def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, monkeypatch):
+def test_training_writes_only_sample_importance_artifacts_and_downloads(tmp_path, monkeypatch):
     import backend.app.main as main
     import backend.app.routers.deps as router_deps
     import backend.app.training as training
@@ -980,22 +892,26 @@ def test_training_writes_feature_importance_artifacts_and_downloads(tmp_path, mo
         },
     )
     run_dir = Path(result["run_dir"])
-    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
 
-    assert result["feature_importance"]["status"] == "ready"
+    assert "feature_importance" not in result
     assert result["sample_feature_importance"]["status"] == "ready"
-    assert (run_dir / "feature_importance.csv").exists()
-    assert any(segment["start_index"] <= 29 and segment["end_index"] >= 20 for segment in feature_payload["top_segments"])
-    assert len(feature_payload["windows"]) == 4
-    assert feature_payload["method"] == "macro_mean_sample_occlusion_log_loss"
-    assert feature_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
-    assert feature_payload["aggregation"] == "macro_class_mean"
+    assert not (run_dir / "feature_importance.json").exists()
+    assert not (run_dir / "feature_importance.csv").exists()
+    assert any(
+        segment["start_index"] <= 29 and segment["end_index"] >= 20
+        for sample in sample_payload["samples"]
+        for segment in sample["top_segments"]
+    )
+    assert sample_payload["window_count"] == 4
+    assert sample_payload["method"] == "sample_occlusion_log_loss"
+    assert sample_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
     assert (run_dir / "sample_feature_importance.json").exists()
     assert (run_dir / "sample_feature_importance.csv").exists()
 
     client = TestClient(main.app)
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 200
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 404
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 404
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
 
 
@@ -1022,11 +938,10 @@ def test_training_warns_when_sample_x_axes_are_inconsistent(tmp_path, monkeypatc
         },
     )
     run_dir = Path(result["run_dir"])
-    feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
     sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
 
     assert result["x_axis_warning"]["status"] == "inconsistent"
-    assert feature_payload["x_axis_warning"]["status"] == "inconsistent"
+    assert not (run_dir / "feature_importance.json").exists()
     assert sample_payload["x_axis_warning"]["status"] == "inconsistent"
     assert sample_payload["samples"]
     assert all("sample_x_axis" in sample for sample in sample_payload["samples"])
@@ -1074,16 +989,13 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
         assert result["sample_feature_importance"]["status"] == "ready"
         assert (run_dir / "sample_feature_importance.json").exists()
         assert (run_dir / "sample_feature_importance.csv").exists()
-        feature_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
         sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-        assert feature_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
-        assert feature_payload["aggregation"] == "macro_class_mean"
+        assert "feature_importance" not in result
+        assert not (run_dir / "feature_importance.json").exists()
+        assert not (run_dir / "feature_importance.csv").exists()
+        assert sample_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
         assert sample_payload["method"] == "sample_occlusion_log_loss"
         assert sample_payload["window_count"] == 4
-        if feature_payload["top_segments"]:
-            assert feature_payload["primary_segment"] == feature_payload["top_segments"][0]
-        else:
-            assert feature_payload["primary_segment"] is None
     else:
         assert (run_dir / "model.pt").exists()
         assert result["sample_feature_importance"]["status"] == "ready"
@@ -1636,7 +1548,7 @@ def test_main_ui_handles_cancelled_runs_and_bounds_explainability_lists():
     assert "第 ${sample.fold_index} 折" in results
     assert ".filter(Boolean).slice(0, 8)" in results
     assert "sample.top_segments" in results
-    assert "解释方法随模型而异" in results
+    assert "不同模型使用其实际生成的解释方法" in results
     assert "primaryFeatureSegment" not in content
     assert "renderIntensitySummary" not in content
     assert 'id="intensitySummary"' not in content
@@ -1679,7 +1591,7 @@ def test_training_records_use_summary_projection_and_result_page_owns_split_metr
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert '["时间", "Run ID", "上传的数据集名", "模型", "状态", ""]' in content
+    assert '["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "状态", ""]' in content
     assert 'new URLSearchParams({ projection: "summary", limit: "50" })' in content
     assert 'const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");' in content
     assert "const splits = result.metrics?.splits || {};" in results

@@ -15,6 +15,7 @@
 
 - 后端是 FastAPI，入口为 `run.py` 或 `backend.app.main:app`。
 - 前端主入口是 `static/index.html`，由后端静态托管；正式快照不包含历史 UI 画廊或候选方案。
+- 并行新前端 `static/v2/index.html` 是独立工作台入口，复用 `static/js/api-client.js` 与 `run-result-v1` 契约；旧 `static/index.html` 与 `static/js/*` 仍受既有字符串契约测试保护，默认不就地重写。
 - 快速回归在 `backend/tests/test_smoke.py`；结果接口、artifact、安全、前端纯函数、迁移和启动器另有专项测试，交付前运行整个 `backend/tests`。
 - 推荐本机 Python 为 `C:\Users\lenovo\anaconda3\envs\pytorch\python.exe`。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是结果页契约；`AutoAI_开发计划.md` 是历史开发计划，不能把里面的 React/Vite、Redis/RQ、SQLite 等早期路线当成当前实现。

@@ -114,7 +114,6 @@ def test_projection_recovers_legacy_success_status_from_artifacts_and_persists_i
             {'fold_index': 1, 'epoch': 2, 'train_loss': 0.3, 'valid_accuracy': 0.8},
         ]
     ).to_csv(run_dir / 'history.csv', index=False)
-    (run_dir / 'feature_importance.json').write_text(json.dumps({'status': 'ready'}), encoding='utf-8')
     (run_dir / 'sample_feature_importance.json').write_text(json.dumps({'status': 'ready'}), encoding='utf-8')
     (run_dir / 'manifest.json').write_text(
         json.dumps(
@@ -123,8 +122,6 @@ def test_projection_recovers_legacy_success_status_from_artifacts_and_persists_i
                 'metadata': {'model_type': 'cnn1d', 'model_family': 'deep_learning'},
                 'artifacts': {
                     'model.pt': {'downloadable': True},
-                    'feature_importance.json': {'downloadable': True},
-                    'feature_importance.csv': {'downloadable': True},
                     'sample_feature_importance.json': {'downloadable': True},
                     'sample_feature_importance.csv': {'downloadable': True},
                 },
@@ -145,8 +142,8 @@ def test_projection_recovers_legacy_success_status_from_artifacts_and_persists_i
     assert payload['model_family'] == 'deep_learning'
     assert payload['model_artifact'] == 'model.pt'
     assert payload['completed_at'] == '2026-07-11T10:00:00+00:00'
-    assert payload['feature_importance']['artifact'] == 'feature_importance.json'
     assert payload['sample_feature_importance']['artifact'] == 'sample_feature_importance.json'
+    assert 'feature_importance' not in payload
     persisted = json.loads((run_dir / 'status.json').read_text(encoding='utf-8'))
     assert persisted['metrics'] == metrics
     assert persisted['actual_epochs'] == 2

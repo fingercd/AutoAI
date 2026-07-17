@@ -102,6 +102,7 @@ def main() -> None:
         os.environ['AUTOAI_DEPLOYMENT_MODE'] = 'server'
     deployment_mode = os.environ.get('AUTOAI_DEPLOYMENT_MODE', 'local').strip().lower()
     from backend.app.http.security import is_loopback_host, load_security_settings
+    from backend.app.version import WORKER_CONTRACT_VERSION
 
     if not is_loopback_host(args.host) and deployment_mode != 'server':
         parser.error('对外绑定必须同时启用 --server，并通过环境变量配置访问令牌')
@@ -137,6 +138,7 @@ def main() -> None:
   ║  健康检查: {url}/health                    ║
   ║                                              ║
   ║  部署模式: {security_settings.mode:<34}║
+  ║  结果契约: {WORKER_CONTRACT_VERSION:<34}║
   ║  按 Ctrl+C 停止服务                          ║
   ╚══════════════════════════════════════════════╝
 """)
@@ -145,7 +147,15 @@ def main() -> None:
     if not args.no_worker:
         # Web 只负责创建 queued Run；训练能力依赖这个独立子进程。使用当前
         # 解释器可确保 worker 与 uvicorn 共享同一虚拟环境和依赖集。
-        worker = WorkerSupervisor([sys.executable, "-m", "backend.app.runs.worker"])
+        worker = WorkerSupervisor(
+            [
+                sys.executable,
+                "-m",
+                "backend.app.runs.worker",
+                "--contract-version",
+                WORKER_CONTRACT_VERSION,
+            ]
+        )
         worker.start()
     try:
         uvicorn.run(

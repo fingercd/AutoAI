@@ -9,11 +9,19 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
 - HPLC：插值到共同时间轴、逐条减最小值、按真实时间轴面积归一化。
 - 分类评估：分层 8:1:1、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
-- 每次训练使用唯一 Run ID；训练完成后进入可刷新、可复制链接的独立“建模结果”页，按层次展示概览、指标、混淆矩阵、训练/参数审计、解释性和逐项下载。
+- 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
+- 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
 - 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
-历史 UI 画廊已经从正式产品移除；未跟踪的界面候选不属于本仓库发布内容。
+## 双前端入口
+
+仓库同时维护两个受测试保护的原生静态前端，它们共享同一套 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约：
+
+- 经典前端：`/`，代码位于 `static/index.html` 与 `static/js/`，继续作为兼容基线。
+- v2 独立工作台：`/v2`（重定向到 `/static/v2/index.html`），代码位于 `static/v2/`。它提供工作台、AI 建模、训练记录、建模结果和分页面说明。
+
+v2 是正式纳入仓库的并行前端，不是历史 UI 画廊，也不会替换或破坏经典入口。两套页面均为原生 HTML/CSS/JavaScript，不依赖 React、Vue、Vite 或外部 CDN。新增接口和结果字段应先维护共享契约，不能只适配其中一个前端。
 
 ## 环境要求
 
@@ -133,8 +141,10 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 ### 正式本地 URL
 
-- 主页面：<http://127.0.0.1:8000/>
-- 专属结果页：`http://127.0.0.1:8000/#/results?run_id=<Run ID>`
+- 经典前端：<http://127.0.0.1:8000/>
+- v2 独立工作台：<http://127.0.0.1:8000/v2>
+- 经典专属结果页：`http://127.0.0.1:8000/#/results?run_id=<Run ID>`
+- v2 专属结果页：`http://127.0.0.1:8000/static/v2/index.html#/results?run_id=<Run ID>`
 - 训练记录：<http://127.0.0.1:8000/#/runs>
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/health>
@@ -149,7 +159,7 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡，并同时提供类别等权全局结果与单样品结果；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。`cnn_mamba1d` 若未来依赖可用，也采用 Log-loss 窗口遮挡。窗口遮挡会将用户请求的窗口数解析为最接近且能整除特征数的窗口数，保证所有窗口等宽；例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。旧 `feature_importance.*`、`sample_feature_importance.*` 名称继续作为只读兼容；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
+解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
 ## 建模 CSV
 
@@ -170,8 +180,8 @@ Index, Name, XXX, Intensity, Label, Sample_ID
 2. 下载统一 CSV，补全 `Label` 与 `Sample_ID`。
 3. 将建模 CSV 上传到“AI 建模”。
 4. 选择模型与评估口径，创建 queued Run。
-5. worker 完成后可立即进入结果页，也会在 3 秒后自动跳转到该 Run 的专属结果 URL。
-6. 在结果页查看 train/valid/test 或 pooled OOF 指标、混淆矩阵、训练/参数审计和解释结果。
+5. worker 完成后，浏览器中央提示框提供“立即查看结果”和“留在当前页”；未操作时 3 秒后进入该 Run 的专属结果 URL。
+6. 在结果页查看 Train/Valid/Test 或 pooled OOF 指标、三分区混淆矩阵、各类别指标、预测分布、训练/参数审计和单样品解释。
 7. 在每项真实产物旁下载对应 JSON/CSV；裸 `model.pkl`、`model.pt` 和内部 joblib 本轮不开放。
 
 仓库不附带真实 `data.csv`。本地验证数据、上传文件、模型和运行结果都位于 Git 管理范围之外。
@@ -182,8 +192,9 @@ Index, Name, XXX, Intensity, Label, Sample_ID
 backend/app/                 FastAPI、预处理、训练、Run 队列与模型
 backend/tests/               自动化测试
 backend/requirements*.txt    核心、开发、DSCARNet 依赖与验证约束
-static/index.html            正式网页入口
-static/js/                   正式前端模块
+static/index.html            经典前端入口（兼容基线）
+static/js/                   经典前端与共享 API 客户端
+static/v2/                   v2 独立工作台、组件和 Node 纯函数测试
 deploy/                      集群部署脚本与说明
 docs/                        接口契约、ADR 和发布规范
 storage/                     本地上传、SQLite 与训练产物（不进 Git）
@@ -198,6 +209,7 @@ run.py                       一键启动入口
 python -m pytest backend/tests/test_smoke.py -q
 python -m pytest backend/tests -q
 python -m compileall backend/app -q
+node static/v2/tests/run-tests.mjs
 python run.py --help
 python -c "from backend.app.main import app; print(app.title)"
 python -c "from backend.app.runs.worker import RunWorker; print(RunWorker.__name__)"
@@ -215,8 +227,15 @@ curl http://127.0.0.1:8000/health
 {
   "status": "ok",
   "deployment_mode": "local",
+  "contracts": {
+    "run_result": "run-result-v1",
+    "artifact_manifest": "run-artifact-manifest-v2",
+    "run_summary": "v1"
+  },
   "worker": {
     "available": true,
+    "compatible": true,
+    "contract_version": "run-artifact-manifest-v2",
     "live_count": 1,
     "last_seen_at": "...",
     "active_run_count": 0
@@ -224,7 +243,7 @@ curl http://127.0.0.1:8000/health
 }
 ```
 
-`status="ok"` 表示 Web 可用；`worker.available=false` 表示当前没有近期心跳，训练会继续停在 queued。健康接口是匿名探针，只返回汇总，不暴露令牌、Principal 或 worker_id。
+`status="ok"` 表示 Web 可用；`worker.available=false` 表示当前没有近期心跳，训练会停在 queued。`worker.compatible=false` 表示活跃 Worker 与 Web 的结果产物契约不一致；此时创建训练会返回 503 `worker_contract_mismatch`，应同时重启 Web 与 Worker。健康接口是匿名探针，只返回汇总，不暴露令牌、Principal 或 worker_id。
 
 前端改动还要抽取 `static/index.html` 的内联脚本并用 `node --check --input-type=commonjs` 检查，同时执行 `backend/tests/test_result_frontend_contract.py` 中的 Node 纯函数测试。没有 Playwright/JSDOM 时不强行增加依赖。
 
@@ -246,7 +265,7 @@ curl http://127.0.0.1:8000/health
 
 ### 任务一直显示 queued
 
-先查看 `/health` 的 `worker.available`。如果为 `false`，确认独立 worker 正在运行，或改用默认会托管并监督 worker 的 `python run.py`。
+先查看 `/health` 的 `worker.available` 和 `worker.compatible`。没有 Worker 时确认独立进程正在运行，或改用默认会托管并监督 Worker 的 `python run.py`；版本不兼容时停止旧 Web/Worker，并从同一代码版本重新启动二者。
 
 ### 服务器页面提示需要访问令牌
 
@@ -269,7 +288,7 @@ python -m backend.app.runs.migration --dry-run \
 
 ### 修改代码后浏览器仍显示旧行为
 
-未使用 `--reload` 的服务不会自动加载新代码。停止旧进程并重启，然后刷新浏览器。
+未使用 `--reload` 的服务不会自动加载新代码。静态文件会被新请求读取，但 Web/Worker Python 进程仍可能是旧版本；应停止并从同一提交同时重启 Web 与 Worker，再确认 `/health.contracts`、`worker.compatible=true` 和 OpenAPI 中存在 `/api/training/runs/{run_id}/result`。
 
 ### 上传后提示 Label 或 Sample_ID 无效
 

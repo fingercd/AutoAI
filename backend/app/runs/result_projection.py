@@ -8,12 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..version import ARTIFACT_MANIFEST_CONTRACT_VERSION, RUN_RESULT_CONTRACT_VERSION
 from .artifacts import ManifestCorruptError, RunArtifactWriter
 from .contracts import RunRecord, public_error_message
 from .status_projection import build_training_status_projection
 
 
-RESULT_SCHEMA_VERSION = 'run-result-v1'
+RESULT_SCHEMA_VERSION = RUN_RESULT_CONTRACT_VERSION
 SCALAR_METRIC_KEYS = (
     'accuracy',
     'balanced_accuracy',
@@ -35,6 +36,20 @@ def _read_json_object(path: Path, warnings: list[str]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         warnings.append(f'{path.name} 不是对象')
         return {}
+    return payload
+
+
+def _read_json_list(path: Path, warnings: list[str]) -> list[Any]:
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        warnings.append(f'{path.name} 无法解析')
+        return []
+    if not isinstance(payload, list):
+        warnings.append(f'{path.name} 不是数组')
+        return []
     return payload
 
 
@@ -156,6 +171,81 @@ def _prediction_distribution(confusion: Any, labels: list[str]) -> dict[str, Any
     }
 
 
+def _sample_id_count_from_splits(
+    folds: list[Any],
+    *,
+    evaluation_strategy: str,
+) -> int | None:
+    """从公开的划分 artifact 恢复主数据集 Sample_ID 数，不读取原始 CSV。"""
+    sample_ids: set[str] = set()
+    allowed_fields = {'train_sample_ids', 'valid_sample_ids'}
+    if evaluation_strategy != 'external_test_holdout':
+        allowed_fields.add('test_sample_ids')
+    for raw_fold in folds:
+        if not isinstance(raw_fold, dict):
+            continue
+        for field in allowed_fields:
+            values = raw_fold.get(field)
+            if isinstance(values, list):
+                sample_ids.update(str(value) for value in values if value is not None)
+    return len(sample_ids) or None
+
+
+def _analysis_split(
+    payload: Any,
+    *,
+    labels: list[str],
+    aggregation: str,
+) -> dict[str, Any]:
+    split_payload = payload if isinstance(payload, dict) else {}
+    confusion = split_payload.get('confusion_matrix')
+    return {
+        'aggregation': aggregation,
+        'confusion_matrix': _without_paths(confusion),
+        'classification_report': _without_paths(split_payload.get('classification_report')),
+        'prediction_distribution': _prediction_distribution(confusion, labels),
+    }
+
+
+def _sample_explainability_summary(
+    status: dict[str, Any],
+    descriptors: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    summary = status.get('sample_feature_importance')
+    if isinstance(summary, dict):
+        return _without_paths(summary)
+    json_descriptor = next(
+        (
+            item
+            for item in descriptors
+            if item.get('name') == 'sample_feature_importance.json'
+        ),
+        None,
+    )
+    if not isinstance(json_descriptor, dict) or not json_descriptor.get('exists'):
+        return None
+    csv_descriptor = next(
+        (
+            item
+            for item in descriptors
+            if item.get('name') == 'sample_feature_importance.csv'
+            and item.get('exists')
+        ),
+        None,
+    )
+    integrity = str(json_descriptor.get('integrity') or '')
+    return {
+        'status': 'ready' if integrity in {'ok', 'volatile'} else 'unavailable',
+        'reason': json_descriptor.get('reason'),
+        'artifact': 'sample_feature_importance.json',
+        'csv_artifact': (
+            'sample_feature_importance.csv'
+            if isinstance(csv_descriptor, dict)
+            else None
+        ),
+    }
+
+
 def _result_state(
     record: RunRecord,
     *,
@@ -195,6 +285,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     cv_file = _read_json_object(run_dir / 'cv_metrics.json', warnings) if is_succeeded else {}
     model_metadata = _read_json_object(run_dir / 'model_metadata.json', warnings) if is_succeeded else {}
     label_map = _read_json_object(run_dir / 'label_map.json', warnings) if is_succeeded else {}
+    split_file = _read_json_list(run_dir / 'split.json', warnings) if is_succeeded else []
 
     manifest: dict[str, Any] | None = None
     descriptors: list[dict[str, Any]] = []
@@ -202,8 +293,8 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     artifact_writer = RunArtifactWriter(run_dir)
     try:
         manifest, descriptors = artifact_writer.descriptors(run_id=record.run_id)
-        if manifest.get('schema_version') != 'run-artifact-manifest-v2':
-            warnings.append('该任务使用历史 Manifest，结果完整性按兼容模式解释')
+        if manifest.get('schema_version') != ARTIFACT_MANIFEST_CONTRACT_VERSION:
+            warnings.append('该 Run 的产物清单由旧版 Worker 生成，已按兼容策略读取')
     except FileNotFoundError:
         manifest_error = 'missing'
         unavailable_reason = (
@@ -306,14 +397,27 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         labels = [str(value) for value in status['label_names']]
 
     snapshot = dict(record.dataset_snapshot)
+    recovered_sample_id_count = _sample_id_count_from_splits(
+        split_file,
+        evaluation_strategy=strategy,
+    )
     dataset_payload = {
         'dataset_id': record.dataset_id,
         'name': snapshot.get('name') or dataset_name or record.config.get('dataset_name'),
         'sha256': snapshot.get('sha256'),
         'curve_count': snapshot.get('curve_count') or status.get('curve_count') or status.get('sample_count'),
-        'sample_id_count': snapshot.get('sample_id_count') or status.get('sample_id_count'),
+        'sample_id_count': (
+            snapshot.get('sample_id_count')
+            or status.get('sample_id_count')
+            or recovered_sample_id_count
+        ),
         'class_count': snapshot.get('class_count') or status.get('class_count') or (len(labels) or None),
-        'feature_count': snapshot.get('feature_count') or status.get('feature_count') or model_metadata.get('feature_count'),
+        'feature_count': (
+            snapshot.get('feature_count')
+            or status.get('feature_count')
+            or model_metadata.get('feature_count')
+            or model_metadata.get('L')
+        ),
         'test_curve_count': snapshot.get('test_curve_count') or status.get('test_sample_count'),
     }
 
@@ -327,8 +431,21 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             'type': record.error_details.get('type'),
         }
 
-    confusion = primary.get('confusion_matrix') if isinstance(primary, dict) else None
-    classification_report = primary.get('classification_report') if isinstance(primary, dict) else None
+    analysis_splits: dict[str, dict[str, Any]] = {}
+    for split_name in ('train', 'valid', 'test'):
+        chart_payload = raw_split_metrics.get(split_name, {})
+        if not chart_payload and split_name == 'test' and isinstance(pooled_oof, dict):
+            chart_payload = pooled_oof
+        if is_cv:
+            aggregation = 'pooled_oof' if split_name == 'test' else 'pooled_cross_fold'
+        else:
+            aggregation = 'direct'
+        analysis_splits[split_name] = _analysis_split(
+            chart_payload,
+            labels=labels,
+            aggregation=aggregation,
+        )
+    primary_analysis = analysis_splits['test']
     model_type = status.get('model_type') or record.config.get('model_type') or model_metadata.get('model_type')
     model_family = status.get('model_family') or model_metadata.get('model_family')
     if is_succeeded and model_family == 'deep_learning':
@@ -409,17 +526,22 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             },
         },
         'analysis': {
-            'confusion_matrix': confusion,
-            'classification_report': _without_paths(classification_report),
-            'prediction_distribution': _prediction_distribution(confusion, labels),
+            'splits': analysis_splits,
+            # Test 顶层字段保留一个兼容周期；新页面应读取 analysis.splits。
+            'confusion_matrix': primary_analysis['confusion_matrix'],
+            'classification_report': primary_analysis['classification_report'],
+            'prediction_distribution': primary_analysis['prediction_distribution'],
             'history': history,
             'training_audit': _without_paths(training_audit),
             'roc': {'available': False, 'reason': '当前训练产物未计算 ROC 曲线或 ROC-AUC'},
             'precision_recall': {'available': False, 'reason': '当前训练产物未计算 Precision-Recall 曲线'},
         },
         'explainability': {
-            'global': _without_paths(status.get('feature_importance')) if is_succeeded else None,
-            'samples': _without_paths(status.get('sample_feature_importance')) if is_succeeded else None,
+            'samples': (
+                _sample_explainability_summary(status, descriptors)
+                if is_succeeded
+                else None
+            ),
         },
         'artifacts': descriptors,
         'warnings': list(dict.fromkeys(warnings)),

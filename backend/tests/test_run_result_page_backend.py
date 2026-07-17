@@ -12,6 +12,7 @@ from backend.app.runs.contracts import Principal
 from backend.app.runs.migration import import_legacy_runs
 from backend.app.runs.repository import RunNotFound, RunRepository
 from backend.app.runs.worker import RunWorker
+from backend.app.version import WORKER_CONTRACT_VERSION
 
 
 def test_run_metadata_snapshot_scope_and_duration_are_persistent(tmp_path) -> None:
@@ -83,7 +84,10 @@ def test_worker_records_heartbeat_and_structured_error(tmp_path) -> None:
     }
     health = repository.worker_health(now=now + timedelta(seconds=1), stale_seconds=15)
     assert health['available'] is True
+    assert health['compatible'] is True
+    assert health['contract_version'] == WORKER_CONTRACT_VERSION
     assert health['workers'][0]['worker_id'] == 'worker-a'
+    assert health['workers'][0]['contract_version'] == WORKER_CONTRACT_VERSION
 
 
 def test_worker_does_not_persist_absolute_paths_in_public_error_fields(tmp_path) -> None:

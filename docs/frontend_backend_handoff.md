@@ -1,16 +1,17 @@
 # SpecAutoAI 前后端接口契约
 
-> 最近核对：2026-07-16。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
+> 最近核对：2026-07-17。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
 
 ## 1. 当前架构
 
-- 前端入口为 `static/index.html`，使用原生 HTML/CSS/JavaScript，不以 React、Vue 或 Vite 为主链路。
+- 经典前端入口为 `/`（`static/index.html`），v2 独立工作台入口为 `/v2`（重定向到 `static/v2/index.html`）。两者都使用原生 HTML/CSS/JavaScript，不引入 React、Vue 或 Vite。
+- 两套前端共享 `static/js/api-client.js`、Principal 鉴权、Dataset/Run API、artifact 规则和 `run-result-v1`；v2 是并行正式入口，不改变经典前端 URL。
 - FastAPI 同源托管网页和 API，入口为 `run.py` 或 `backend.app.main:app`。
 - `POST /api/training/runs` 只创建 SQLite 中的 `queued` Run；训练由独立 `backend.app.runs.worker` 进程执行。
 - FastAPI BackgroundTasks 不承担训练执行。
 - SQLite `RunRepository` 是任务状态权威；`status.json` 只是历史兼容投影。
 - 每次训练通过唯一 Run ID 关联训练记录、结果页和 artifact。
-- 结果页使用 `#/results?run_id=<Run ID>`，刷新页面后重新请求后端，不依赖浏览器内存中的旧结果。
+- 结果页使用 `#/results?run_id=<Run ID>`；v2 的可复制完整地址为 `/static/v2/index.html#/results?run_id=<Run ID>`。刷新页面后重新请求后端，不依赖浏览器内存中的旧结果。
 
 ## 2. 本机与服务器认证
 
@@ -79,7 +80,29 @@ GET /api/auth/config
 
 HTTP 状态为 401，并包含 `WWW-Authenticate: Bearer`。
 
-`GET /health` 始终匿名可访问，返回 `status="ok"`、`deployment_mode` 和 worker 的 `available/live_count/last_seen_at/active_run_count` 汇总。它不返回 token、owner、tenant、worker_id 或底层数据库路径。
+`GET /health` 始终匿名可访问，返回：
+
+```json
+{
+  "status": "ok",
+  "deployment_mode": "local",
+  "contracts": {
+    "run_result": "run-result-v1",
+    "artifact_manifest": "run-artifact-manifest-v2",
+    "run_summary": "v1"
+  },
+  "worker": {
+    "available": true,
+    "compatible": true,
+    "contract_version": "run-artifact-manifest-v2",
+    "live_count": 1,
+    "last_seen_at": "...",
+    "active_run_count": 0
+  }
+}
+```
+
+它不返回 token、owner、tenant、worker_id 或底层数据库路径。旧 Worker 没有 `contract_version`，或同时存在不同版本的活跃 Worker 时，`compatible=false` 且汇总 `contract_version=null`。
 
 ## 3. 错误处理
 
@@ -209,6 +232,17 @@ Content-Type: application/json
 
 该响应不代表训练已开始或完成。
 
+发现活跃但与当前 Web 不兼容的 Worker 时，创建接口在写入 queued Run 前返回 HTTP 503：
+
+```json
+{
+  "detail": {
+    "code": "worker_contract_mismatch",
+    "message": "训练 Worker 版本与当前 Web 不兼容，请同时重启 Web 和 Worker"
+  }
+}
+```
+
 ### 5.2 列表
 
 兼容完整列表：
@@ -235,7 +269,8 @@ GET /api/training/runs?projection=summary&limit=20&cursor=<Run ID>
       "dataset_name": "teacher-data.csv",
       "created_at": "...",
       "started_at": "...",
-      "finished_at": "..."
+      "finished_at": "...",
+      "duration_seconds": 12.5
     }
   ],
   "next_cursor": null
@@ -309,7 +344,7 @@ GET /api/training/runs/{run_id}/artifact/{name}
 - `leave_one_sample_id_cv`：每折留一个 Sample_ID 作 test，其余按 8:2 形成 train/valid。
 - `external_test_holdout`：主数据 8:2，独立测试集作为最终 test；与 CV 互斥。
 
-交叉验证的 Test 主指标来自所有折合并后的 OOF 预测。Train/Valid 展示折均值，折标准差作为审计值；不得把 fold mean 和 pooled OOF 混在同一口径中。
+交叉验证的 Test 主指标来自所有折合并后的 OOF 预测。Train/Valid 标量展示折均值，折标准差作为审计值；图表分析使用跨折预测合并并标记 `pooled_cross_fold`，样本可能重复。不得把 fold mean、pooled cross-fold 和 pooled OOF 混在同一口径中。
 
 传统模型按 valid balanced accuracy 选优，再使用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
 
@@ -327,8 +362,9 @@ GET /api/training/runs/{run_id}/artifact/{name}
 - Train/Valid/Test 分区指标。
 - CV pooled OOF、fold mean、fold std。
 - 混淆矩阵、分类报告、由混淆矩阵计算的真实/预测类别分布。
-- 深度模型训练历史；传统模型没有逐 epoch loss 曲线时返回明确不适用状态。
-- 全局和单样品特征重要性摘要及对应 artifact。
+- Train/Valid/Test 三分区混淆矩阵、各类别指标和竖向预测分布。
+- 深度模型训练历史；传统模型不生成 `history.csv`，结果页不显示空曲线。
+- 单样品解释摘要及 JSON/CSV artifact；新 Run 不生成或展示全局重要性。
 
 当前没有正式计算 ROC-AUC、ROC 曲线和 Precision-Recall 曲线。结果契约会返回 `available=false` 和原因；前端不得绘制空图或伪造数值。
 
@@ -343,9 +379,8 @@ GET /api/training/runs/{run_id}/artifact/{name}
 | `fold_metrics.csv` | 分折审计指标 |
 | `predictions.csv` | 测试预测明细 |
 | `cv_predictions.csv` | OOF/兼容预测明细 |
-| `history.csv` | 训练过程，适用时 |
+| `history.csv` | 深度模型训练过程，适用时 |
 | `hyperparameter_search.csv` | 传统模型参数搜索，适用时 |
-| `feature_importance.json/csv` | 全局解释结果，适用时 |
 | `sample_feature_importance.json/csv` | 单样品解释结果，适用时 |
 | `dscarnet_mapping.json` | DSCARNet 映射说明，适用时 |
 | `config.json` | 已移除服务器路径的训练配置；只在内容审查通过时公开 |
@@ -363,6 +398,8 @@ GET /api/training/runs/{run_id}/artifact/{name}
 `config.json` 采用内容审查：新训练生成的无路径配置可下载；历史或异常配置只要包含 `data_path`、`test_data_path`、`*_path` 等服务器路径字段，就会自动标为不可下载并说明原因。
 
 前端只消费 `/result` 返回的 `artifacts[]`，不得维护自己的固定文件数组。
+
+历史 Manifest 已登记的 `feature_importance.json/csv` 只保留原 Principal、Manifest 和完整性校验下的直接 URL 兼容；新 descriptors 不列出，前端也不展示。
 
 ## 9. 前端页面与状态流
 
@@ -383,10 +420,14 @@ Hash 页面：
 新建 Run 成功后：
 
 1. AI 建模页显示简洁成功状态。
-2. 3 秒后进入对应结果 URL。
-3. 同时保留“立即查看结果”真实链接。
+2. 浏览器中央对话框显示 Run ID 和 3 秒倒计时。
+3. 提供“立即查看结果”和“留在当前页”；留页、Escape、手动导航或新训练都会清理定时器。
 4. 只对当前标签页新创建的 Run 自动跳转；打开历史成功 Run 不自动抢占页面。
 5. 跳转定时器在新训练、手动跳转或页面切换时清理。
+
+没有指定 Run ID 的建模结果入口显示最近任务，至少包括 Run ID、原始 CSV 文件名、模型、状态、训练开始时间（未开始时标记创建时间）、耗时和查看操作。
+
+`/result` 返回 404 时，只有 `/health.contracts.run_result` 明确缺失/旧版才允许回退兼容接口；当前 Web 已声明 `run-result-v1` 时必须按任务不存在/不可见处理。
 
 轮询必须串行执行；切换 Run 后取消旧请求，终态停止。queued/running 显示进度，failed/cancelled/404/403/网络失败和部分产物缺失分别处理。
 
