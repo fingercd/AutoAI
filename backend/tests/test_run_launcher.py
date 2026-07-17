@@ -5,10 +5,25 @@ from pathlib import Path
 import subprocess
 import sys
 
-from run import WorkerSupervisor
+from run import (
+    CLASSIC_FRONTEND_PATH,
+    V2_FRONTEND_PATH,
+    WorkerSupervisor,
+    build_frontend_url,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_frontend_launchers_target_the_two_supported_entries() -> None:
+    assert build_frontend_url("http://127.0.0.1:8000", CLASSIC_FRONTEND_PATH) == "http://127.0.0.1:8000/"
+    assert build_frontend_url("http://127.0.0.1:8000/", V2_FRONTEND_PATH) == "http://127.0.0.1:8000/v2"
+
+    classic = (ROOT / "run_classic.py").read_text(encoding="utf-8")
+    v2 = (ROOT / "run_v2.py").read_text(encoding="utf-8")
+    assert "main(frontend_path=CLASSIC_FRONTEND_PATH)" in classic
+    assert "main(frontend_path=V2_FRONTEND_PATH)" in v2
 
 
 class _FakeProcess:

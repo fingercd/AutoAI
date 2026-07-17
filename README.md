@@ -89,7 +89,31 @@ AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目�
 
 ### 一键启动
 
-`run.py` 默认同时启动网页服务与本地训练 worker，并打开浏览器：
+本地提供两个明确的前端启动文件。两者启动的是同一个 FastAPI 服务和同一个训练 worker，区别只在于自动打开哪个页面：
+
+| 启动文件 | 自动打开 | 用途 |
+|---|---|---|
+| `run_classic.py` | `http://127.0.0.1:8000/` | 经典前端，保留现有操作习惯与兼容入口 |
+| `run_v2.py` | `http://127.0.0.1:8000/v2` | 新版 v2 独立工作台 |
+
+推荐按需要选择其中一个：
+
+```bash
+python run_classic.py
+python run_v2.py
+```
+
+两个脚本都支持公共启动参数，例如：
+
+```bash
+python run_v2.py --port 9000
+python run_classic.py --no-browser
+python run_v2.py --reload
+```
+
+不要在同一端口同时运行两个启动文件；如服务已经启动，直接在浏览器中访问 `/` 或 `/v2` 即可切换，不需要再启动第二个进程。
+
+`run.py` 继续作为公共兼容启动器，默认打开经典前端：
 
 ```bash
 python run.py
@@ -198,7 +222,9 @@ static/v2/                   v2 独立工作台、组件和 Node 纯函数测试
 deploy/                      集群部署脚本与说明
 docs/                        接口契约、ADR 和发布规范
 storage/                     本地上传、SQLite 与训练产物（不进 Git）
-run.py                       一键启动入口
+run.py                       两种前端共享的底层启动器（默认经典前端）
+run_classic.py               启动服务并打开经典前端
+run_v2.py                    启动服务并打开 v2 工作台
 ```
 
 ## 验证
