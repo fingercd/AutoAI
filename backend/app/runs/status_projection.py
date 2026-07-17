@@ -77,6 +77,8 @@ def project_status(run_dir: Path, record: RunRecord, **fields: Any) -> dict[str,
     if record.manifest_name:
         payload['manifest_name'] = record.manifest_name
     payload.update(fields)
+    # 新投影不再公开全局重要性；历史 artifact 文件仍由下载层单独兼容。
+    payload.pop('feature_importance', None)
     payload["training_audit"] = build_training_status_projection(
         run_dir,
         config=record.config,
@@ -95,6 +97,31 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     except (json.JSONDecodeError, OSError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_json_list(path: Path) -> list[Any]:
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _recover_sample_id_count(folds: list[Any], evaluation_strategy: str) -> int | None:
+    sample_ids: set[str] = set()
+    fields = {'train_sample_ids', 'valid_sample_ids'}
+    if evaluation_strategy != 'external_test_holdout':
+        fields.add('test_sample_ids')
+    for raw_fold in folds:
+        if not isinstance(raw_fold, dict):
+            continue
+        for field in fields:
+            values = raw_fold.get(field)
+            if isinstance(values, list):
+                sample_ids.update(str(value) for value in values if value is not None)
+    return len(sample_ids) or None
 
 
 def _parse_history_value(value: str | None) -> Any:
@@ -148,6 +175,7 @@ def recover_status_from_artifacts(run_dir: Path, payload: dict[str, Any]) -> dic
     if payload.get('status') != 'success' and payload.get('state') != 'succeeded':
         return payload
     recovered = dict(payload)
+    recovered.pop('feature_importance', None)
     changed = False
 
     metrics = _read_json_object(run_dir / 'metrics.json')
@@ -202,16 +230,15 @@ def recover_status_from_artifacts(run_dir: Path, payload: dict[str, Any]) -> dic
             recovered['model_artifact'] = model_artifact
             changed = True
 
-    for field, json_name, csv_name in (
-        ('feature_importance', 'feature_importance.json', 'feature_importance.csv'),
-        ('sample_feature_importance', 'sample_feature_importance.json', 'sample_feature_importance.csv'),
-    ):
-        if recovered.get(field) is None and json_name in artifacts:
-            summary: dict[str, Any] = {'status': 'ready', 'artifact': json_name}
-            if csv_name in artifacts:
-                summary['csv_artifact'] = csv_name
-            recovered[field] = summary
-            changed = True
+    if recovered.get('sample_feature_importance') is None and 'sample_feature_importance.json' in artifacts:
+        summary: dict[str, Any] = {
+            'status': 'ready',
+            'artifact': 'sample_feature_importance.json',
+        }
+        if 'sample_feature_importance.csv' in artifacts:
+            summary['csv_artifact'] = 'sample_feature_importance.csv'
+        recovered['sample_feature_importance'] = summary
+        changed = True
 
     label_map = _read_json_object(run_dir / 'label_map.json')
     if recovered.get('label_names') is None and label_map:
@@ -220,10 +247,43 @@ def recover_status_from_artifacts(run_dir: Path, payload: dict[str, Any]) -> dic
             changed = True
         except (TypeError, ValueError, KeyError):
             pass
+    if recovered.get('class_count') is None and label_map:
+        recovered['class_count'] = len(label_map)
+        changed = True
+
+    model_metadata = _read_json_object(run_dir / 'model_metadata.json')
+    if recovered.get('feature_count') is None:
+        feature_count = model_metadata.get('feature_count') or model_metadata.get('L')
+        if feature_count is not None:
+            recovered['feature_count'] = feature_count
+            changed = True
+    if recovered.get('model_family') is None and model_metadata.get('model_family') is not None:
+        recovered['model_family'] = model_metadata['model_family']
+        changed = True
+
+    if recovered.get('curve_count') is None and recovered.get('sample_count') is not None:
+        recovered['curve_count'] = recovered['sample_count']
+        changed = True
+    if recovered.get('sample_id_count') is None:
+        evaluation_strategy = str(
+            recovered.get('evaluation_strategy')
+            or config.get('evaluation_strategy')
+            or metadata.get('evaluation_strategy')
+            or 'stratified_holdout'
+        )
+        sample_id_count = _recover_sample_id_count(
+            _read_json_list(run_dir / 'split.json'),
+            evaluation_strategy,
+        )
+        if sample_id_count is not None:
+            recovered['sample_id_count'] = sample_id_count
+            changed = True
 
     if changed:
         _atomic_json_write(run_dir / 'status.json', recovered)
     return recovered
+
+
 def _mapping(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -365,7 +425,6 @@ def _explainability_projection(
     status: Mapping[str, Any],
     model_metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
-    feature = _importance_summary(run_dir, status, "feature_importance")
     sample = _importance_summary(run_dir, status, "sample_feature_importance")
     declared_method = _first_present(
         model_metadata.get("explainability_method"),
@@ -377,9 +436,8 @@ def _explainability_projection(
         status.get("artifact_explainability_method"),
         config.get("artifact_explainability_method"),
         sample.get("method"),
-        feature.get("method"),
     )
-    importance_metric = _first_present(sample.get("importance_metric"), feature.get("importance_metric"))
+    importance_metric = sample.get("importance_metric")
     if declared_method is None and artifact_method is None and importance_metric is None:
         return {}
     return {

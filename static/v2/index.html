@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpecAutoAI v2 工作台</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#v2-main">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="side-nav">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">SpecAutoAI<span class="brand-version">v2</span></span>
+      </div>
+      <nav class="v2-nav" aria-label="主导航">
+        <ul>
+          <li>
+            <a class="nav-item" href="#/workbench" data-view="workbench">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6.3L4.7 18a2 2 0 0 0 1.8 3h11a2 2 0 0 0 1.8-3L14 9.3V3"/><path d="M7.5 14h9"/></svg>
+              预处理工作台
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="#/modeling" data-view="modeling">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+              AI 建模
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="#/results" data-view="results">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 15l4-5 3.5 3.5L19 8"/></svg>
+              建模结果
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="#/runs" data-view="runs">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"/></svg>
+              训练记录
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="#/manual" data-view="manual">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5z"/><path d="M8 7h8M8 11h5"/></svg>
+              使用手册
+            </a>
+          </li>
+        </ul>
+      </nav>
+      <p class="side-nav-foot">预处理 · 建模 · 结果 一体化实验台</p>
+    </aside>
+    <div class="shell-main">
+      <header class="topbar">
+        <span class="topbar-hint">光谱 / 色谱 → AI 建模工作台</span>
+        <div id="v2-health-badge" class="health-badge" aria-label="部署、worker 与契约状态"></div>
+      </header>
+      <main id="v2-main" class="app-main page" tabindex="-1">
+        <header class="page-head">
+          <h1 id="v2-view-title">预处理工作台</h1>
+          <p id="v2-view-sub" class="page-sub"></p>
+        </header>
+        <div id="v2-view-root"></div>
+      </main>
+    </div>
+  </div>
+  <div id="v2-status" class="visually-hidden" aria-live="polite"></div>
+  <div id="v2-toasts" class="toast-region" aria-live="polite"></div>
+  <div id="v2-auth-root"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

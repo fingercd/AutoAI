@@ -22,7 +22,7 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
         "status.json",
         {
             "model_family": "traditional_ml",
-            "feature_importance": {
+            "sample_feature_importance": {
                 "method": "interval_permutation_importance",
                 "importance_metric": "baseline_macro_f1_minus_perturbed_macro_f1",
             },
@@ -139,10 +139,6 @@ def test_projects_log_loss_occlusion_contract(tmp_path: Path) -> None:
         tmp_path,
         "status.json",
         {
-            "feature_importance": {
-                "method": "macro_mean_sample_occlusion_log_loss",
-                "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
-            },
             "sample_feature_importance": {
                 "method": "sample_occlusion_log_loss",
                 "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",

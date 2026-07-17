@@ -98,6 +98,44 @@ def test_hash_result_route_and_auto_redirect_are_pure_and_run_specific() -> None
         assert.equal(results.shouldAutoRedirect({ runId: 'run-1', state: 'running', isNewRun: true }), false);
         assert.equal(results.shouldAutoRedirect({ runId: 'run-1', state: 'succeeded', isNewRun: false }), false);
         assert.equal(results.shouldAutoRedirect({ runId: '', state: 'succeeded', isNewRun: true }), false);
+        assert.equal(results.backendSupportsResultContract({
+          contracts: { run_result: 'run-result-v1' },
+        }), true);
+        assert.equal(results.backendSupportsResultContract({ contracts: {} }), false);
+        assert.equal(results.shouldUseLegacyResultFallback(
+          { status: 404 },
+          { contracts: { run_result: 'legacy' } },
+        ), true);
+        assert.equal(results.shouldUseLegacyResultFallback(
+          { status: 404 },
+          { contracts: { run_result: 'run-result-v1' } },
+        ), false);
+        assert.equal(results.shouldUseLegacyResultFallback({ status: 404 }, null), false);
+        """
+    )
+
+
+def test_result_split_analysis_order_and_vertical_scale_are_deterministic() -> None:
+    _run_node(
+        """
+        import assert from 'node:assert/strict';
+        const results = await import('./static/js/run-results.js');
+
+        const entries = results.analysisSplitEntries({
+          analysis: {
+            splits: {
+              test: { aggregation: 'pooled_oof' },
+              train: { aggregation: 'pooled_cross_fold' },
+              valid: { aggregation: 'pooled_cross_fold' },
+            },
+          },
+        });
+        assert.deepEqual(entries.map((entry) => entry.name), ['train', 'valid', 'test']);
+        assert.deepEqual(results.analysisSplitEntries({
+          analysis: { confusion_matrix: [[1]] },
+        }).map((entry) => entry.name), ['test']);
+        assert.deepEqual(results.distributionScaleTicks(0), [0]);
+        assert.deepEqual(results.distributionScaleTicks(6), [6, 4, 2, 0]);
         """
     )
 

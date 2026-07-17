@@ -31,17 +31,10 @@ from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, sav
 from .feature_selection import (
     aggregate_attribution_sanity,
     aggregate_dscarnet_branch_sanity,
-    aggregate_sample_feature_importance,
-    build_feature_windows,
-    interval_permutation_importance,
-    merge_ranked_windows,
-    primary_feature_segment,
     sample_deep_attribution_importance,
     sample_dscarnet_dual_2d_gradcam_importance,
     sample_dscarnet_single_2d_gradcam_importance,
     sample_occlusion_importance,
-    unavailable_feature_importance,
-    write_feature_importance_artifacts,
     write_sample_feature_importance_artifacts,
 )
 from .models import ARCHITECTURE_VERSION, build_deep_model, build_dscarnet_model, build_traditional_model, canonical_model_type, model_family
@@ -475,58 +468,6 @@ def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indice
     }
 
 
-# 解释性入口：按模型方法分派窗口遮挡、1D Grad-CAM 或 DSCARNet 2D 回投。
-def _compute_feature_importance(
-    *,
-    run_dir: Path,
-    config: TrainConfig,
-    x: np.ndarray,
-    y: np.ndarray,
-    splits: dict[str, list[int]],
-    x_axis: list[float],
-    x_axis_warning: dict[str, Any],
-    predict_fn: Any,
-) -> dict[str, Any]:
-    eval_split = config.feature_eval_split if config.feature_eval_split in splits else "valid"
-    mean_indices = splits.get("train", [])
-    if not config.feature_selection_enabled:
-        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
-        result = unavailable_feature_importance(
-            "特征区间识别已关闭",
-            x_axis=x_axis,
-            mean_curve=mean_curve,
-        )
-        result["status"] = "disabled"
-        result["eval_split"] = eval_split
-        result["x_axis_warning"] = x_axis_warning
-        return write_feature_importance_artifacts(run_dir, result)
-    try:
-        result = interval_permutation_importance(
-            x,
-            y,
-            x_axis=x_axis,
-            eval_indices=splits.get(eval_split, []),
-            mean_indices=mean_indices,
-            predict_fn=predict_fn,
-            window_count=config.feature_window_count,
-            top_k=config.feature_top_k,
-            n_repeats=config.feature_n_repeats,
-            seed=config.seed,
-            eval_split=eval_split,
-        )
-    except Exception as exc:
-        mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
-        result = unavailable_feature_importance(
-            f"重要区间计算失败: {exc}",
-            x_axis=x_axis,
-            mean_curve=mean_curve,
-        )
-        result["status"] = "failed"
-        result["eval_split"] = eval_split
-    result["x_axis_warning"] = x_axis_warning
-    return write_feature_importance_artifacts(run_dir, result)
-
-
 def _compute_sample_feature_importance(
     *,
     run_dir: Path,
@@ -715,21 +656,15 @@ def _merge_deep_sample_results(results: list[dict[str, Any]], x_axis_warning: di
     return combined
 
 
-def _write_deep_explainability_artifacts(
+def _write_sample_explainability_artifacts(
     *,
     run_dir: Path,
     sample_result: dict[str, Any],
     x_axis_warning: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> dict[str, Any]:
     sample_result["sample_count"] = len(sample_result.get("samples", []))
-    sample_summary = write_sample_feature_importance_artifacts(run_dir, sample_result)
-    feature_result = aggregate_sample_feature_importance(sample_result)
-    feature_result["x_axis_warning"] = x_axis_warning
-    if sample_result.get("status") in {"disabled", "failed"}:
-        feature_result["status"] = sample_result.get("status")
-        feature_result["reason"] = sample_result.get("reason")
-    feature_summary = write_feature_importance_artifacts(run_dir, feature_result)
-    return feature_summary, sample_summary
+    sample_result["x_axis_warning"] = x_axis_warning
+    return write_sample_feature_importance_artifacts(run_dir, sample_result)
 
 
 def _compute_deep_explainability(
@@ -746,7 +681,7 @@ def _compute_deep_explainability(
     metadata: list[dict[str, Any]],
     dscarnet_mapped: DSCARNetMappedInputs | None = None,
     dscarnet_mapping_metadata: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> dict[str, Any]:
     sample_result = _tag_fold_sample_result(
         _deep_sample_feature_result(
             config=config,
@@ -763,7 +698,7 @@ def _compute_deep_explainability(
         ),
         int(1),
     )
-    return _write_deep_explainability_artifacts(
+    return _write_sample_explainability_artifacts(
         run_dir=run_dir,
         sample_result=sample_result,
         x_axis_warning=x_axis_warning,
@@ -1501,90 +1436,6 @@ def _fit_deep_fold(
     return model, history, dscarnet_mapped, dscarnet_mapping_metadata
 
 
-# 兼容与现行窗口重要性实现。新 Run 使用真实类别 Log-loss 增量路径。
-def _cv_f1_window_importance(
-    *,
-    fold_artifacts: list[dict[str, Any]],
-    x_raw: np.ndarray,
-    y: np.ndarray,
-    x_axis: list[float],
-    label_names: list[str],
-    window_count: int,
-    top_k: int,
-    x_axis_warning: dict[str, Any],
-) -> dict[str, Any]:
-    x_axis_array = np.asarray(x_axis, dtype=np.float32).reshape(-1)
-    if x_axis_array.size != x_raw.shape[1]:
-        x_axis_array = np.arange(x_raw.shape[1], dtype=np.float32)
-    baseline_true: list[int] = []
-    baseline_pred: list[int] = []
-    for artifact in fold_artifacts:
-        baseline_true.extend(int(item) for item in artifact["test_true"])
-        baseline_pred.extend(int(item) for item in artifact["test_pred"])
-    baseline_score = float(f1_score(baseline_true, baseline_pred, average="macro", zero_division=0))
-    windows = build_feature_windows(x_raw.shape[1], window_count)
-    rows: list[dict[str, Any]] = []
-    for window in windows:
-        start = int(window["start_index"])
-        end = int(window["end_index"])
-        perturbed_true: list[int] = []
-        perturbed_pred: list[int] = []
-        for artifact in fold_artifacts:
-            idxs = artifact["splits"]["test"]
-            x_test = x_raw[idxs].copy()
-            baseline_curve = artifact["train_mean_curve"]
-            x_test[:, start : end + 1] = baseline_curve[start : end + 1]
-            x_test_norm = _transform_x_with_normalizer(x_test, artifact["normalizer"])
-            pred = np.asarray(artifact["model"].predict(x_test_norm), dtype=np.int64)
-            perturbed_true.extend(int(item) for item in y[idxs])
-            perturbed_pred.extend(int(item) for item in pred)
-        perturbed_score = float(f1_score(perturbed_true, perturbed_pred, average="macro", zero_division=0))
-        importance = baseline_score - perturbed_score
-        rows.append(
-            {
-                "window_index": int(window["window_index"]),
-                "start_index": start,
-                "end_index": end,
-                "start_x": float(x_axis_array[start]),
-                "end_x": float(x_axis_array[end]),
-                "importance": float(importance),
-                "importance_std": 0.0,
-                "baseline_macro_f1": baseline_score,
-                "permuted_macro_f1": perturbed_score,
-            }
-        )
-    ranked = sorted(rows, key=lambda item: (-item["importance"], item["start_index"]))
-    values = np.asarray([row["importance"] for row in ranked], dtype=np.float64)
-    min_value = float(values.min()) if values.size else 0.0
-    max_value = float(values.max()) if values.size else 0.0
-    span = max_value - min_value
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = int(rank)
-        row["normalized_importance"] = float((row["importance"] - min_value) / span) if span > 1e-12 else 0.0
-    top_windows = [row for row in ranked if row["importance"] > 0][: max(1, int(top_k))]
-    ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
-    top_segments = merge_ranked_windows(top_windows)
-    return {
-        "status": "ready",
-        "method": "interval_permutation_importance",
-        "importance_metric": "baseline_macro_f1_minus_perturbed_macro_f1",
-        "eval_split": "outer_cv_test",
-        "baseline_macro_f1": baseline_score,
-        "window_policy": "nearest_divisor_equal_width",
-        "requested_window_count": int(window_count),
-        "window_count": len(windows),
-        "window_width": int(windows[0]["end_index"] - windows[0]["start_index"] + 1),
-        "top_k": int(top_k),
-        "n_repeats": 1,
-        "x_axis": [float(item) for item in x_axis_array],
-        "mean_curve": [float(item) for item in np.mean(x_raw, axis=0)],
-        "windows": ranked_by_index,
-        "top_segments": top_segments,
-        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
-        "x_axis_warning": x_axis_warning,
-    }
-
-
 def _traditional_fold_log_loss_importance(
     *,
     config: TrainConfig,
@@ -1788,7 +1639,6 @@ def _run_legacy_training(
     fold_metric_rows: list[dict[str, Any]] = []
     cv_fold_payloads: list[dict[str, Any]] = []
     history_rows: list[dict[str, Any]] = []
-    fold_artifacts: list[dict[str, Any]] = []
     fold_split_evals: list[dict[str, dict[str, Any]]] = []
     all_true: list[int] = []
     all_pred: list[int] = []
@@ -1887,30 +1737,6 @@ def _run_legacy_training(
             test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
             model = final_model
             normalizer = final_normalizer
-            history_rows.append(
-                {
-                    "fold_index": fold_index,
-                    "epoch": 1,
-                    "train_loss": None,
-                    "valid_accuracy": valid_eval["accuracy"],
-                    "valid_balanced_accuracy": valid_eval["balanced_accuracy"],
-                    "valid_macro_f1": valid_eval["macro_f1"],
-                    "best_valid_macro_f1": valid_eval["macro_f1"],
-                    "bad_epochs": 0,
-                }
-            )
-            fold_artifacts.append(
-                {
-                    "model": model,
-                    "normalizer": normalizer,
-                    "splits": splits,
-                    "test_true": test_eval["true"],
-                    "test_pred": test_eval["pred"],
-                    "train_mean_curve": np.mean(x_model_raw[train_valid_indices], axis=0),
-                    "selected_config": selected_config.__dict__,
-                    "final_fit_indices": fold_final_fit_indices.tolist(),
-                }
-            )
             if config.feature_selection_enabled:
                 check_run_active()
                 traditional_sample_results.append(
@@ -2067,16 +1893,12 @@ def _run_legacy_training(
     if model_family(model_type) == "traditional_ml":
         if config.feature_selection_enabled:
             sample_result = _merge_deep_sample_results(traditional_sample_results, x_axis_warning)
-            feature_summary, sample_feature_summary = _write_deep_explainability_artifacts(
+            sample_feature_summary = _write_sample_explainability_artifacts(
                 run_dir=run_dir,
                 sample_result=sample_result,
                 x_axis_warning=x_axis_warning,
             )
         else:
-            feature_summary = _unsupported_explainability_summary(
-                "特征区间识别已关闭",
-                method="macro_mean_sample_occlusion_log_loss",
-            )
             sample_feature_summary = _unsupported_explainability_summary(
                 "特征区间识别已关闭",
                 method="sample_occlusion_log_loss",
@@ -2086,7 +1908,7 @@ def _run_legacy_training(
             raise ValueError("深度模型训练未产生可解释性上下文")
         check_run_active()
         sample_result = _merge_deep_sample_results(deep_sample_results, x_axis_warning)
-        feature_summary, sample_feature_summary = _write_deep_explainability_artifacts(
+        sample_feature_summary = _write_sample_explainability_artifacts(
             run_dir=run_dir,
             sample_result=sample_result,
             x_axis_warning=x_axis_warning,
@@ -2118,7 +1940,6 @@ def _run_legacy_training(
         "explainability_method": explainability,
         "artifact_explainability_method": (
             sample_feature_summary.get("method")
-            or feature_summary.get("method")
             or explainability
         ),
     }
@@ -2154,7 +1975,8 @@ def _run_legacy_training(
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "cv_metrics.json").write_text(json.dumps(cv_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     pd.DataFrame(fold_metric_rows).to_csv(run_dir / "fold_metrics.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
+    if last_model_family == "deep_learning":
+        pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
     search_columns = [
@@ -2205,7 +2027,6 @@ def _run_legacy_training(
             else "本次 holdout 训练得到的模型，用于对应测试指标"
         ),
         "not_used_for_reported_cv_metrics": evaluation_strategy == "leave_one_sample_id_cv",
-        "feature_importance": feature_summary,
         "sample_feature_importance": sample_feature_summary,
         "x_axis_warning": x_axis_warning,
         "sample_count": sample_count,

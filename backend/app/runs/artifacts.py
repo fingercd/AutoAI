@@ -17,11 +17,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..version import ARTIFACT_MANIFEST_CONTRACT_VERSION
 
-MANIFEST_SCHEMA_VERSION = 'run-artifact-manifest-v2'
+
+MANIFEST_SCHEMA_VERSION = ARTIFACT_MANIFEST_CONTRACT_VERSION
+LEGACY_DIRECT_DOWNLOAD_NAMES = frozenset({
+    'feature_importance.json',
+    'feature_importance.csv',
+})
 
 # 新 Run 的公开下载面由这里唯一声明。未知文件和可执行模型对象默认私有；旧
-# manifest 的 downloadable 标记仍由 resolve_download 兼容读取。
+# manifest 的 downloadable 标记仍由 resolve_download 兼容读取。历史全局
+# 重要性文件不再出现在结果页 catalog，但保留已知文件名的直接下载兼容。
 ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'metrics.json': {'label': '总体指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'cv_metrics.json': {'label': '交叉验证汇总', 'category': 'metrics', 'required': True, 'downloadable': True},
@@ -30,8 +37,6 @@ ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'cv_predictions.csv': {'label': 'OOF / 兼容预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
     'history.csv': {'label': '训练过程', 'category': 'training', 'required': False, 'downloadable': True},
     'hyperparameter_search.csv': {'label': '参数搜索记录', 'category': 'training', 'required': False, 'downloadable': True},
-    'feature_importance.json': {'label': '全局特征重要性', 'category': 'explainability', 'required': False, 'downloadable': True},
-    'feature_importance.csv': {'label': '全局特征重要性', 'category': 'explainability', 'required': False, 'downloadable': True},
     'sample_feature_importance.json': {'label': '单样品解释结果', 'category': 'explainability', 'required': False, 'downloadable': True},
     'sample_feature_importance.csv': {'label': '单样品解释结果', 'category': 'explainability', 'required': False, 'downloadable': True},
     'dscarnet_mapping.json': {'label': 'DSCARNet 映射说明', 'category': 'explainability', 'required': False, 'downloadable': True},
@@ -290,8 +295,13 @@ class RunArtifactWriter:
         manifest = self.load_manifest()
         entry, path = self._resolve_manifest_entry(manifest, name)
         is_v2 = manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
-        # v1 继续尊重历史 downloadable；v2 还必须通过当前显式 catalog。
-        if not entry.get('downloadable') or (is_v2 and not _catalog_policy(name).get('downloadable')):
+        catalog_downloadable = bool(_catalog_policy(name).get('downloadable'))
+        legacy_direct_download = name in LEGACY_DIRECT_DOWNLOAD_NAMES
+        # v1 继续尊重历史 downloadable；v2 通常还必须通过当前显式 catalog。
+        # 已发布过的全局重要性仅保留已知文件名的窄范围直接下载，不重新进入结果页。
+        if not entry.get('downloadable') or (
+            is_v2 and not catalog_downloadable and not legacy_direct_download
+        ):
             raise PermissionError(f'artifact is not downloadable: {name}')
         self._verify_entry(path, entry, verify_hash=True)
         return path
@@ -304,6 +314,8 @@ class RunArtifactWriter:
         is_v2 = manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
         descriptors: list[dict[str, Any]] = []
         for name in names:
+            if name in LEGACY_DIRECT_DOWNLOAD_NAMES:
+                continue
             policy = _catalog_policy(name)
             entry = manifest_entries.get(name)
             exists = isinstance(entry, dict) and self._path(name).is_file()
@@ -328,13 +340,18 @@ class RunArtifactWriter:
             integrity = 'not_generated'
             reason: str | None = None
             if isinstance(entry, dict) and exists:
-                try:
-                    # 结果页只做常数时间的大小检查；实际下载前重新计算 sha256。
-                    self._verify_entry(self._path(name), entry, verify_hash=False)
-                    integrity = 'volatile' if entry.get('volatile') else 'ok'
-                except ArtifactIntegrityError:
-                    integrity = 'corrupt'
-                    reason = '文件大小或内容哈希与 Manifest 不一致'
+                if entry.get('volatile') or policy.get('volatile'):
+                    # status.json 是终态提交后仍会刷新的兼容投影。旧 Manifest 没有
+                    # volatile 标记时也按当前 catalog 解释，不能因此把 Run 判为 partial。
+                    integrity = 'volatile'
+                else:
+                    try:
+                        # 结果页只做常数时间的大小检查；实际下载前重新计算 sha256。
+                        self._verify_entry(self._path(name), entry, verify_hash=False)
+                        integrity = 'ok'
+                    except ArtifactIntegrityError:
+                        integrity = 'corrupt'
+                        reason = '文件大小或内容哈希与 Manifest 不一致'
             elif isinstance(entry, dict):
                 integrity = 'missing'
                 reason = 'Manifest 已登记，但文件不存在'

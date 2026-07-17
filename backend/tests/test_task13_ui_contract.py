@@ -78,7 +78,8 @@ def test_official_ui_hides_mamba_and_traditional_epoch_progress():
     assert 'const epochMetric = traditionalModel' not in content
     assert '训练 Epoch<strong>${run.actual_epochs || "-"}/' not in content
     assert 'result.analysis?.history?.reason' in results
-    assert '该模型不产生逐 Epoch 训练曲线。' in results
+    assert 'function renderHistory(result)' in results
+    assert "'traditional_ml'" in results
     assert '实际训练 Epoch' in results
 
 
@@ -122,10 +123,22 @@ def test_modeling_completion_uses_refreshable_dedicated_result_route():
     assert 'id="resultAnalysis"' in html
     assert 'id="resultArtifacts"' in html
     assert 'window.SpecAutoAIResults?.showNewRunSuccess(run)' in html
+    for element_id in (
+        'trainingResultDialog',
+        'trainingResultDialogTitle',
+        'trainingResultRunId',
+        'trainingResultCountdown',
+        'trainingResultNow',
+        'trainingResultStay',
+    ):
+        assert f'id="{element_id}"' in html
     assert 'export const AUTO_REDIRECT_DELAY_MS = 3000;' in results
     assert "text: '立即查看结果'" in results
+    assert '留在当前页' in html
     assert 'window.location.hash = destination;' in results
     assert 'return await request(`/api/training/runs/${encoded}/result`, { signal });' in results
+    assert 'function backendSupportsResultContract' in results
+    assert 'function shouldUseLegacyResultFallback' in results
     assert "if (route.view === 'results') loadResult(route.runId);" in results
     assert 'window.SpecAutoAIResults.navigateToView(button.dataset.view)' in html
 
@@ -142,11 +155,60 @@ def test_official_ui_only_renders_sample_feature_importance():
     assert "combinedLogLossView" not in content
     assert "run.feature_importance" not in content
     assert 'function renderExplainability(result)' in results
+    assert 'renderGlobalImportance' not in results
+    assert "explainabilityPayload(result, 'global'" not in results
+    assert '全局特征重要性' not in results
     assert '加载单样品解释' in results
-    assert "const samplePayload = await explainabilityPayload(result, 'samples', generation);" in results
+    assert '正在自动加载单样品解释' in results
+    assert "const samplePayload = await explainabilityPayload(result, generation);" in results
     assert 'if (generation !== resultRenderGeneration) return;' in results
     assert 'id: \'resultSampleExplanationSelect\'' in results
+    assert 'function drawSampleExplanationChart' in results
+    assert 'function drawImportanceHeatmap' in results
+    assert 'sample-explanation-chart' in results
+    assert 'sample-importance-heatmap' in results
+    assert '重要性低' in results
+    assert '重要性高' in results
     assert 'function triggerArtifactDownload' in results
     assert 'artifact.suggested_filename || response.filename' in results
     assert 'artifact?.downloadable === true' in results
     assert 'safeDownloadUrl(artifact?.download_url)' in results
+
+
+def test_official_result_ui_renders_three_split_analysis_and_vertical_distributions():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
+
+    assert '.analysis-split-grid' in html
+    assert '.result-split-card' in html
+    assert '.distribution-chart' in html
+    assert '.distribution-column' in html
+    assert 'function analysisSplitEntries' in results
+    assert 'function renderSplitConfusion' in results
+    assert 'function renderSplitClassMetrics' in results
+    assert 'function renderSplitDistribution' in results
+    for split in ('train', 'valid', 'test'):
+        assert f"'{split}'" in results
+    assert 'pooled_cross_fold' in results
+    assert 'pooled_oof' in results
+
+
+def test_modeling_layout_and_recent_result_landing_use_new_summary_fields():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
+
+    assert '.modeling-primary-grid' in html
+    assert 'class="grid modeling-primary-grid"' in html
+    assert 'dataset_name' in results
+    assert 'started_at' in results
+    assert 'duration_seconds' in results
+    assert '训练时间' in results
+    assert '耗时' in results
+
+
+def test_result_download_cards_use_fixed_four_column_grid():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert 'grid-template-columns: repeat(4, minmax(0, 1fr));' in html
+    assert '@media (max-width: 1180px)' in html
+    assert '@media (max-width: 600px)' in html

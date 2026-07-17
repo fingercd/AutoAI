@@ -1,9 +1,9 @@
-"""生成全局与单样品光谱特征重要性 artifact。
+"""生成单样品光谱特征重要性 artifact。
 
 窗口遮挡把特征轴解析成最接近请求数量且能整除长度的等宽窗口，并用训练集均值
 替换窗口。重要性定义为真实类别 ``masked_loss - original_loss``，也就是
-``log(p_before / p_after)``；全局结果先按真实类别求均值，再做类别等权聚合。
-卷积模型走 1D Grad-CAM，DSCARNet 走二维分支归因后回投到原始一维特征。
+``log(p_before / p_after)``。卷积模型走 1D Grad-CAM，DSCARNet 走二维分支
+归因后回投到原始一维特征。
 """
 
 from __future__ import annotations
@@ -15,34 +15,14 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 from torch import nn
 from .training_explainability import explainability_method
 
 
-PredictFn = Callable[[np.ndarray], np.ndarray]
 ScoreFn = Callable[[np.ndarray], np.ndarray]
 
-
-FEATURE_COLUMNS = [
-    "importance_metric",
-    "rank",
-    "window_index",
-    "start_index",
-    "end_index",
-    "start_x",
-    "end_x",
-    "importance",
-    "importance_std",
-    "normalized_importance",
-    "mean_true_probability_drop",
-    "original_loss",
-    "masked_loss",
-    "baseline_macro_f1",
-    "permuted_macro_f1",
-]
 
 SAMPLE_FEATURE_COLUMNS = [
     "importance_metric",
@@ -208,132 +188,6 @@ def primary_feature_segment(
     if "normalized_importance" in window:
         segment["normalized_importance"] = float(window["normalized_importance"])
     return segment
-
-
-def unavailable_feature_importance(
-    reason: str,
-    *,
-    x_axis: np.ndarray | list[float] | None = None,
-    mean_curve: np.ndarray | list[float] | None = None,
-    method: str = "interval_permutation_importance",
-) -> dict[str, Any]:
-    """构造结构稳定的不可用摘要，使前端和下载接口无需猜测缺失字段。"""
-    return {
-        "status": "unavailable",
-        "reason": reason,
-        "method": method,
-        "x_axis": _float_list(x_axis),
-        "mean_curve": _float_list(mean_curve),
-        "windows": [],
-        "top_segments": [],
-    }
-
-
-# 全局/单样品窗口扰动。现行单样品方法直接比较真实类别概率对应的 Log-loss。
-def interval_permutation_importance(
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    x_axis: np.ndarray | list[float],
-    eval_indices: list[int],
-    mean_indices: list[int],
-    predict_fn: PredictFn,
-    window_count: int = 50,
-    top_k: int = 5,
-    n_repeats: int = 5,
-    seed: int = 42,
-    eval_split: str = "valid",
-) -> dict[str, Any]:
-    """Compute supervised importance for contiguous spectral intervals."""
-    x = np.asarray(x, dtype=np.float32)
-    y = np.asarray(y, dtype=np.int64)
-    x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
-    mean_curve = _mean_curve(x, mean_indices)
-
-    if x.ndim != 2 or x.shape[1] == 0:
-        return unavailable_feature_importance(
-            "特征矩阵为空，无法计算重要区间",
-            x_axis=x_axis_array,
-            mean_curve=mean_curve,
-        )
-    if len(eval_indices) < 2:
-        return unavailable_feature_importance(
-            "评估集样本少于 2 个，无法稳定计算重要区间",
-            x_axis=x_axis_array,
-            mean_curve=mean_curve,
-        )
-
-    eval_indices_array = np.asarray(eval_indices, dtype=np.int64)
-    y_eval = y[eval_indices_array]
-    if np.unique(y_eval).size < 2:
-        return unavailable_feature_importance(
-            "评估集只有一个类别，无法计算判别性重要区间",
-            x_axis=x_axis_array,
-            mean_curve=mean_curve,
-        )
-
-    x_eval = x[eval_indices_array]
-    baseline_pred = np.asarray(predict_fn(x_eval.copy()), dtype=np.int64)
-    baseline_score = float(f1_score(y_eval, baseline_pred, average="macro", zero_division=0))
-    windows = build_feature_windows(x.shape[1], window_count)
-    repeats = max(1, int(n_repeats))
-    rng = np.random.default_rng(seed)
-    window_rows: list[dict[str, Any]] = []
-
-    for window in windows:
-        start = int(window["start_index"])
-        end = int(window["end_index"])
-        drops = []
-        permuted_scores = []
-        for _ in range(repeats):
-            order = rng.permutation(len(eval_indices_array))
-            if len(order) > 1 and np.array_equal(order, np.arange(len(order))):
-                order = np.roll(order, 1)
-            x_permuted = x_eval.copy()
-            x_permuted[:, start : end + 1] = x_permuted[order, start : end + 1]
-            permuted_pred = np.asarray(predict_fn(x_permuted), dtype=np.int64)
-            permuted_score = float(f1_score(y_eval, permuted_pred, average="macro", zero_division=0))
-            permuted_scores.append(permuted_score)
-            drops.append(baseline_score - permuted_score)
-
-        importance = float(np.mean(drops))
-        window_rows.append(
-            {
-                "window_index": int(window["window_index"]),
-                "start_index": start,
-                "end_index": end,
-                "start_x": float(x_axis_array[start]),
-                "end_x": float(x_axis_array[end]),
-                "importance": importance,
-                "importance_std": float(np.std(drops)),
-                "baseline_macro_f1": baseline_score,
-                "permuted_macro_f1": float(np.mean(permuted_scores)),
-            }
-        )
-
-    ranked = sorted(window_rows, key=lambda item: (-item["importance"], item["start_index"]))
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = rank
-    ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
-    top_windows = [row for row in ranked if row["importance"] > 0][: max(1, int(top_k))]
-    top_segments = merge_ranked_windows(top_windows)
-    return {
-        "status": "ready",
-        "method": "interval_permutation_importance",
-        "eval_split": eval_split,
-        "baseline_macro_f1": baseline_score,
-        "window_policy": "nearest_divisor_equal_width",
-        "requested_window_count": int(window_count),
-        "window_count": len(windows),
-        "window_width": int(windows[0]["end_index"] - windows[0]["start_index"] + 1),
-        "top_k": int(top_k),
-        "n_repeats": repeats,
-        "x_axis": _float_list(x_axis_array),
-        "mean_curve": _float_list(mean_curve),
-        "windows": ranked_by_index,
-        "top_segments": top_segments,
-        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
-    }
 
 
 def sample_occlusion_importance(
@@ -841,156 +695,6 @@ def sample_dscarnet_dual_2d_gradcam_importance(
         "dscarnet_mapping": mapping_metadata,
         "samples": samples,
         "sanity_checks": _aggregate_dscarnet_branch_sanity(samples),
-    }
-
-
-# 聚合、序列化与 CSV 展开。全局聚合按真实类别等权，避免多数类主导。
-def aggregate_sample_feature_importance(result: dict[str, Any]) -> dict[str, Any]:
-    """把单样品重要性先按真实类别平均，再做类别等权全局聚合。"""
-    samples = result.get("samples", [])
-    if result.get("status") != "ready" or not samples:
-        unavailable = unavailable_feature_importance(
-            result.get("reason") or "没有可聚合的单样品重要区间",
-            x_axis=result.get("x_axis", []),
-            mean_curve=result.get("baseline_curve", []),
-            method=f"mean_{result.get('method') or 'sample_feature_importance'}",
-        )
-        if result.get("x_axis_warning"):
-            unavailable["x_axis_warning"] = result.get("x_axis_warning")
-        if result.get("sanity_checks"):
-            unavailable["sanity_checks"] = result.get("sanity_checks")
-        if result.get("importance_metric"):
-            unavailable["importance_metric"] = result.get("importance_metric")
-        if result.get("dscarnet_mapping"):
-            unavailable["dscarnet_mapping"] = result.get("dscarnet_mapping")
-        return unavailable
-
-    first_windows = samples[0].get("windows", [])
-    loss_occlusion = result.get("method") == "sample_occlusion_log_loss"
-    class_ids = np.asarray([int(sample.get("true_class_id", -1)) for sample in samples], dtype=np.int64)
-    present_class_ids = sorted(int(item) for item in np.unique(class_ids) if int(item) >= 0)
-
-    def aggregate_values(values: list[float]) -> float:
-        if not values:
-            return 0.0
-        values_array = np.asarray(values, dtype=np.float64)
-        if not loss_occlusion or not present_class_ids or len(values_array) != len(class_ids):
-            return float(np.mean(values_array))
-        class_means = [float(np.mean(values_array[class_ids == class_id])) for class_id in present_class_ids]
-        return float(np.mean(class_means))
-
-    rows = []
-    for window_idx, window in enumerate(first_windows):
-        sample_windows = [
-            sample.get("windows", [])[window_idx]
-            for sample in samples
-            if window_idx < len(sample.get("windows", []))
-        ]
-        values = [float(item.get("importance", 0.0)) for item in sample_windows]
-        row = {
-            "window_index": int(window.get("window_index", window_idx)),
-            "start_index": int(window.get("start_index", window_idx)),
-            "end_index": int(window.get("end_index", window_idx)),
-            "start_x": float(window.get("start_x", window_idx)),
-            "end_x": float(window.get("end_x", window_idx)),
-            "importance": aggregate_values(values),
-            "importance_std": float(np.std(values)) if values else 0.0,
-            "baseline_macro_f1": None,
-            "permuted_macro_f1": None,
-        }
-        if loss_occlusion:
-            row.update(
-                {
-                    "mean_true_probability_drop": aggregate_values(
-                        [float(item.get("true_probability_drop", 0.0)) for item in sample_windows]
-                    ),
-                    "original_loss": aggregate_values(
-                        [float(item.get("original_loss", 0.0)) for item in sample_windows]
-                    ),
-                    "masked_loss": aggregate_values(
-                        [float(item.get("masked_loss", 0.0)) for item in sample_windows]
-                    ),
-                }
-            )
-        rows.append(row)
-
-    ranked = sorted(rows, key=lambda item: (-item["importance"], item["start_index"]))
-    max_positive = max((float(row["importance"]) for row in ranked), default=0.0)
-    for rank, row in enumerate(ranked, start=1):
-        row["rank"] = rank
-        row["normalized_importance"] = (
-            float(max(0.0, row["importance"]) / max_positive)
-            if max_positive > 1e-12
-            else 0.0
-        )
-    top_limit = max(1, int(result.get("top_k") or 5))
-    top_windows = [row for row in ranked if row["importance"] > 0][:top_limit]
-    ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
-    top_segments = merge_ranked_windows(top_windows)
-    payload = {
-        "status": "ready",
-        "method": (
-            "macro_mean_sample_occlusion_log_loss"
-            if loss_occlusion
-            else f"mean_{result.get('method') or 'sample_feature_importance'}"
-        ),
-        "importance_metric": result.get("importance_metric"),
-        "eval_split": "test",
-        "window_policy": result.get("window_policy"),
-        "requested_window_count": result.get("requested_window_count"),
-        "window_count": len(rows),
-        "window_width": result.get("window_width"),
-        "top_k": top_limit,
-        "n_repeats": None,
-        "x_axis": result.get("x_axis", []),
-        "mean_curve": result.get("baseline_curve", []),
-        "windows": ranked_by_index,
-        "top_segments": top_segments,
-        "primary_segment": primary_feature_segment(top_segments, ranked_by_index),
-    }
-    if loss_occlusion:
-        payload["aggregation"] = "macro_class_mean"
-        payload["aggregation_class_count"] = len(present_class_ids)
-    if result.get("x_axis_warning"):
-        payload["x_axis_warning"] = result.get("x_axis_warning")
-    if result.get("sanity_checks"):
-        payload["sanity_checks"] = result.get("sanity_checks")
-    if result.get("dscarnet_mapping"):
-        payload["dscarnet_mapping"] = result.get("dscarnet_mapping")
-    return payload
-
-
-def write_feature_importance_artifacts(run_dir: str | Path, result: dict[str, Any]) -> dict[str, Any]:
-    """写出全局重要性的 JSON/Excel 友好 CSV，并返回状态摘要。"""
-    run_path = Path(run_dir)
-    json_path = run_path / "feature_importance.json"
-    csv_path = run_path / "feature_importance.csv"
-    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    rows = [
-        {"importance_metric": result.get("importance_metric"), **window}
-        for window in result.get("windows", [])
-    ]
-    pd.DataFrame(rows, columns=FEATURE_COLUMNS).to_csv(
-        csv_path,
-        index=False,
-        encoding="utf-8-sig",
-    )
-    return {
-        "status": result.get("status", "unknown"),
-        "reason": result.get("reason"),
-        "method": result.get("method"),
-        "importance_metric": result.get("importance_metric"),
-        "eval_split": result.get("eval_split"),
-        "baseline_macro_f1": result.get("baseline_macro_f1"),
-        "aggregation": result.get("aggregation"),
-        "aggregation_class_count": result.get("aggregation_class_count"),
-        "artifact": "feature_importance.json",
-        "csv_artifact": "feature_importance.csv",
-        "top_segments": result.get("top_segments", []),
-        "primary_segment": result.get("primary_segment"),
-        "x_axis_warning": result.get("x_axis_warning"),
-        "sanity_checks": result.get("sanity_checks"),
-        "dscarnet_mapping": result.get("dscarnet_mapping"),
     }
 
 

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..version import WORKER_CONTRACT_VERSION
 from .contracts import Principal, RunRecord, RunState
 
 
@@ -145,10 +146,20 @@ class RunRepository:
                 CREATE TABLE IF NOT EXISTS worker_heartbeats (
                     worker_id TEXT PRIMARY KEY,
                     last_seen_at TEXT NOT NULL,
-                    active_run_id TEXT
+                    active_run_id TEXT,
+                    contract_version TEXT
                 )
                 '''
             )
+            heartbeat_columns = {
+                str(row['name'])
+                for row in connection.execute('PRAGMA table_info(worker_heartbeats)').fetchall()
+            }
+            if 'contract_version' not in heartbeat_columns:
+                # 保持可空，使旧 Worker 写入的心跳仍可被保留并明确判为不兼容。
+                connection.execute(
+                    'ALTER TABLE worker_heartbeats ADD COLUMN contract_version TEXT'
+                )
 
     def create_queued(
         self,
@@ -416,6 +427,7 @@ class RunRepository:
         worker_id: str,
         now: datetime,
         active_run_id: str | None = None,
+        contract_version: str | None = None,
     ) -> None:
         now_text = _timestamp(now)
         stale_cutoff = _timestamp(now - timedelta(days=7))
@@ -426,21 +438,30 @@ class RunRepository:
             )
             connection.execute(
                 '''
-                INSERT INTO worker_heartbeats (worker_id, last_seen_at, active_run_id)
-                VALUES (?, ?, ?)
+                INSERT INTO worker_heartbeats (
+                    worker_id, last_seen_at, active_run_id, contract_version
+                )
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     last_seen_at = excluded.last_seen_at,
-                    active_run_id = excluded.active_run_id
+                    active_run_id = excluded.active_run_id,
+                    contract_version = excluded.contract_version
                 ''',
-                (worker_id, now_text, active_run_id),
+                (worker_id, now_text, active_run_id, contract_version),
             )
 
-    def worker_health(self, *, now: datetime, stale_seconds: float = 15.0) -> dict[str, Any]:
+    def worker_health(
+        self,
+        *,
+        now: datetime,
+        stale_seconds: float = 15.0,
+        expected_contract_version: str | None = WORKER_CONTRACT_VERSION,
+    ) -> dict[str, Any]:
         now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
         with self._connection() as connection:
             rows = connection.execute(
                 '''
-                SELECT worker_id, last_seen_at, active_run_id
+                SELECT worker_id, last_seen_at, active_run_id, contract_version
                 FROM worker_heartbeats ORDER BY last_seen_at DESC LIMIT 20
                 '''
             ).fetchall()
@@ -456,13 +477,34 @@ class RunRepository:
                     'worker_id': str(row['worker_id']),
                     'last_seen_at': row['last_seen_at'],
                     'active_run_id': row['active_run_id'],
+                    'contract_version': row['contract_version'],
                     'age_seconds': age,
                     'live': age is not None and age <= stale_seconds,
+                    'compatible': (
+                        expected_contract_version is not None
+                        and row['contract_version'] == expected_contract_version
+                    ),
                 }
             )
         live_workers = [item for item in workers if item['live']]
+        live_contract_versions = {
+            item['contract_version']
+            for item in live_workers
+            if item['contract_version'] is not None
+        }
+        contract_version = (
+            next(iter(live_contract_versions))
+            if len(live_contract_versions) == 1
+            and all(item['contract_version'] is not None for item in live_workers)
+            else None
+        )
+        compatible = bool(live_workers) and all(
+            item['compatible'] for item in live_workers
+        )
         return {
             'available': bool(live_workers),
+            'compatible': compatible,
+            'contract_version': contract_version,
             'live_count': len(live_workers),
             'last_seen_at': workers[0]['last_seen_at'] if workers else None,
             'active_run_ids': [

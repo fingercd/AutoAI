@@ -8,9 +8,9 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 - 后端使用 FastAPI，前端静态页面由后端一起托管。
 - 入口脚本是 `run.py`。
-- 主要代码在 `backend/` 和 `static/`，主前端为 `static/index.html`。
+- 主要代码在 `backend/` 和 `static/`；经典前端为 `static/index.html`，并行 v2 工作台为 `static/v2/index.html`。
 - 快速回归在 `backend/tests/test_smoke.py`；Run 结果、artifact、安全、前端纯函数和迁移另有专项测试，交付时运行整个 `backend/tests`。
-- 正式前端只有 `static/index.html` 与 `static/js/`；历史 UI 画廊和未跟踪候选不属于产品快照。
+- 正式产品包含经典前端与 v2 独立工作台。两者均使用原生 Hash 路由、共享 `static/js/api-client.js`、同一 FastAPI API 与 `run-result-v1`；v2 不覆盖经典入口。
 - 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是 `run-result-v1` 结果结构；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
 - HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
@@ -18,9 +18,9 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - server CORS 只接受 `AUTOAI_ALLOWED_ORIGINS` 的明确来源，禁止 `*`；浏览器令牌只进当前标签页 sessionStorage。
 - server Principal 只能访问同 owner/tenant 的 Dataset 与 Run；历史 owner 为空 Run 默认不可见，使用显式 migration dry-run/rebind。
 - Run 状态转换由 SQLite 事务、claim token 和 lease 控制；本机 worker 可用 `python -m backend.app.runs.worker` 独立启动。
-- `run.py` 默认托管 worker，并在意外退出时有限退避重启；`/health` 返回匿名 worker 心跳摘要。
+- `run.py` 默认托管 worker，并在意外退出时有限退避重启；`/health` 返回 Web 契约版本与匿名 worker 心跳/兼容性摘要。活跃旧 Worker 会使创建训练返回 503，避免新 Web 被旧 Worker 抢占任务。
 - 独立结果页使用 `#/results?run_id=...`，刷新后从 `GET /api/training/runs/{run_id}/result` 恢复。
-- `run-result-v1` 明确区分 direct、pooled OOF、fold mean 与 fold std；传统模型不伪装成有 epoch history。
+- `run-result-v1` 明确区分 direct、pooled OOF、fold mean 与 fold std；`analysis.splits.train/valid/test` 提供三分区混淆矩阵、分类报告和预测分布。传统模型不生成或展示 epoch history。
 - Run 成功前必须提交 Manifest；新 Manifest 使用显式 catalog 和 SHA-256/大小校验。模型 pickle/PT 和 joblib 私有；无路径 `config.json` 才可下载。
 
 ## 预处理与接口事实
@@ -48,8 +48,8 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 当前八个可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
 - 模型 profile 同时按训练样本数 N 和特征数 L 分档：N 为 `<=100`、`101-299`、`>=300`；L 为 `<=1000`、`1001-2999`、`>=3000`。模型输入范围会另行给出警告，但不会把警告阈值误当成 profile 分档。
 - 分类评估支持三种口径：`stratified_holdout` 为无独立测试集时按标签比例 8:1:1 划分 train/valid/test；`leave_one_sample_id_cv` 为无独立测试集时按 `Sample_ID` 留一作 test，其余按 8:2 划分 train/valid；`external_test_holdout` 为有独立测试集时主数据 8:2 划分 train/valid、独立测试集作最终 test。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
-- 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。全局结果先按真实类别分别求均值，再做类别等权聚合。
-- 前端优先展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条和中文色标；聚合产物仍通过 `feature_importance.json/csv` 下载。
+- 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。
+- 新训练只生成并展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条、中文色标和 Top 区间，不再生成全局重要性。历史 `feature_importance.json/csv` 仅保留原 Manifest、Principal 和完整性约束下的直接下载兼容，不进入新 catalog 或结果页。
 - DSCARNet 使用仅由当前训练折拟合的 AggMap/PCA 生成 SAR/CAR 2D 输入，额外写入 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。
 - 当前没有正式 ROC-AUC、ROC 曲线或 Precision-Recall 曲线产物；结果 API 明确返回 unavailable，前端不绘制虚假图表。
 - 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。
@@ -71,7 +71,9 @@ C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:ap
 打开：
 
 - `http://127.0.0.1:8000/`
+- `http://127.0.0.1:8000/v2`
 - `http://127.0.0.1:8000/#/results?run_id=<Run ID>`
+- `http://127.0.0.1:8000/static/v2/index.html#/results?run_id=<Run ID>`
 - `http://127.0.0.1:8000/#/runs`
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/health`
@@ -86,6 +88,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
+node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 ```
 
 前端 JS 改动后，优先抽取 `static/index.html` 的内联 `<script>` 再用 Node 检查；不要直接 `node --check static/index.html`。没有 Playwright 时不要强行引入新依赖。

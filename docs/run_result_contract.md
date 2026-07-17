@@ -1,6 +1,8 @@
 # 建模结果接口契约（run-result-v1）
 
-> 最近核对：2026-07-16。该接口是专属建模结果页的稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
+> 最近核对：2026-07-17。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
+
+前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。
 
 ## 请求与 URL
 
@@ -12,7 +14,10 @@ GET /api/training/runs/{run_id}/result
 
 ```text
 /#/results?run_id=<URL-encoded Run ID>
+/static/v2/index.html#/results?run_id=<URL-encoded Run ID>
 ```
+
+v2 公共入口 `/v2` 会重定向到静态工作台；结果页刷新、分享链接和自动跳转均以 URL 中的 Run ID 重新取数。两套前端只能下载 `artifacts[]` 中 `downloadable=true` 且 `download_url` 合法的条目。单样品解释在摘要为 `ready` 且 JSON artifact 可下载时默认加载，使用样品自身的 `curve` 与 `sample_x_axis`；旧产物缺少这些字段时才允许回退到全局轴或基线曲线。
 
 Run ID 属于当前 Principal 时返回结果；不存在、已删除或不属于当前 Principal 均返回 404。server 模式还需要 Bearer 令牌。
 
@@ -130,6 +135,7 @@ queued | running | succeeded | failed | cancelled
 - Train/Valid split 的 `aggregation="fold_mean"`。
 - `metrics.fold_mean` 与 `metrics.fold_std` 仅用于逐折审计。
 - 不得用折 Test Macro F1 平均值覆盖 pooled OOF Macro F1。
+- 图表分析的 Test 使用 pooled OOF；Train/Valid 使用跨折预测合并，`aggregation="pooled_cross_fold"`，同一样本可能在不同折重复出现。Train/Valid 标量主展示仍是 fold mean。
 
 当前可能返回的标量：
 
@@ -149,6 +155,20 @@ weighted_f1
 ```json
 {
   "analysis": {
+    "splits": {
+      "train": {
+        "aggregation": "direct",
+        "confusion_matrix": [[9, 1], [0, 10]],
+        "classification_report": {},
+        "prediction_distribution": {
+          "labels": ["A", "B"],
+          "true_counts": [10, 10],
+          "predicted_counts": [9, 11]
+        }
+      },
+      "valid": {},
+      "test": {}
+    },
     "confusion_matrix": [[3, 1], [1, 3]],
     "classification_report": {},
     "prediction_distribution": {
@@ -175,20 +195,25 @@ weighted_f1
 }
 ```
 
-传统模型通常没有逐 epoch loss；`history.available=false` 时前端显示原因，不绘制空坐标。当前没有正式 ROC-AUC/ROC/PR 产物，前端不得自行从不完整数据猜测。
+新页面以 `analysis.splits` 为准。顶层 `confusion_matrix`、`classification_report`、`prediction_distribution` 暂时继续映射 Test，供旧调用方兼容。传统模型不生成 `history.csv`，`history.available=false` 时前端不渲染训练曲线区域；历史传统 Run 即使含单行 history 也按不适用处理。深度模型曲线使用真实 epoch，并展示数值轴、刻度和网格。当前没有正式 ROC-AUC/ROC/PR 产物，前端不得自行猜测。
 
 ## 解释性
 
 ```json
 {
   "explainability": {
-    "global": {},
-    "samples": {}
+    "samples": {
+      "status": "ready",
+      "artifact": "sample_feature_importance.json",
+      "csv_artifact": "sample_feature_importance.csv",
+      "method": "sample_occlusion_log_loss",
+      "sample_count": 9
+    }
   }
 }
 ```
 
-这里提供用于选择和概览的安全摘要。完整 JSON/CSV 由 `artifacts[]` 下载；单样品文件可能较大，前端应在用户明确点击后再懒加载，加载完成后才在本地切换样品，不能把全部内容重复塞入首屏结果响应。
+这里仅提供单样品解释的安全摘要。完整 JSON/CSV 由 `artifacts[]` 下载；单样品文件可能较大，前端应在用户明确点击后再懒加载，加载完成后才在本地切换样品，不能把全部内容重复塞入首屏结果响应。新 Run 不生成或投影全局重要性。
 
 ## Artifact 描述
 
@@ -229,6 +254,7 @@ ok | volatile | missing | corrupt | not_generated
 - 原 Run 状态接口、旧顶层字段和旧 artifact URL 不删除。
 - 新 Manifest v2 使用大小和 SHA-256 校验。
 - 历史 Manifest 继续按旧 `downloadable` 做 local 只读兼容，但结果页会给出兼容 warning。
+- 历史 Manifest 已登记的 `feature_importance.json/csv` 保留直接下载兼容，但 descriptors 和新页面不列出；新 Manifest catalog 不再登记这两个文件。
 - server Principal 不使用“无 DB 的旧目录”旁路。
 - 部分文件损坏只影响对应分析和下载，不应导致整个结果页 500。
 
@@ -240,3 +266,5 @@ ok | volatile | missing | corrupt | not_generated
 4. 私有、缺失、篡改和未成功 Run 的下载分别被拒绝。
 5. server 模式下其他 Principal 和旧 owner 为空 Run 返回 404。
 6. 响应和公开配置中不存在服务器绝对路径。
+7. Holdout/CV fixture 均验证三分区分析口径；新结果不含 `explainability.global`。
+8. 传统模型没有 history 文件/曲线，深度模型保留真实 history。

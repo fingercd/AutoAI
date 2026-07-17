@@ -18,6 +18,7 @@ from typing import Any
 
 from .contracts import public_error_message
 from .repository import InvalidRunTransition, RunRepository
+from ..version import WORKER_CONTRACT_VERSION
 
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class LeaseGuard:
                         worker_id=self.worker_id,
                         now=self.now(),
                         active_run_id=self.run_id,
+                        contract_version=WORKER_CONTRACT_VERSION,
                     )
                 except InvalidRunTransition:
                     self.lost.set()
@@ -123,7 +125,11 @@ class RunWorker:
         self.project_status = project_status
 
     def run_once(self) -> bool:
-        self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
+        self.repository.record_worker_heartbeat(
+            worker_id=self.worker_id,
+            now=self.now(),
+            contract_version=WORKER_CONTRACT_VERSION,
+        )
         self.repository.requeue_expired(now=self.now())
         run = self.repository.claim_next(worker_id=self.worker_id, now=self.now())
         if run is None:
@@ -141,6 +147,7 @@ class RunWorker:
                     worker_id=self.worker_id,
                     now=self.now(),
                     active_run_id=run.run_id,
+                    contract_version=WORKER_CONTRACT_VERSION,
                 )
                 result = self.execute(run)
             finished = self.repository.finish_success(
@@ -151,7 +158,11 @@ class RunWorker:
             )
             if self.project_status is not None:
                 self.project_status(finished)
-            self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
+            self.repository.record_worker_heartbeat(
+                worker_id=self.worker_id,
+                now=self.now(),
+                contract_version=WORKER_CONTRACT_VERSION,
+            )
         except InvalidRunTransition:
             return True
         except Exception as exc:
@@ -167,7 +178,11 @@ class RunWorker:
                 )
                 if self.project_status is not None:
                     self.project_status(failed)
-                self.repository.record_worker_heartbeat(worker_id=self.worker_id, now=self.now())
+                self.repository.record_worker_heartbeat(
+                    worker_id=self.worker_id,
+                    now=self.now(),
+                    contract_version=WORKER_CONTRACT_VERSION,
+                )
             except InvalidRunTransition:
                 pass
         return True
@@ -183,7 +198,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--poll-seconds', type=float, default=0.5)
+    parser.add_argument(
+        '--contract-version',
+        default=None,
+        help='启动器期望的 Worker 产物契约；不一致时拒绝启动',
+    )
     args = parser.parse_args()
+    if args.contract_version and args.contract_version != WORKER_CONTRACT_VERSION:
+        parser.error(
+            'Worker 契约版本与启动器不一致：'
+            f'expected={args.contract_version}, actual={WORKER_CONTRACT_VERSION}'
+        )
 
     from ..paths import RUNS_DATABASE, RUNS_DIR
     from .status_projection import project_status

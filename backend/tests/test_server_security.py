@@ -255,6 +255,7 @@ def test_local_principal_keeps_controlled_legacy_path_compatibility(tmp_path, mo
 def test_health_remains_compatible_and_reports_no_worker(tmp_path, monkeypatch) -> None:
     from backend.app import paths
     from backend.app.main import app as main_app
+    from backend.app.version import WEB_CONTRACTS
 
     monkeypatch.setattr(paths, 'RUNS_DATABASE', tmp_path / 'runs.sqlite3')
 
@@ -263,8 +264,11 @@ def test_health_remains_compatible_and_reports_no_worker(tmp_path, monkeypatch) 
     assert response.status_code == 200
     assert response.json()['status'] == 'ok'
     assert response.json()['deployment_mode'] == 'local'
+    assert response.json()['contracts'] == WEB_CONTRACTS
     assert response.json()['worker'] == {
         'available': False,
+        'compatible': False,
+        'contract_version': None,
         'live_count': 0,
         'last_seen_at': None,
         'active_run_count': 0,
@@ -274,6 +278,7 @@ def test_health_remains_compatible_and_reports_no_worker(tmp_path, monkeypatch) 
 def test_health_reports_live_worker_summary_without_exposing_worker_id(tmp_path, monkeypatch) -> None:
     from backend.app import paths
     from backend.app.main import app as main_app
+    from backend.app.version import WORKER_CONTRACT_VERSION
 
     database = tmp_path / 'runs.sqlite3'
     repository = RunRepository(database)
@@ -282,6 +287,7 @@ def test_health_reports_live_worker_summary_without_exposing_worker_id(tmp_path,
         worker_id='host-secret-worker-id',
         now=datetime.now(timezone.utc),
         active_run_id='active-run',
+        contract_version=WORKER_CONTRACT_VERSION,
     )
     monkeypatch.setattr(paths, 'RUNS_DATABASE', database)
 
@@ -289,6 +295,8 @@ def test_health_reports_live_worker_summary_without_exposing_worker_id(tmp_path,
 
     assert payload['status'] == 'ok'
     assert payload['worker']['available'] is True
+    assert payload['worker']['compatible'] is True
+    assert payload['worker']['contract_version'] == WORKER_CONTRACT_VERSION
     assert payload['worker']['live_count'] == 1
     assert payload['worker']['active_run_count'] == 1
     assert payload['worker']['last_seen_at']
@@ -297,6 +305,7 @@ def test_health_reports_live_worker_summary_without_exposing_worker_id(tmp_path,
 
 def test_server_health_is_public_and_contains_no_secret_identity_data(tmp_path, monkeypatch) -> None:
     from backend.app import paths
+    from backend.app.version import WORKER_CONTRACT_VERSION
 
     settings = load_security_settings(
         {
@@ -312,6 +321,7 @@ def test_server_health_is_public_and_contains_no_secret_identity_data(tmp_path, 
     repository.record_worker_heartbeat(
         worker_id='private-worker-id',
         now=datetime.now(timezone.utc),
+        contract_version=WORKER_CONTRACT_VERSION,
     )
     monkeypatch.setattr(paths, 'RUNS_DATABASE', database)
     server_app = FastAPI()
@@ -326,7 +336,28 @@ def test_server_health_is_public_and_contains_no_secret_identity_data(tmp_path, 
     assert response.json()['status'] == 'ok'
     assert response.json()['deployment_mode'] == 'server'
     assert response.json()['worker']['available'] is True
+    assert response.json()['worker']['compatible'] is True
     assert TOKEN not in payload_text
     assert 'private-owner' not in payload_text
     assert 'private-tenant' not in payload_text
     assert 'private-worker-id' not in payload_text
+
+
+def test_health_marks_legacy_worker_without_contract_version_incompatible(tmp_path, monkeypatch) -> None:
+    from backend.app import paths
+    from backend.app.main import app as main_app
+
+    database = tmp_path / 'runs.sqlite3'
+    repository = RunRepository(database)
+    repository.initialize()
+    repository.record_worker_heartbeat(
+        worker_id='legacy-worker',
+        now=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(paths, 'RUNS_DATABASE', database)
+
+    worker = TestClient(main_app).get('/health').json()['worker']
+
+    assert worker['available'] is True
+    assert worker['compatible'] is False
+    assert worker['contract_version'] is None

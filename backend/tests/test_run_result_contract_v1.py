@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -34,8 +35,28 @@ def _write_ready_artifacts(
     model_family: str = 'traditional_ml',
 ) -> None:
     metrics = metrics or {
-        'train': {'accuracy': 0.95, 'macro_precision': 0.95, 'macro_recall': 0.95, 'macro_f1': 0.95},
-        'valid': {'accuracy': 0.90, 'macro_precision': 0.90, 'macro_recall': 0.90, 'macro_f1': 0.90},
+        'train': {
+            'accuracy': 0.95,
+            'macro_precision': 0.95,
+            'macro_recall': 0.95,
+            'macro_f1': 0.95,
+            'confusion_matrix': [[9, 1], [0, 10]],
+            'classification_report': {
+                'A': {'precision': 1.0, 'recall': 0.9, 'f1-score': 0.9474, 'support': 10},
+                'B': {'precision': 0.9091, 'recall': 1.0, 'f1-score': 0.9524, 'support': 10},
+            },
+        },
+        'valid': {
+            'accuracy': 0.90,
+            'macro_precision': 0.90,
+            'macro_recall': 0.90,
+            'macro_f1': 0.90,
+            'confusion_matrix': [[5, 1], [0, 4]],
+            'classification_report': {
+                'A': {'precision': 1.0, 'recall': 0.8333, 'f1-score': 0.9091, 'support': 6},
+                'B': {'precision': 0.8, 'recall': 1.0, 'f1-score': 0.8889, 'support': 4},
+            },
+        },
         'test': {
             'accuracy': 0.75,
             'balanced_accuracy': 0.75,
@@ -60,6 +81,13 @@ def _write_ready_artifacts(
         'model_family': model_family,
         'label_names': ['A', 'B'],
         'sample_count': 24,
+        'sample_feature_importance': {
+            'status': 'ready',
+            'artifact': 'sample_feature_importance.json',
+            'csv_artifact': 'sample_feature_importance.csv',
+            'method': 'sample_occlusion_log_loss',
+            'sample_count': 8,
+        },
     })
     writer.write_json('config.json', {'model_type': model_type, 'data_path': r'D:\private\dataset.csv'})
     writer.write_json('model_metadata.json', {
@@ -80,10 +108,21 @@ def _write_ready_artifacts(
     })
     writer.write_bytes('fold_metrics.csv', b'fold_index,test_macro_f1\n1,0.75\n')
     writer.write_bytes('predictions.csv', b'Index,true_label,pred_label\n1,A,A\n')
+    writer.write_json('sample_feature_importance.json', {
+        'status': 'ready',
+        'method': 'sample_occlusion_log_loss',
+        'sample_count': 1,
+        'samples': [],
+    })
     writer.write_bytes(
-        'history.csv',
-        b'fold_index,epoch,train_loss,valid_accuracy\n1,1,,0.9\n',
+        'sample_feature_importance.csv',
+        b'sample_id,start_index,end_index,importance\nsample-1,0,1,0.5\n',
     )
+    if model_family == 'deep_learning':
+        writer.write_bytes(
+            'history.csv',
+            b'fold_index,epoch,train_loss,valid_accuracy\n1,1,0.4,0.9\n',
+        )
     writer.write_bytes('model.pt' if model_family == 'deep_learning' else 'model.pkl', b'private-model-object')
     writer.finalize(run_id=run_id, metadata={'model_type': model_type, 'model_family': model_family})
 
@@ -171,11 +210,22 @@ def test_result_v1_is_refreshable_traceable_and_contains_only_real_analysis(tmp_
         'true_counts': [4, 4],
         'predicted_counts': [4, 4],
     }
+    assert set(payload['analysis']['splits']) == {'train', 'valid', 'test'}
+    assert payload['analysis']['splits']['train']['aggregation'] == 'direct'
+    assert payload['analysis']['splits']['train']['confusion_matrix'] == [[9, 1], [0, 10]]
+    assert payload['analysis']['splits']['valid']['prediction_distribution'] == {
+        'labels': ['A', 'B'],
+        'true_counts': [6, 4],
+        'predicted_counts': [5, 5],
+    }
+    assert payload['analysis']['splits']['test']['classification_report']['A']['support'] == 4
     assert payload['analysis']['history']['available'] is False
     assert '参数选择审计' in payload['analysis']['history']['reason']
     assert 'traditional' in payload['analysis']['training_audit']
     assert payload['analysis']['roc']['available'] is False
     assert payload['analysis']['precision_recall']['available'] is False
+    assert 'global' not in payload['explainability']
+    assert payload['explainability']['samples']['artifact'] == 'sample_feature_importance.json'
     assert r'D:\private' not in first.text
 
     artifacts = {item['name']: item for item in payload['artifacts']}
@@ -183,6 +233,10 @@ def test_result_v1_is_refreshable_traceable_and_contains_only_real_analysis(tmp_
     assert artifacts['metrics.json']['download_url'].endswith('/artifact/metrics.json')
     assert artifacts['config.json']['downloadable'] is False
     assert artifacts['model.pkl']['downloadable'] is False
+    assert artifacts['sample_feature_importance.json']['downloadable'] is True
+    assert 'feature_importance.json' not in artifacts
+    assert 'feature_importance.csv' not in artifacts
+    assert artifacts['history.csv']['applicable'] is False
     assert all('path' not in item for item in payload['artifacts'])
 
 
@@ -250,6 +304,67 @@ def test_result_v1_separates_pooled_oof_from_fold_mean(tmp_path, monkeypatch) ->
     assert payload['metrics']['fold_mean']['test']['macro_f1'] == pytest.approx(0.5)
     assert payload['metrics']['splits']['train']['aggregation'] == 'fold_mean'
     assert payload['metrics']['splits']['valid']['fold_std']['macro_f1'] == pytest.approx(0.02)
+    assert payload['analysis']['splits']['train']['aggregation'] == 'pooled_cross_fold'
+    assert payload['analysis']['splits']['valid']['aggregation'] == 'pooled_cross_fold'
+    assert payload['analysis']['splits']['test']['aggregation'] == 'pooled_oof'
+
+
+def test_summary_projection_includes_dataset_training_time_and_duration(tmp_path, monkeypatch) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    record = _create_succeeded_run(repository, run_root)
+
+    response = TestClient(app).get(
+        '/api/training/runs',
+        params={'projection': 'summary', 'limit': 20},
+    )
+
+    assert response.status_code == 200
+    summary = next(item for item in response.json()['items'] if item['run_id'] == record.run_id)
+    assert summary['dataset_name'] == 'teacher-data.csv'
+    assert summary['created_at']
+    assert summary['started_at']
+    assert summary['finished_at']
+    assert summary['duration_seconds'] == pytest.approx(12.5)
+    assert 'config' not in summary
+
+
+def test_create_run_rejects_live_incompatible_worker_before_queueing(tmp_path, monkeypatch) -> None:
+    repository, _run_root = _patch_run_storage(monkeypatch, tmp_path)
+    repository.record_worker_heartbeat(
+        worker_id='legacy-worker',
+        now=datetime.now(timezone.utc),
+        contract_version=None,
+    )
+    monkeypatch.setattr(
+        runs_router,
+        'resolve_training_data_reference',
+        lambda payload, principal: SimpleNamespace(
+            dataset_id='dataset-1',
+            legacy_path=None,
+            dataset_name='teacher-data.csv',
+            test_dataset_id=None,
+            test_legacy_path=None,
+            test_dataset_name=None,
+        ),
+    )
+    monkeypatch.setattr(
+        runs_router,
+        '_dataset_snapshot_for_reference',
+        lambda **kwargs: {
+            'dataset_id': 'dataset-1',
+            'name': 'teacher-data.csv',
+            'sha256': 'a' * 64,
+        },
+    )
+
+    response = TestClient(app).post(
+        '/api/training/runs',
+        json={'dataset_id': 'dataset-1', 'config': {'model_type': 'pls_da'}},
+    )
+
+    assert response.status_code == 503
+    assert response.json()['detail']['code'] == 'worker_contract_mismatch'
+    assert repository.list() == []
 
 
 @pytest.mark.parametrize(
@@ -355,6 +470,45 @@ def test_succeeded_result_distinguishes_missing_corrupt_and_partial_artifacts(tm
     assert any('Manifest 缺失' in warning for warning in missing_payload['warnings'])
     assert any('Manifest 损坏' in warning for warning in corrupt_payload['warnings'])
     assert any('部分结果文件缺失' in warning for warning in partial_payload['warnings'])
+
+
+def test_legacy_manifest_status_size_changes_do_not_make_result_partial(tmp_path, monkeypatch) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    record = repository.import_legacy(
+        run_id='legacy-volatile-status',
+        state='succeeded',
+        config={'model_type': 'pls_da', 'dataset_name': 'legacy.csv'},
+        dataset_id=None,
+        legacy_data_path=None,
+    )
+    run_dir = run_root / record.run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / 'status.json').write_text(
+        json.dumps({'state': 'succeeded', 'sample_count': 90}),
+        encoding='utf-8',
+    )
+    (run_dir / 'manifest.json').write_text(
+        json.dumps(
+            {
+                'run_id': record.run_id,
+                'artifacts': {
+                    'status.json': {
+                        'downloadable': False,
+                        'size_bytes': 1,
+                        'sha256': '0' * 64,
+                    },
+                },
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    payload = TestClient(app).get(f'/api/training/runs/{record.run_id}/result').json()
+    descriptors = {item['name']: item for item in payload['artifacts']}
+
+    assert payload['run']['result_state'] == 'ready'
+    assert descriptors['status.json']['integrity'] == 'volatile'
+    assert any('旧版 Worker' in warning for warning in payload['warnings'])
 
 
 def test_summary_projection_is_scoped_paginated_and_does_not_return_full_results(tmp_path, monkeypatch) -> None:

@@ -12,10 +12,11 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from ..parsers import summarize_modeling_csv
 from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
+from ..version import WEB_CONTRACTS, WORKER_CONTRACT_VERSION
 
 router = APIRouter()
 
@@ -53,56 +54,35 @@ _MODEL_MODULES = {
     "tcn1d": "backend.app.models.tcn1d",
     "cnn_transformer1d": "backend.app.models.cnn_transformer1d",
 }
-
-
-def _capability_failure(model_name: str, exc: BaseException) -> tuple[bool, str]:
-    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
-    return False, f"{model_name} 不可用：{detail}"
+_MODEL_ROOT = Path(__file__).resolve().parents[1] / "models"
 
 
 def _import_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
-    try:
-        importlib.import_module(_MODEL_MODULES[model_type])
-    except Exception as exc:  # Catalog reporting must not break the landing page.
-        return _capability_failure(display_name, exc)
+    module_name = _MODEL_MODULES[model_type]
+    module_file = _MODEL_ROOT / f"{module_name.rsplit('.', 1)[-1]}.py"
+    if not module_file.is_file():
+        return False, f"{display_name} 不可用：缺少内部模型模块 {module_name}"
     return True, None
 
 
 def _mamba_capability() -> tuple[bool, str | None]:
-    try:
-        from ..models.cnn_mamba1d import (
-            MAMBA_INSTALL_MESSAGE,
-            ModelDependencyError,
-            build_cnn_mamba1d,
-            mamba_available,
+    if importlib.util.find_spec("mamba_ssm") is None:
+        return False, (
+            "CNN-Mamba 需要可选依赖 mamba-ssm（Python 导入名为 mamba_ssm）；"
+            "请安装与当前 PyTorch/CUDA 匹配的官方兼容版本。"
         )
-
-        if not mamba_available():
-            return False, MAMBA_INSTALL_MESSAGE
-        build_cnn_mamba1d(input_length=8, class_count=2, hidden_size=8, mamba_layers=1)
-    except ModelDependencyError as exc:
-        return _capability_failure("CNN-Mamba", exc)
-    except Exception as exc:  # Optional native dependencies can fail after import.
-        return _capability_failure("CNN-Mamba", exc)
     return True, None
 
 
 def _dscarnet_capability() -> tuple[bool, str | None]:
-    try:
-        from ..models.dscarnet import dual_dscarnet
-
-        if importlib.util.find_spec("aggmap") is None:
-            return False, "DSCARNet/AggMap 不可用：缺少 aggmap"
-
-        # Use the same compatibility path as training. AggMap 1.2.1 imports
-        # lapjv eagerly, while SpecAutoAI supplies a SciPy implementation when
-        # the obsolete native dependency is absent.
-        from ..dscarnet_mapping import _load_aggmap_class
-
-        _load_aggmap_class()
-        dual_dscarnet((4, 4, 1), (4, 4, 1), n_outputs=2, last_avf=None)
-    except Exception as exc:  # AggMap and its native optional dependencies are not guaranteed.
-        return _capability_failure("DSCARNet/AggMap", exc)
+    if not (_MODEL_ROOT / "dscarnet.py").is_file():
+        return False, "DSCARNet/AggMap 不可用：缺少内部 DSCARNet 模块"
+    if importlib.util.find_spec("aggmap") is None:
+        return False, "DSCARNet/AggMap 不可用：缺少 aggmap"
+    # Capability discovery runs in the Web request path. Importing AggMap
+    # here also imports UMAP/Numba and can spend minutes compiling third-party
+    # code. The Worker performs the authoritative import and compatibility
+    # patch when a DSCARNet Run actually starts.
     return True, None
 
 
@@ -140,6 +120,13 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / 'index.html')
 
 
+@router.get('/v2', include_in_schema=False)
+@router.get('/v2/', include_in_schema=False)
+def v2_index() -> RedirectResponse:
+    """把简洁入口重定向到 v2 的真实静态基路径，确保共享模块相对导入有效。"""
+    return RedirectResponse(url='/static/v2/index.html', status_code=307)
+
+
 @router.get('/health')
 def health(request: Request) -> dict[str, object]:
     """报告 Web 存活与独立训练 worker 的最近心跳摘要。"""
@@ -151,11 +138,16 @@ def health(request: Request) -> dict[str, object]:
     try:
         repository = RunRepository(RUNS_DATABASE)
         repository.initialize()
-        worker_health = repository.worker_health(now=datetime.now(timezone.utc))
+        worker_health = repository.worker_health(
+            now=datetime.now(timezone.utc),
+            expected_contract_version=WORKER_CONTRACT_VERSION,
+        )
         workers = list(worker_health.get('workers') or [])
         live_workers = [item for item in workers if item.get('live')]
         worker_summary = {
             'available': bool(worker_health.get('available')),
+            'compatible': bool(worker_health.get('compatible')),
+            'contract_version': worker_health.get('contract_version'),
             'live_count': len(live_workers),
             'last_seen_at': workers[0].get('last_seen_at') if workers else None,
             'active_run_count': sum(1 for item in live_workers if item.get('active_run_id')),
@@ -164,6 +156,8 @@ def health(request: Request) -> dict[str, object]:
         # 健康检查不能把数据库路径或底层异常公开给未认证的探针。
         worker_summary = {
             'available': False,
+            'compatible': False,
+            'contract_version': None,
             'live_count': 0,
             'last_seen_at': None,
             'active_run_count': 0,
@@ -172,6 +166,7 @@ def health(request: Request) -> dict[str, object]:
     return {
         'status': 'ok',
         'deployment_mode': request.app.state.security_settings.mode,
+        'contracts': dict(WEB_CONTRACTS),
         'worker': worker_summary,
     }
 

@@ -46,29 +46,30 @@ def test_missing_dscarnet_dependency_does_not_break_catalog(monkeypatch):
     assert by_id['cnn_mamba1d']['available'] is False
 
 
-def test_dscarnet_catalog_uses_project_lapjv_compatibility(monkeypatch):
+def test_dscarnet_catalog_does_not_import_heavy_aggmap_runtime(monkeypatch):
     from backend.app import dscarnet_mapping
     from backend.app.routers import catalog
 
     original_find_spec = catalog.importlib.util.find_spec
-    loader_calls = []
 
     def fake_find_spec(name, *args, **kwargs):
         if name == 'aggmap':
             return object()
-        if name == 'lapjv':
-            return None
         return original_find_spec(name, *args, **kwargs)
 
     monkeypatch.setattr(catalog.importlib.util, 'find_spec', fake_find_spec)
     monkeypatch.setattr(
+        catalog.importlib,
+        'import_module',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('catalog must not import model runtimes')),
+    )
+    monkeypatch.setattr(
         dscarnet_mapping,
         '_load_aggmap_class',
-        lambda: loader_calls.append(True) or object(),
+        lambda: (_ for _ in ()).throw(AssertionError('catalog must not import AggMap')),
     )
 
     assert catalog._dscarnet_capability() == (True, None)
-    assert loader_calls == [True]
 
 
 def test_model_catalog_initialization_has_module_and_dom_ready_paths():
