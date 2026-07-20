@@ -1,8 +1,9 @@
 """建模 CSV 与原始拉曼/色谱 CSV 的解析和统一导出。
 
 统一建模行固定为 ``Index, Name, XXX, Intensity, Label, Sample_ID``。
-数组序列化采用紧凑 JSON，并在写出前检查 Excel 32,767 字符单元格上限；超限时
-明确拒绝，绝不静默截断或降采样。拉曼流程固定先选择范围，再执行基线校正。
+数组序列化采用紧凑 JSON，并在最多 5 位小数内自动选择满足 Excel 32,767
+字符单元格上限的最高批次统一精度；无法安全容纳时明确拒绝，绝不静默截断或
+降采样。拉曼流程固定先选择范围，再执行基线校正。
 """
 
 from __future__ import annotations
@@ -22,7 +23,10 @@ MODELING_COLUMNS = ("Index", "Name", "XXX", "Intensity", "Label", "Sample_ID")
 REQUIRED_MODELING_COLUMNS = set(MODELING_COLUMNS)
 LEGACY_SAMPLE_ID_COLUMN = "Repeat_index"
 EXCEL_CELL_CHARACTER_LIMIT = 32_767
-OUTPUT_DECIMAL_PLACES = 5
+MAX_OUTPUT_DECIMAL_PLACES = 5
+MAX_AXIS_DESCRIPTOR_POINTS = 1_000_000
+# 兼容既有内部引用；新代码应使用语义更明确的 MAX_OUTPUT_DECIMAL_PLACES。
+OUTPUT_DECIMAL_PLACES = MAX_OUTPUT_DECIMAL_PLACES
 
 
 @dataclass
@@ -33,6 +37,26 @@ class ModelingDataset:
     intensity: np.ndarray
     labels: list[str]
     sample_id: list[str]
+
+
+@dataclass(frozen=True)
+class SerializedModelingArray:
+    """一个数组在指定小数精度下的最终建模 JSON 表示。"""
+
+    values: list[int | float]
+    serialized: str
+    decimal_places: int
+    character_count: int
+
+
+@dataclass(frozen=True)
+class BatchSerializationResult:
+    """同一字段在一个预处理批次内采用统一精度后的结果。"""
+
+    arrays: list[SerializedModelingArray]
+    decimal_places: int
+    max_characters: int
+    max_source_name: str
 
 
 def _parse_array(value: object, field: str, row_number: int) -> list[float]:
@@ -49,6 +73,42 @@ def _parse_array(value: object, field: str, row_number: int) -> list[float]:
         return [float(item) for item in raw]
     except (TypeError, ValueError) as exc:
         raise ValueError(f"第 {row_number} 行 {field} 含有非数字值") from exc
+
+
+def _parse_modeling_axis(value: object, row_number: int) -> list[float]:
+    """读取旧式数值数组或可逆的等距轴描述。"""
+    if isinstance(value, dict):
+        raw = value
+    elif isinstance(value, (list, tuple)):
+        return _parse_array(value, "XXX", row_number)
+    else:
+        try:
+            raw = ast.literal_eval(str(value))
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"第 {row_number} 行 XXX 不是有效数组或轴描述") from exc
+    if not isinstance(raw, dict):
+        return _parse_array(raw, "XXX", row_number)
+    if raw.get("type") != "linspace-v1":
+        raise ValueError(f"第 {row_number} 行 XXX 使用了不支持的轴描述类型")
+    try:
+        start = float(raw["start"])
+        stop = float(raw["stop"])
+        count_raw = raw["count"]
+        count = int(count_raw)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"第 {row_number} 行 XXX 的等距轴描述参数无效") from exc
+    if isinstance(count_raw, bool) or float(count_raw) != count:
+        raise ValueError(f"第 {row_number} 行 XXX 的 count 必须是整数")
+    if not np.isfinite(start) or not np.isfinite(stop) or start >= stop:
+        raise ValueError(f"第 {row_number} 行 XXX 的 start/stop 必须是有限递增数值")
+    if not 2 <= count <= MAX_AXIS_DESCRIPTOR_POINTS:
+        raise ValueError(
+            f"第 {row_number} 行 XXX 的 count 必须在 2 到 {MAX_AXIS_DESCRIPTOR_POINTS} 之间"
+        )
+    unit = raw.get("unit")
+    if unit is not None and (not isinstance(unit, str) or not unit.strip()):
+        raise ValueError(f"第 {row_number} 行 XXX 的 unit 必须是非空字符串")
+    return np.linspace(start, stop, count, dtype=np.float64).tolist()
 
 
 def _normalise_sample_id_column(frame: pd.DataFrame) -> pd.DataFrame:
@@ -85,7 +145,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     sample_ids: list[str] = []
     for idx, row in frame.iterrows():
         row_number = idx + 2
-        x = _parse_array(row["XXX"], "XXX", row_number)
+        x = _parse_modeling_axis(row["XXX"], row_number)
         y = _parse_array(row["Intensity"], "Intensity", row_number)
         if len(x) != len(y):
             raise ValueError(f"第 {row_number} 行 XXX 和 Intensity 长度不一致")
@@ -228,47 +288,174 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
     # X 轴保留输入精度，避免 450.82 先量化为 float32 后被输出成
     # 450.82000732421875 之类的长文本。强度仍沿用现有 float32 计算契约。
     x = numeric.iloc[:, 0].to_numpy(dtype=np.float64)
-    y = numeric.iloc[:, 1].to_numpy(dtype=np.float32)
+    # HPLC 的强度需要在原始时间轴上做 float64 线性映射，不能在插值前先量化。
+    y_dtype = np.float64 if kind == "hplc" else np.float32
+    y = numeric.iloc[:, 1].to_numpy(dtype=y_dtype)
     if kind not in {"raman", "chromatography", "hplc"}:
         raise ValueError("kind 必须是 raman、chromatography 或 hplc")
     return x, y
 
 
-def _normalize_numeric_array(values: np.ndarray, field_name: str) -> list[float]:
+def _normalize_numeric_array(
+    values: np.ndarray,
+    field_name: str,
+    decimal_places: int = MAX_OUTPUT_DECIMAL_PLACES,
+) -> list[float]:
     array = np.asarray(values, dtype=np.float64)
     if array.ndim != 1:
         raise ValueError(f"{field_name} 必须是一维数组")
     if not np.all(np.isfinite(array)):
         raise ValueError(f"{field_name} 含有 NaN 或无穷值")
-    rounded = np.round(array, decimals=OUTPUT_DECIMAL_PLACES)
+    if not 0 <= decimal_places <= MAX_OUTPUT_DECIMAL_PLACES:
+        raise ValueError(
+            f"{field_name} 小数位数必须在 0 到 {MAX_OUTPUT_DECIMAL_PLACES} 之间"
+        )
+    rounded = np.round(array, decimals=decimal_places)
     rounded[rounded == 0.0] = 0.0
     if array.size > 1 and float(np.ptp(array)) > 0.0 and float(np.ptp(rounded)) == 0.0:
         raise ValueError(
-            f"{field_name} 保留 {OUTPUT_DECIMAL_PLACES} 位小数后失去全部有效变化；"
+            f"{field_name} 保留 {decimal_places} 位小数后失去全部有效变化；"
             "请缩小数值缩放范围，或改用更高精度后重试"
         )
     return rounded.astype(float).tolist()
+
+
+def _compact_json_numbers(values: list[float]) -> list[int | float]:
+    """删除不必要的 ``.0``，同时保留更短的合法指数表示。"""
+    compact: list[int | float] = []
+    for value in values:
+        if value == 0.0:
+            compact.append(0)
+            continue
+        if value.is_integer():
+            integer_value = int(value)
+            # 对普通整数去掉 .0；极大数使用更短的浮点指数表示。
+            if len(str(integer_value)) <= len(repr(value)):
+                compact.append(integer_value)
+                continue
+        compact.append(value)
+    return compact
+
+
+def _serialize_modeling_array_at_precision(
+    values: np.ndarray,
+    field_name: str,
+    decimal_places: int,
+) -> SerializedModelingArray:
+    normalized = _normalize_numeric_array(values, field_name, decimal_places)
+    compact_values = _compact_json_numbers(normalized)
+    serialized = json.dumps(
+        compact_values,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    # 从最终文本回读，保证 API 预览与实际落盘 JSON 使用完全相同的数值源。
+    final_values = json.loads(serialized)
+    return SerializedModelingArray(
+        values=final_values,
+        serialized=serialized,
+        decimal_places=decimal_places,
+        character_count=len(serialized),
+    )
+
+
+def _serialize_modeling_arrays(
+    arrays: list[np.ndarray],
+    field_name: str,
+    source_names: list[str],
+    max_decimal_places: int = MAX_OUTPUT_DECIMAL_PLACES,
+    character_limit: int | None = None,
+) -> BatchSerializationResult:
+    """为一个批次字段选择 Excel 可容纳的最高统一小数精度。"""
+    if not arrays:
+        raise ValueError(f"{field_name} 没有可序列化的数据")
+    if len(arrays) != len(source_names):
+        raise ValueError(f"{field_name} 数组数量与样本名数量不一致")
+    if not 0 <= max_decimal_places <= MAX_OUTPUT_DECIMAL_PLACES:
+        raise ValueError(
+            f"{field_name} 最大小数位数必须在 0 到 {MAX_OUTPUT_DECIMAL_PLACES} 之间"
+        )
+    limit = EXCEL_CELL_CHARACTER_LIMIT if character_limit is None else character_limit
+    if limit <= 0:
+        raise ValueError("Excel 单元格字符上限必须为正整数")
+
+    shortest_results: list[SerializedModelingArray] | None = None
+    for decimal_places in range(max_decimal_places, -1, -1):
+        candidate: list[SerializedModelingArray] = []
+        for values, source_name in zip(arrays, source_names):
+            try:
+                item = _serialize_modeling_array_at_precision(
+                    values,
+                    field_name,
+                    decimal_places,
+                )
+            except ValueError as exc:
+                if "失去全部有效变化" in str(exc):
+                    if decimal_places == max_decimal_places:
+                        raise ValueError(
+                            f"{source_name} 的 {field_name} 保留 {decimal_places} 位小数后"
+                            "失去全部有效变化；请缩小数值缩放范围，或改用更高精度后重试"
+                        ) from exc
+                    raise ValueError(
+                        f"{source_name} 的 {field_name} 为满足 Excel 单元格上限需要降低精度，"
+                        f"但保留 {decimal_places} 位小数会失去全部有效变化；"
+                        "请缩小行号范围或 X 轴数值范围，或改用降采样/非 Excel 格式"
+                    ) from exc
+                raise
+            candidate.append(item)
+        shortest_results = candidate
+        if all(item.character_count <= limit for item in candidate):
+            max_index = max(
+                range(len(candidate)),
+                key=lambda index: candidate[index].character_count,
+            )
+            return BatchSerializationResult(
+                arrays=candidate,
+                decimal_places=decimal_places,
+                max_characters=candidate[max_index].character_count,
+                max_source_name=source_names[max_index],
+            )
+
+    assert shortest_results is not None
+    max_index = max(
+        range(len(shortest_results)),
+        key=lambda index: shortest_results[index].character_count,
+    )
+    longest = shortest_results[max_index]
+    source_name = source_names[max_index]
+    point_count = len(longest.values)
+    raise ValueError(
+        f"{source_name} 的 {field_name} 含 {point_count} 个点，即使保留 0 位小数并紧凑序列化后仍有 "
+        f"{longest.character_count} 个字符，超过 Excel 单元格上限 {limit}；"
+        "请缩小行号范围或 X 轴数值范围，或改用降采样/非 Excel 格式"
+    )
 
 
 def _serialize_modeling_array(
     values: np.ndarray,
     field_name: str,
     source_name: str,
-) -> tuple[list[float], str]:
-    normalized = _normalize_numeric_array(values, field_name)
-    serialized = json.dumps(
-        normalized,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    if len(serialized) > EXCEL_CELL_CHARACTER_LIMIT:
-        raise ValueError(
-            f"{source_name} 的 {field_name} 含 {len(normalized)} 个点，紧凑序列化后仍有 "
-            f"{len(serialized)} 个字符，超过 Excel 单元格上限 {EXCEL_CELL_CHARACTER_LIMIT}；"
-            "请缩小行号范围或 X 轴数值范围后重试"
-        )
-    return normalized, serialized
+) -> tuple[list[int | float], str]:
+    """兼容单数组调用；内部同样使用自适应最高精度算法。"""
+    result = _serialize_modeling_arrays([values], field_name, [source_name])
+    item = result.arrays[0]
+    return item.values, item.serialized
+
+
+def _output_precision_metadata(
+    x_result: BatchSerializationResult,
+    intensity_result: BatchSerializationResult,
+) -> dict[str, int | bool]:
+    return {
+        "adaptive": True,
+        "max_decimal_places": MAX_OUTPUT_DECIMAL_PLACES,
+        "xxx_decimal_places": x_result.decimal_places,
+        "intensity_decimal_places": intensity_result.decimal_places,
+        "xxx_max_characters": x_result.max_characters,
+        "intensity_max_characters": intensity_result.max_characters,
+        "excel_cell_character_limit": EXCEL_CELL_CHARACTER_LIMIT,
+    }
 
 
 def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
@@ -333,7 +520,7 @@ def preprocess_raw_files(
     display_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """批量处理原始文件并生成 Excel 可编辑的统一建模表。"""
-    records = []
+    prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
@@ -345,14 +532,27 @@ def preprocess_raw_files(
             raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
         if kind == "raman":
             y = _baseline_correct(x, y, baseline_method)
-        _x_values, x_serialized = _serialize_modeling_array(x, "XXX", display_name)
-        _y_values, y_serialized = _serialize_modeling_array(y, "Intensity", display_name)
+        prepared.append(
+            {"index": index, "name": display_name, "x": x, "processed_y": y}
+        )
+
+    names = [str(item["name"]) for item in prepared]
+    x_result = _serialize_modeling_arrays(
+        [np.asarray(item["x"]) for item in prepared], "XXX", names
+    )
+    intensity_result = _serialize_modeling_arrays(
+        [np.asarray(item["processed_y"]) for item in prepared], "Intensity", names
+    )
+    records = []
+    for item, x_item, intensity_item in zip(
+        prepared, x_result.arrays, intensity_result.arrays
+    ):
         records.append(
             {
-                "Index": index,
-                "Name": display_name,
-                "XXX": x_serialized,
-                "Intensity": y_serialized,
+                "Index": item["index"],
+                "Name": item["name"],
+                "XXX": x_item.serialized,
+                "Intensity": intensity_item.serialized,
                 "Label": "",
                 "Sample_ID": "",
             }
@@ -372,8 +572,7 @@ def preprocess_raw_files_with_preview(
     display_names: list[str] | None = None,
 ) -> dict:
     """在统一表之外返回前端曲线预览和实际范围元数据。"""
-    records = []
-    curves = []
+    prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
         display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
@@ -387,34 +586,60 @@ def preprocess_raw_files_with_preview(
             corrected_y = raw_y.copy()
         if len(x) == 0:
             raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
-        x_values, x_serialized = _serialize_modeling_array(x, "XXX", display_name)
-        corrected_values, corrected_serialized = _serialize_modeling_array(
-            corrected_y, "Intensity", display_name
+        prepared.append(
+            {
+                "index": index,
+                "name": display_name,
+                "x": x,
+                "raw_y": raw_y,
+                "processed_y": corrected_y,
+            }
         )
-        raw_values = _normalize_numeric_array(raw_y, "raw_y")
+
+    names = [str(item["name"]) for item in prepared]
+    x_result = _serialize_modeling_arrays(
+        [np.asarray(item["x"]) for item in prepared], "XXX", names
+    )
+    intensity_result = _serialize_modeling_arrays(
+        [np.asarray(item["processed_y"]) for item in prepared], "Intensity", names
+    )
+    records = []
+    curves = []
+    for item, x_item, intensity_item in zip(
+        prepared, x_result.arrays, intensity_result.arrays
+    ):
+        raw_values = (
+            _normalize_numeric_array(np.asarray(item["raw_y"]), "raw_y")
+            if kind == "raman"
+            else intensity_item.values
+        )
         records.append(
             {
-                "Index": index,
-                "Name": display_name,
-                "XXX": x_serialized,
-                "Intensity": corrected_serialized,
+                "Index": item["index"],
+                "Name": item["name"],
+                "XXX": x_item.serialized,
+                "Intensity": intensity_item.serialized,
                 "Label": "",
                 "Sample_ID": "",
             }
         )
         curves.append(
             ({
-                "name": display_name,
-                "x": x_values,
+                "name": item["name"],
+                "x": x_item.values,
                 "raw_y": raw_values,
-                "corrected_y": corrected_values,
+                "corrected_y": intensity_item.values,
             }
             if kind == "raman"
             else {
-                "name": display_name,
-                "x": x_values,
+                "name": item["name"],
+                "x": x_item.values,
                 "raw_y": raw_values,
             })
         )
     frame = pd.DataFrame.from_records(records, columns=MODELING_COLUMNS)
-    return {"frame": frame, "curves": curves}
+    return {
+        "frame": frame,
+        "curves": curves,
+        "output_precision": _output_precision_metadata(x_result, intensity_result),
+    }

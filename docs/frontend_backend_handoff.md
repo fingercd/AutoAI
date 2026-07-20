@@ -173,9 +173,35 @@ POST /api/preprocess/hplc
 POST /api/preprocess/chromatography   # 简单截取兼容接口
 ```
 
-拉曼顺序固定为先选择行号/X 轴范围，再执行基线校正。HPLC 默认顺序固定为共同时间轴插值、逐条减最小值、按真实时间轴面积归一化；响应曲线使用 `raw_y` 与 `processed_y`。
+拉曼顺序固定为先选择行号/X 轴范围，再执行基线校正。HPLC 同样保留行号/X 轴范围选择和 `hplc_interpolate` 开关。固定轴使用服务端 `HplcGridConfig`，默认是包含首尾端点的 0–50 分钟、7500 点；业务值集中在配置对象中，算法函数不内嵌这些数值。
 
-预处理下载使用响应中的 `download_url`。`output_path`、`common_time_path` 等服务器路径不得直接作为浏览器链接。
+每个原始 HPLC 文件必须解析到配置要求的完整点数且源 X 严格递增。开启插值时，范围参数选择固定目标轴的对应切片：行号 1–4000 会产生前 4000 个固定目标点，而不是把 4000 个源点强行扩展为完整 7500 点；强度始终从完整源曲线中寻找左右邻点。仪器轴与目标轴在边界只有不超过一个采样间隔的相位差时，允许使用首两个或末两个源点线性延伸，超过一个间隔则拒绝。关闭插值时按所选范围导出原始 X/Y，即使多文件 X 轴不一致也返回 200，并通过 `x_axis_consistent=false` 和 `warnings` 提示。两种模式都不执行消负或面积归一化。
+
+普通数组形式的 `XXX` 与 `Intensity` 最多保留 5 位小数。后端以一个预处理批次为单位，分别按 `5 → 4 → 3 → 2 → 1 → 0` 生成最终紧凑 JSON，选择能让该字段所有样本均不超过 Excel 单元格 32,767 字符上限的最高统一精度。该过程只量化数值，不删点、不降采样；同一字段不会对不同样本使用不同精度。若 0 位仍超限，或降低精度会使原本有变化的数据变为常量，则返回 HTTP 400 且不生成结果 CSV。
+
+开启 HPLC 插值时，固定轴不走小数降精度，而是在 `XXX` 中写入可逆描述，例如 `{"type":"linspace-v1","start":0,"stop":50,"count":7500,"unit":"minute"}`；`load_modeling_csv()` 自动恢复完整 float64 数值轴。关闭时 `XXX` 保存所选原数组。HPLC 的 `Intensity` 始终使用上述最高 Excel 安全统一精度。
+
+为方便人工核对，HPLC 响应额外返回 `xxx_download_url` 和 `xxx_rows`。该下载文件按 `Index, Name, Point_Index, XXX, Unit` 逐点展开每条曲线的 X 轴，因此 Excel 中能直接看到每个时间坐标；主建模 CSV 仍保持六列契约和紧凑可逆描述，不受 Excel 单元格字符上限影响。
+
+成功响应包含实际输出精度：
+
+```json
+{
+  "output_precision": {
+    "adaptive": true,
+    "max_decimal_places": 5,
+    "xxx_encoding": "linspace-v1",
+    "intensity_decimal_places": 4,
+    "xxx_max_characters": 28754,
+    "intensity_max_characters": 32110,
+    "excel_cell_character_limit": 32767
+  }
+}
+```
+
+其中最大字符数来自最终写入 CSV 的实际 JSON。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是固定配置展开轴，CSV `XXX` 保存其可逆描述，`hplc_axis` 返回轴元数据；关闭时 `curves[].x` 对应 CSV 普通 X 数组、`common_time=[]`、`hplc_axis=null`。
+
+预处理主文件使用响应中的 `download_url`，HPLC 人工核对时间轴使用 `xxx_download_url`。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 固定轴不再生成 `common_time_path`。
 
 ## 5. 创建训练 Run
 

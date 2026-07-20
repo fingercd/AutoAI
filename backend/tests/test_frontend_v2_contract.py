@@ -86,6 +86,24 @@ def test_v2_has_no_framework_or_cdn() -> None:
     assert '<script type="module" src="./app.js"></script>' in html
 
 
+def test_v2_hplc_preprocess_preserves_range_and_interpolation_controls() -> None:
+    api = _read("api.js")
+    workbench = _read("views/workbench.js")
+
+    assert "hplc_interpolate" in api
+    assert "hplc_interpolate" in workbench
+    assert "启用共同时间轴线性插值" in workbench
+    assert "lastResult.x_axis_consistent" in workbench
+    assert "lastResult.hplc_axis" in workbench
+    assert "lastResult.xxx_download_url" in workbench
+    assert "下载可见 XXX 时间轴" in workbench
+    assert "warning-panel" in workbench
+    assert "不做面积归一化" in workbench
+    for removed in ("hplc_subtract_min", "hplc_normalize_area", "减最小值"):
+        assert removed not in api
+        assert removed not in workbench
+
+
 def test_v2_token_only_in_session_storage_via_api_client() -> None:
     for name, source in _js_sources().items():
         assert not re.search(r"localStorage\s*[.\[]", source), f"{name} 访问了 localStorage"

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..hplc import preprocess_hplc_files_with_preview
@@ -59,6 +60,27 @@ def _curve_intensity_summary(curves: list[dict[str, Any]]) -> list[dict[str, Any
     return summary
 
 
+def _hplc_visible_axis_frame(curves: list[dict[str, Any]]) -> pd.DataFrame:
+    """把每条色谱的 X 轴逐点展开，供 Excel/文本编辑器直接查看。"""
+    records: list[dict[str, Any]] = []
+    for sample_index, curve in enumerate(curves, start=1):
+        name = str(curve.get('name', ''))
+        for point_index, x_value in enumerate(curve.get('x') or [], start=1):
+            records.append(
+                {
+                    'Index': sample_index,
+                    'Name': name,
+                    'Point_Index': point_index,
+                    'XXX': float(x_value),
+                    'Unit': 'minute',
+                }
+            )
+    return pd.DataFrame.from_records(
+        records,
+        columns=['Index', 'Name', 'Point_Index', 'XXX', 'Unit'],
+    )
+
+
 @router.post('/api/preprocess/{kind}')
 def preprocess(
     kind: str,
@@ -70,8 +92,6 @@ def preprocess(
     x_max: float | None = Form(None),
     baseline_method: str = Form('arPLS'),
     hplc_interpolate: bool = Form(True),
-    hplc_subtract_min: bool = Form(True),
-    hplc_normalize_area: bool = Form(True),
 ) -> dict[str, Any]:
     """校验 kind 与范围参数，执行对应管线并返回预览及下载地址。"""
     if kind not in {'raman', 'chromatography', 'hplc'}:
@@ -89,8 +109,6 @@ def preprocess(
                 x_max=x_max,
                 display_names=original_names,
                 interpolate=hplc_interpolate,
-                subtract_min=hplc_subtract_min,
-                normalize_area=hplc_normalize_area,
             )
         else:
             result = preprocess_raw_files_with_preview(
@@ -105,7 +123,8 @@ def preprocess(
                 display_names=original_names,
             )
         frame = result['frame']
-        output = PREPROCESSED_DIR / f'{kind}_{uuid.uuid4().hex[:10]}.csv'
+        output_token = uuid.uuid4().hex[:10]
+        output = PREPROCESSED_DIR / f'{kind}_{output_token}.csv'
         frame.to_csv(output, index=False, encoding='utf-8-sig')
         response: dict[str, Any] = {
             'output_path': str(output.resolve()),
@@ -117,21 +136,29 @@ def preprocess(
             'curves': result['curves'],
             'preview': frame.head(5).drop(columns=['XXX', 'Intensity']).to_dict(orient='records'),
             'intensity_summary': _curve_intensity_summary(result['curves']),
+            'output_precision': result['output_precision'],
+            'warnings': result.get('warnings', []),
         }
         if kind == 'hplc':
+            visible_axis = _hplc_visible_axis_frame(result['curves'])
+            axis_output = PREPROCESSED_DIR / f'{kind}_{output_token}_xxx.csv'
+            visible_axis.to_csv(
+                axis_output,
+                index=False,
+                encoding='utf-8-sig',
+                float_format='%.15g',
+            )
             response.update(
                 {
                     'baseline_method': None,
                     'hplc_interpolate': hplc_interpolate,
-                    'hplc_subtract_min': hplc_subtract_min,
-                    'hplc_normalize_area': hplc_normalize_area,
                     'common_time': result.get('common_time', []),
+                    'hplc_axis': result.get('hplc_axis'),
+                    'x_axis_consistent': result.get('x_axis_consistent', True),
+                    'xxx_download_url': f'/api/files?path={axis_output.resolve()}',
+                    'xxx_rows': int(len(visible_axis)),
                 }
             )
-            if result.get('common_time'):
-                npy_path = PREPROCESSED_DIR / f'common_time_{output.stem}.npy'
-                np.save(npy_path, np.array(result['common_time'], dtype=np.float32))
-                response['common_time_path'] = str(npy_path.resolve())
         elif kind == 'raman':
             response['baseline_method'] = baseline_method
         else:

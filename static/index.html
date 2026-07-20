@@ -239,46 +239,7 @@
         padding: 14px;
         background: #f1fbf9;
       }
-      .hplc-card-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-      }
-      .hplc-title {
-        display: grid;
-        gap: 4px;
-      }
-      .hplc-title strong {
-        color: var(--brand-dark);
-        font-size: 14px;
-      }
-      .hplc-title span {
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.5;
-      }
-      .hplc-badge {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        border-radius: 999px;
-        padding: 3px 9px;
-        background: #d9f4ec;
-        color: var(--brand-dark);
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .hplc-options-panel {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 12px;
-        padding-top: 12px;
-        border-top: 1px solid #c8e8e1;
-      }
       .hplc-option {
-        min-height: 76px;
         border: 1px solid #d8eee9;
         border-radius: 8px;
         padding: 10px;
@@ -1170,7 +1131,6 @@
         .modeling-primary-grid,
         .metrics,
         .chart-grid,
-        .hplc-options-panel,
         .result-analysis-grid {
           grid-template-columns: 1fr;
         }
@@ -1515,14 +1475,15 @@
           </div>
         </div>
 
-        <!-- 色谱主界面实际提交到 HPLC 三步管线；简单 chromatography 仅保留 API 兼容。 -->
+        <!-- 色谱主界面提交到 HPLC 管线；简单 chromatography 仅保留 API 兼容。 -->
         <div id="view-chromatography" class="view hidden">
           <details class="page-help">
             <summary>色谱预处理操作说明</summary>
             <ol>
-              <li>上传一个或多个色谱 CSV，并选择需要的时间范围。</li>
-              <li>默认依次执行共同时间轴插值、逐条消负和真实时间轴面积归一化。</li>
-              <li>仅在数据确有特殊要求时展开并调整标准流程参数。</li>
+              <li>上传一个或多个色谱 CSV，并选择需要的数据范围。</li>
+              <li>可选择是否将曲线线性映射到服务端配置的固定时间轴，默认开启。</li>
+              <li>关闭插值时保留所选原始 X/Y；若文件间 X 轴不一致，仍会生成 CSV 并显示提示。</li>
+              <li>不执行消负或面积归一化。</li>
             </ol>
           </details>
           <div class="grid">
@@ -1539,36 +1500,18 @@
                 <label for="chromStart">起始行</label>
                 <input id="chromStart" type="number" value="1" min="1" />
                 <label for="chromEnd">结束行</label>
-                <input id="chromEnd" type="number" value="160" min="1" />
+                <input id="chromEnd" type="number" value="9000" min="1" />
               </div>
               <div id="chromValueRange" class="hidden">
                 <label for="chromXMin">时间下限（留空不限制）</label>
                 <input id="chromXMin" type="number" step="any" placeholder="例如 0.5" />
                 <label for="chromXMax">时间上限（留空不限制）</label>
-                <input id="chromXMax" type="number" step="any" placeholder="例如 12" />
+                <input id="chromXMax" type="number" step="any" placeholder="例如 50" />
               </div>
               <div class="hplc-default-card">
-                <div class="hplc-card-head">
-                  <div class="hplc-title">
-                    <span class="hplc-badge">默认启用</span>
-                    <strong>HPLC 标准流程</strong>
-                    <span>生成整理 CSV 时默认执行插值对齐、消负和面积归一化；需要调整细项时展开参数。</span>
-                  </div>
-                  <button class="secondary" id="hplcOptionsToggle" type="button" aria-expanded="false">参数</button>
-                </div>
-                <div id="chromHplcOptions" class="hplc-options-panel hidden">
-                  <div class="hplc-option">
-                    <label><input type="checkbox" id="chromHplcInterp" checked /> 线性插值</label>
-                    <span>把多条曲线对齐到共同时间轴。</span>
-                  </div>
-                  <div class="hplc-option">
-                    <label><input type="checkbox" id="chromHplcSubMin" checked /> 消除负值</label>
-                    <span>逐条曲线减最小值，降低负基线影响。</span>
-                  </div>
-                  <div class="hplc-option">
-                    <label><input type="checkbox" id="chromHplcNormArea" checked /> 面积归一化</label>
-                    <span>总面积归一化为 1，突出峰形比例。</span>
-                  </div>
+                <div class="hplc-option">
+                  <label><input type="checkbox" id="chromHplcInterp" checked /> 启用线性插值</label>
+                  <span>开启时映射到配置的固定时间轴；关闭时保留所选原始 X/Y。</span>
                 </div>
               </div>
               <div class="actions">
@@ -1984,10 +1927,7 @@
         const pad = 46;
         let series;
         if (kind === "hplc") {
-          series = [
-            { label: "插值/消负前", values: curve.raw_y, color: "#94a3b8", dashed: true },
-            { label: "处理后", values: curve.processed_y, color: "#2563eb" },
-          ];
+          series = [{ label: "色谱强度", values: curve.processed_y, color: "#2563eb" }];
         } else if (kind === "chromatography") {
           series = [{ label: "原始色谱曲线", values: curve.raw_y, color: "#0f766e" }];
         } else {
@@ -2480,7 +2420,7 @@
 
       window.openRun = (runId) => window.SpecAutoAIResults?.navigateToResult(runId);
 
-      // 预处理表单编排：色谱 UI 固定映射到 hplc，三个布尔值按用户开关提交。
+      // 预处理表单编排：色谱 UI 固定映射到服务端配置驱动的 HPLC 管线。
       function selectedRamanBaselineMethod() {
         if ($("ramanBaselineMethodMode").value === "custom") {
           return $("ramanCustomMethod").value.trim() || "arPLS";
@@ -2492,13 +2432,6 @@
         if (kind === "raman") return "raman";
         if (kind === "hplc") return "chrom";
         return "chrom";
-      }
-
-      function toggleHplcOptionDetails() {
-        const panel = $("chromHplcOptions");
-        const collapsed = panel.classList.toggle("hidden");
-        $("hplcOptionsToggle").textContent = collapsed ? "参数" : "收起";
-        $("hplcOptionsToggle").setAttribute("aria-expanded", String(!collapsed));
       }
 
       function updatePreprocessRangeMode(kind) {
@@ -2513,10 +2446,10 @@
         const effectiveKind = isChrom ? "hplc" : kind;
         const prefix = preprocessPrefix(kind);
         const filesInput = $(`${prefix}Files`);
-        const rangeMode = $(`${prefix}RangeMode`).value;
         if (!filesInput.files.length) throw new Error("请选择文件");
         const form = new FormData();
         [...filesInput.files].forEach((file) => form.append("files", file));
+        const rangeMode = $(`${prefix}RangeMode`).value;
         form.append("range_mode", rangeMode);
         if (rangeMode === "row") {
           form.append("start_row", $(`${prefix}Start`).value);
@@ -2533,8 +2466,6 @@
         }
         if (effectiveKind === "hplc") {
           form.append("hplc_interpolate", String($("chromHplcInterp").checked));
-          form.append("hplc_subtract_min", String($("chromHplcSubMin").checked));
-          form.append("hplc_normalize_area", String($("chromHplcNormArea").checked));
         }
         const result = await api(`/api/preprocess/${effectiveKind}`, { method: "POST", body: form });
         const hasCurves = result.curves && result.curves.length;
@@ -2543,7 +2474,7 @@
         const selectId = `${kind}PreprocessCurveSelect`;
         const canvasId = `${kind}PreprocessCurveCanvas`;
         const title = effectiveKind === "hplc"
-          ? "HPLC 处理后曲线（灰=插值后/消负前，蓝=归一化后）"
+          ? "HPLC 色谱曲线"
           : kind === "chromatography"
             ? "原始色谱曲线"
             : "原始拉曼光谱与基线校正后光谱";
@@ -2587,12 +2518,67 @@
           }
         });
         actions.append(downloadButton);
+        if (effectiveKind === "hplc" && result.xxx_download_url) {
+          const axisDownloadButton = document.createElement("button");
+          axisDownloadButton.className = "secondary";
+          axisDownloadButton.type = "button";
+          axisDownloadButton.textContent = "下载可见 XXX 时间轴";
+          axisDownloadButton.addEventListener("click", async () => {
+            const original = axisDownloadButton.textContent;
+            axisDownloadButton.disabled = true;
+            axisDownloadButton.textContent = "下载中…";
+            try {
+              if (!window.SpecAutoAIDownload) throw new Error("下载模块尚未加载");
+              const downloaded = await window.SpecAutoAIDownload(result.xxx_download_url);
+              const objectUrl = URL.createObjectURL(downloaded.blob);
+              const anchor = document.createElement("a");
+              anchor.href = objectUrl;
+              anchor.download = downloaded.filename || "hplc_xxx.csv";
+              document.body.append(anchor);
+              anchor.click();
+              anchor.remove();
+              setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+            } catch (error) {
+              window.alert(`XXX 时间轴下载失败：${error.message}`);
+            } finally {
+              axisDownloadButton.disabled = false;
+              axisDownloadButton.textContent = original;
+            }
+          });
+          actions.append(axisDownloadButton);
+        }
         resultTarget.replaceChildren(metricGrid, actions);
-        if (effectiveKind === "hplc" && result.common_time?.length) {
+        for (const warning of Array.isArray(result.warnings) ? result.warnings : []) {
+          resultTarget.append(currentRunNotice("warning", "X 轴提示", String(warning)));
+        }
+        if (result.output_precision) {
+          const precision = result.output_precision;
+          const precisionInfo = document.createElement("p");
+          precisionInfo.className = "section-note";
+          const intensityDigits = Number(precision.intensity_decimal_places);
+          const maxDigits = Number(precision.max_decimal_places);
+          if (effectiveKind === "hplc" && precision.xxx_encoding) {
+            const reduced = Number.isFinite(maxDigits) && Number.isFinite(intensityDigits) && intensityDigits < maxDigits;
+            precisionInfo.textContent = reduced
+              ? `固定时间轴使用 ${precision.xxx_encoding} 无损描述；为兼容 Excel，本批次强度采用 ${intensityDigits} 位小数，数据点数量未改变。`
+              : `固定时间轴使用 ${precision.xxx_encoding} 无损描述；强度采用 ${intensityDigits} 位小数。`;
+          } else {
+            const xDigits = Number(precision.xxx_decimal_places);
+            const reduced = Number.isFinite(maxDigits)
+              && ((Number.isFinite(xDigits) && xDigits < maxDigits)
+                || (Number.isFinite(intensityDigits) && intensityDigits < maxDigits));
+            precisionInfo.textContent = reduced
+              ? `为兼容 Excel，本批次已自动采用 XXX 最多 ${xDigits} 位、Intensity 最多 ${intensityDigits} 位小数；数据点数量未改变。`
+              : `输出精度：XXX 最多 ${xDigits} 位、Intensity 最多 ${intensityDigits} 位小数。`;
+          }
+          resultTarget.append(precisionInfo);
+        }
+        if (effectiveKind === "hplc" && result.hplc_axis) {
           const info = document.createElement("p");
           info.className = "section-note";
-          const step = result.common_time.length > 1 ? (Number(result.common_time[1]) - Number(result.common_time[0])) * 60 : 0;
-          info.textContent = `统一时间轴：${result.common_time.length} 点，步长 ${Number.isFinite(step) ? step.toFixed(3) : "-"} 秒`;
+          const axis = result.hplc_axis;
+          const stepSeconds = Number(axis.step_minutes) * 60;
+          info.textContent = `固定时间轴：${axis.start}–${axis.stop} 分钟，${axis.point_count} 点，步长 ${Number.isFinite(stepSeconds) ? stepSeconds.toFixed(6) : "-"} 秒；相邻点线性映射。`;
           resultTarget.append(info);
         }
         if (hasCurves) {
@@ -2896,7 +2882,6 @@
       });
       $("ramanRangeMode").addEventListener("change", () => updatePreprocessRangeMode("raman"));
       $("chromRangeMode").addEventListener("change", () => updatePreprocessRangeMode("chromatography"));
-      $("hplcOptionsToggle").addEventListener("click", toggleHplcOptionDetails);
       document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
         button.addEventListener("click", () => {
           if (window.SpecAutoAIResults?.navigateToView) window.SpecAutoAIResults.navigateToView(button.dataset.viewShortcut);

@@ -1334,6 +1334,124 @@ def test_preprocess_rejects_9000_point_arrays_over_excel_cell_limit(tmp_path, mo
     assert not outputs.exists() or not list(outputs.iterdir())
 
 
+def test_adaptive_serialization_selects_highest_fitting_precision():
+    from backend.app.parsers import _serialize_modeling_arrays
+
+    values = np.array([1.23456, 2.34567, 3.45678], dtype=np.float64)
+
+    result = _serialize_modeling_arrays(
+        [values],
+        "XXX",
+        ["sample"],
+        character_limit=17,
+    )
+
+    assert result.decimal_places == 2
+    assert result.max_characters == 16
+    assert result.arrays[0].serialized == "[1.23,2.35,3.46]"
+    assert result.arrays[0].values == json.loads(result.arrays[0].serialized)
+
+
+def test_adaptive_serialization_uses_one_precision_for_the_whole_batch():
+    from backend.app.parsers import _serialize_modeling_arrays
+
+    short_values = np.array([1.2, 2.3, 3.4], dtype=np.float64)
+    long_values = np.array([1.23456, 2.34567, 3.45678], dtype=np.float64)
+
+    result = _serialize_modeling_arrays(
+        [short_values, long_values],
+        "Intensity",
+        ["short", "long"],
+        character_limit=17,
+    )
+
+    assert result.decimal_places == 2
+    assert all(item.decimal_places == 2 for item in result.arrays)
+    assert result.max_source_name == "long"
+
+
+def test_adaptive_serialization_compacts_integral_values_and_negative_zero():
+    from backend.app.parsers import _serialize_modeling_arrays
+
+    values = np.array([-0.0, 1.49, 2.49], dtype=np.float64)
+
+    result = _serialize_modeling_arrays(
+        [values],
+        "XXX",
+        ["sample"],
+        character_limit=7,
+    )
+
+    assert result.decimal_places == 0
+    assert result.arrays[0].serialized == "[0,1,2]"
+    assert ".0" not in result.arrays[0].serialized
+    assert "-0" not in result.arrays[0].serialized
+
+
+def test_adaptive_serialization_rejects_precision_that_erases_variation():
+    from backend.app.parsers import _serialize_modeling_arrays
+
+    values = np.array([0.01, 0.02], dtype=np.float64)
+
+    with pytest.raises(ValueError, match="失去全部有效变化"):
+        _serialize_modeling_arrays(
+            [values],
+            "Intensity",
+            ["sample"],
+            character_limit=9,
+        )
+
+
+def test_adaptive_serialization_rejects_when_zero_decimals_are_still_too_long():
+    from backend.app.parsers import _serialize_modeling_arrays
+
+    values = np.array([100, 200], dtype=np.float64)
+
+    with pytest.raises(ValueError, match="即使保留 0 位小数.*超过 Excel 单元格上限 8"):
+        _serialize_modeling_arrays(
+            [values],
+            "XXX",
+            ["sample"],
+            character_limit=8,
+        )
+
+
+def test_7500_point_chromatography_adapts_precision_and_round_trips(tmp_path):
+    from backend.app.parsers import preprocess_raw_files_with_preview
+
+    x = np.linspace(0, 75, 7500, dtype=np.float64)
+    files = []
+    for index in range(2):
+        y = 10 + np.sin(x + index * 0.1)
+        source = tmp_path / f"chrom_{index}.csv"
+        pd.DataFrame({"Time": x, "Intensity": y}).to_csv(source, index=False)
+        files.append(source)
+
+    result = preprocess_raw_files_with_preview(files, kind="chromatography")
+    precision = result["output_precision"]
+
+    assert precision["xxx_decimal_places"] < 5
+    assert precision["intensity_decimal_places"] < 5
+    assert precision["xxx_max_characters"] <= 32767
+    assert precision["intensity_max_characters"] <= 32767
+    for row_index, curve in enumerate(result["curves"]):
+        row = result["frame"].iloc[row_index]
+        assert len(curve["x"]) == 7500
+        assert len(curve["raw_y"]) == 7500
+        assert json.loads(row["XXX"]) == curve["x"]
+        assert json.loads(row["Intensity"]) == curve["raw_y"]
+
+    frame = result["frame"].copy()
+    frame["Label"] = ["A", "B"]
+    frame["Sample_ID"] = ["1", "2"]
+    output = tmp_path / "adaptive_modeling.csv"
+    frame.to_csv(output, index=False, encoding="utf-8-sig")
+
+    loaded = load_modeling_csv(output)
+    assert loaded.intensity.shape == (2, 7500)
+    assert len(loaded.x_axis[0]) == 7500
+
+
 def test_read_raw_spectrum_no_header_preserves_first_row(tmp_path):
     from backend.app.parsers import read_raw_spectrum
 
@@ -1626,17 +1744,18 @@ def test_main_ui_manual_explains_sample_id_group_split():
     assert "几个 Sample_ID 就跑几折" in content
 
 
-def test_main_ui_manual_explains_hplc_advanced_preprocessing():
+def test_main_ui_preserves_hplc_range_and_interpolation_controls():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "色谱预处理操作说明" in content
-    assert "HPLC 标准流程" in content
-    assert "共同时间轴" in content
-    assert "逐条消负" in content
-    assert "逐条曲线减最小值" in content
-    assert "真实时间轴面积归一化" in content
-    assert "总面积归一化为 1" in content
-    assert 'id="hplcOptionsToggle"' in content
+    assert "服务端配置的固定时间轴" in content
+    assert 'id="chromHplcInterp" checked' in content
+    assert 'id="chromRangeMode"' in content
+    assert 'id="chromStart"' in content
+    assert 'id="chromEnd"' in content
+    assert 'id="chromHplcSubMin"' not in content
+    assert 'id="chromHplcNormArea"' not in content
+    assert "不执行消负或面积归一化" in content
 
 
 def test_chromatography_ui_uses_hplc_by_default():
@@ -1644,11 +1763,9 @@ def test_chromatography_ui_uses_hplc_by_default():
 
     assert 'id="chromHplcMode"' not in content
     assert "启用 HPLC 高级预处理" not in content
-    assert 'id="hplcOptionsToggle"' in content
-    assert "HPLC 标准流程" in content
-    assert "默认启用" in content
     assert 'const effectiveKind = isChrom ? "hplc" : kind;' in content
-    assert 'hplcOptionsToggle").textContent' in content
+    assert 'form.append("hplc_interpolate"' in content
+    assert "result.hplc_axis" in content
 
 
 # ---------------------------------------------------------------------------
@@ -1656,16 +1773,18 @@ def test_chromatography_ui_uses_hplc_by_default():
 # ---------------------------------------------------------------------------
 
 
-def _make_hplc_fixture(tmp_path, n_files=2, n_points=50, offset_range=0.005, add_negatives=True):
-    """Generate XJ-GC-like test data: uniform time grid + constant offset + Gaussian peaks."""
+def _make_hplc_fixture(tmp_path, n_files=2, n_points=7500, add_negatives=True):
+    """Generate a full-range HPLC fixture with configurable point count."""
     files = []
     for i in range(n_files):
-        offset = np.random.uniform(-offset_range, offset_range)
-        x = np.linspace(0 + offset, 10 + offset, n_points, dtype=np.float64)
+        x = np.linspace(0, 50, n_points, dtype=np.float64)
+        if n_points > 2 and i:
+            # Keep endpoints fixed while making internal source coordinates slightly irregular.
+            x[1:-1] += np.sin(np.linspace(0, np.pi, n_points - 2)) * (i * 1e-4)
         y = (
-            100 * np.exp(-0.5 * ((x - 3) / 1.0) ** 2)
-            + 80 * np.exp(-0.5 * ((x - 7) / 1.5) ** 2)
-            + np.random.normal(0, 0.3, n_points).astype(np.float64)
+            100 * np.exp(-0.5 * ((x - 15) / 2.0) ** 2)
+            + 80 * np.exp(-0.5 * ((x - 35) / 3.0) ** 2)
+            + i
         )
         if add_negatives:
             y[:3] = -0.3  # simulate baseline drift negatives
@@ -1678,191 +1797,144 @@ def _make_hplc_fixture(tmp_path, n_files=2, n_points=50, offset_range=0.005, add
 # ---- Unit tests for pure functions ----
 
 
-def test_compute_common_time_identical():
-    from backend.app.hplc import compute_common_time_axis
+def test_hplc_grid_is_driven_by_injected_config():
+    from backend.app.hplc import HplcGridConfig, build_hplc_target_axis
 
-    x1 = np.linspace(0, 10, 100, dtype=np.float32)
-    x2 = np.linspace(0, 10, 100, dtype=np.float32)
-    common = compute_common_time_axis([x1, x2])
-    assert len(common) == 100
-    np.testing.assert_allclose(common[0], 0.0, atol=1e-6)
-    np.testing.assert_allclose(common[-1], 10.0, atol=1e-6)
+    config = HplcGridConfig(1.0, 3.0, 5, 1e-10)
+    np.testing.assert_allclose(build_hplc_target_axis(config), [1, 1.5, 2, 2.5, 3])
+    assert config.step_minutes == 0.5
 
 
-def test_compute_common_time_offset():
-    from backend.app.hplc import compute_common_time_axis
+def test_hplc_linear_mapping_uses_bracketing_source_points():
+    from backend.app.hplc import HplcGridConfig, map_hplc_intensity
 
-    x1 = np.linspace(0.003, 10.003, 200, dtype=np.float32)
-    x2 = np.linspace(0.000, 10.000, 200, dtype=np.float32)
-    common = compute_common_time_axis([x1, x2])
-    # Overlap: start = max(0.000, 0.003) = 0.003, end = min(10.0, 10.003) = 10.0
-    np.testing.assert_allclose(common[0], 0.003, atol=1e-5)
-    np.testing.assert_allclose(common[-1], 10.0, atol=1e-5)
-    assert len(common) == 200  # median length
+    config = HplcGridConfig(0.0, 0.03, 4, 1e-10)
+    source_x = np.array([0.0, 0.008, 0.021, 0.03])
+    source_y = 100 + 3000 * source_x
+    mapped = map_hplc_intensity(source_x, source_y, "manual.csv", config)
+    np.testing.assert_allclose(mapped, [100, 130, 160, 190], rtol=0, atol=1e-10)
 
 
-def test_compute_common_time_single_file():
-    from backend.app.hplc import compute_common_time_axis
+def test_hplc_fixed_axis_default_contract():
+    from backend.app.hplc import DEFAULT_HPLC_GRID, build_hplc_target_axis
 
-    x = np.linspace(1, 50, 7500, dtype=np.float32)
-    common = compute_common_time_axis([x])
-    np.testing.assert_array_equal(common, x)
-
-
-def test_compute_common_time_no_overlap():
-    from backend.app.hplc import compute_common_time_axis
-
-    x1 = np.linspace(0, 5, 100, dtype=np.float32)
-    x2 = np.linspace(6, 10, 100, dtype=np.float32)
-    with pytest.raises(ValueError, match="无重叠"):
-        compute_common_time_axis([x1, x2])
+    axis = build_hplc_target_axis()
+    assert len(axis) == DEFAULT_HPLC_GRID.point_count
+    assert axis[0] == DEFAULT_HPLC_GRID.start_minutes
+    assert axis[-1] == DEFAULT_HPLC_GRID.stop_minutes
+    assert np.all(np.diff(axis) > 0)
+    np.testing.assert_allclose(np.diff(axis), DEFAULT_HPLC_GRID.step_minutes, rtol=1e-12, atol=1e-14)
 
 
-def test_hplc_interpolate_two_files(tmp_path):
-    from backend.app.hplc import hplc_interpolate
-
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50)
-    pairs = []
-    for f in files:
-        df = pd.read_csv(f, header=None)
-        pairs.append((df.iloc[:, 0].values.astype(np.float32), df.iloc[:, 1].values.astype(np.float32)))
-
-    matrix, common_x = hplc_interpolate(pairs)
-    assert matrix.shape == (2, 50)
-    assert common_x.shape == (50,)
-    assert not np.any(np.isnan(matrix))
-
-
-def test_hplc_subtract_min_basic():
-    from backend.app.hplc import hplc_subtract_min
-
-    m = np.array([[-1.0, 0.0, 5.0], [-0.5, 2.0, 10.0]], dtype=np.float32)
-    result = hplc_subtract_min(m)
-    np.testing.assert_allclose(result[0].min(), 0.0, atol=1e-7)
-    np.testing.assert_allclose(result[0, 0], 0.0, atol=1e-7)  # -1 - (-1) = 0
-    np.testing.assert_allclose(result[0, 2], 6.0, atol=1e-7)  # 5 - (-1) = 6
-    np.testing.assert_allclose(result[1].min(), 0.0, atol=1e-7)
-
-
-def test_hplc_subtract_min_all_positive():
-    from backend.app.hplc import hplc_subtract_min
-
-    m = np.array([[1.0, 2.0, 3.0], [0.5, 1.0, 2.0]], dtype=np.float32)
-    result = hplc_subtract_min(m)
-    assert np.all(result >= 0)
-    np.testing.assert_allclose(result[0, 0], 0.0, atol=1e-7)  # 1 - 1 = 0
-
-
-def test_hplc_normalize_area_basic():
-    from backend.app.hplc import hplc_normalize_area
-
-    m = np.array([[0.0, 1.0, 2.0, 1.0, 0.0]], dtype=np.float32)
-    result = hplc_normalize_area(m)
-    area = float(np.trapezoid(result[0]))
-    np.testing.assert_allclose(area, 1.0, atol=1e-5)
-
-
-def test_hplc_normalize_area_uses_real_time_axis():
-    from backend.app.hplc import hplc_normalize_area
-
-    x_axis = np.linspace(0, 10, 101, dtype=np.float32)
-    m = np.ones((1, 101), dtype=np.float32)
-    result = hplc_normalize_area(m, x_axis=x_axis)
-
-    index_area = float(np.trapezoid(result[0]))
-    time_area = float(np.trapezoid(result[0], x=x_axis))
-    np.testing.assert_allclose(time_area, 1.0, atol=1e-5)
-    assert abs(index_area - 1.0) > 1.0
-
-
-def test_hplc_normalize_area_zero_protection():
-    from backend.app.hplc import hplc_normalize_area
-
-    m = np.zeros((2, 10), dtype=np.float32)
-    result = hplc_normalize_area(m)
-    assert not np.any(np.isnan(result))
-    assert not np.any(np.isinf(result))
-
-
-def test_hplc_pipeline_default(tmp_path):
+@pytest.mark.parametrize("point_count", [7499, 7501])
+def test_hplc_rejects_non_configured_point_count(tmp_path, point_count):
     from backend.app.hplc import preprocess_hplc_files_with_preview
 
-    files = _make_hplc_fixture(tmp_path, n_files=3, n_points=50)
-    result = preprocess_hplc_files_with_preview(
-        files, subtract_min=True, normalize_area=True, interpolate=True
+    source = _make_hplc_fixture(tmp_path, n_files=1, n_points=point_count)[0]
+    with pytest.raises(ValueError, match=rf"解析到 {point_count} 个有效色谱点.*恰好 7500"):
+        preprocess_hplc_files_with_preview([source])
+
+
+def test_hplc_rejects_non_increasing_source_axis(tmp_path):
+    from backend.app.hplc import preprocess_hplc_files_with_preview
+
+    source = _make_hplc_fixture(tmp_path, n_files=1)[0]
+    frame = pd.read_csv(source, header=None)
+    frame.iloc[101, 0] = frame.iloc[100, 0]
+    frame.to_csv(source, index=False, header=False)
+    with pytest.raises(ValueError, match="不严格递增"):
+        preprocess_hplc_files_with_preview([source])
+
+
+def test_hplc_rejects_source_that_cannot_cover_configured_range(tmp_path):
+    from backend.app.hplc import preprocess_hplc_files_with_preview
+
+    source = tmp_path / "short_range.csv"
+    x = np.linspace(0.1, 49.9, 7500)
+    pd.DataFrame({0: x, 1: np.sin(x)}).to_csv(source, index=False, header=False)
+    with pytest.raises(ValueError, match="相差超过一个采样间隔.*无法安全线性映射"):
+        preprocess_hplc_files_with_preview([source])
+
+
+def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_path):
+    from backend.app.hplc import DEFAULT_HPLC_GRID, build_hplc_target_axis, preprocess_hplc_files_with_preview
+
+    source = tmp_path / "instrument_phase.csv"
+    source_x = 0.0020833333333333 + np.arange(7500, dtype=np.float64) * (50 / 7500)
+    source_y = 10 + 2 * source_x
+    pd.DataFrame({0: source_x, 1: source_y}).to_csv(source, index=False, header=False)
+
+    result = preprocess_hplc_files_with_preview([source], start_row=1, end_row=4000)
+
+    expected_x = build_hplc_target_axis(DEFAULT_HPLC_GRID)[:4000]
+    assert result["hplc_axis"]["point_count"] == 4000
+    assert len(result["common_time"]) == 4000
+    np.testing.assert_allclose(result["common_time"], expected_x, rtol=0, atol=0)
+    digits = result["output_precision"]["intensity_decimal_places"]
+    np.testing.assert_allclose(
+        result["curves"][0]["processed_y"],
+        10 + 2 * expected_x,
+        rtol=0,
+        atol=0.5 * 10 ** (-digits) + 1e-12,
     )
-    assert result["frame"].shape[0] == 3
-    assert len(result["curves"]) == 3
-    assert "common_time" in result
-    # After full pipeline, all values >= 0
+    assert json.loads(result["frame"].iloc[0]["XXX"])["count"] == 4000
+
+
+def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
+    from backend.app.hplc import preprocess_hplc_files_with_preview
+    from backend.app.parsers import load_modeling_csv
+
+    files = _make_hplc_fixture(tmp_path, n_files=2)
+    result = preprocess_hplc_files_with_preview(files)
+    assert result["frame"].shape[0] == 2
+    assert result["hplc_axis"]["point_count"] == 7500
+    assert result["hplc_axis"]["mapping"] == "piecewise_linear"
+    assert len(result["common_time"]) == 7500
+    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
+    assert descriptor == {"type": "linspace-v1", "start": 0.0, "stop": 50.0, "count": 7500, "unit": "minute"}
+    assert len(result["frame"].iloc[0]["XXX"]) < 32767
     for curve in result["curves"]:
-        assert np.min(curve["processed_y"]) >= 0.0
-    # Area normalization: each curve area ≈ 1.0 on the real common time axis.
-    common_time = np.asarray(result["common_time"], dtype=np.float32)
-    for curve in result["curves"]:
-        area = float(np.trapezoid(curve["processed_y"], x=common_time))
-        assert abs(area - 1.0) < 0.1  # loose tolerance for random noise
+        assert len(curve["x"]) == len(curve["processed_y"]) == 7500
+        assert curve["raw_y"] == curve["processed_y"]
+    assert min(result["curves"][0]["processed_y"]) < 0
 
-
-def test_hplc_pipeline_interpolate_off(tmp_path):
-    from backend.app.hplc import preprocess_hplc_files_with_preview
-
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50, offset_range=0)
-    result = preprocess_hplc_files_with_preview(files, interpolate=False)
-    # With same offsets, X should be unchanged
-    np.testing.assert_allclose(result["curves"][0]["x"], result["curves"][1]["x"], atol=1e-4)
-
-
-def test_hplc_pipeline_interpolate_off_rejects_shifted_time_axes(tmp_path):
-    from backend.app.hplc import preprocess_hplc_files_with_preview
-
-    files = []
-    for idx, offset in enumerate([0.0, 0.1]):
-        x = np.linspace(offset, 10 + offset, 50, dtype=np.float64)
-        y = np.linspace(1, 50, 50, dtype=np.float64)
-        path = tmp_path / f"shifted_{idx}.csv"
-        pd.DataFrame({0: x, 1: y}).to_csv(path, index=False, header=False)
-        files.append(path)
-
-    with pytest.raises(ValueError, match="时间轴一致"):
-        preprocess_hplc_files_with_preview(files, interpolate=False)
-
-
-def test_hplc_pipeline_subtract_min_off(tmp_path):
-    from backend.app.hplc import preprocess_hplc_files_with_preview
-
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50, add_negatives=True)
-    result = preprocess_hplc_files_with_preview(files, subtract_min=False, normalize_area=False)
-    # Negatives may persist
-    has_negative = any(np.min(curve["processed_y"]) < 0 for curve in result["curves"])
-    assert has_negative  # our fixture has negatives
-
-
-def test_hplc_pipeline_normalize_off(tmp_path):
-    from backend.app.hplc import preprocess_hplc_files_with_preview
-
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50)
-    result = preprocess_hplc_files_with_preview(files, normalize_area=False)
-    area = float(np.trapezoid(result["curves"][0]["processed_y"]))
-    # Area should NOT be 1.0 (normalization disabled)
-    assert abs(area - 1.0) > 0.01
+    modeling = result["frame"].copy()
+    modeling["Label"] = ["A", "B"]
+    modeling["Sample_ID"] = ["S1", "S2"]
+    output = tmp_path / "hplc_modeling.csv"
+    modeling.to_csv(output, index=False, encoding="utf-8-sig")
+    loaded = load_modeling_csv(output)
+    assert len(loaded.x_axis[0]) == 7500
+    np.testing.assert_allclose(loaded.x_axis[0], result["common_time"], rtol=0, atol=0)
 
 
 # ---- API integration tests ----
+
+
+def test_hplc_preprocess_openapi_preserves_interpolation_switch():
+    from backend.app.main import app
+
+    schema = app.openapi()
+    body = schema["paths"]["/api/preprocess/{kind}"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]
+    body_name = body["$ref"].rsplit("/", 1)[-1]
+    properties = schema["components"]["schemas"][body_name]["properties"]
+
+    assert "hplc_interpolate" in properties
+    assert "hplc_subtract_min" not in properties
+    assert "hplc_normalize_area" not in properties
 
 
 def test_hplc_preprocess_api_200(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50)
+    files = _make_hplc_fixture(tmp_path, n_files=2)
     client = TestClient(app)
     opened = [f.open("rb") for f in files]
     try:
         response = client.post(
             "/api/preprocess/hplc",
             files=[("files", (f.name, h, "text/csv")) for f, h in zip(files, opened)],
-            data={"hplc_interpolate": "true", "hplc_subtract_min": "true", "hplc_normalize_area": "true"},
         )
     finally:
         for h in opened:
@@ -1874,7 +1946,7 @@ def test_hplc_preprocess_api_curve_keys(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50)
+    files = _make_hplc_fixture(tmp_path, n_files=2)
     client = TestClient(app)
     opened = [f.open("rb") for f in files]
     try:
@@ -1894,7 +1966,7 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50)
+    files = _make_hplc_fixture(tmp_path, n_files=2)
     client = TestClient(app)
     opened = [f.open("rb") for f in files]
     try:
@@ -1907,40 +1979,85 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
             h.close()
     assert response.status_code == 200
     payload = response.json()
-    assert payload["hplc_interpolate"] is True
-    assert payload["hplc_subtract_min"] is True
-    assert payload["hplc_normalize_area"] is True
+    assert payload["warnings"] == []
+    assert "hplc_subtract_min" not in payload
+    assert "hplc_normalize_area" not in payload
     assert "common_time" in payload
-    assert len(payload["common_time"]) >= 48  # overlap may trim 1–2 points with offset
-    assert "common_time_path" in payload
+    assert len(payload["common_time"]) == 7500
+    assert payload["hplc_axis"]["start"] == 0.0
+    assert payload["hplc_axis"]["stop"] == 50.0
+    assert payload["hplc_axis"]["point_count"] == 7500
+    assert payload["hplc_axis"]["mapping"] == "piecewise_linear"
+    assert payload["xxx_download_url"].startswith("/api/files?path=")
+    assert payload["xxx_rows"] == 15000
+    assert "common_time_path" not in payload
     assert payload["intensity_summary"]
-    assert payload["intensity_summary"][0]["point_count"] >= 48
+    assert payload["intensity_summary"][0]["point_count"] == 7500
     assert payload["intensity_summary"][0]["all_zero"] is False
     assert payload["intensity_summary"][0]["max"] > payload["intensity_summary"][0]["min"]
     assert payload["baseline_method"] is None
+    precision = payload["output_precision"]
+    assert precision["adaptive"] is True
+    assert precision["max_decimal_places"] == 5
+    assert precision["xxx_encoding"] == "linspace-v1"
+    assert 0 <= precision["intensity_decimal_places"] <= 5
+    assert precision["xxx_max_characters"] <= 32767
+    assert precision["intensity_max_characters"] <= 32767
+    assert precision["excel_cell_character_limit"] == 32767
 
 
-def test_hplc_preprocess_api_toggles_off(tmp_path):
+def test_hplc_preprocess_api_row_range_selects_matching_target_axis_slice(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
-    files = _make_hplc_fixture(tmp_path, n_files=2, n_points=50, offset_range=0)
+    files = _make_hplc_fixture(tmp_path, n_files=1)
     client = TestClient(app)
     opened = [f.open("rb") for f in files]
     try:
         response = client.post(
             "/api/preprocess/hplc",
             files=[("files", (f.name, h, "text/csv")) for f, h in zip(files, opened)],
-            data={"hplc_interpolate": "false", "hplc_subtract_min": "false", "hplc_normalize_area": "false"},
+            data={"end_row": "100"},
         )
     finally:
         for h in opened:
             h.close()
     assert response.status_code == 200
     payload = response.json()
+    assert payload["hplc_axis"]["point_count"] == 100
+    assert len(payload["common_time"]) == 100
+    assert len(payload["curves"][0]["processed_y"]) == 100
+
+
+def test_hplc_preprocess_api_interpolation_off_exports_selected_original_axes(tmp_path):
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    files = _make_hplc_fixture(tmp_path, n_files=2)
+    shifted = pd.read_csv(files[1], header=None)
+    shifted.iloc[:, 0] += 0.01
+    shifted.to_csv(files[1], index=False, header=False)
+    client = TestClient(app)
+    opened = [f.open("rb") for f in files]
+    try:
+        response = client.post(
+            "/api/preprocess/hplc",
+            files=[("files", (f.name, h, "text/csv")) for f, h in zip(files, opened)],
+            data={"end_row": "9000", "hplc_interpolate": "false"},
+        )
+    finally:
+        for handle in opened:
+            handle.close()
+
+    assert response.status_code == 200
+    payload = response.json()
     assert payload["hplc_interpolate"] is False
-    assert payload["hplc_subtract_min"] is False
-    assert payload["hplc_normalize_area"] is False
+    assert payload["x_axis_consistent"] is False
+    assert payload["common_time"] == []
+    assert payload["hplc_axis"] is None
+    assert payload["warnings"]
+    assert "所选原始 X 轴正常生成" in payload["warnings"][0]
+    assert all(len(curve["x"]) == 7500 for curve in payload["curves"])
 
 
 def test_hplc_preprocess_rejects_invalid_kind():
@@ -1965,7 +2082,7 @@ def test_hplc_csv_downloadable(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
-    files = _make_hplc_fixture(tmp_path, n_files=1, n_points=50)
+    files = _make_hplc_fixture(tmp_path, n_files=1)
     client = TestClient(app)
     opened = [f.open("rb") for f in files]
     try:
@@ -1982,8 +2099,24 @@ def test_hplc_csv_downloadable(tmp_path):
     assert dl_resp.status_code == 200
     assert "Index,Name,XXX,Intensity,Label,Sample_ID" in dl_resp.text
     downloaded = pd.read_csv(io.StringIO(dl_resp.text))
-    x_values = ast.literal_eval(downloaded.iloc[0]["XXX"])
+    x_descriptor = ast.literal_eval(downloaded.iloc[0]["XXX"])
     intensity = ast.literal_eval(downloaded.iloc[0]["Intensity"])
-    assert len(intensity) == len(x_values) == 50
+    assert x_descriptor["type"] == "linspace-v1"
+    assert x_descriptor["count"] == 7500
+    assert len(intensity) == 7500
     assert not any(pd.isna(value) for value in intensity)
     assert any(abs(float(value)) > 1e-12 for value in intensity)
+
+    axis_response = client.get(resp.json()["xxx_download_url"])
+    assert axis_response.status_code == 200
+    visible_axis = pd.read_csv(io.StringIO(axis_response.text))
+    assert list(visible_axis.columns) == ["Index", "Name", "Point_Index", "XXX", "Unit"]
+    assert len(visible_axis) == 7500
+    assert visible_axis["Point_Index"].tolist() == list(range(1, 7501))
+    np.testing.assert_allclose(
+        visible_axis["XXX"].to_numpy(dtype=float),
+        np.linspace(0.0, 50.0, 7500),
+        rtol=0,
+        atol=5e-14,
+    )
+    assert set(visible_axis["Unit"]) == {"minute"}

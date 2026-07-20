@@ -25,10 +25,12 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 预处理与接口事实
 
-- 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Sample_ID`；`XXX` 与 `Intensity` 输出保留 5 位小数，超过 Excel 单元格 32767 字符上限时拒绝导出并提示调整范围。
+- 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Sample_ID`；`XXX` 与 `Intensity` 最多保留 5 位小数，并按批次字段从 5 到 0 自动选择不超过 Excel 单元格 32767 字符上限的最高统一精度。该过程不删点、不降采样；0 位仍超限或量化会使有效变化全部消失时拒绝导出。
 - 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
-- HPLC 预处理按固定顺序执行：线性插值到共同时间轴、逐条曲线减最小值消负、按真实时间轴梯形积分做面积归一化。
-- HPLC 表单字段 `hplc_interpolate`、`hplc_subtract_min`、`hplc_normalize_area` 默认均为 `true`；响应包含 `processed_y`、`common_time`，可能包含 `common_time_path`。
+- HPLC 固定轴由 `HplcGridConfig` 配置，默认覆盖 0–50 分钟并包含 7500 点；每个原始文件必须有配置要求的完整有效点数且 X 严格递增。
+- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片（1–4000 行即前 4000 个目标点），再用完整源曲线左右邻点线性映射；边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，轴不一致仍生成并警告。均不消负或做面积归一化。
+- 开启时 HPLC `XXX` 使用 `linspace-v1` 紧凑描述并返回 `common_time`/`hplc_axis`；关闭时保存普通 X 数组，`common_time=[]`、`hplc_axis=null`。
+- HPLC 同时通过 `xxx_download_url` 提供逐点展开的可见时间轴 CSV（`Index, Name, Point_Index, XXX, Unit`），供 Excel 人工核对；主建模 CSV 六列契约不变。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
 - server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
 
