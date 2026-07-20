@@ -29,7 +29,7 @@ export function uploadDataset(file, options = {}) {
 /**
  * 预处理：多文件使用重复的 files 字段；kind ∈ raman | hplc | chromatography。
  * params: { start_row, end_row, range_mode, x_min, x_max, baseline_method,
- *           hplc_interpolate, hplc_subtract_min, hplc_normalize_area }
+ *           hplc_interpolate }。
  */
 export function preprocess(kind, files, params = {}, options = {}) {
   const form = new FormData();
@@ -44,11 +44,7 @@ export function preprocess(kind, files, params = {}, options = {}) {
   append('x_min', params.x_min);
   append('x_max', params.x_max);
   if (kind === 'raman') append('baseline_method', params.baseline_method ?? 'arPLS');
-  if (kind === 'hplc') {
-    form.append('hplc_interpolate', String(params.hplc_interpolate !== false));
-    form.append('hplc_subtract_min', String(params.hplc_subtract_min !== false));
-    form.append('hplc_normalize_area', String(params.hplc_normalize_area !== false));
-  }
+  if (kind === 'hplc') form.append('hplc_interpolate', String(params.hplc_interpolate !== false));
   return request(`/api/preprocess/${encodeURIComponent(kind)}`, { method: 'POST', body: form, ...options });
 }
 

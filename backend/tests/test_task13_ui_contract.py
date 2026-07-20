@@ -206,6 +206,31 @@ def test_modeling_layout_and_recent_result_landing_use_new_summary_fields():
     assert '耗时' in results
 
 
+def test_preprocess_ui_reports_adaptive_excel_safe_precision():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert "result.output_precision" in html
+    assert "precision.xxx_decimal_places" in html
+    assert "precision.xxx_encoding" in html
+    assert "precision.intensity_decimal_places" in html
+    assert "为兼容 Excel，本批次已自动采用 XXX 最多" in html
+    assert "固定时间轴使用" in html
+    assert "数据点数量未改变" in html
+    assert "precisionInfo.textContent" in html
+
+
+def test_preprocess_ui_preserves_hplc_warning_and_axis_metadata():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+
+    assert "Array.isArray(result.warnings)" in html
+    assert 'currentRunNotice("warning", "X 轴提示"' in html
+    assert "result.hplc_axis" in html
+    assert "相邻点线性映射" in html
+    assert "若文件间 X 轴不一致，仍会生成 CSV 并显示提示" in html
+    assert "result.xxx_download_url" in html
+    assert "下载可见 XXX 时间轴" in html
+
+
 def test_result_download_cards_use_fixed_four_column_grid():
     html = Path("static/index.html").read_text(encoding="utf-8")
 
