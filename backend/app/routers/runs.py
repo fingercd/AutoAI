@@ -7,7 +7,9 @@ Run，取消和删除均通过仓库状态机校验。成功 Run 的下载必须
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -106,6 +108,134 @@ def _dataset_name_for_record(record: RunRecord) -> str | None:
     return None
 
 
+def _bounded_macro_f1(value: Any) -> float | None:
+    """只接受 JSON 数值中的有限 Macro F1；bool 和字符串不做隐式转换。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        metric = float(value)
+    except OverflowError:
+        return None
+    return metric if math.isfinite(metric) and 0.0 <= metric <= 1.0 else None
+
+
+def _read_manifest_verified_json(
+    writer: RunArtifactWriter,
+    manifest: dict[str, Any],
+    name: str,
+) -> dict[str, Any] | None:
+    """读取一个由 Manifest 同时登记了大小和 SHA-256 的 JSON 对象。"""
+    try:
+        entry = manifest['artifacts'].get(name)
+        if not isinstance(entry, dict):
+            return None
+        expected_size = entry.get('size_bytes')
+        expected_sha256 = entry.get('sha256')
+        if (
+            isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or expected_size < 0
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(character not in '0123456789abcdefABCDEF' for character in expected_sha256)
+        ):
+            return None
+        path = (writer.run_dir / name).resolve()
+        if path.parent != writer.run_dir or not path.is_file():
+            return None
+        encoded = path.read_bytes()
+        if len(encoded) != expected_size:
+            return None
+        if hashlib.sha256(encoded).hexdigest() != expected_sha256.lower():
+            return None
+        loaded = json.loads(encoded.decode('utf-8-sig'))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _summary_test_macro_f1(
+    record: RunRecord,
+    writer: RunArtifactWriter,
+    manifest: dict[str, Any],
+) -> float | None:
+    """读取列表页唯一需要的测试主指标，不构造完整 run-result-v1。"""
+    cv_aliases = {
+        'leave_one_sample_id_cv',
+        'leave_one_repeat_index_cv',
+        'outer_leave_one_repeat_index_cv',
+        'loocv',
+        'loo',
+    }
+    direct_aliases = {
+        'stratified_holdout',
+        'stratified',
+        'holdout',
+        'external_test_holdout',
+    }
+
+    def evaluation_mode(value: Any) -> str | None:
+        normalized = str(value or '').strip().lower()
+        if normalized in cv_aliases:
+            return 'cv'
+        if normalized in direct_aliases:
+            return 'direct'
+        return None
+
+    metadata = manifest.get('metadata')
+    metadata = metadata if isinstance(metadata, dict) else {}
+    declared_modes = {
+        mode
+        for mode in (
+            evaluation_mode(record.config.get('evaluation_strategy')),
+            evaluation_mode(record.config.get('split_mode')),
+            evaluation_mode(metadata.get('evaluation_strategy')),
+        )
+        if mode is not None
+    }
+    # 数据库配置与已发布 Manifest 对评估口径有冲突时，宁可不展示也不猜测。
+    if len(declared_modes) > 1:
+        return None
+    mode = next(iter(declared_modes), None)
+    cv_metrics: dict[str, Any] | None = None
+    if mode is None:
+        # 只为没有口径快照的旧 Run 读取已校验的 cv_metrics.strategy；未知仍返回空值。
+        cv_metrics = _read_manifest_verified_json(writer, manifest, 'cv_metrics.json')
+        mode = evaluation_mode(cv_metrics.get('strategy')) if cv_metrics is not None else None
+
+    if mode == 'cv':
+        if cv_metrics is None:
+            cv_metrics = _read_manifest_verified_json(writer, manifest, 'cv_metrics.json')
+        if cv_metrics is None:
+            return None
+        artifact_mode = evaluation_mode(cv_metrics.get('strategy'))
+        if artifact_mode is not None and artifact_mode != 'cv':
+            return None
+        cv_summary = cv_metrics.get('cv_summary')
+        pooled_test = cv_summary.get('pooled_test') if isinstance(cv_summary, dict) else None
+        if isinstance(pooled_test, dict) and 'macro_f1' in pooled_test:
+            return _bounded_macro_f1(pooled_test.get('macro_f1'))
+
+        # 兼容少量没有 cv_summary 的旧 Run：只有明确标注为 pooled OOF 的
+        # test 节点才可作为回退，绝不读取 fold_mean 或不明顶层指标。
+        metrics = _read_manifest_verified_json(writer, manifest, 'metrics.json')
+        test_metrics = metrics.get('test') if isinstance(metrics, dict) else None
+        if isinstance(test_metrics, dict) and test_metrics.get('aggregation') in {
+            'pooled_out_of_fold',
+            'pooled_oof',
+        }:
+            return _bounded_macro_f1(test_metrics.get('macro_f1'))
+        return None
+
+    if mode != 'direct':
+        return None
+    metrics = _read_manifest_verified_json(writer, manifest, 'metrics.json')
+    test_metrics = metrics.get('test') if isinstance(metrics, dict) else None
+    if not isinstance(test_metrics, dict):
+        return None
+    return _bounded_macro_f1(test_metrics.get('macro_f1'))
+
+
 def _projection(record: RunRecord) -> dict[str, Any]:
     """合并规范 RunRecord、兼容 status.json 和可恢复的 artifact 摘要。"""
     status_file = get_run_dir(record.run_id) / 'status.json'
@@ -168,10 +298,12 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
         'failed': 'failed',
         'cancelled': 'cancelled',
     }.get(record.state)
+    test_macro_f1: float | None = None
     if result_state is None:
         run_dir = get_run_dir(record.run_id)
+        artifact_writer = RunArtifactWriter(run_dir)
         try:
-            _manifest, descriptors = RunArtifactWriter(run_dir).descriptors(run_id=record.run_id)
+            manifest, descriptors = artifact_writer.descriptors(run_id=record.run_id)
         except FileNotFoundError:
             result_state = 'missing_manifest'
         except ManifestCorruptError:
@@ -183,6 +315,8 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
                 for item in descriptors
             )
             result_state = 'partial' if damaged else 'ready'
+            if record.state == 'succeeded' and result_state == 'ready':
+                test_macro_f1 = _summary_test_macro_f1(record, artifact_writer, manifest)
     return {
         'run_id': record.run_id,
         'state': record.state,
@@ -195,6 +329,7 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
         'started_at': started_at,
         'finished_at': finished_at,
         'duration_seconds': _duration_seconds(started_at, finished_at),
+        'test_macro_f1': test_macro_f1,
         'progress': _without_server_paths(record.progress),
         'error': public_error_message(record.error) if record.error else None,
     }

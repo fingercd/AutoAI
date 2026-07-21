@@ -76,7 +76,7 @@ def _parse_array(value: object, field: str, row_number: int) -> list[float]:
 
 
 def _parse_modeling_axis(value: object, row_number: int) -> list[float]:
-    """读取旧式数值数组或可逆的等距轴描述。"""
+    """读取旧式数值数组、历史等距轴或固定分钟网格切片描述。"""
     if isinstance(value, dict):
         raw = value
     elif isinstance(value, (list, tuple)):
@@ -88,7 +88,101 @@ def _parse_modeling_axis(value: object, row_number: int) -> list[float]:
             raise ValueError(f"第 {row_number} 行 XXX 不是有效数组或轴描述") from exc
     if not isinstance(raw, dict):
         return _parse_array(raw, "XXX", row_number)
-    if raw.get("type") != "linspace-v1":
+    descriptor_type = raw.get("type")
+    if descriptor_type == "linspace-slice-v1":
+        expected_fields = {
+            "type",
+            "grid_start",
+            "grid_stop",
+            "grid_count",
+            "offset",
+            "length",
+            "unit",
+        }
+        actual_fields = set(raw)
+        if actual_fields != expected_fields:
+            missing = sorted(expected_fields - actual_fields)
+            extra = sorted(str(item) for item in actual_fields - expected_fields)
+            details = []
+            if missing:
+                details.append(f"缺少字段 {', '.join(missing)}")
+            if extra:
+                details.append(f"包含不支持字段 {', '.join(extra)}")
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的 linspace-slice-v1 描述无效："
+                + "；".join(details)
+            )
+
+        def finite_number(field: str) -> float:
+            field_value = raw[field]
+            if isinstance(field_value, bool) or not isinstance(
+                field_value, (int, float, np.integer, np.floating)
+            ):
+                raise ValueError(
+                    f"第 {row_number} 行 XXX 的 {field} 必须是有限数值"
+                )
+            number = float(field_value)
+            if not np.isfinite(number):
+                raise ValueError(
+                    f"第 {row_number} 行 XXX 的 {field} 必须是有限数值"
+                )
+            return number
+
+        def true_integer(field: str) -> int:
+            field_value = raw[field]
+            if isinstance(field_value, bool) or not isinstance(
+                field_value, (int, np.integer)
+            ):
+                raise ValueError(f"第 {row_number} 行 XXX 的 {field} 必须是整数")
+            return int(field_value)
+
+        grid_start = finite_number("grid_start")
+        grid_stop = finite_number("grid_stop")
+        grid_count = true_integer("grid_count")
+        offset = true_integer("offset")
+        length = true_integer("length")
+        if grid_start >= grid_stop:
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的 grid_start/grid_stop 必须严格递增"
+            )
+        if not 2 <= grid_count <= MAX_AXIS_DESCRIPTOR_POINTS:
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的 grid_count 必须在 2 到 "
+                f"{MAX_AXIS_DESCRIPTOR_POINTS} 之间"
+            )
+        if offset < 0:
+            raise ValueError(f"第 {row_number} 行 XXX 的 offset 不能小于 0")
+        if length < 1:
+            raise ValueError(f"第 {row_number} 行 XXX 的 length 必须至少为 1")
+        if offset + length > grid_count:
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的 offset + length 不能超过 grid_count"
+            )
+        if raw["unit"] != "minute":
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的 linspace-slice-v1 unit 必须是 minute"
+            )
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            full_axis = np.linspace(
+                grid_start, grid_stop, grid_count, dtype=np.float64
+            )
+        if not np.all(np.isfinite(full_axis)) or np.any(np.diff(full_axis) <= 0):
+            raise ValueError(
+                f"第 {row_number} 行 XXX 的完整固定轴必须有限且严格递增"
+            )
+        selected_axis = full_axis[offset : offset + length]
+        if (
+            selected_axis.size == 0
+            or not np.all(np.isfinite(selected_axis))
+            or (selected_axis.size > 1 and np.any(np.diff(selected_axis) <= 0))
+        ):
+            raise ValueError(
+                f"第 {row_number} 行 XXX 展开的时间轴必须非空、有限且严格递增"
+            )
+        return selected_axis.tolist()
+
+    if descriptor_type != "linspace-v1":
         raise ValueError(f"第 {row_number} 行 XXX 使用了不支持的轴描述类型")
     try:
         start = float(raw["start"])

@@ -274,7 +274,7 @@ function evaluationLabel(strategy) {
 
 function aggregationLabel(value) {
   const labels = {
-    pooled_oof: '合并 OOF 预测',
+    pooled_oof: '合并交叉验证预测',
     fold_mean: '各折均值',
     fold_std: '各折标准差',
     direct: '直接计算',
@@ -294,6 +294,12 @@ function durationText(run) {
   if (!Number.isFinite(start) || !Number.isFinite(end)) return '-';
   const seconds = Math.max(0, (end - start) / 1000);
   return seconds < 60 ? `${seconds.toFixed(1)} 秒` : `${(seconds / 60).toFixed(1)} 分钟`;
+}
+
+export function trainingTimeText(run) {
+  if (run?.started_at) return formatTime(run.started_at);
+  if (run?.created_at) return `${formatTime(run.created_at)}（任务创建）`;
+  return '—';
 }
 
 function notice(kind, title, message, actions = []) {
@@ -359,12 +365,11 @@ function renderOverview(result) {
     overviewItem('数据集', dataset.name || dataset.dataset_id),
     overviewItem('评估方式', evaluationLabel(evaluation.strategy)),
     overviewItem('主指标口径', aggregationLabel(evaluation.primary_aggregation)),
-    overviewItem('创建时间', formatTime(run.created_at)),
-    overviewItem('开始时间', formatTime(run.started_at)),
+    overviewItem('训练时间', trainingTimeText(run)),
     overviewItem('结束时间', formatTime(run.finished_at)),
     overviewItem('训练耗时', durationText(run)),
-    overviewItem('曲线数', dataset.curve_count),
-    overviewItem('Sample_ID 数', dataset.sample_id_count),
+    overviewItem('数据量', dataset.curve_count),
+    overviewItem('样本数', dataset.sample_id_count),
     overviewItem('类别数', dataset.class_count),
     overviewItem('特征数', dataset.feature_count),
     overviewItem('数据指纹', dataset.sha256 ? String(dataset.sha256).slice(0, 16) : null),
@@ -444,7 +449,7 @@ function renderSplitMetrics(result) {
   replaceChildren(target,
     element('div', { className: 'section-heading' }, element('div', {},
       element('h2', { text: '训练、验证与测试集' }),
-      element('p', { text: '交叉验证中的 OOF 测试指标与折均值分开标注，避免混用。' }),
+      element('p', { text: '全部交叉验证折合并的测试指标与折均值分开标注，避免混用。' }),
     )),
     element('div', { className: 'table-scroll' }, table),
   );
@@ -512,7 +517,7 @@ function renderSplitClassMetrics(splitName, splitAnalysis, result) {
   if (!rows.length) return null;
   const splitLabel = { train: 'Train', valid: 'Valid', test: 'Test' }[splitName] || splitName;
   const table = element('table', {},
-    element('thead', {}, element('tr', {}, ...['类别', 'Precision', 'Recall', 'F1', 'Support'].map((label) => element('th', { text: label })))),
+    element('thead', {}, element('tr', {}, ...['类别', 'Precision', 'Recall', 'F1', '数据量'].map((label) => element('th', { text: label })))),
     element('tbody', {}, ...rows.map(([label, values]) => element('tr', {},
       element('th', { text: label }),
       element('td', { text: formatMetric(values.precision) }),
@@ -592,7 +597,7 @@ function renderSplitDistribution(splitName, splitAnalysis, result) {
   });
   const summaryTable = element('table', { className: 'visually-hidden' },
     element('caption', { text: `${splitLabel} 预测结果分布` }),
-    element('thead', {}, element('tr', {}, element('th', { text: '类别' }), element('th', { text: '真实数量' }), element('th', { text: '预测数量' }))),
+    element('thead', {}, element('tr', {}, element('th', { text: '类别' }), element('th', { text: '真实数据量' }), element('th', { text: '预测数据量' }))),
     element('tbody', {}, ...rows.map((row) => element('tr', {},
       element('th', { text: valueOrDash(row.label ?? row.class_name) }),
       element('td', { text: Number(row.actual ?? row.true_count ?? 0) }),
@@ -605,7 +610,7 @@ function renderSplitDistribution(splitName, splitAnalysis, result) {
     element('div', {
       className: 'distribution-chart',
       role: 'img',
-      'aria-label': `${splitLabel} 各类别真实数量与预测数量竖向柱状图`,
+      'aria-label': `${splitLabel} 各类别真实数据量与预测数据量竖向柱状图`,
     },
     element('div', { className: 'distribution-axis' }, ...ticks.map((tick) => element('span', { text: tick }))),
     element('div', { className: 'distribution-plot', style: `min-width:${Math.max(320, rows.length * 72)}px` }, ...columns)),
@@ -866,8 +871,8 @@ function renderAnalysis(result) {
       element('p', { text: '这里只展示当前 Run 已真实生成或可由现有指标直接推导的分析。' }),
     )),
     group('混淆矩阵', '并列比较 Train、Valid 与 Test；行是真实类别，列是预测类别。', confusionCards),
-    group('各类别指标', '分别查看每个数据分区中各类别的 Precision、Recall、F1 与样本量。', classCards),
-    group('预测结果分布', '每个类别使用竖向分组柱比较真实数量和预测数量。', distributionCards),
+    group('各类别指标', '分别查看每个数据分区中各类别的 Precision、Recall、F1 与数据量。', classCards),
+    group('预测结果分布', '每个类别使用竖向分组柱比较真实数据量和预测数据量。', distributionCards),
     historyCard,
     auditCard,
   );
@@ -1388,8 +1393,7 @@ async function renderResultLanding() {
       const modelId = run.model_type || run.model?.type || run.config?.model_type;
       const modelName = window.SpecAutoAIModelMeta?.(modelId)?.displayName || modelId || '-';
       const datasetName = run.dataset_name || run.dataset?.name || run.config?.dataset_name || '-';
-      const trainingTime = run.started_at || run.created_at;
-      const timeLabel = run.started_at ? formatTime(trainingTime) : `${formatTime(trainingTime)}（创建）`;
+      const timeLabel = trainingTimeText(run);
       const link = element('a', { className: 'button secondary compact', href: buildResultHash(runId), text: '查看' });
       return element('tr', {},
         element('td', {}, element('span', { className: 'truncate-text', text: runId, title: runId })),

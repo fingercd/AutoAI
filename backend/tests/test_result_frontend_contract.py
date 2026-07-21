@@ -81,6 +81,37 @@ def test_curve_index_parser_accepts_common_forms_and_caps_large_selections() -> 
     )
 
 
+def test_hplc_row_range_validator_is_strict_and_reports_actual_point_count() -> None:
+    _run_node(
+        """
+        import assert from 'node:assert/strict';
+        const ui = await import('./static/js/ui-utils.js');
+
+        assert.equal(ui.HPLC_POINT_COUNT, 7500);
+        assert.deepEqual(ui.validateHplcRowRange('100', '4000'), {
+          startRow: 100,
+          endRow: 4000,
+          pointCount: 3901,
+        });
+        assert.deepEqual(ui.validateHplcRowRange('1', ''), {
+          startRow: 1,
+          endRow: 7500,
+          pointCount: 7500,
+        });
+        assert.throws(() => ui.validateHplcRowRange('0', '10'), /1–7500/);
+        assert.throws(() => ui.validateHplcRowRange('1', '7501'), /不能超过 7500/);
+        assert.throws(() => ui.validateHplcRowRange('1', '9000'), /不能超过 7500/);
+        assert.throws(() => ui.validateHplcRowRange('10.5', '20'), /必须是整数/);
+        assert.throws(() => ui.validateHplcRowRange('4000', '100'), /不能大于终止行/);
+        assert.deepEqual(ui.validateHplcRowRange('1', '5', 5), {
+          startRow: 1,
+          endRow: 5,
+          pointCount: 5,
+        });
+        """
+    )
+
+
 def test_hash_result_route_and_auto_redirect_are_pure_and_run_specific() -> None:
     _run_node(
         """
@@ -111,6 +142,15 @@ def test_hash_result_route_and_auto_redirect_are_pure_and_run_specific() -> None
           { contracts: { run_result: 'run-result-v1' } },
         ), false);
         assert.equal(results.shouldUseLegacyResultFallback({ status: 404 }, null), false);
+        assert.doesNotMatch(results.trainingTimeText({
+          created_at: '2026-07-21T01:00:00Z',
+          started_at: '2026-07-21T02:00:00Z',
+        }), /任务创建/);
+        assert.match(results.trainingTimeText({
+          created_at: '2026-07-21T01:00:00Z',
+          started_at: null,
+        }), /任务创建/);
+        assert.equal(results.trainingTimeText({}), '—');
         """
     )
 

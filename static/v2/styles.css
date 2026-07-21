@@ -447,6 +447,18 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 }
 .data-table tbody tr:hover { background: #f8fafc; }
 .data-table tbody tr:last-child td { border-bottom: none; }
+.run-summary-table { min-width: 980px; }
+.sample-id-list { display: grid; gap: 8px; }
+.sample-id-table-wrap table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 13.5px; }
+.sample-id-table-wrap th, .sample-id-table-wrap td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid #eef2f7;
+}
+.sample-id-table-wrap thead th { background: #f8fafc; color: #475569; font-size: 12.5px; }
+.sample-id-actions { display: flex; align-items: center; gap: 10px; }
+.sample-id-render-status { color: var(--text-muted); font-size: 12.5px; }
+.truncate-text { display: inline-block; max-width: 32rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .confusion-table { min-width: 0; width: auto; }
 .confusion-cell { text-align: center; font-variant-numeric: tabular-nums; min-width: 52px; }
 .artifacts-table .artifact-reason { display: block; font-size: 12px; margin-top: 3px; }

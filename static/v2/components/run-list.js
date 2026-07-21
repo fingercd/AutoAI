@@ -1,6 +1,9 @@
 /** 训练记录列表：摘要表格、状态徽章、每行一个主按钮与键盘巡阅。 */
 import { el, clear } from '../lib/dom.js';
-import { stateMeta, stateBadgeClass, isTerminalState, isActiveState, formatDateTime, formatDuration } from '../lib/format.js';
+import {
+  stateMeta, stateBadgeClass, isTerminalState, isActiveState,
+  formatMetric, formatTrainingTime, formatDuration,
+} from '../lib/format.js';
 
 export function stateBadge(state) {
   const meta = stateMeta(state);
@@ -37,7 +40,8 @@ function runRow(item, { onAction }) {
     ]),
     el('td', { text: `${item.model_type || '—'} · ${item.dataset_name || '—'}` }),
     el('td', {}, stateBadge(item.state)),
-    el('td', { text: formatDateTime(item.created_at) }),
+    el('td', { text: formatMetric(item.test_macro_f1) }),
+    el('td', { text: formatTrainingTime(item) }),
     el('td', { text: formatDuration(item.duration_seconds) }),
     el('td', {}, el('div', { className: 'row' }, [
       rowAction(item, { action: 'view', text: '查看结果', className: 'btn btn-primary btn-sm', title: '打开该 Run 的建模结果', onAction }),
@@ -77,9 +81,9 @@ export function renderRunList(container, { items, onAction }) {
   }
   const tbody = el('tbody', {}, items.map((item) => runRow(item, { onAction })));
   const wrap = el('div', { className: 'table-wrap' });
-  wrap.append(el('table', { className: 'data-table' }, [
+  wrap.append(el('table', { className: 'data-table run-summary-table' }, [
     el('caption', { text: '训练 Run 摘要列表；每行可聚焦，Enter 打开结果。' }),
-    el('thead', {}, el('tr', {}, ['Run ID', '模型 · 数据集', '状态', '创建时间', '耗时', '操作'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
+    el('thead', {}, el('tr', {}, ['Run ID', '模型 · 数据集', '状态', '测试集 Macro F1', '训练时间', '耗时', '操作'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
     tbody,
   ]));
   wrap.addEventListener('keydown', (event) => {

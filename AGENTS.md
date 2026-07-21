@@ -31,9 +31,9 @@
 - 统一建模 CSV 固定为 `Index, Name, XXX, Intensity, Label, Sample_ID`。
 - 拉曼支持行号或 X 轴范围截取，处理顺序固定为先选择数据范围，再执行基线校正。
 - HPLC 固定轴业务值集中在 `HplcGridConfig`，算法函数只接收配置；默认配置为 0–50 分钟、7500 点（包含首尾端点），不得在算法函数体内散落硬编码。
-- HPLC 保留行号/X 轴范围选择和 `hplc_interpolate` 开关；每个原始文件仍必须解析出配置要求的完整点数且 X 严格递增。
-- 开启 HPLC 插值时，范围选择作用于固定目标轴：例如第 1–4000 行输出固定完整轴的前 4000 个目标点；强度使用完整源曲线的左右邻点做 float64 线性映射，边界相位差不超过一个采样间隔时允许用首尾两点线性延伸。关闭时导出所选原始 X/Y，轴不一致只警告。两种模式都不执行消负或面积归一化。
-- 开启插值的新 HPLC CSV 使用可逆 `linspace-v1` 描述以避开 Excel 单元格上限；关闭时 `XXX` 保存原数组。`Intensity` 继续使用最高 Excel 安全统一精度。
+- HPLC 保留行号/X 轴范围选择和 `hplc_interpolate` 开关；每个原始文件仍必须解析出配置要求的完整点数且 X 严格递增。行号为 1 基、首尾包含，起止都必须位于 `1..point_count`，终止行留空才按完整点数处理，禁止把 7501、9000 等越界值静默截到末尾。
+- 开启 HPLC 插值时，范围选择作用于固定目标轴：第 1–4000 行输出 4000 个目标点，第 100–4000 行输出 3901 个目标点；第 n 点的真实时间为 `start_minutes + (n - 1) * (stop_minutes - start_minutes) / (point_count - 1)`。强度使用完整源曲线的左右邻点做 float64 线性映射，边界相位差不超过一个采样间隔时允许用首尾两点线性延伸。关闭时导出所选原始 X/Y，轴不一致只警告。两种模式都不执行消负或面积归一化。
+- 开启插值的新 HPLC CSV 使用可逆 `linspace-slice-v1` 描述完整分钟网格和本次 `offset/length`，避免 Excel 单元格上限；读取器继续兼容普通数组和历史 `linspace-v1`。关闭时 `XXX` 保存原数组。`Intensity` 继续使用最高 Excel 安全统一精度。一次 HPLC 预处理只生成一个六列主 CSV，不再生成 `_xxx.csv` 或返回第二下载地址。
 
 ## 建模与可解释性规则
 
@@ -49,6 +49,7 @@
 - 传统模型和无卷积深度模型同时生成 `feature_importance.json/csv` 与 `sample_feature_importance.json/csv`；当前正式前端优先展示单样品结果，旧下载接口保持可用。
 - DSCARNet 会额外写入 `dscarnet_mapping.json` 和 AggMap/PCA joblib 文件；当前 artifact 下载白名单不开放这些 joblib 文件，除非同步更新接口和测试。
 - 结果页以 `GET /api/training/runs/{run_id}/result` 的 `run-result-v1` 为准；CV 必须明确区分 pooled OOF、fold mean 和 fold std。
+- `GET /api/training/runs?projection=summary` 可返回可空 `test_macro_f1`；仅成功且 Manifest 完整的 Run 读取测试主指标，CV 必须取 pooled test，不能取 fold mean。
 - 新 Manifest 使用显式 catalog 与 SHA-256/大小校验；`model.pkl`、`model.pt`、joblib 和 `status.json` 不在新结果页下载白名单。`config.json` 只有在不含服务器路径时才可下载。
 - 当前没有正式 ROC-AUC、ROC 或 Precision-Recall 产物；不得在前端伪造指标或空图。
 

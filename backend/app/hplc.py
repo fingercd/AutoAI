@@ -15,7 +15,6 @@ from .parsers import (
     MAX_OUTPUT_DECIMAL_PLACES,
     MODELING_COLUMNS,
     _output_precision_metadata,
-    _range_indexer,
     _serialize_modeling_arrays,
     read_raw_spectrum,
 )
@@ -34,6 +33,20 @@ class HplcGridConfig:
     @property
     def step_minutes(self) -> float:
         return (self.stop_minutes - self.start_minutes) / (self.point_count - 1)
+
+
+@dataclass(frozen=True)
+class HplcAxisSelection:
+    """固定 HPLC 网格上的连续范围选择结果。"""
+
+    full_axis: np.ndarray
+    indices: np.ndarray
+    target_x: np.ndarray
+    offset: int
+    length: int
+    selected_start_row: int
+    selected_end_row: int
+    range_label: str
 
 
 DEFAULT_HPLC_GRID = HplcGridConfig(
@@ -60,6 +73,132 @@ def build_hplc_target_axis(config: HplcGridConfig = DEFAULT_HPLC_GRID) -> np.nda
         config.point_count,
         dtype=np.float64,
     )
+
+
+def _validated_hplc_row_range(
+    start_row: int,
+    end_row: int | None,
+    config: HplcGridConfig,
+) -> tuple[int, int]:
+    """校验 HPLC 专用的 1 基、首尾包含行号范围。"""
+
+    def validate(value: object, label: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise ValueError(
+                f"HPLC {label}必须是 1 到 {config.point_count} 的整数；当前为 {value!r}"
+            )
+        row = int(value)
+        if not 1 <= row <= config.point_count:
+            raise ValueError(
+                f"HPLC {label}必须在 1 到 {config.point_count} 之间；当前为 {row}"
+            )
+        return row
+
+    start = validate(start_row, "起始行")
+    end = config.point_count if end_row is None else validate(end_row, "终止行")
+    if start > end:
+        raise ValueError(
+            f"HPLC 起始行不能大于终止行；当前为 {start}–{end}，"
+            f"允许范围为 1–{config.point_count}"
+        )
+    return start, end
+
+
+def _validated_hplc_time_bounds(
+    x_min: float | None,
+    x_max: float | None,
+) -> tuple[float, float]:
+    """把可选的真实保留时间边界规范化为有限闭区间边界。"""
+
+    def validate(value: object, label: str) -> float:
+        if isinstance(value, bool):
+            raise ValueError(f"HPLC 保留时间{label}必须是有限数值；当前为 {value!r}")
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"HPLC 保留时间{label}必须是有限数值；当前为 {value!r}"
+            ) from exc
+        if not np.isfinite(number):
+            raise ValueError(f"HPLC 保留时间{label}必须是有限数值；当前为 {value!r}")
+        return number
+
+    lower = float("-inf") if x_min is None else validate(x_min, "下限")
+    upper = float("inf") if x_max is None else validate(x_max, "上限")
+    if lower > upper:
+        raise ValueError(
+            f"HPLC 保留时间下限不能大于上限；当前为 {lower:.12g}–{upper:.12g} 分钟"
+        )
+    return lower, upper
+
+
+def _select_hplc_target_axis(
+    *,
+    start_row: int = 1,
+    end_row: int | None = None,
+    range_mode: str = "row",
+    x_min: float | None = None,
+    x_max: float | None = None,
+    config: HplcGridConfig = DEFAULT_HPLC_GRID,
+) -> HplcAxisSelection:
+    """在完整固定分钟轴上严格选择连续点，并保留原始整数位置。"""
+
+    full_axis = build_hplc_target_axis(config)
+    positions = np.arange(config.point_count, dtype=np.int64)
+    if range_mode == "row":
+        selected_start, selected_end = _validated_hplc_row_range(
+            start_row, end_row, config
+        )
+        indices = positions[selected_start - 1 : selected_end]
+        range_label = "行范围"
+    elif range_mode == "x_value":
+        lower, upper = _validated_hplc_time_bounds(x_min, x_max)
+        indices = positions[(full_axis >= lower) & (full_axis <= upper)]
+        range_label = "保留时间范围"
+    else:
+        raise ValueError("HPLC range_mode 必须是 row 或 x_value")
+
+    if indices.size == 0:
+        raise ValueError(f"所选{range_label}在固定 HPLC 时间轴上没有数据")
+    if indices.size > 1 and np.any(np.diff(indices) != 1):
+        raise ValueError(f"所选{range_label}在固定 HPLC 时间轴上不是连续范围")
+
+    offset = int(indices[0])
+    length = int(indices.size)
+    target_x = full_axis[indices]
+    return HplcAxisSelection(
+        full_axis=full_axis,
+        indices=indices,
+        target_x=target_x,
+        offset=offset,
+        length=length,
+        selected_start_row=offset + 1,
+        selected_end_row=offset + length,
+        range_label=range_label,
+    )
+
+
+def _select_hplc_original_axis(
+    source_x: np.ndarray,
+    *,
+    start_row: int,
+    end_row: int | None,
+    range_mode: str,
+    x_min: float | None,
+    x_max: float | None,
+    config: HplcGridConfig,
+) -> tuple[np.ndarray, str]:
+    """关闭插值时，在每条完整原始轴上应用同一严格请求范围。"""
+
+    if range_mode == "row":
+        selected_start, selected_end = _validated_hplc_row_range(
+            start_row, end_row, config
+        )
+        return np.arange(selected_start - 1, selected_end, dtype=np.int64), "行范围"
+    if range_mode == "x_value":
+        lower, upper = _validated_hplc_time_bounds(x_min, x_max)
+        return np.flatnonzero((source_x >= lower) & (source_x <= upper)), "保留时间范围"
+    raise ValueError("HPLC range_mode 必须是 row 或 x_value")
 
 
 def _validated_hplc_source(
@@ -164,13 +303,17 @@ def hplc_x_axes_consistent(x_axes: list[np.ndarray]) -> bool:
     )
 
 
-def _axis_descriptor(target_x: np.ndarray, config: HplcGridConfig) -> str:
+def _axis_descriptor(selection: HplcAxisSelection, config: HplcGridConfig) -> str:
+    if config.unit != "minute":
+        raise ValueError("linspace-slice-v1 HPLC 时间轴单位必须是 minute")
     return json.dumps(
         {
-            "type": "linspace-v1",
-            "start": float(target_x[0]),
-            "stop": float(target_x[-1]),
-            "count": int(len(target_x)),
+            "type": "linspace-slice-v1",
+            "grid_start": float(config.start_minutes),
+            "grid_stop": float(config.stop_minutes),
+            "grid_count": int(config.point_count),
+            "offset": selection.offset,
+            "length": selection.length,
             "unit": config.unit,
         },
         ensure_ascii=False,
@@ -179,7 +322,11 @@ def _axis_descriptor(target_x: np.ndarray, config: HplcGridConfig) -> str:
     )
 
 
-def _axis_metadata(target_x: np.ndarray, config: HplcGridConfig) -> dict[str, int | float | str]:
+def _axis_metadata(
+    selection: HplcAxisSelection,
+    config: HplcGridConfig,
+) -> dict[str, int | float | str]:
+    target_x = selection.target_x
     return {
         "start": float(target_x[0]),
         "stop": float(target_x[-1]),
@@ -188,7 +335,12 @@ def _axis_metadata(target_x: np.ndarray, config: HplcGridConfig) -> dict[str, in
         "step_minutes": config.step_minutes,
         "mapping": "piecewise_linear",
         "input_point_count_required": config.point_count,
-        "encoding": "linspace-v1",
+        "encoding": "linspace-slice-v1",
+        "grid_start": float(config.start_minutes),
+        "grid_stop": float(config.stop_minutes),
+        "grid_point_count": int(config.point_count),
+        "selected_start_row": selection.selected_start_row,
+        "selected_end_row": selection.selected_end_row,
     }
 
 
@@ -208,20 +360,30 @@ def preprocess_hplc_files_with_preview(
         raise ValueError("至少需要上传一个文件")
     files = list(files)
 
-    full_target_x = build_hplc_target_axis(config)
-    target_indexer, target_range_label = _range_indexer(
-        full_target_x,
-        start_row,
-        end_row,
-        range_mode,
-        x_min,
-        x_max,
-    )
-    target_x = full_target_x[target_indexer]
-    if interpolate and len(target_x) < 2:
-        raise ValueError(f"所选{target_range_label}在固定时间轴上少于 2 个点，无法线性插值")
+    if interpolate:
+        selection = _select_hplc_target_axis(
+            start_row=start_row,
+            end_row=end_row,
+            range_mode=range_mode,
+            x_min=x_min,
+            x_max=x_max,
+            config=config,
+        )
+        if selection.length < 2:
+            raise ValueError(
+                f"所选{selection.range_label}在固定时间轴上少于 2 个点，无法线性插值"
+            )
+    else:
+        # 关闭插值时不套用固定轴边界，但配置和请求本身仍需先严格校验。
+        build_hplc_target_axis(config)
+        if range_mode == "row":
+            _validated_hplc_row_range(start_row, end_row, config)
+        elif range_mode == "x_value":
+            _validated_hplc_time_bounds(x_min, x_max)
+        else:
+            raise ValueError("HPLC range_mode 必须是 row 或 x_value")
+        selection = None
     full_pairs: list[tuple[np.ndarray, np.ndarray]] = []
-    selected_pairs: list[tuple[np.ndarray, np.ndarray]] = []
     names: list[str] = []
     for idx, file_path in enumerate(files):
         path = Path(file_path)
@@ -240,22 +402,11 @@ def preprocess_hplc_files_with_preview(
             require_coverage=False,
         )
         full_pairs.append((validated_x, validated_y))
-        indexer, range_label = _range_indexer(
-            validated_x,
-            start_row,
-            end_row,
-            range_mode,
-            x_min,
-            x_max,
-        )
-        selected_x = validated_x[indexer]
-        selected_y = validated_y[indexer]
-        if len(selected_x) == 0:
-            raise ValueError(f"{path.name} 在所选{range_label}内没有数据")
-        selected_pairs.append((selected_x, selected_y))
 
     warnings: list[str] = []
     if interpolate:
+        assert selection is not None
+        target_x = selection.target_x
         mapped_intensities = [
             map_hplc_intensity(
                 full_x,
@@ -266,10 +417,26 @@ def preprocess_hplc_files_with_preview(
             )
             for (full_x, full_y), file_path in zip(full_pairs, files)
         ]
-        x_arrays = [target_x] * len(selected_pairs)
+        x_arrays = [target_x] * len(full_pairs)
         intensity_arrays = mapped_intensities
         x_axis_consistent = True
     else:
+        selected_pairs: list[tuple[np.ndarray, np.ndarray]] = []
+        for (validated_x, validated_y), file_path in zip(full_pairs, files):
+            indices, range_label = _select_hplc_original_axis(
+                validated_x,
+                start_row=start_row,
+                end_row=end_row,
+                range_mode=range_mode,
+                x_min=x_min,
+                x_max=x_max,
+                config=config,
+            )
+            selected_x = validated_x[indices]
+            selected_y = validated_y[indices]
+            if len(selected_x) == 0:
+                raise ValueError(f"{Path(file_path).name} 在所选{range_label}内没有数据")
+            selected_pairs.append((selected_x, selected_y))
         x_arrays = [pair[0] for pair in selected_pairs]
         intensity_arrays = [pair[1] for pair in selected_pairs]
         x_axis_consistent = hplc_x_axes_consistent(x_arrays)
@@ -284,7 +451,7 @@ def preprocess_hplc_files_with_preview(
     intensity_result = _serialize_modeling_arrays(
         intensity_arrays, "Intensity", names
     )
-    axis_descriptor = _axis_descriptor(target_x, config) if interpolate else ""
+    axis_descriptor = _axis_descriptor(selection, config) if selection is not None else ""
     x_result = None if interpolate else _serialize_modeling_arrays(x_arrays, "XXX", names)
     processed_values: list[list[int | float]] = []
     for i in range(n_files):
@@ -306,7 +473,7 @@ def preprocess_hplc_files_with_preview(
     )
 
     curves = []
-    target_values = target_x.tolist()
+    target_values = selection.target_x.tolist() if selection is not None else []
     for i in range(n_files):
         curve_x = target_values if interpolate else x_result.arrays[i].values
         curve_data: dict = {
@@ -321,14 +488,14 @@ def preprocess_hplc_files_with_preview(
         "frame": frame,
         "curves": curves,
         "common_time": target_values if interpolate else [],
-        "hplc_axis": _axis_metadata(target_x, config) if interpolate else None,
+        "hplc_axis": _axis_metadata(selection, config) if selection is not None else None,
         "x_axis_consistent": x_axis_consistent,
         "warnings": warnings,
         "output_precision": (
             {
                 "adaptive": True,
                 "max_decimal_places": MAX_OUTPUT_DECIMAL_PLACES,
-                "xxx_encoding": "linspace-v1",
+                "xxx_encoding": "linspace-slice-v1",
                 "xxx_max_characters": len(axis_descriptor),
                 "intensity_decimal_places": intensity_result.decimal_places,
                 "intensity_max_characters": intensity_result.max_characters,

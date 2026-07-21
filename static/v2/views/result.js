@@ -1,7 +1,7 @@
 /** 建模结果 / 解释性视图：只消费 run-result-v1，single-flight 轮询，终态停止。 */
 import { el, clear, saveBlob } from '../lib/dom.js';
 import {
-  stateMeta, resultStateMeta, isActiveState, formatMetric, formatDateTime, formatDuration,
+  stateMeta, resultStateMeta, isActiveState, formatMetric, formatDateTime, formatTrainingTime, formatDuration,
   SCALAR_METRIC_KEYS, METRIC_LABELS, EVALUATION_STRATEGIES, AGGREGATION_LABELS,
   resolveSplitScalars, validateCvAggregation, isCvResult, findServerPaths,
   resultStateBadgeClass,
@@ -57,7 +57,7 @@ function foldAuditTable(result) {
   if (!splits.length) return null;
   const wrap = el('div', { className: 'table-wrap' });
   wrap.append(el('table', { className: 'data-table' }, [
-    el('caption', { text: '逐折审计指标（fold mean ± fold std）；Test 主指标以 pooled OOF 为准，不与此表混用。' }),
+    el('caption', { text: '逐折审计指标（fold mean ± fold std）；Test 主指标以合并交叉验证预测为准，不与此表混用。' }),
     el('thead', {}, el('tr', {}, [
       el('th', { text: '分区', attrs: { scope: 'col' } }),
       SCALAR_METRIC_KEYS.map((key) => el('th', { text: METRIC_LABELS[key] || key, attrs: { scope: 'col' } })),
@@ -138,8 +138,8 @@ function splitPanel(result, split) {
   const distribution = analysis?.prediction_distribution;
   if (distribution?.labels?.length) {
     const series = [
-      { name: '真实数量', values: distribution.true_counts || [], color: '#2563eb' },
-      { name: '预测数量', values: distribution.predicted_counts || [], color: '#d97706' },
+      { name: '真实数据量', values: distribution.true_counts || [], color: '#2563eb' },
+      { name: '预测数据量', values: distribution.predicted_counts || [], color: '#d97706' },
     ];
     host.append(el('h3', { text: '预测分布' }));
     host.append(el('div', { className: 'chart-card' }, [
@@ -148,7 +148,7 @@ function splitPanel(result, split) {
           labels: distribution.labels,
           series,
           title: `${SPLIT_LABELS[split]} 分区预测分布`,
-          description: '按类别对比真实与预测样本数量。',
+          description: '按类别对比真实与预测数据量。',
         }),
       ]),
       chartLegend(series),
@@ -247,7 +247,7 @@ function conclusionCard(result) {
   card.append(metricCards(result.metrics?.primary, evaluation.primary_aggregation));
   card.append(el('p', { className: 'hint', text: `结果完整性：${resultMeta.label}。${resultMeta.description || ''}` }));
   if (isCvResult(result)) {
-    card.append(el('p', { className: 'hint', text: '交叉验证：Test 主指标为全部折合并的 OOF 预测（pooled OOF）；Train/Valid 标量为逐折均值，两者不混用。' }));
+    card.append(el('p', { className: 'hint', text: '交叉验证：Test 主指标由全部交叉验证折的测试预测合并计算；Train/Valid 标量为逐折均值，两者不混用。' }));
   }
 
   const detailHost = el('div', { className: 'stack', attrs: { id: 'v2-eval-details', hidden: true } });
@@ -283,11 +283,11 @@ function datasetCard(result) {
     el('h2', { className: 'card-title', text: '数据集快照' }),
     metaBlocks([
       ['名称', dataset.name],
-      ['曲线数', dataset.curve_count],
-      ['Sample_ID 数', dataset.sample_id_count],
+      ['数据量', dataset.curve_count],
+      ['样本数', dataset.sample_id_count],
       ['类别数', dataset.class_count],
       ['特征数', dataset.feature_count],
-      ['独立测试曲线数', dataset.test_curve_count],
+      ['独立测试数据量', dataset.test_curve_count],
     ]),
   ]);
 }
@@ -373,10 +373,6 @@ function statusView(result) {
     ['Run ID', run.run_id],
     ['执行状态', `${meta.label}（${run.state || '—'}）`],
     ['结果状态', `${resultMeta.label}（${run.result_state || '—'}）`],
-    ['创建时间', formatDateTime(run.created_at)],
-    ['开始时间', run.started_at ? formatDateTime(run.started_at) : '未开始'],
-    ['结束时间', formatDateTime(run.finished_at)],
-    ['耗时', formatDuration(run.duration_seconds)],
   ];
   if (progress.fold_progress_text) items.push(['折进度', `${progress.fold_progress_text}${progress.current_fold_sample_id ? `（当前折 Sample_ID：${progress.current_fold_sample_id}）` : ''}`]);
   if (progress.target_epochs) items.push(['目标 epochs', progress.target_epochs]);
@@ -428,12 +424,12 @@ export function mountResult(container, { route, announce, toast, navigate }) {
       const wrap = el('div', { className: 'table-wrap' });
       wrap.append(el('table', { className: 'data-table' }, [
         el('caption', { text: '最近训练任务' }),
-        el('thead', {}, el('tr', {}, ['Run ID', '模型 · 数据集', '状态', '开始时间', '耗时', '操作'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
+        el('thead', {}, el('tr', {}, ['Run ID', '模型 · 数据集', '状态', '训练时间', '耗时', '操作'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
         el('tbody', {}, items.map((item) => el('tr', {}, [
           el('td', {}, el('code', { text: item.run_id })),
           el('td', { text: `${item.model_type || '—'} · ${item.dataset_name || '—'}` }),
           el('td', {}, stateBadge(item.state)),
-          el('td', { text: item.started_at ? formatDateTime(item.started_at) : `未开始（创建于 ${formatDateTime(item.created_at)}）` }),
+          el('td', { text: formatTrainingTime(item) }),
           el('td', { text: formatDuration(item.duration_seconds) }),
           el('td', {}, el('button', {
             className: 'btn btn-primary btn-sm',
@@ -496,8 +492,7 @@ export function mountResult(container, { route, announce, toast, navigate }) {
         ]),
       ]),
       metaBlocks([
-        ['创建时间', formatDateTime(run.created_at)],
-        ['开始时间', run.started_at ? formatDateTime(run.started_at) : '未开始'],
+        ['训练时间', formatTrainingTime(run)],
         ['结束时间', formatDateTime(run.finished_at)],
         ['耗时', formatDuration(run.duration_seconds)],
       ], 'grid grid-2'),

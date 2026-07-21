@@ -25,12 +25,12 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 预处理与接口事实
 
-- 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Sample_ID`；`XXX` 与 `Intensity` 最多保留 5 位小数，并按批次字段从 5 到 0 自动选择不超过 Excel 单元格 32767 字符上限的最高统一精度。该过程不删点、不降采样；0 位仍超限或量化会使有效变化全部消失时拒绝导出。
+- 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Sample_ID`；普通数组形式的 `XXX` 与 `Intensity` 最多保留 5 位小数，并按批次字段从 5 到 0 自动选择不超过 Excel 单元格 32767 字符上限的最高统一精度。该过程不删点、不降采样；0 位仍超限或量化会使有效变化全部消失时拒绝导出。开启插值的 HPLC `XXX` 使用下述紧凑可逆描述，不走数组小数降精度。
 - 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
-- HPLC 固定轴由 `HplcGridConfig` 配置，默认覆盖 0–50 分钟并包含 7500 点；每个原始文件必须有配置要求的完整有效点数且 X 严格递增。
-- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片（1–4000 行即前 4000 个目标点），再用完整源曲线左右邻点线性映射；边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，轴不一致仍生成并警告。均不消负或做面积归一化。
-- 开启时 HPLC `XXX` 使用 `linspace-v1` 紧凑描述并返回 `common_time`/`hplc_axis`；关闭时保存普通 X 数组，`common_time=[]`、`hplc_axis=null`。
-- HPLC 同时通过 `xxx_download_url` 提供逐点展开的可见时间轴 CSV（`Index, Name, Point_Index, XXX, Unit`），供 Excel 人工核对；主建模 CSV 六列契约不变。
+- HPLC 固定轴由 `HplcGridConfig` 配置，默认覆盖 0–50 分钟并包含 7500 点；每个原始文件必须有配置要求的完整有效点数且 X 严格递增。行号为 1 基、首尾包含且严格限制在 1–7500，终止行留空才使用 7500；100–4000 实际输出 3901 点。
+- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算，不能用 `n/7500` 代替。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，轴不一致仍生成并警告。均不消负或做面积归一化。
+- 开启时 HPLC `XXX` 使用 `linspace-slice-v1` 紧凑描述完整真实分钟网格及本次 `offset/length`，并返回实际选择的 `common_time`/`hplc_axis`；关闭时保存普通 X 数组，`common_time=[]`、`hplc_axis=null`。读取器继续兼容历史 `linspace-v1` 和普通数组。
+- HPLC 成功请求只生成一个六列统一建模 CSV，并只返回主 `download_url`；不再生成逐点 `_xxx.csv`，也不再返回 `xxx_download_url`/`xxx_rows`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
 - server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
 
@@ -41,6 +41,8 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 15 个目标模型是 catalog 契约，不表示每个依赖在本机都可用。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而禁用并跳过训练验收；不得回退成近似模型。`dscarnet` 支持 SAR、CAR、dual 三模式；二分类深度模型使用单 logit + `BCEWithLogitsLoss`。
 
 `stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 的外层 test 留一个 `Sample_ID`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。交叉验证测试集的 Precision、Recall 和 Macro F1 以全部折 OOF 预测合并后计算，逐折均值/标准差只作审计。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+
+训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
 
 解释性矩阵以 `backend/app/training_explainability.py` 为准：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、未来可用的 `cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM，并保留输入梯度 sanity check；`dscarnet` 使用 SAR/CAR/dual 模式对应的 2D Grad-CAM 回投。旧 artifact 名保持兼容。
 

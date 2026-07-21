@@ -1676,7 +1676,7 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert '["总数据", summary.samples]' in content
+    assert '["数据量", summary.samples]' in content
     assert '["样本数", sampleIds.group_count]' in content
     assert '["样品种类",' not in content
     assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
@@ -1709,7 +1709,8 @@ def test_training_records_use_summary_projection_and_result_page_owns_split_metr
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert '["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "状态", ""]' in content
+    assert '["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "测试集 Macro F1", "状态", ""]' in content
+    assert "run.test_macro_f1" in content
     assert 'new URLSearchParams({ projection: "summary", limit: "50" })' in content
     assert 'const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");' in content
     assert "const splits = result.metrics?.splits || {};" in results
@@ -1877,7 +1878,10 @@ def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_
         rtol=0,
         atol=0.5 * 10 ** (-digits) + 1e-12,
     )
-    assert json.loads(result["frame"].iloc[0]["XXX"])["count"] == 4000
+    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
+    assert descriptor["grid_count"] == 7500
+    assert descriptor["offset"] == 0
+    assert descriptor["length"] == 4000
 
 
 def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
@@ -1891,7 +1895,15 @@ def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
     assert result["hplc_axis"]["mapping"] == "piecewise_linear"
     assert len(result["common_time"]) == 7500
     descriptor = json.loads(result["frame"].iloc[0]["XXX"])
-    assert descriptor == {"type": "linspace-v1", "start": 0.0, "stop": 50.0, "count": 7500, "unit": "minute"}
+    assert descriptor == {
+        "type": "linspace-slice-v1",
+        "grid_start": 0.0,
+        "grid_stop": 50.0,
+        "grid_count": 7500,
+        "offset": 0,
+        "length": 7500,
+        "unit": "minute",
+    }
     assert len(result["frame"].iloc[0]["XXX"]) < 32767
     for curve in result["curves"]:
         assert len(curve["x"]) == len(curve["processed_y"]) == 7500
@@ -1988,8 +2000,8 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     assert payload["hplc_axis"]["stop"] == 50.0
     assert payload["hplc_axis"]["point_count"] == 7500
     assert payload["hplc_axis"]["mapping"] == "piecewise_linear"
-    assert payload["xxx_download_url"].startswith("/api/files?path=")
-    assert payload["xxx_rows"] == 15000
+    assert "xxx_download_url" not in payload
+    assert "xxx_rows" not in payload
     assert "common_time_path" not in payload
     assert payload["intensity_summary"]
     assert payload["intensity_summary"][0]["point_count"] == 7500
@@ -1999,7 +2011,7 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     precision = payload["output_precision"]
     assert precision["adaptive"] is True
     assert precision["max_decimal_places"] == 5
-    assert precision["xxx_encoding"] == "linspace-v1"
+    assert precision["xxx_encoding"] == "linspace-slice-v1"
     assert 0 <= precision["intensity_decimal_places"] <= 5
     assert precision["xxx_max_characters"] <= 32767
     assert precision["intensity_max_characters"] <= 32767
@@ -2043,7 +2055,7 @@ def test_hplc_preprocess_api_interpolation_off_exports_selected_original_axes(tm
         response = client.post(
             "/api/preprocess/hplc",
             files=[("files", (f.name, h, "text/csv")) for f, h in zip(files, opened)],
-            data={"end_row": "9000", "hplc_interpolate": "false"},
+            data={"end_row": "7500", "hplc_interpolate": "false"},
         )
     finally:
         for handle in opened:
@@ -2101,22 +2113,13 @@ def test_hplc_csv_downloadable(tmp_path):
     downloaded = pd.read_csv(io.StringIO(dl_resp.text))
     x_descriptor = ast.literal_eval(downloaded.iloc[0]["XXX"])
     intensity = ast.literal_eval(downloaded.iloc[0]["Intensity"])
-    assert x_descriptor["type"] == "linspace-v1"
-    assert x_descriptor["count"] == 7500
+    assert x_descriptor["type"] == "linspace-slice-v1"
+    assert x_descriptor["grid_count"] == 7500
+    assert x_descriptor["offset"] == 0
+    assert x_descriptor["length"] == 7500
     assert len(intensity) == 7500
     assert not any(pd.isna(value) for value in intensity)
     assert any(abs(float(value)) > 1e-12 for value in intensity)
 
-    axis_response = client.get(resp.json()["xxx_download_url"])
-    assert axis_response.status_code == 200
-    visible_axis = pd.read_csv(io.StringIO(axis_response.text))
-    assert list(visible_axis.columns) == ["Index", "Name", "Point_Index", "XXX", "Unit"]
-    assert len(visible_axis) == 7500
-    assert visible_axis["Point_Index"].tolist() == list(range(1, 7501))
-    np.testing.assert_allclose(
-        visible_axis["XXX"].to_numpy(dtype=float),
-        np.linspace(0.0, 50.0, 7500),
-        rtol=0,
-        atol=5e-14,
-    )
-    assert set(visible_axis["Unit"]) == {"minute"}
+    assert "xxx_download_url" not in resp.json()
+    assert "xxx_rows" not in resp.json()

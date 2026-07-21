@@ -52,7 +52,7 @@ def test_official_ui_external_audit_never_renders_cv_or_fold_progress():
 
     assert "external_test_holdout: '独立测试集最终评估'" in results
     assert "leave_one_sample_id_cv: '按 Sample_ID 留一交叉验证'" in results
-    assert "pooled_oof: '合并 OOF 预测'" in results
+    assert "pooled_oof: '合并交叉验证预测'" in results
     assert 'result.evaluation?.primary_aggregation' in results
     assert 'result.metrics?.splits' in results
     assert 'const progressMarkup = isExternal' not in html
@@ -214,7 +214,7 @@ def test_preprocess_ui_reports_adaptive_excel_safe_precision():
     assert "precision.xxx_encoding" in html
     assert "precision.intensity_decimal_places" in html
     assert "为兼容 Excel，本批次已自动采用 XXX 最多" in html
-    assert "固定时间轴使用" in html
+    assert "真实时间轴使用" in html
     assert "数据点数量未改变" in html
     assert "precisionInfo.textContent" in html
 
@@ -227,8 +227,12 @@ def test_preprocess_ui_preserves_hplc_warning_and_axis_metadata():
     assert "result.hplc_axis" in html
     assert "相邻点线性映射" in html
     assert "若文件间 X 轴不一致，仍会生成 CSV 并显示提示" in html
-    assert "result.xxx_download_url" in html
-    assert "下载可见 XXX 时间轴" in html
+    assert "result.xxx_download_url" not in html
+    assert "下载可见 XXX 时间轴" not in html
+    assert 'id="chromEnd" type="number" value="7500" min="1" max="7500" step="1"' in html
+    assert "validateHplcRowRange" in html
+    assert 'if (!xMin && !xMax && effectiveKind !== "hplc")' in html
+    assert "真实保留时间" in html
 
 
 def test_result_download_cards_use_fixed_four_column_grid():
@@ -237,3 +241,24 @@ def test_result_download_cards_use_fixed_four_column_grid():
     assert 'grid-template-columns: repeat(4, minmax(0, 1fr));' in html
     assert '@media (max-width: 1180px)' in html
     assert '@media (max-width: 600px)' in html
+
+
+def test_classic_ui_uses_unified_business_terms_and_test_macro_f1_column():
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    ui = Path("static/js/ui-utils.js").read_text(encoding="utf-8")
+    results = Path("static/js/run-results.js").read_text(encoding="utf-8")
+
+    for text in ("数据量", "类别数", "样本数", "每样本测量数", "特征数", "按样本分组", "类别分布"):
+        assert text in html or text in ui
+    for stale in ("总数据", "每组测量数", "曲线长度", "Sample_ID 分组", "标签分布", "模型目录已加载"):
+        assert stale not in html
+    assert "['类别', 'Precision', 'Recall', 'F1', '数据量']" in results
+    assert "overviewItem('训练时间', trainingTimeText(run))" in results
+    assert "overviewItem('创建时间'" not in results
+    assert "overviewItem('开始时间'" not in results
+    assert "function formatTrainingTime(run)" in html
+    assert "if (run?.created_at) return `${formatTime(run.created_at)}（任务创建）`;" in html
+    assert "formatTrainingTime(run)," in html
+    assert "测试集 Macro F1" in html
+    assert "run.test_macro_f1" in html
+    assert "cell.colSpan = 8" in html

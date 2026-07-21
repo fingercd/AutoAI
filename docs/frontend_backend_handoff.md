@@ -152,7 +152,7 @@ worker 当前收敛的稳定错误码包括：数据完整性变化用 `dataset_
 Index, Name, XXX, Intensity, Label, Sample_ID
 ```
 
-- `XXX` 和 `Intensity` 是等长数值数组。
+- `Intensity` 是数值数组；`XXX` 是等长数值数组，或后端可逆解析的固定轴 JSON 描述。
 - `Label` 必填且始终按分类类别处理。
 - 同一 `Sample_ID` 只能对应一个 Label；重复测量组不能跨 train/valid/test。
 - 上传使用 `multipart/form-data`，文件字段名为 `file`；预处理多文件字段名为重复的 `files`。
@@ -175,13 +175,13 @@ POST /api/preprocess/chromatography   # 简单截取兼容接口
 
 拉曼顺序固定为先选择行号/X 轴范围，再执行基线校正。HPLC 同样保留行号/X 轴范围选择和 `hplc_interpolate` 开关。固定轴使用服务端 `HplcGridConfig`，默认是包含首尾端点的 0–50 分钟、7500 点；业务值集中在配置对象中，算法函数不内嵌这些数值。
 
-每个原始 HPLC 文件必须解析到配置要求的完整点数且源 X 严格递增。开启插值时，范围参数选择固定目标轴的对应切片：行号 1–4000 会产生前 4000 个固定目标点，而不是把 4000 个源点强行扩展为完整 7500 点；强度始终从完整源曲线中寻找左右邻点。仪器轴与目标轴在边界只有不超过一个采样间隔的相位差时，允许使用首两个或末两个源点线性延伸，超过一个间隔则拒绝。关闭插值时按所选范围导出原始 X/Y，即使多文件 X 轴不一致也返回 200，并通过 `x_axis_consistent=false` 和 `warnings` 提示。两种模式都不执行消负或面积归一化。
+每个原始 HPLC 文件必须解析到配置要求的完整点数且源 X 严格递增。行号为 1 基、首尾包含，起止都必须在 `1..point_count` 内；默认最大终止行为 7500，留空才按 7500 处理，7501/9000 返回 HTTP 400。开启插值时，范围参数选择固定目标轴的对应切片：行号 1–4000 产生 4000 个目标点，100–4000 产生 3901 个目标点，而不是把所选源点重新扩展为完整 7500 点。第 n 点的真实保留时间为 `start_minutes + (n-1)*(stop_minutes-start_minutes)/(point_count-1)`；强度始终从完整源曲线中寻找左右邻点。仪器轴与目标轴在边界只有不超过一个采样间隔的相位差时，允许使用首两个或末两个源点线性延伸，超过一个间隔则拒绝。关闭插值时按每条文件自己的原始轴导出所选 X/Y，即使多文件 X 轴不一致也返回 200，并通过 `x_axis_consistent=false` 和 `warnings` 提示。两种模式都不执行消负或面积归一化。
 
 普通数组形式的 `XXX` 与 `Intensity` 最多保留 5 位小数。后端以一个预处理批次为单位，分别按 `5 → 4 → 3 → 2 → 1 → 0` 生成最终紧凑 JSON，选择能让该字段所有样本均不超过 Excel 单元格 32,767 字符上限的最高统一精度。该过程只量化数值，不删点、不降采样；同一字段不会对不同样本使用不同精度。若 0 位仍超限，或降低精度会使原本有变化的数据变为常量，则返回 HTTP 400 且不生成结果 CSV。
 
-开启 HPLC 插值时，固定轴不走小数降精度，而是在 `XXX` 中写入可逆描述，例如 `{"type":"linspace-v1","start":0,"stop":50,"count":7500,"unit":"minute"}`；`load_modeling_csv()` 自动恢复完整 float64 数值轴。关闭时 `XXX` 保存所选原数组。HPLC 的 `Intensity` 始终使用上述最高 Excel 安全统一精度。
+开启 HPLC 插值时，固定轴不走小数降精度，而是在 `XXX` 中写入可逆描述。例如 100–4000 行为 `{"type":"linspace-slice-v1","grid_start":0.0,"grid_stop":50.0,"grid_count":7500,"offset":99,"length":3901,"unit":"minute"}`。`load_modeling_csv()` 先构造完整 float64 网格再切片，可与 API `common_time` 逐位恢复一致；普通数组和历史 `linspace-v1` 继续兼容。关闭插值时 `XXX` 保存所选原数组。HPLC 的 `Intensity` 始终使用上述最高 Excel 安全统一精度，不因新的 X 描述额外改变。
 
-为方便人工核对，HPLC 响应额外返回 `xxx_download_url` 和 `xxx_rows`。该下载文件按 `Index, Name, Point_Index, XXX, Unit` 逐点展开每条曲线的 X 轴，因此 Excel 中能直接看到每个时间坐标；主建模 CSV 仍保持六列契约和紧凑可逆描述，不受 Excel 单元格字符上限影响。
+一次成功的 HPLC 预处理只原子写入一个 `hplc_<token>.csv`。响应只通过 `download_url` 提供这个六列主文件，不再生成 `_xxx.csv`，也不再返回 `xxx_download_url`/`xxx_rows`。
 
 成功响应包含实际输出精度：
 
@@ -190,18 +190,18 @@ POST /api/preprocess/chromatography   # 简单截取兼容接口
   "output_precision": {
     "adaptive": true,
     "max_decimal_places": 5,
-    "xxx_encoding": "linspace-v1",
+    "xxx_encoding": "linspace-slice-v1",
     "intensity_decimal_places": 4,
-    "xxx_max_characters": 28754,
+    "xxx_max_characters": 122,
     "intensity_max_characters": 32110,
     "excel_cell_character_limit": 32767
   }
 }
 ```
 
-其中最大字符数来自最终写入 CSV 的实际 JSON。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是固定配置展开轴，CSV `XXX` 保存其可逆描述，`hplc_axis` 返回轴元数据；关闭时 `curves[].x` 对应 CSV 普通 X 数组、`common_time=[]`、`hplc_axis=null`。
+其中最大字符数来自最终写入 CSV 的实际 JSON。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是本次实际选择的固定分钟轴；`hplc_axis.start/stop/point_count` 描述实际输出，`grid_start/grid_stop/grid_point_count` 描述完整网格，`selected_start_row/selected_end_row` 是完整网格中的 1 基位置。CSV `XXX` 保存其可逆描述；关闭时 `curves[].x` 对应 CSV 普通 X 数组、`common_time=[]`、`hplc_axis=null`。
 
-预处理主文件使用响应中的 `download_url`，HPLC 人工核对时间轴使用 `xxx_download_url`。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 固定轴不再生成 `common_time_path`。
+预处理主文件统一使用响应中的 `download_url`；两套前端都只展示“下载统一建模 CSV”。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 不生成第二时间轴文件或 `common_time_path`。
 
 ## 5. 创建训练 Run
 
@@ -296,14 +296,15 @@ GET /api/training/runs?projection=summary&limit=20&cursor=<Run ID>
       "created_at": "...",
       "started_at": "...",
       "finished_at": "...",
-      "duration_seconds": 12.5
+      "duration_seconds": 12.5,
+      "test_macro_f1": 0.9234
     }
   ],
   "next_cursor": null
 }
 ```
 
-summary 不包含完整指标、历史曲线或服务器路径。
+summary 不包含完整指标、历史曲线或服务器路径。`test_macro_f1` 可为 `null`：仅成功且结果完整的 Run 从通过 Manifest 大小/SHA-256 校验的必要指标文件中读取；holdout/external test 使用 `metrics.test.macro_f1`，留一交叉验证使用 `cv_summary.pooled_test.macro_f1`，不得使用 fold mean。
 
 ### 5.3 单个状态
 
@@ -457,13 +458,17 @@ Hash 页面：
 
 轮询必须串行执行；切换 Run 后取消旧请求，终态停止。queued/running 显示进度，failed/cancelled/404/403/网络失败和部分产物缺失分别处理。
 
+经典入口和 v2 对相同业务概念使用同一可见术语：建模摘要固定按“数据量、类别数、样本数、每样本测量数、特征数”展示；分组区使用“按样本分组”和“样本编号、类别、每样本测量数”；类别统计使用“类别分布”和“类别、数据量”。结果页把 `curve_count` 显示为“数据量”、`sample_id_count` 显示为“样本数”，各类别 `support` 显示为“数据量”。创建/开始时间合并为一个“训练时间”，优先开始时间，未开始时回退创建时间并标注“任务创建”。训练记录显示可空“测试集 Macro F1”，固定四位小数；无值显示 `—`。内部 CSV/API 字段名不随界面术语改名。
+
+两套 HPLC 表单的起始/终止行均展示 1–7500 边界，并在请求前调用共享 `validateHplcRowRange()`；HTML `max` 只作输入提示，后端仍执行配置驱动的第二道校验。时间输入显示为“保留时间下限/上限（分钟）”，成功结果展示服务端返回的实际首末分钟、完整网格中的首末点和实际点数。
+
 ## 10. 分页面说明边界
 
 - 拉曼页：上传、范围、先截取后基线、下载。
 - HPLC 页：输入、三步默认流程、何时调整参数、下载。
 - AI 建模页：六列 CSV、评估方式、queued/worker、提交。
-- 建模结果页：Run ID、OOF、结果完整性、逐项下载。
-- 训练记录页：查看、取消、删除和不可恢复提示。
+- 建模结果页：Run ID、交叉验证测试主口径、结果完整性、逐项下载。
+- 训练记录页：测试集 Macro F1、训练时间、查看、取消、删除和不可恢复提示。
 - 全局帮助：只保留六列格式、Sample_ID 整组原则、worker 排查和服务器认证等跨页面规则。
 
 容易误操作的字段使用就近提示；页面内说明不复制本技术契约。

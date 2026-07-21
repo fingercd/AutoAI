@@ -124,7 +124,14 @@ def _write_ready_artifacts(
             b'fold_index,epoch,train_loss,valid_accuracy\n1,1,0.4,0.9\n',
         )
     writer.write_bytes('model.pt' if model_family == 'deep_learning' else 'model.pkl', b'private-model-object')
-    writer.finalize(run_id=run_id, metadata={'model_type': model_type, 'model_family': model_family})
+    writer.finalize(
+        run_id=run_id,
+        metadata={
+            'model_type': model_type,
+            'model_family': model_family,
+            'evaluation_strategy': strategy,
+        },
+    )
 
 
 def _create_succeeded_run(
@@ -137,13 +144,14 @@ def _create_succeeded_run(
     cv_summary: dict | None = None,
     model_type: str = 'pls_da',
     model_family: str = 'traditional_ml',
+    config_strategy_field: str = 'evaluation_strategy',
 ) -> RunRecord:
     queued = repository.create_queued(
         dataset_id='dataset-1',
         config={
             'model_type': model_type,
             'dataset_name': 'teacher-data.csv',
-            'evaluation_strategy': strategy,
+            config_strategy_field: strategy,
             'data_path': r'D:\private\dataset.csv',
         },
         dataset_snapshot={
@@ -309,9 +317,19 @@ def test_result_v1_separates_pooled_oof_from_fold_mean(tmp_path, monkeypatch) ->
     assert payload['analysis']['splits']['test']['aggregation'] == 'pooled_oof'
 
 
-def test_summary_projection_includes_dataset_training_time_and_duration(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize('strategy', ['stratified_holdout', 'external_test_holdout'])
+def test_summary_projection_includes_dataset_training_time_duration_and_test_macro_f1(
+    tmp_path,
+    monkeypatch,
+    strategy: str,
+) -> None:
     repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
-    record = _create_succeeded_run(repository, run_root)
+    record = _create_succeeded_run(repository, run_root, strategy=strategy)
+
+    def unexpected_full_projection(*_args, **_kwargs):
+        raise AssertionError('summary 列表不应构造完整 result projection')
+
+    monkeypatch.setattr(runs_router, 'project_run_result', unexpected_full_projection)
 
     response = TestClient(app).get(
         '/api/training/runs',
@@ -325,7 +343,158 @@ def test_summary_projection_includes_dataset_training_time_and_duration(tmp_path
     assert summary['started_at']
     assert summary['finished_at']
     assert summary['duration_seconds'] == pytest.approx(12.5)
+    assert summary['test_macro_f1'] == pytest.approx(0.75)
     assert 'config' not in summary
+
+
+def test_summary_projection_uses_cv_pooled_test_macro_f1_not_fold_mean(tmp_path, monkeypatch) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    pooled_test = {'accuracy': 0.88, 'macro_f1': 0.88}
+    record = _create_succeeded_run(
+        repository,
+        run_root,
+        strategy='leave_one_sample_id_cv',
+        config_strategy_field='split_mode',
+        metrics={
+            'test': {
+                'accuracy': 0.61,
+                'macro_f1': 0.61,
+                'aggregation': 'pooled_out_of_fold',
+            },
+        },
+        cv_summary={
+            'primary_test_aggregation': 'pooled_out_of_fold',
+            'pooled_test': pooled_test,
+            'fold_mean': {'test': {'accuracy': 0.42, 'macro_f1': 0.42}},
+        },
+    )
+    client = TestClient(app)
+
+    summary_response = client.get('/api/training/runs', params={'projection': 'summary'})
+    result_response = client.get(f'/api/training/runs/{record.run_id}/result')
+
+    assert summary_response.status_code == 200
+    assert result_response.status_code == 200
+    summary = next(item for item in summary_response.json()['items'] if item['run_id'] == record.run_id)
+    result = result_response.json()
+    assert summary['test_macro_f1'] == pytest.approx(0.88)
+    assert summary['test_macro_f1'] == pytest.approx(result['metrics']['primary']['macro_f1'])
+    assert summary['test_macro_f1'] != pytest.approx(0.42)
+    assert summary['test_macro_f1'] != pytest.approx(0.61)
+    assert 'metrics' not in summary
+
+
+def test_summary_projection_returns_null_for_invalid_or_ambiguous_test_macro_f1(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    invalid_metrics = [
+        {'test': {'macro_f1': None}},
+        {'test': {'macro_f1': float('nan')}},
+        {'test': {'macro_f1': float('inf')}},
+        {'test': {'macro_f1': -0.01}},
+        {'test': {'macro_f1': 1.01}},
+        {'test': {'macro_f1': 10**400}},
+        {'test': {'macro_f1': '0.75'}},
+        {'test': {'macro_f1': True}},
+        {'macro_f1': 0.99, 'valid': {'macro_f1': 0.99}},
+    ]
+    run_ids = {
+        _create_succeeded_run(repository, run_root, metrics=metrics).run_id
+        for metrics in invalid_metrics
+    }
+
+    response = TestClient(app).get(
+        '/api/training/runs',
+        params={'projection': 'summary', 'limit': 20},
+    )
+
+    assert response.status_code == 200
+    summaries = [item for item in response.json()['items'] if item['run_id'] in run_ids]
+    assert len(summaries) == len(run_ids)
+    assert all(item['test_macro_f1'] is None for item in summaries)
+
+
+def test_summary_projection_rejects_invalid_cv_pooled_value_without_using_fold_mean(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    record = _create_succeeded_run(
+        repository,
+        run_root,
+        strategy='leave_one_sample_id_cv',
+        metrics={
+            'test': {
+                'macro_f1': 0.77,
+                'aggregation': 'pooled_out_of_fold',
+            },
+        },
+        cv_summary={
+            'primary_test_aggregation': 'pooled_out_of_fold',
+            'pooled_test': {'macro_f1': None},
+            'fold_mean': {'test': {'macro_f1': 0.99}},
+        },
+    )
+
+    response = TestClient(app).get('/api/training/runs', params={'projection': 'summary'})
+
+    summary = next(item for item in response.json()['items'] if item['run_id'] == record.run_id)
+    assert summary['test_macro_f1'] is None
+
+
+def test_summary_projection_requires_manifest_size_and_sha256_integrity(tmp_path, monkeypatch) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    missing = _create_succeeded_run(repository, run_root)
+    damaged = _create_succeeded_run(repository, run_root)
+    unverifiable = _create_succeeded_run(repository, run_root)
+
+    (run_root / missing.run_id / 'metrics.json').unlink()
+    damaged_metrics = run_root / damaged.run_id / 'metrics.json'
+    original = damaged_metrics.read_bytes()
+    tampered = original.replace(b'"macro_f1": 0.75', b'"macro_f1": 0.95', 1)
+    assert tampered != original
+    assert len(tampered) == len(original)
+    damaged_metrics.write_bytes(tampered)
+    manifest_path = run_root / unverifiable.run_id / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['artifacts']['metrics.json'].pop('size_bytes')
+    manifest['artifacts']['metrics.json'].pop('sha256')
+    manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+
+    response = TestClient(app).get('/api/training/runs', params={'projection': 'summary'})
+
+    summaries = {item['run_id']: item for item in response.json()['items']}
+    assert summaries[missing.run_id]['result_state'] == 'partial'
+    assert summaries[missing.run_id]['test_macro_f1'] is None
+    # descriptors 的快速大小检查仍会认为 ready；标量读取器必须由 SHA-256 拒绝同大小篡改。
+    assert summaries[damaged.run_id]['result_state'] == 'ready'
+    assert summaries[damaged.run_id]['test_macro_f1'] is None
+    assert summaries[unverifiable.run_id]['result_state'] == 'ready'
+    assert summaries[unverifiable.run_id]['test_macro_f1'] is None
+
+
+@pytest.mark.parametrize('state', ['queued', 'running', 'failed', 'cancelled'])
+def test_summary_projection_never_reads_metrics_for_non_success_states(
+    tmp_path,
+    monkeypatch,
+    state: str,
+) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    record = repository.import_legacy(
+        run_id=f'{state}-summary-run',
+        state=state,
+        config={'model_type': 'pls_da', 'evaluation_strategy': 'stratified_holdout'},
+        dataset_id=None,
+        legacy_data_path=None,
+    )
+    _write_ready_artifacts(run_root / record.run_id, run_id=record.run_id)
+
+    response = TestClient(app).get('/api/training/runs', params={'projection': 'summary'})
+
+    summary = next(item for item in response.json()['items'] if item['run_id'] == record.run_id)
+    assert summary['test_macro_f1'] is None
 
 
 def test_create_run_rejects_live_incompatible_worker_before_queueing(tmp_path, monkeypatch) -> None:

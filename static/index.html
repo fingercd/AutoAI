@@ -1494,18 +1494,19 @@
               <label for="chromRangeMode">范围选择方式</label>
               <select id="chromRangeMode">
                 <option value="row">按行号范围</option>
-                <option value="x_value">按 X 轴数值范围</option>
+                <option value="x_value">按保留时间范围</option>
               </select>
               <div id="chromRowRange">
-                <label for="chromStart">起始行</label>
-                <input id="chromStart" type="number" value="1" min="1" />
-                <label for="chromEnd">结束行</label>
-                <input id="chromEnd" type="number" value="9000" min="1" />
+                <label for="chromStart">起始行（1–7500）</label>
+                <input id="chromStart" type="number" value="1" min="1" max="7500" step="1" />
+                <label for="chromEnd">终止行（最多 7500）</label>
+                <input id="chromEnd" type="number" value="7500" min="1" max="7500" step="1" />
+                <p class="section-note">每个 HPLC 文件固定 7500 点，范围首尾都包含；例如 100–4000 共 3901 点。</p>
               </div>
               <div id="chromValueRange" class="hidden">
-                <label for="chromXMin">时间下限（留空不限制）</label>
+                <label for="chromXMin">保留时间下限（分钟，留空不限制）</label>
                 <input id="chromXMin" type="number" step="any" placeholder="例如 0.5" />
-                <label for="chromXMax">时间上限（留空不限制）</label>
+                <label for="chromXMax">保留时间上限（分钟，留空不限制）</label>
                 <input id="chromXMax" type="number" step="any" placeholder="例如 50" />
               </div>
               <div class="hplc-default-card">
@@ -1530,7 +1531,7 @@
             <summary>建模结果查看说明</summary>
             <ol>
               <li>每次训练使用唯一 Run ID；复制当前链接即可稍后重新打开。</li>
-              <li>交叉验证任务的测试主指标使用合并 OOF 预测，折均值会单独标注。</li>
+              <li>交叉验证任务的测试主指标使用全部折合并的测试预测，折均值会单独标注。</li>
               <li>下载按钮按真实产物清单生成；缺失、不适用或无权限的文件会说明原因。</li>
             </ol>
           </details>
@@ -1755,7 +1756,7 @@
         const selected = preferred && preferred.available !== false ? preferred : firstAvailable || entries[0];
         select.value = selected.id;
         select.disabled = !firstAvailable;
-        $("modelCatalogHint").textContent = "模型目录已加载；模型按文档分类分组显示。";
+        $("modelCatalogHint").textContent = "";
         updateModelOptionVisibility();
         window.dispatchEvent(new CustomEvent("specautoai:model-catalog-ready"));
       }
@@ -1981,11 +1982,11 @@
         const metricGrid = document.createElement("div");
         metricGrid.className = "metrics summary-metrics";
         [
-          ["总数据", summary.samples],
+          ["数据量", summary.samples],
           ["类别数", summary.classes],
           ["样本数", sampleIds.group_count],
-          ["每组测量数", sampleIds.expected_repeats_per_group],
-          ["曲线长度", summary.curve_length],
+          ["每样本测量数", sampleIds.expected_repeats_per_group],
+          ["特征数", summary.curve_length],
         ].forEach(([label, value]) => {
           const card = document.createElement("div");
           card.className = "metric";
@@ -2001,14 +2002,14 @@
         const summaryHeading = document.createElement("h3");
         summaryHeading.textContent = isTest ? "测试集摘要" : "数据摘要";
         const sampleHeading = document.createElement("h3");
-        sampleHeading.textContent = "Sample_ID 分组";
+        sampleHeading.textContent = "按样本分组";
         const sampleTarget = document.createElement("div");
         const labelHeading = document.createElement("h3");
-        labelHeading.textContent = "标签分布";
+        labelHeading.textContent = "类别分布";
         const labelTable = document.createElement("table");
         const labelHead = document.createElement("thead");
         const labelHeadRow = document.createElement("tr");
-        ["Label", "Count"].forEach((text) => {
+        ["类别", "数据量"].forEach((text) => {
           const th = document.createElement("th");
           th.textContent = text;
           labelHeadRow.append(th);
@@ -2227,6 +2228,12 @@
         return date.toLocaleString("zh-CN", { hour12: false });
       }
 
+      function formatTrainingTime(run) {
+        if (run?.started_at) return formatTime(run.started_at);
+        if (run?.created_at) return `${formatTime(run.created_at)}（任务创建）`;
+        return "—";
+      }
+
       function formatDuration(run) {
         let seconds = Number(run?.duration_seconds);
         if (!Number.isFinite(seconds)) {
@@ -2340,7 +2347,8 @@
           const trainingDetail = traditionalModel
             ? `${(run.model_type || run.config?.model_type) === "random_forest" ? "正在进行 OOB 随机参数搜索" : "正在进行参数搜索与模型拟合"} · ${progressText}`
             : `最多 ${totalTargetEpochs} Epoch · ${progressText}`;
-          const detailText = `${run.model_type || run.config?.model_type || "分类模型"} · ${trainingDetail} · 开始时间 ${formatTime(run.started_at || run.created_at)}`;
+          const liveTrainingTime = formatTrainingTime(run);
+          const detailText = `${run.model_type || run.config?.model_type || "分类模型"} · ${trainingDetail} · 训练时间 ${liveTrainingTime}`;
           const activeState = $("trainingProgress").querySelector("[data-active-training-run]");
           if (activeState?.dataset.activeTrainingRun === String(run.run_id || "")) {
             activeState.querySelector("span").textContent = detailText;
@@ -2452,12 +2460,24 @@
         const rangeMode = $(`${prefix}RangeMode`).value;
         form.append("range_mode", rangeMode);
         if (rangeMode === "row") {
-          form.append("start_row", $(`${prefix}Start`).value);
-          form.append("end_row", $(`${prefix}End`).value);
+          if (effectiveKind === "hplc") {
+            if (!window.SpecAutoAIUI?.validateHplcRowRange) throw new Error("HPLC 行号校验组件尚未加载");
+            const selected = window.SpecAutoAIUI.validateHplcRowRange(
+              $(`${prefix}Start`).value,
+              $(`${prefix}End`).value,
+            );
+            form.append("start_row", String(selected.startRow));
+            form.append("end_row", String(selected.endRow));
+          } else {
+            form.append("start_row", $(`${prefix}Start`).value);
+            form.append("end_row", $(`${prefix}End`).value);
+          }
         } else {
           const xMin = $(`${prefix}XMin`).value.trim();
           const xMax = $(`${prefix}XMax`).value.trim();
-          if (!xMin && !xMax) throw new Error("按 X 轴数值取范围时，请至少填写下限或上限");
+          if (!xMin && !xMax && effectiveKind !== "hplc") {
+            throw new Error("按 X 轴数值取范围时，请至少填写下限或上限");
+          }
           if (xMin) form.append("x_min", xMin);
           if (xMax) form.append("x_max", xMax);
         }
@@ -2518,35 +2538,6 @@
           }
         });
         actions.append(downloadButton);
-        if (effectiveKind === "hplc" && result.xxx_download_url) {
-          const axisDownloadButton = document.createElement("button");
-          axisDownloadButton.className = "secondary";
-          axisDownloadButton.type = "button";
-          axisDownloadButton.textContent = "下载可见 XXX 时间轴";
-          axisDownloadButton.addEventListener("click", async () => {
-            const original = axisDownloadButton.textContent;
-            axisDownloadButton.disabled = true;
-            axisDownloadButton.textContent = "下载中…";
-            try {
-              if (!window.SpecAutoAIDownload) throw new Error("下载模块尚未加载");
-              const downloaded = await window.SpecAutoAIDownload(result.xxx_download_url);
-              const objectUrl = URL.createObjectURL(downloaded.blob);
-              const anchor = document.createElement("a");
-              anchor.href = objectUrl;
-              anchor.download = downloaded.filename || "hplc_xxx.csv";
-              document.body.append(anchor);
-              anchor.click();
-              anchor.remove();
-              setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-            } catch (error) {
-              window.alert(`XXX 时间轴下载失败：${error.message}`);
-            } finally {
-              axisDownloadButton.disabled = false;
-              axisDownloadButton.textContent = original;
-            }
-          });
-          actions.append(axisDownloadButton);
-        }
         resultTarget.replaceChildren(metricGrid, actions);
         for (const warning of Array.isArray(result.warnings) ? result.warnings : []) {
           resultTarget.append(currentRunNotice("warning", "X 轴提示", String(warning)));
@@ -2560,8 +2551,8 @@
           if (effectiveKind === "hplc" && precision.xxx_encoding) {
             const reduced = Number.isFinite(maxDigits) && Number.isFinite(intensityDigits) && intensityDigits < maxDigits;
             precisionInfo.textContent = reduced
-              ? `固定时间轴使用 ${precision.xxx_encoding} 无损描述；为兼容 Excel，本批次强度采用 ${intensityDigits} 位小数，数据点数量未改变。`
-              : `固定时间轴使用 ${precision.xxx_encoding} 无损描述；强度采用 ${intensityDigits} 位小数。`;
+              ? `真实时间轴使用 ${precision.xxx_encoding} JSON 描述；为兼容 Excel，本批次强度采用 ${intensityDigits} 位小数，数据点数量未改变。`
+              : `真实时间轴使用 ${precision.xxx_encoding} JSON 描述；强度采用 ${intensityDigits} 位小数。`;
           } else {
             const xDigits = Number(precision.xxx_decimal_places);
             const reduced = Number.isFinite(maxDigits)
@@ -2578,7 +2569,14 @@
           info.className = "section-note";
           const axis = result.hplc_axis;
           const stepSeconds = Number(axis.step_minutes) * 60;
-          info.textContent = `固定时间轴：${axis.start}–${axis.stop} 分钟，${axis.point_count} 点，步长 ${Number.isFinite(stepSeconds) ? stepSeconds.toFixed(6) : "-"} 秒；相邻点线性映射。`;
+          const axisNumber = (value) => {
+            const number = Number(value);
+            return Number.isFinite(number) ? number.toFixed(6).replace(/\.?0+$/, "") : "—";
+          };
+          const selectedRows = Number.isInteger(Number(axis.selected_start_row)) && Number.isInteger(Number(axis.selected_end_row))
+            ? `，第 ${axis.selected_start_row}–${axis.selected_end_row} 点`
+            : "";
+          info.textContent = `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟${selectedRows}，共 ${axis.point_count} 点；步长 ${Number.isFinite(stepSeconds) ? stepSeconds.toFixed(6) : "—"} 秒，相邻点线性映射；CSV 使用 ${axis.encoding || precision.xxx_encoding || "linspace-slice-v1"} JSON 保存。`;
           resultTarget.append(info);
         }
         if (hasCurves) {
@@ -2634,7 +2632,7 @@
         const table = document.createElement("table");
         const head = document.createElement("thead");
         const headRow = document.createElement("tr");
-        ["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "状态", ""].forEach((label) => {
+        ["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "测试集 Macro F1", "状态", ""].forEach((label) => {
           const th = document.createElement("th");
           th.textContent = label;
           headRow.append(th);
@@ -2649,11 +2647,12 @@
           const terminal = ["succeeded", "success", "failed", "cancelled", "paused"].includes(canonicalState);
           const row = document.createElement("tr");
           const values = [
-            formatTime(run.started_at || run.created_at),
+            formatTrainingTime(run),
             formatDuration(run),
             run.run_id || "-",
             datasetName,
             modelName,
+            window.SpecAutoAIUI?.formatMetric?.(run.test_macro_f1) || "—",
           ];
           values.forEach((value, index) => {
             const cell = document.createElement(index === 2 ? "th" : "td");
@@ -2701,7 +2700,7 @@
         if (!runs.length) {
           const row = document.createElement("tr");
           const cell = document.createElement("td");
-          cell.colSpan = 7;
+          cell.colSpan = 8;
           cell.className = "empty-state";
           cell.textContent = "暂无训练记录";
           row.append(cell);

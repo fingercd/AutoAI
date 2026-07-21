@@ -98,7 +98,7 @@ export const EVALUATION_STRATEGIES = {
   leave_one_sample_id_cv: {
     label: '留一样本交叉验证 leave_one_sample_id_cv',
     shortLabel: '留一 Sample_ID CV',
-    description: '每折留一个 Sample_ID 作 test，其余按 8:2 形成 train/valid；Test 主指标为所有折合并的 OOF 预测（pooled OOF）。',
+    description: '每折留一个 Sample_ID 作 test，其余按 8:2 形成 train/valid；Test 主指标由全部交叉验证折的测试预测合并计算。',
   },
   external_test_holdout: {
     label: '独立测试集 external_test_holdout',
@@ -109,7 +109,7 @@ export const EVALUATION_STRATEGIES = {
 
 export const AGGREGATION_LABELS = {
   direct: '直接计算',
-  pooled_oof: 'pooled OOF（全部折合并）',
+  pooled_oof: '合并交叉验证预测',
   fold_mean: '逐折均值（审计）',
   pooled_cross_fold: '跨折预测合并（样本可能重复）',
 };
@@ -145,6 +145,13 @@ export function formatDateTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+/** 训练时间优先取实际开始时间；尚未开始时回退任务创建时间并明确标注。 */
+export function formatTrainingTime(run) {
+  if (run?.started_at) return formatDateTime(run.started_at);
+  if (run?.created_at) return `${formatDateTime(run.created_at)}（任务创建）`;
+  return '—';
+}
+
 export const MODEL_FAMILY_LABELS = {
   traditional_ml: '传统机器学习',
   basic_deep: '基础深度学习',
@@ -161,7 +168,7 @@ export function isCvResult(result) {
 
 /**
  * CV 口径守卫：解析某个 split 的标量指标。
- * - CV 的 test 只允许 pooled OOF；train/valid 标量只允许 fold mean（fold_std 为审计值）。
+ * - CV 的 test 只允许 pooled_oof；train/valid 标量只允许 fold mean（fold_std 为审计值）。
  * - 非 CV（holdout）全部为 direct。
  * 返回 { split, aggregation, values, foldStd, note } 或 null。
  */
@@ -178,7 +185,7 @@ export function resolveSplitScalars(result, split) {
         aggregation: 'pooled_oof',
         values,
         foldStd: null,
-        note: 'Test 主指标来自所有折合并后的 OOF 预测',
+        note: 'Test 主指标由全部交叉验证折的测试预测合并计算',
       };
     }
     return {
@@ -199,7 +206,7 @@ export function resolveSplitScalars(result, split) {
 }
 
 /**
- * 校验 CV 结果没有把 fold mean、pooled cross-fold 与 pooled OOF 混在同一口径。
+ * 校验 CV 结果没有把 fold mean、pooled cross-fold 与 pooled_oof 混在同一口径。
  * 返回 { ok, violations: string[] }。
  */
 export function validateCvAggregation(result) {
