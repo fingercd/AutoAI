@@ -1,5 +1,6 @@
 export const DEFAULT_SAMPLE_ID_LIMIT = 10;
 export const MAX_CURVE_SELECTION = 5000;
+export const HPLC_POINT_COUNT = 7500;
 const SAMPLE_ID_BATCH_SIZE = 200;
 
 const naturalCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
@@ -7,6 +8,31 @@ const naturalCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity:
 export const naturalCompare = (first, second) => (
   naturalCollator.compare(String(first ?? ''), String(second ?? ''))
 );
+
+/**
+ * 校验 HPLC 1 基、首尾包含的行号范围。终止行留空时使用完整固定点数。
+ * 返回值可直接用于 multipart 请求和前端实际点数摘要。
+ */
+export function validateHplcRowRange(startValue, endValue, pointCount = HPLC_POINT_COUNT) {
+  const limit = Number(pointCount);
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('HPLC 固定点数配置无效');
+  const parseRow = (value, label, fallback) => {
+    if (value == null || String(value).trim() === '') return fallback;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed)) throw new Error(`HPLC ${label}必须是整数`);
+    return parsed;
+  };
+  const startRow = parseRow(startValue, '起始行', 1);
+  const endRow = parseRow(endValue, '终止行', limit);
+  if (startRow < 1 || startRow > limit) {
+    throw new Error(`HPLC 起始行必须在 1–${limit} 之间；当前为 ${startRow}`);
+  }
+  if (endRow < 1 || endRow > limit) {
+    throw new Error(`HPLC 终止行不能超过 ${limit} 且不能小于 1；当前为 ${endRow}`);
+  }
+  if (startRow > endRow) throw new Error('HPLC 起始行不能大于终止行');
+  return { startRow, endRow, pointCount: endRow - startRow + 1 };
+}
 
 export function parseCurveIndexExpression(input, limit = MAX_CURVE_SELECTION) {
   const maxSelections = Math.max(1, Math.floor(Number(limit) || MAX_CURVE_SELECTION));
@@ -118,9 +144,9 @@ export function renderSampleIdList(target, groups, options = {}) {
     'table',
     {},
     element('thead', {}, element('tr', {},
-      element('th', { text: 'Sample_ID' }),
-      element('th', { text: 'Label' }),
-      element('th', { text: '数量' }),
+      element('th', { text: '样本编号' }),
+      element('th', { text: '类别' }),
+      element('th', { text: '每样本测量数' }),
     )),
     body,
   );
@@ -197,7 +223,7 @@ export function renderSampleIdList(target, groups, options = {}) {
 
 export function formatMetric(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(4) : '-';
+  return value != null && value !== '' && Number.isFinite(number) ? number.toFixed(4) : '—';
 }
 
 export function formatTime(value) {
@@ -210,6 +236,7 @@ export function formatTime(value) {
 if (typeof window !== 'undefined') {
   window.SpecAutoAIUI = {
     DEFAULT_SAMPLE_ID_LIMIT,
+    HPLC_POINT_COUNT,
     buildSampleIdViewModel,
     element,
     formatMetric,
@@ -219,6 +246,7 @@ if (typeof window !== 'undefined') {
     parseCurveIndexExpression,
     renderSampleIdList,
     replaceChildren,
+    validateHplcRowRange,
   };
   window.dispatchEvent(new CustomEvent('specautoai:ui-ready'));
 }

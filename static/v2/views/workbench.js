@@ -2,6 +2,7 @@
 import { el, clear, saveBlob, svgEl } from '../lib/dom.js';
 import { lineChart } from '../lib/charts.js';
 import { preprocess, download } from '../api.js';
+import { validateHplcRowRange } from '../../js/ui-utils.js';
 
 const RAMAN_BASELINE_METHODS = ['arPLS', 'airPLS', 'als', 'drPLS', 'poly'];
 const COLOR_RAW = '#94a3b8';
@@ -39,7 +40,7 @@ function curveChart(curve, kind) {
       description: kind === 'hplc'
         ? `曲线 ${curve.name}：横轴为保留时间，纵轴为强度。`
         : `曲线 ${curve.name}：灰虚线为原始强度，绿线为基线校正后强度。横轴为 X，纵轴为强度。`,
-      xLabel: kind === 'hplc' ? '保留时间' : '拉曼位移 / X',
+      xLabel: kind === 'hplc' ? '保留时间（分钟）' : '拉曼位移 / X',
       yLabel: '强度',
     }),
     legend: legendList(series),
@@ -48,22 +49,23 @@ function curveChart(curve, kind) {
 
 /** 范围截取 + 各类型的方法/开关，收进高级参数并附带实时摘要。 */
 function paramForm(kind) {
+  const isHplc = kind === 'hplc';
   const rangeMode = el('select', { className: 'select', attrs: { id: 'v2-pp-range-mode' } }, [
     el('option', { text: '全部数据（不截取）', attrs: { value: 'row' } }),
     el('option', { text: '按行号截取', attrs: { value: 'row_range' } }),
-    el('option', { text: '按 X 轴数值截取', attrs: { value: 'x_value' } }),
+    el('option', { text: isHplc ? '按保留时间截取' : '按 X 轴数值截取', attrs: { value: 'x_value' } }),
   ]);
-  const startRow = el('input', { className: 'input', attrs: { id: 'v2-pp-start-row', type: 'number', min: '1', step: '1', value: '1' } });
-  const endRow = el('input', { className: 'input', attrs: { id: 'v2-pp-end-row', type: 'number', min: '1', step: '1', placeholder: '留空到末尾' } });
+  const startRow = el('input', { className: 'input', attrs: { id: 'v2-pp-start-row', type: 'number', min: '1', max: isHplc ? '7500' : null, step: '1', value: '1' } });
+  const endRow = el('input', { className: 'input', attrs: { id: 'v2-pp-end-row', type: 'number', min: '1', max: isHplc ? '7500' : null, step: '1', placeholder: isHplc ? '留空按 7500' : '留空到末尾' } });
   const xMin = el('input', { className: 'input', attrs: { id: 'v2-pp-x-min', type: 'number', step: 'any', placeholder: '下限，可留空' } });
   const xMax = el('input', { className: 'input', attrs: { id: 'v2-pp-x-max', type: 'number', step: 'any', placeholder: '上限，可留空' } });
   const rowBox = el('div', { className: 'grid grid-2' }, [
     el('div', { className: 'field' }, [el('label', { text: '起始行', attrs: { for: 'v2-pp-start-row' } }), startRow]),
-    el('div', { className: 'field' }, [el('label', { text: '结束行', attrs: { for: 'v2-pp-end-row' } }), endRow]),
+    el('div', { className: 'field' }, [el('label', { text: '终止行', attrs: { for: 'v2-pp-end-row' } }), endRow]),
   ]);
   const xBox = el('div', { className: 'grid grid-2' }, [
-    el('div', { className: 'field' }, [el('label', { text: 'X 下限', attrs: { for: 'v2-pp-x-min' } }), xMin]),
-    el('div', { className: 'field' }, [el('label', { text: 'X 上限', attrs: { for: 'v2-pp-x-max' } }), xMax]),
+    el('div', { className: 'field' }, [el('label', { text: isHplc ? '保留时间下限（分钟）' : 'X 下限', attrs: { for: 'v2-pp-x-min' } }), xMin]),
+    el('div', { className: 'field' }, [el('label', { text: isHplc ? '保留时间上限（分钟）' : 'X 上限', attrs: { for: 'v2-pp-x-max' } }), xMax]),
   ]);
   rowBox.hidden = true;
   xBox.hidden = true;
@@ -86,7 +88,7 @@ function paramForm(kind) {
     });
     extras.append(
       el('label', { className: 'row', attrs: { for: 'v2-pp-hplc_interpolate' } }, [interpolate, ' 启用共同时间轴线性插值']),
-      el('p', { className: 'hint', text: '开启时映射到服务端固定时间轴；关闭时保留所选原始 X/Y，轴不一致仍会生成 CSV 并提示；不做面积归一化或消负。' }),
+      el('p', { className: 'hint', text: '开启时在 0–50 分钟固定目标时间轴上选择并插值；关闭时按每条文件自己的原始时间轴筛选。两种模式都不做面积归一化或消负。' }),
     );
     extras.hplcInterpolate = interpolate;
   }
@@ -94,9 +96,22 @@ function paramForm(kind) {
   const summary = el('p', { className: 'hint', attrs: { role: 'status' } });
 
   const rangeText = () => {
+    if (isHplc && rangeMode.value !== 'x_value') {
+      try {
+        const selected = validateHplcRowRange(
+          rangeMode.value === 'row_range' ? startRow.value : 1,
+          rangeMode.value === 'row_range' ? endRow.value : null,
+        );
+        return `范围：第 ${selected.startRow}–${selected.endRow} 行，共 ${selected.pointCount} 点；最大终止行 7500`;
+      } catch (error) {
+        return `范围错误：${error?.message || '请检查 HPLC 行号'}`;
+      }
+    }
     if (rangeMode.value === 'row') return '范围：全部数据';
     if (rangeMode.value === 'row_range') return `范围：第 ${startRow.value || 1} 行 ～ ${endRow.value || '末尾'}`;
-    return `范围：X ${xMin.value || '—'} ～ ${xMax.value || '—'}`;
+    return isHplc
+      ? `范围：保留时间 ${xMin.value || '—'} ～ ${xMax.value || '—'} 分钟`
+      : `范围：X ${xMin.value || '—'} ～ ${xMax.value || '—'}`;
   };
 
   const update = () => {
@@ -116,14 +131,26 @@ function paramForm(kind) {
   const collect = () => {
     const params = { range_mode: rangeMode.value === 'x_value' ? 'x_value' : 'row' };
     if (rangeMode.value === 'row_range') {
-      params.start_row = Number(startRow.value) || 1;
-      params.end_row = endRow.value ? Number(endRow.value) : null;
+      if (isHplc) {
+        const selected = validateHplcRowRange(startRow.value, endRow.value);
+        params.start_row = selected.startRow;
+        params.end_row = selected.endRow;
+      } else {
+        params.start_row = Number(startRow.value) || 1;
+        params.end_row = endRow.value ? Number(endRow.value) : null;
+      }
     } else if (rangeMode.value === 'x_value') {
       params.x_min = xMin.value === '' ? null : Number(xMin.value);
       params.x_max = xMax.value === '' ? null : Number(xMax.value);
     } else {
-      params.start_row = 1;
-      params.end_row = null;
+      if (isHplc) {
+        const selected = validateHplcRowRange(1, null);
+        params.start_row = selected.startRow;
+        params.end_row = selected.endRow;
+      } else {
+        params.start_row = 1;
+        params.end_row = null;
+      }
     }
     if (kind === 'raman') params.baseline_method = extras.baselineSelect.value;
     if (kind === 'hplc') params.hplc_interpolate = extras.hplcInterpolate.checked;
@@ -271,6 +298,14 @@ export function mountWorkbench(container, { announce, toast }) {
       fileInput.focus();
       return;
     }
+    let params;
+    try {
+      params = form.collect();
+    } catch (error) {
+      errorBox.textContent = error?.message || 'HPLC 行号范围无效，请检查后重试。';
+      announce('预处理参数校验未通过');
+      return;
+    }
     busy = true;
     submitButton.disabled = true;
     submitButton.textContent = '处理中…';
@@ -282,7 +317,7 @@ export function mountWorkbench(container, { announce, toast }) {
     ]));
     announce('预处理请求已提交');
     try {
-      const result = await preprocess(kind, files, form.collect());
+      const result = await preprocess(kind, files, params);
       lastResult = result;
       renderResults();
       syncSteps();
@@ -309,16 +344,6 @@ export function mountWorkbench(container, { announce, toast }) {
       saveBlob(blob, filename || `${kind}_preprocessed.csv`);
     } catch (error) {
       toast(`下载失败：${error?.message || '未知错误'}。请重试，或刷新页面后重新处理。`, { type: 'error' });
-    }
-  }
-
-  async function downloadVisibleAxis() {
-    if (!lastResult?.xxx_download_url) return;
-    try {
-      const { blob, filename } = await download(lastResult.xxx_download_url);
-      saveBlob(blob, filename || 'hplc_xxx.csv');
-    } catch (error) {
-      toast(`XXX 时间轴下载失败：${error?.message || '未知错误'}。请重试。`, { type: 'error' });
     }
   }
 
@@ -353,16 +378,26 @@ export function mountWorkbench(container, { announce, toast }) {
     const metaCards = [
       ['类型', kind === 'raman' ? '拉曼' : 'HPLC'],
       ['输出行数', String(lastResult.rows ?? '—')],
-      ['曲线数', String(curves.length)],
+      ['数据量', String(curves.length)],
     ];
     if (kind === 'raman') metaCards.push(['基线方法', lastResult.baseline_method || '—']);
     if (kind === 'hplc') {
       metaCards.push(['插值', lastResult.hplc_interpolate ? '开' : '关']);
       metaCards.push(['X 轴', lastResult.x_axis_consistent ? '一致' : '不一致']);
       if (lastResult.hplc_axis) {
-        metaCards.push(['固定点数', String(lastResult.hplc_axis.point_count ?? '—')]);
+        metaCards.push(['实际点数', String(lastResult.hplc_axis.point_count ?? '—')]);
+        metaCards.push(['完整网格点数', String(lastResult.hplc_axis.grid_point_count ?? lastResult.hplc_axis.input_point_count_required ?? '—')]);
       }
     }
+
+    const axis = kind === 'hplc' ? lastResult.hplc_axis : null;
+    const axisNumber = (value) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(6).replace(/\.?0+$/, '') : '—';
+    };
+    const axisSummary = axis
+      ? `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟，第 ${axis.selected_start_row ?? '—'}–${axis.selected_end_row ?? '—'} 点，共 ${axis.point_count ?? '—'} 点；CSV 使用 ${axis.encoding || lastResult.output_precision?.xxx_encoding || 'linspace-slice-v1'} JSON 保存。`
+      : null;
 
     const warnings = Array.isArray(lastResult.warnings) ? lastResult.warnings : [];
     const warningPanel = warnings.length
@@ -378,15 +413,6 @@ export function mountWorkbench(container, { announce, toast }) {
       attrs: { type: 'button', disabled: lastResult.download_url ? null : true },
       on: { click: downloadResult },
     });
-    const axisDownloadButton = kind === 'hplc' && lastResult.xxx_download_url
-      ? el('button', {
-        className: 'btn btn-secondary',
-        text: '下载可见 XXX 时间轴',
-        attrs: { type: 'button' },
-        on: { click: downloadVisibleAxis },
-      })
-      : null;
-
     if (warningPanel) resultsHost.append(warningPanel);
     resultsHost.append(el('div', { className: 'card' }, [
       el('div', { className: 'row spread' }, [
@@ -397,6 +423,7 @@ export function mountWorkbench(container, { announce, toast }) {
         el('span', { className: 'metric-label', text: label }),
         el('span', { className: 'metric-value', text: value }),
       ]))),
+      axisSummary ? el('p', { className: 'hint', text: axisSummary }) : null,
       curves.length
         ? el('div', { className: 'field' }, [el('label', { text: kind === 'hplc' ? '查看色谱曲线' : '查看曲线对照（灰虚线原始 / 绿线校正后）', attrs: { for: 'v2-pp-curve' } }), curveSelect])
         : null,
@@ -406,7 +433,6 @@ export function mountWorkbench(container, { announce, toast }) {
       el('p', { className: 'hint', text: '下一步：下载 CSV 后用表格软件补齐 Label 和 Sample_ID 两列（同一 Sample_ID 的重复测量会整组划分，不会跨 train/valid/test），然后到建模页上传训练。' }),
       el('div', { className: 'card-actions' }, [
         downloadButton,
-        axisDownloadButton,
         el('a', { className: 'btn btn-ghost', text: '补齐后去建模页 →', attrs: { href: '#/modeling' } }),
       ]),
     ]));

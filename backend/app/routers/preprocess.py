@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..hplc import preprocess_hplc_files_with_preview
@@ -60,27 +59,6 @@ def _curve_intensity_summary(curves: list[dict[str, Any]]) -> list[dict[str, Any
     return summary
 
 
-def _hplc_visible_axis_frame(curves: list[dict[str, Any]]) -> pd.DataFrame:
-    """把每条色谱的 X 轴逐点展开，供 Excel/文本编辑器直接查看。"""
-    records: list[dict[str, Any]] = []
-    for sample_index, curve in enumerate(curves, start=1):
-        name = str(curve.get('name', ''))
-        for point_index, x_value in enumerate(curve.get('x') or [], start=1):
-            records.append(
-                {
-                    'Index': sample_index,
-                    'Name': name,
-                    'Point_Index': point_index,
-                    'XXX': float(x_value),
-                    'Unit': 'minute',
-                }
-            )
-    return pd.DataFrame.from_records(
-        records,
-        columns=['Index', 'Name', 'Point_Index', 'XXX', 'Unit'],
-    )
-
-
 @router.post('/api/preprocess/{kind}')
 def preprocess(
     kind: str,
@@ -98,6 +76,7 @@ def preprocess(
         raise HTTPException(status_code=400, detail='kind 必须是 raman、chromatography 或 hplc')
     original_names = [Path(file.filename or f'sample_{idx}').stem for idx, file in enumerate(files, start=1)]
     saved_files = [_save_upload(file) for file in files]
+    temporary_output: Path | None = None
     try:
         if kind == 'hplc':
             result = preprocess_hplc_files_with_preview(
@@ -125,7 +104,6 @@ def preprocess(
         frame = result['frame']
         output_token = uuid.uuid4().hex[:10]
         output = PREPROCESSED_DIR / f'{kind}_{output_token}.csv'
-        frame.to_csv(output, index=False, encoding='utf-8-sig')
         response: dict[str, Any] = {
             'output_path': str(output.resolve()),
             'download_url': f'/api/files?path={output.resolve()}',
@@ -140,14 +118,6 @@ def preprocess(
             'warnings': result.get('warnings', []),
         }
         if kind == 'hplc':
-            visible_axis = _hplc_visible_axis_frame(result['curves'])
-            axis_output = PREPROCESSED_DIR / f'{kind}_{output_token}_xxx.csv'
-            visible_axis.to_csv(
-                axis_output,
-                index=False,
-                encoding='utf-8-sig',
-                float_format='%.15g',
-            )
             response.update(
                 {
                     'baseline_method': None,
@@ -155,14 +125,21 @@ def preprocess(
                     'common_time': result.get('common_time', []),
                     'hplc_axis': result.get('hplc_axis'),
                     'x_axis_consistent': result.get('x_axis_consistent', True),
-                    'xxx_download_url': f'/api/files?path={axis_output.resolve()}',
-                    'xxx_rows': int(len(visible_axis)),
                 }
             )
         elif kind == 'raman':
             response['baseline_method'] = baseline_method
         else:
             response['baseline_method'] = None
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_output = output.with_name(f'.{output.name}.{uuid.uuid4().hex}.tmp')
+        frame.to_csv(temporary_output, index=False, encoding='utf-8-sig')
+        temporary_output.replace(output)
         return response
     except Exception as exc:
+        if temporary_output is not None:
+            try:
+                temporary_output.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -251,6 +251,8 @@ ok | volatile | missing | corrupt | not_generated
 
 ## 兼容性
 
+训练记录列表的 `GET /api/training/runs?projection=summary` 不属于 `run-result-v1` 完整投影，但可额外返回可空标量 `test_macro_f1`。该值必须与本契约的 Test 主口径一致：holdout 取直接测试指标，CV 取 pooled OOF 主指标，禁止用 fold mean；指标文件缺失、损坏、Run 未成功或结果不完整时返回 `null`。
+
 - 原 Run 状态接口、旧顶层字段和旧 artifact URL 不删除。
 - 新 Manifest v2 使用大小和 SHA-256 校验。
 - 历史 Manifest 继续按旧 `downloadable` 做 local 只读兼容，但结果页会给出兼容 warning。

@@ -15,9 +15,12 @@ import {
   findServerPaths,
   looksLikeServerPath,
   formatMetric,
+  formatDateTime,
+  formatTrainingTime,
   formatBytes,
   formatDuration,
 } from '../lib/format.js';
+import { validateHplcRowRange } from '../../js/ui-utils.js';
 import { createPoller } from '../lib/poller.js';
 import { decimateSeries, niceTicks } from '../lib/charts.js';
 import { escapeHtml } from '../lib/dom.js';
@@ -93,6 +96,21 @@ test('三种评估口径常量齐备', () => {
   for (const meta of Object.values(EVALUATION_STRATEGIES)) {
     assert.ok(meta.label && meta.description);
   }
+});
+
+// ---------- HPLC 行号门禁 ----------
+
+test('HPLC 行号范围规范化并计算实际点数', () => {
+  assert.deepEqual(validateHplcRowRange('', ''), { startRow: 1, endRow: 7500, pointCount: 7500 });
+  assert.deepEqual(validateHplcRowRange('100', '4000'), { startRow: 100, endRow: 4000, pointCount: 3901 });
+});
+
+test('HPLC 行号范围拒绝越界、小数和倒序', () => {
+  assert.throws(() => validateHplcRowRange(0, 100), /1–7500/);
+  assert.throws(() => validateHplcRowRange(1, 7501), /不能超过 7500/);
+  assert.throws(() => validateHplcRowRange(1, 9000), /不能超过 7500/);
+  assert.throws(() => validateHplcRowRange(1, 3.5), /必须是整数/);
+  assert.throws(() => validateHplcRowRange(4000, 100), /不能大于终止行/);
 });
 
 // ---------- CV 口径守卫 ----------
@@ -398,6 +416,14 @@ test('格式化辅助函数', () => {
   assert.equal(formatDuration(45.2), '45.2 秒');
   assert.equal(formatDuration(125), '2 分 5 秒');
   assert.equal(formatDuration(null), '—');
+});
+
+test('训练时间优先开始时间并回退任务创建时间', () => {
+  const createdAt = '2026-07-21T01:02:03Z';
+  const startedAt = '2026-07-21T02:03:04Z';
+  assert.equal(formatTrainingTime({ created_at: createdAt, started_at: startedAt }), formatDateTime(startedAt));
+  assert.equal(formatTrainingTime({ created_at: createdAt }), `${formatDateTime(createdAt)}（任务创建）`);
+  assert.equal(formatTrainingTime({}), '—');
 });
 
 // ---------- 运行 ----------

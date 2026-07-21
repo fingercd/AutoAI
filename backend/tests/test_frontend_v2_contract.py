@@ -89,19 +89,87 @@ def test_v2_has_no_framework_or_cdn() -> None:
 def test_v2_hplc_preprocess_preserves_range_and_interpolation_controls() -> None:
     api = _read("api.js")
     workbench = _read("views/workbench.js")
+    manual = _read("views/manual.js")
 
     assert "hplc_interpolate" in api
     assert "hplc_interpolate" in workbench
     assert "启用共同时间轴线性插值" in workbench
+    assert "validateHplcRowRange" in workbench
+    assert workbench.count("max: isHplc ? '7500' : null") == 2
+    assert workbench.index("params = form.collect()") < workbench.index("busy = true")
     assert "lastResult.x_axis_consistent" in workbench
     assert "lastResult.hplc_axis" in workbench
-    assert "lastResult.xxx_download_url" in workbench
-    assert "下载可见 XXX 时间轴" in workbench
+    assert "selected_start_row" in workbench
+    assert "selected_end_row" in workbench
+    assert "真实保留时间" in workbench
+    assert "linspace-slice-v1" in workbench
+    assert "保留时间下限（分钟）" in workbench
+    assert "保留时间上限（分钟）" in workbench
+    assert "保留时间（分钟）" in workbench
+    assert "最大终止行 7500" in workbench
+    assert workbench.count("下载统一建模 CSV") == 1
+    for removed in ("xxx_download_url", "downloadVisibleAxis", "下载可见 XXX 时间轴", "归一化 X 坐标"):
+        assert removed not in workbench
+    assert "linspace-slice-v1 JSON" in manual
+    assert "只保留一个“下载统一建模 CSV”入口" in manual
     assert "warning-panel" in workbench
     assert "不做面积归一化" in workbench
     for removed in ("hplc_subtract_min", "hplc_normalize_area", "减最小值"):
         assert removed not in api
         assert removed not in workbench
+
+
+def test_v2_modeling_summary_and_business_tables_use_unified_terms() -> None:
+    modeling = _read("views/modeling.js")
+    metrics = modeling.split("const metrics = [", 1)[1].split("];", 1)[0]
+    labels = ["数据量", "类别数", "样本数", "每样本测量数", "特征数"]
+    positions = [metrics.index(f"['{label}'") for label in labels]
+
+    assert positions == sorted(positions)
+    assert "expected_repeats_per_group" in metrics
+    assert "renderSampleIdList" in modeling
+    assert "按样本分组" in modeling
+    assert "类别分布" in modeling
+    assert "el('th', { text: '类别'" in modeling
+    assert "el('th', { text: '数据量'" in modeling
+    assert "模型目录已加载" not in modeling
+    for old_term in ("曲线数（行）", "Sample_ID 组数", "曲线长度", "标签分布"):
+        assert old_term not in modeling
+
+
+def test_v2_result_uses_one_training_time_and_user_facing_cv_terms() -> None:
+    formatting = _read("lib/format.js")
+    result = _read("views/result.js")
+    modeling = _read("views/modeling.js")
+    manual = _read("views/manual.js")
+
+    assert "export function formatTrainingTime" in formatting
+    assert "run?.started_at" in formatting
+    assert "run?.created_at" in formatting
+    assert "（任务创建）" in formatting
+    assert "['训练时间', formatTrainingTime(run)]" in result
+    assert "['创建时间'" not in result
+    assert "['开始时间'" not in result
+    assert "['数据量', dataset.curve_count]" in result
+    assert "['样本数', dataset.sample_id_count]" in result
+    assert "['独立测试数据量', dataset.test_curve_count]" in result
+    assert "真实数据量" in result and "预测数据量" in result
+    for source in (formatting, result, modeling, manual):
+        assert "OOF" not in source
+        assert "Support" not in source
+
+
+def test_v2_run_list_shows_test_macro_f1_and_training_time() -> None:
+    run_list = _read("components/run-list.js")
+
+    assert "测试集 Macro F1" in run_list
+    assert "formatMetric(item.test_macro_f1)" in run_list
+    assert "formatTrainingTime(item)" in run_list
+    assert "'训练时间'" in run_list
+    assert "'创建时间'" not in run_list
+    assert "run-summary-table" in run_list
+    for action in ("view", "copy", "cancel", "delete"):
+        assert f"action: '{action}'" in run_list
 
 
 def test_v2_token_only_in_session_storage_via_api_client() -> None:

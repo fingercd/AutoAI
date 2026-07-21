@@ -23,14 +23,15 @@ export function mountManual(container) {
           el('tbody', {}, [
             ['Index', '行号', '整数或可读标识'],
             ['Name', '样品名称', '文本'],
-            ['XXX', 'X 轴数组', '与 Intensity 等长的数值数组'],
-            ['Intensity', '强度数组', '与 XXX 等长的数值数组'],
+            ['XXX', 'X 轴数组或可恢复轴描述', '展开后与 Intensity 等长'],
+            ['Intensity', '强度数组', '与展开后的 XXX 等长'],
             ['Label', '类别标签', '必填；即使为数字也始终按分类类别处理'],
             ['Sample_ID', '样品组标识', '同一组重复测量必须使用相同 Sample_ID'],
           ].map((row) => el('tr', {}, row.map((cell) => el('td', { text: cell }))))),
         ]),
       ]),
       el('p', { className: 'hint', text: '预处理导出的统一 CSV 中 Label 与 Sample_ID 为空，需要人工补齐后再上传到建模页。' }),
+      el('p', { className: 'hint', text: 'HPLC 开启插值时，XXX 使用 linspace-slice-v1 JSON 描述完整固定分钟网格与实际切片；读取器可恢复真实保留时间，无需在单元格中展开数千个 X 值。页面和 API 只保留一个“下载统一建模 CSV”入口。' }),
     ),
 
     faq('为什么 Sample_ID 必须整组划分？',
@@ -40,7 +41,7 @@ export function mountManual(container) {
     faq('三种评估口径怎么选？',
       el('ul', {}, [
         el('li', { text: 'stratified_holdout：按 Sample_ID 整组分层 8:1:1 划分 train/valid/test，常规首选。' }),
-        el('li', { text: 'leave_one_sample_id_cv：每折留一个 Sample_ID 作 test，适合小样本；Test 主指标为全部折合并的 OOF 预测（pooled OOF），逐折均值只作审计。' }),
+        el('li', { text: 'leave_one_sample_id_cv：每折留一个 Sample_ID 作 test，适合小样本；Test 主指标由全部交叉验证折的测试预测合并计算，逐折均值只作审计。' }),
         el('li', { text: 'external_test_holdout：主数据 8:2 划分 train/valid，独立测试集作为最终 test；与交叉验证互斥。' }),
       ]),
     ),
@@ -51,7 +52,7 @@ export function mountManual(container) {
     ),
 
     faq('交叉验证的 Test 指标看哪个？',
-      el('p', { text: '只看主指标卡：它来自全部折合并的 OOF 预测（pooled OOF）。逐折均值（fold mean ± std）放在“评估与审计明细”里仅供审计，两者口径不同，不能混用比较。' }),
+      el('p', { text: '只看主指标卡：它由全部交叉验证折的测试预测合并计算。逐折均值（fold mean ± std）放在“评估与审计明细”里仅供审计，两者口径不同，不能混用比较。' }),
     ),
 
     faq('如何复用、取消或删除 Run？',
@@ -69,7 +70,7 @@ export function mountManual(container) {
     faq('为什么有些文件不能下载？',
       el('p', { text: '结果下载由后端 catalog 逐项决定，每个文件都经过大小与 SHA-256 校验；禁用项会显示原因，不提供打包下载。' }),
       el('p', { text: '以下内容不开放：model.pkl、model.pt 等模型对象/权重、*.joblib 内部拟合对象、status.json 易变投影、manifest.json 内部索引；config.json 仅在不含服务器路径时开放。' }),
-      el('p', { className: 'hint', text: '预处理导出 CSV 通过响应中的 download_url 下载；响应里的 output_path 等服务器路径不会也不应作为浏览器链接使用。' }),
+      el('p', { className: 'hint', text: '预处理只提供一个统一建模 CSV，通过响应中的 download_url 下载；响应里的 output_path 等服务器路径不会也不应作为浏览器链接使用。' }),
     ),
 
     faq('为什么没有 ROC / PR 曲线？',

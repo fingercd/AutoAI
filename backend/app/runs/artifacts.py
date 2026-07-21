@@ -34,7 +34,7 @@ ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'cv_metrics.json': {'label': '交叉验证汇总', 'category': 'metrics', 'required': True, 'downloadable': True},
     'fold_metrics.csv': {'label': '分折指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'predictions.csv': {'label': '预测明细', 'category': 'predictions', 'required': True, 'downloadable': True},
-    'cv_predictions.csv': {'label': 'OOF / 兼容预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
+    'cv_predictions.csv': {'label': '交叉验证预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
     'history.csv': {'label': '训练过程', 'category': 'training', 'required': False, 'downloadable': True},
     'hyperparameter_search.csv': {'label': '参数搜索记录', 'category': 'training', 'required': False, 'downloadable': True},
     'sample_feature_importance.json': {'label': '单样品解释结果', 'category': 'explainability', 'required': False, 'downloadable': True},

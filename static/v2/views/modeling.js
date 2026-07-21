@@ -4,21 +4,28 @@ import { EVALUATION_STRATEGIES } from '../lib/format.js';
 import { uploadDataset, getModels, createRun } from '../api.js';
 import { renderModelCatalog, findModel } from '../components/model-catalog.js';
 import { markRunCreated, consumeModelingDraft } from '../store.js';
+import { naturalCompare, renderSampleIdList } from '../../js/ui-utils.js';
 
 const STEPS = ['上传数据', '评估口径', '选择模型', '参数与提交'];
 const REDIRECT_SECONDS = 3;
+let summaryListSerial = 0;
 
 function datasetSummaryCard({ name, summary, reuse }) {
+  const sampleSummary = summary?.sample_id || {};
   const metrics = [
-    ['曲线数（行）', summary?.samples ?? '—'],
+    ['数据量', summary?.samples ?? '—'],
     ['类别数', summary?.classes ?? '—'],
-    ['曲线长度', summary?.curve_length ?? '—'],
-    ['Sample_ID 组数', summary?.sample_id?.group_count ?? summary?.sample_id?.groups?.length ?? '—'],
+    ['样本数', sampleSummary.group_count ?? sampleSummary.groups?.length ?? '—'],
+    ['每样本测量数', sampleSummary.expected_repeats_per_group ?? '—'],
+    ['特征数', summary?.curve_length ?? '—'],
   ];
-  const labelCounts = summary?.label_counts
-    ? Object.entries(summary.label_counts).map(([label, count]) => `${label}: ${count}`).join('，')
-    : '';
-  return el('div', { className: 'card' }, [
+  const labelRows = Object.entries(summary?.label_counts || {})
+    .sort(([first], [second]) => naturalCompare(first, second));
+  const groupsHost = el('div');
+  renderSampleIdList(groupsHost, sampleSummary.groups || [], {
+    listId: `v2-sample-groups-${summaryListSerial += 1}`,
+  });
+  const card = el('div', { className: 'card' }, [
     el('div', { className: 'row spread' }, [
       el('h3', { className: 'card-title', text: name || '—' }),
       reuse ? el('span', { className: 'badge status-queued', text: '沿用原 Run 数据集' }) : el('span', { className: 'badge status-succeeded', text: '校验通过' }),
@@ -27,9 +34,26 @@ function datasetSummaryCard({ name, summary, reuse }) {
       el('span', { className: 'metric-label', text: label }),
       el('span', { className: 'metric-value', text: String(value) }),
     ]))),
-    labelCounts ? el('p', { className: 'hint', text: `类别分布：${labelCounts}` }) : null,
+    el('h4', { text: '按样本分组' }),
+    groupsHost,
+    el('h4', { text: '类别分布' }),
+    labelRows.length
+      ? el('div', { className: 'table-wrap' }, [
+        el('table', { className: 'data-table' }, [
+          el('thead', {}, el('tr', {}, [
+            el('th', { text: '类别', attrs: { scope: 'col' } }),
+            el('th', { text: '数据量', attrs: { scope: 'col' } }),
+          ])),
+          el('tbody', {}, labelRows.map(([label, count]) => el('tr', {}, [
+            el('td', { text: label }),
+            el('td', { text: String(count) }),
+          ]))),
+        ]),
+      ])
+      : el('p', { className: 'hint', text: '没有可展示的类别统计。' }),
     el('p', { className: 'hint', text: 'Label 始终按分类处理；同一 Sample_ID 整组划分，不会跨 train/valid/test。' }),
   ]);
+  return card;
 }
 
 /** 单个 CSV 上传区：选文件 → 点“上传并校验”，结果卡片就地展示。 */
@@ -241,7 +265,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         el('h2', { className: 'card-title', text: '选择评估口径' }),
         el('span', { className: 'badge', text: '第 2 步，共 4 步' }),
       ]),
-      el('p', { className: 'hint', text: '默认“分层留出”适合大多数情况，直接下一步即可。三种口径互斥；CV 的 Test 主指标为 pooled OOF，不会与逐折均值混用。' }),
+      el('p', { className: 'hint', text: '默认“分层留出”适合大多数情况，直接下一步即可。三种口径互斥；交叉验证的 Test 主指标由全部折的测试预测合并计算，不会与逐折均值混用。' }),
       group,
       navButtons({ onNext: () => goto(3) }),
     ]));
@@ -316,7 +340,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     };
     const splitInfo = {
       stratified_holdout: 'train/valid/test = 8:1:1（按 Sample_ID 整组分层）',
-      leave_one_sample_id_cv: '每折留 1 个 Sample_ID 作 test，其余 8:2；Test 主指标为 pooled OOF',
+      leave_one_sample_id_cv: '每折留 1 个 Sample_ID 作 test，其余 8:2；Test 主指标为合并交叉验证预测',
       external_test_holdout: '主数据 8:2 划分 train/valid，独立测试集作 test',
     }[wizard.strategy];
     const summaryRows = [
