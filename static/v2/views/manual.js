@@ -16,22 +16,20 @@ export function mountManual(container) {
     el('p', { className: 'page-sub', text: '常见问题速查；每条只讲一件事，看完即可回到工作台操作。' }),
 
     faq('建模 CSV 需要什么格式？',
-      el('p', { text: '固定六列，列名与顺序不可更改：' }),
+      el('p', { text: '使用 wide-feature-v1 宽表。前三列名称与顺序固定，第 4 列起每一列代表一个真实坐标：' }),
       el('div', { className: 'table-wrap' }, [
         el('table', { className: 'data-table' }, [
           el('thead', {}, el('tr', {}, ['列名', '含义', '要求'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
           el('tbody', {}, [
-            ['Index', '行号', '整数或可读标识'],
-            ['Name', '样品名称', '文本'],
-            ['XXX', 'X 轴数组或可恢复轴描述', '展开后与 Intensity 等长'],
-            ['Intensity', '强度数组', '与展开后的 XXX 等长'],
-            ['Label', '类别标签', '必填；即使为数字也始终按分类类别处理'],
-            ['Sample_ID', '样品组标识', '同一组重复测量必须使用相同 Sample_ID'],
+            ['Index', '曲线标识', '第 1 列；不可为空'],
+            ['Label', '类别标签', '第 2 列；必填，即使为数字也始终按分类类别处理'],
+            ['Sample_ID', '样品组标识', '第 3 列；同一组重复测量必须使用相同 Sample_ID'],
+            ['第 4 列起', '真实 XXX 坐标 / 标量 Intensity', '列名必须是有限、唯一、严格递增的数值；每个单元格必须是有限强度值'],
           ].map((row) => el('tr', {}, row.map((cell) => el('td', { text: cell }))))),
         ]),
       ]),
-      el('p', { className: 'hint', text: '预处理导出的统一 CSV 中 Label 与 Sample_ID 为空，需要人工补齐后再上传到建模页。' }),
-      el('p', { className: 'hint', text: 'HPLC 开启插值时，XXX 使用 linspace-slice-v1 JSON 描述完整固定分钟网格与实际切片；读取器可恢复真实保留时间，无需在单元格中展开数千个 X 值。页面和 API 只保留一个“下载统一建模 CSV”入口。' }),
+      el('p', { className: 'hint', text: '预处理导出的 CSV 中 Label 与 Sample_ID 为空，需要人工填写后再上传。原文件名只保留在曲线预览的 name 中，不写入建模 CSV。' }),
+      el('p', { className: 'hint', text: '所有行必须共享同一真实坐标轴；HPLC 关闭插值时若多文件轴不一致会拒绝导出。旧的六列数组/JSON CSV 不再可训练。Excel 最多 16,384 列，因此最多支持 16,381 个特征。' }),
     ),
 
     faq('为什么 Sample_ID 必须整组划分？',

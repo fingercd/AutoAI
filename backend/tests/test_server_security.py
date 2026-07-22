@@ -236,7 +236,7 @@ def test_server_principal_can_resolve_owned_dataset_ids(monkeypatch) -> None:
 
 def test_local_principal_keeps_controlled_legacy_path_compatibility(tmp_path, monkeypatch) -> None:
     source = tmp_path / 'legacy.csv'
-    source.write_text('Index,Name,XXX,Intensity,Label,Sample_ID\n', encoding='utf-8')
+    source.write_text('Index,Label,Sample_ID,0\n', encoding='utf-8')
     monkeypatch.setattr(router_deps, '_dataset_repository', lambda: object())
     monkeypatch.setattr(router_deps, 'UPLOADS_DIR', tmp_path)
     monkeypatch.setattr(router_deps, 'PREPROCESSED_DIR', tmp_path / 'preprocessed')

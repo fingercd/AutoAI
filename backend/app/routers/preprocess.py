@@ -14,7 +14,7 @@ import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..hplc import preprocess_hplc_files_with_preview
-from ..parsers import preprocess_raw_files_with_preview
+from ..parsers import modeling_metadata_preview, preprocess_raw_files_with_preview
 from ..paths import PREPROCESSED_DIR, UPLOADS_DIR
 
 router = APIRouter()
@@ -112,7 +112,7 @@ def preprocess(
             'x_min': x_min,
             'x_max': x_max,
             'curves': result['curves'],
-            'preview': frame.head(5).drop(columns=['XXX', 'Intensity']).to_dict(orient='records'),
+            'preview': modeling_metadata_preview(frame),
             'intensity_summary': _curve_intensity_summary(result['curves']),
             'output_precision': result['output_precision'],
             'warnings': result.get('warnings', []),

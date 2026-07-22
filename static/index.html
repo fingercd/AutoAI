@@ -1259,7 +1259,7 @@
           <details class="page-help">
             <summary>AI 建模操作说明</summary>
             <ol>
-              <li>加载符合六列规范的数据集；有独立测试集时一并加载。</li>
+              <li>加载 wide-feature-v1 宽表：前三列为 Index、Label、Sample_ID，第 4 列起是真实 XXX 坐标；有独立测试集时一并加载。</li>
               <li>选择模型和评估方式。相同 Sample_ID 会整组进入同一数据分区。</li>
               <li>提交后只创建排队任务，训练由独立 worker 执行；完成后可进入专属结果页。</li>
             </ol>
@@ -1430,7 +1430,7 @@
             <ol>
               <li>上传一个或多个拉曼 CSV，并选择按行号或 X 轴范围截取。</li>
               <li>系统固定先截取目标范围，再执行基线校正。</li>
-              <li>预览曲线无误后下载统一六列建模 CSV。</li>
+              <li>预览曲线无误后下载统一宽表建模 CSV，再填写 Label 与 Sample_ID。</li>
             </ol>
           </details>
           <div class="grid">
@@ -1482,7 +1482,7 @@
             <ol>
               <li>上传一个或多个色谱 CSV，并选择需要的数据范围。</li>
               <li>可选择是否将曲线线性映射到服务端配置的固定时间轴，默认开启。</li>
-              <li>关闭插值时保留所选原始 X/Y；若文件间 X 轴不一致，仍会生成 CSV 并显示提示。</li>
+              <li>关闭插值时保留所选原始 X/Y；多文件所选 X 轴必须完全一致，否则会拒绝导出。</li>
               <li>不执行消负或面积归一化。</li>
             </ol>
           </details>
@@ -1512,7 +1512,7 @@
               <div class="hplc-default-card">
                 <div class="hplc-option">
                   <label><input type="checkbox" id="chromHplcInterp" checked /> 启用线性插值</label>
-                  <span>开启时映射到配置的固定时间轴；关闭时保留所选原始 X/Y。</span>
+                  <span>开启时映射到配置的固定时间轴；关闭时保留所选原始 X/Y，但多文件轴必须完全一致。</span>
                 </div>
               </div>
               <div class="actions">
@@ -1569,7 +1569,7 @@
             <h2>全局使用说明</h2>
             <p>各功能页顶部都提供与当前操作直接相关的简短说明。这里仅保留跨页面规则和故障排查入口。</p>
             <h3>统一数据格式</h3>
-            <p>建模 CSV 固定使用 Index、Name、XXX、Intensity、Label、Sample_ID 六列。Label 始终按分类类别处理；相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合。</p>
+            <p>建模 CSV 使用 wide-feature-v1 宽表：前三列固定为 Index、Label、Sample_ID，第 4 列起的列名为有限、唯一、严格递增的真实 XXX 坐标，单元格为标量 Intensity。原文件名不写入 CSV；旧六列数组/JSON 文件不再可训练。总列数最多 16,384（最多 16,381 个特征）。Label 始终按分类类别处理；相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合。</p>
             <h3>训练与结果</h3>
             <p>提交训练只会创建排队任务，独立 worker 负责执行。完成后使用唯一 Run ID 进入建模结果；结果页刷新或服务重启后仍可重新获取。</p>
             <h3>服务器访问</h3>
@@ -2514,7 +2514,7 @@
         const downloadButton = document.createElement("button");
         downloadButton.className = "secondary";
         downloadButton.type = "button";
-        downloadButton.textContent = "下载整理 CSV";
+        downloadButton.textContent = "下载统一建模 CSV";
         downloadButton.addEventListener("click", async () => {
           const original = downloadButton.textContent;
           downloadButton.disabled = true;
@@ -2547,21 +2547,10 @@
           const precisionInfo = document.createElement("p");
           precisionInfo.className = "section-note";
           const intensityDigits = Number(precision.intensity_decimal_places);
-          const maxDigits = Number(precision.max_decimal_places);
-          if (effectiveKind === "hplc" && precision.xxx_encoding) {
-            const reduced = Number.isFinite(maxDigits) && Number.isFinite(intensityDigits) && intensityDigits < maxDigits;
-            precisionInfo.textContent = reduced
-              ? `真实时间轴使用 ${precision.xxx_encoding} JSON 描述；为兼容 Excel，本批次强度采用 ${intensityDigits} 位小数，数据点数量未改变。`
-              : `真实时间轴使用 ${precision.xxx_encoding} JSON 描述；强度采用 ${intensityDigits} 位小数。`;
-          } else {
-            const xDigits = Number(precision.xxx_decimal_places);
-            const reduced = Number.isFinite(maxDigits)
-              && ((Number.isFinite(xDigits) && xDigits < maxDigits)
-                || (Number.isFinite(intensityDigits) && intensityDigits < maxDigits));
-            precisionInfo.textContent = reduced
-              ? `为兼容 Excel，本批次已自动采用 XXX 最多 ${xDigits} 位、Intensity 最多 ${intensityDigits} 位小数；数据点数量未改变。`
-              : `输出精度：XXX 最多 ${xDigits} 位、Intensity 最多 ${intensityDigits} 位小数。`;
-          }
+          const featureCount = Number(precision.feature_count);
+          const totalColumnCount = Number(precision.total_column_count);
+          const excelColumnLimit = Number(precision.excel_column_limit);
+          precisionInfo.textContent = `输出格式 ${precision.format || "wide-feature-v1"}：真实 XXX 坐标按 float64 可往返文本逐列写入表头，Intensity ${Number.isFinite(intensityDigits) ? `最多 ${intensityDigits} 位小数` : "使用标量数值"}；共 ${Number.isFinite(featureCount) ? featureCount : "—"} 个特征、${Number.isFinite(totalColumnCount) ? totalColumnCount : "—"} 列${Number.isFinite(excelColumnLimit) ? `，Excel 上限 ${excelColumnLimit} 列` : ""}。`;
           resultTarget.append(precisionInfo);
         }
         if (effectiveKind === "hplc" && result.hplc_axis) {
@@ -2576,7 +2565,7 @@
           const selectedRows = Number.isInteger(Number(axis.selected_start_row)) && Number.isInteger(Number(axis.selected_end_row))
             ? `，第 ${axis.selected_start_row}–${axis.selected_end_row} 点`
             : "";
-          info.textContent = `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟${selectedRows}，共 ${axis.point_count} 点；步长 ${Number.isFinite(stepSeconds) ? stepSeconds.toFixed(6) : "—"} 秒，相邻点线性映射；CSV 使用 ${axis.encoding || precision.xxx_encoding || "linspace-slice-v1"} JSON 保存。`;
+          info.textContent = `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟${selectedRows}，共 ${axis.point_count} 点；步长 ${Number.isFinite(stepSeconds) ? stepSeconds.toFixed(6) : "—"} 秒，相邻点线性映射；每个真实时间坐标逐列保存在 CSV 特征表头中。`;
           resultTarget.append(info);
         }
         if (hasCurves) {

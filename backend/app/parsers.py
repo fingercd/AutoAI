@@ -1,15 +1,14 @@
 """建模 CSV 与原始拉曼/色谱 CSV 的解析和统一导出。
 
-统一建模行固定为 ``Index, Name, XXX, Intensity, Label, Sample_ID``。
-数组序列化采用紧凑 JSON，并在最多 5 位小数内自动选择满足 Excel 32,767
-字符单元格上限的最高批次统一精度；无法安全容纳时明确拒绝，绝不静默截断或
-降采样。拉曼流程固定先选择范围，再执行基线校正。
+新建模文件使用 ``wide-feature-v1``：前三列固定为 ``Index, Label,
+Sample_ID``，后续列名是共享的真实 XXX 坐标，每个单元格保存一个强度标量。
+宽表无法表达逐行不同的坐标轴，因此预处理导出前必须确认批次内所有曲线共享
+同一轴；不一致时明确拒绝，绝不静默套用首条曲线的坐标。
 """
 
 from __future__ import annotations
 
-import ast
-import json
+import csv
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,14 +18,13 @@ import numpy as np
 import pandas as pd
 
 
-MODELING_COLUMNS = ("Index", "Name", "XXX", "Intensity", "Label", "Sample_ID")
-REQUIRED_MODELING_COLUMNS = set(MODELING_COLUMNS)
-LEGACY_SAMPLE_ID_COLUMN = "Repeat_index"
-EXCEL_CELL_CHARACTER_LIMIT = 32_767
+MODELING_METADATA_COLUMNS = ("Index", "Label", "Sample_ID")
+WIDE_MODELING_FORMAT = "wide-feature-v1"
+WIDE_AXIS_ENCODING = "column_headers"
+LEGACY_MODELING_ARRAY_COLUMNS = ("XXX", "Intensity")
+EXCEL_WORKSHEET_MAX_COLUMNS = 16_384
+MAX_WIDE_FEATURE_COUNT = EXCEL_WORKSHEET_MAX_COLUMNS - len(MODELING_METADATA_COLUMNS)
 MAX_OUTPUT_DECIMAL_PLACES = 5
-MAX_AXIS_DESCRIPTOR_POINTS = 1_000_000
-# 兼容既有内部引用；新代码应使用语义更明确的 MAX_OUTPUT_DECIMAL_PLACES。
-OUTPUT_DECIMAL_PLACES = MAX_OUTPUT_DECIMAL_PLACES
 
 
 @dataclass
@@ -40,228 +38,164 @@ class ModelingDataset:
 
 
 @dataclass(frozen=True)
-class SerializedModelingArray:
-    """一个数组在指定小数精度下的最终建模 JSON 表示。"""
+class WideModelingFrameResult:
+    """预处理宽表以及与落盘内容完全一致的轴和强度值。"""
 
-    values: list[int | float]
-    serialized: str
-    decimal_places: int
-    character_count: int
-
-
-@dataclass(frozen=True)
-class BatchSerializationResult:
-    """同一字段在一个预处理批次内采用统一精度后的结果。"""
-
-    arrays: list[SerializedModelingArray]
-    decimal_places: int
-    max_characters: int
-    max_source_name: str
+    frame: pd.DataFrame
+    x_axis: list[float]
+    intensity: list[list[float]]
+    output_precision: dict[str, int | str | bool]
 
 
-def _parse_array(value: object, field: str, row_number: int) -> list[float]:
-    if isinstance(value, list):
-        raw = value
-    else:
+def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[str]]:
+    """读取宽表并保留原始表头，避免 pandas 静默改写重复列名。"""
+
+    path = Path(path)
+    encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
+    last_error: Exception | None = None
+    for encoding in encodings:
         try:
-            raw = ast.literal_eval(str(value))
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"第 {row_number} 行 {field} 不是有效数组") from exc
-    if not isinstance(raw, (list, tuple)) or not raw:
-        raise ValueError(f"第 {row_number} 行 {field} 必须是非空数组")
-    try:
-        return [float(item) for item in raw]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"第 {row_number} 行 {field} 含有非数字值") from exc
-
-
-def _parse_modeling_axis(value: object, row_number: int) -> list[float]:
-    """读取旧式数值数组、历史等距轴或固定分钟网格切片描述。"""
-    if isinstance(value, dict):
-        raw = value
-    elif isinstance(value, (list, tuple)):
-        return _parse_array(value, "XXX", row_number)
-    else:
-        try:
-            raw = ast.literal_eval(str(value))
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"第 {row_number} 行 XXX 不是有效数组或轴描述") from exc
-    if not isinstance(raw, dict):
-        return _parse_array(raw, "XXX", row_number)
-    descriptor_type = raw.get("type")
-    if descriptor_type == "linspace-slice-v1":
-        expected_fields = {
-            "type",
-            "grid_start",
-            "grid_stop",
-            "grid_count",
-            "offset",
-            "length",
-            "unit",
-        }
-        actual_fields = set(raw)
-        if actual_fields != expected_fields:
-            missing = sorted(expected_fields - actual_fields)
-            extra = sorted(str(item) for item in actual_fields - expected_fields)
-            details = []
-            if missing:
-                details.append(f"缺少字段 {', '.join(missing)}")
-            if extra:
-                details.append(f"包含不支持字段 {', '.join(extra)}")
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的 linspace-slice-v1 描述无效："
-                + "；".join(details)
+            with path.open("r", encoding=encoding, newline="") as handle:
+                header_line = handle.readline()
+            if not header_line:
+                raise ValueError(f"建模 CSV {path.name} 为空")
+            try:
+                dialect = csv.Sniffer().sniff(header_line, delimiters=",;\t|")
+            except csv.Error as exc:
+                raise ValueError(f"建模 CSV {path.name} 无法识别列分隔符") from exc
+            raw_header = next(csv.reader([header_line], dialect=dialect))
+            normalized_header = [str(item).strip() for item in raw_header]
+            frame = pd.read_csv(
+                path,
+                sep=dialect.delimiter,
+                engine="python",
+                encoding=encoding,
+                dtype=str,
+                keep_default_na=False,
             )
-
-        def finite_number(field: str) -> float:
-            field_value = raw[field]
-            if isinstance(field_value, bool) or not isinstance(
-                field_value, (int, float, np.integer, np.floating)
-            ):
+            if len(frame.columns) != len(normalized_header):
                 raise ValueError(
-                    f"第 {row_number} 行 XXX 的 {field} 必须是有限数值"
+                    f"建模 CSV 表头解析得到 {len(normalized_header)} 列，但数据表解析得到 "
+                    f"{len(frame.columns)} 列"
                 )
-            number = float(field_value)
-            if not np.isfinite(number):
-                raise ValueError(
-                    f"第 {row_number} 行 XXX 的 {field} 必须是有限数值"
-                )
-            return number
+            # 在检查重复表头后才会按这些原始名称访问数据。这里先覆盖 pandas 为重复
+            # 列自动附加的 .1/.2，确保后续检查面对用户实际写入的表头。
+            frame.columns = normalized_header
+            return frame, normalized_header
+        except UnicodeDecodeError as exc:
+            last_error = exc
+        except (OSError, csv.Error, pd.errors.ParserError, ValueError) as exc:
+            last_error = exc
+            # 编码已经成功解码时，结构错误不应继续用其他编码掩盖原始原因。
+            if not isinstance(exc, UnicodeDecodeError):
+                break
+    if isinstance(last_error, ValueError):
+        raise last_error
+    raise ValueError(f"无法读取 CSV 文件 {path.name}: {last_error}")
 
-        def true_integer(field: str) -> int:
-            field_value = raw[field]
-            if isinstance(field_value, bool) or not isinstance(
-                field_value, (int, np.integer)
-            ):
-                raise ValueError(f"第 {row_number} 行 XXX 的 {field} 必须是整数")
-            return int(field_value)
 
-        grid_start = finite_number("grid_start")
-        grid_stop = finite_number("grid_stop")
-        grid_count = true_integer("grid_count")
-        offset = true_integer("offset")
-        length = true_integer("length")
-        if grid_start >= grid_stop:
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的 grid_start/grid_stop 必须严格递增"
-            )
-        if not 2 <= grid_count <= MAX_AXIS_DESCRIPTOR_POINTS:
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的 grid_count 必须在 2 到 "
-                f"{MAX_AXIS_DESCRIPTOR_POINTS} 之间"
-            )
-        if offset < 0:
-            raise ValueError(f"第 {row_number} 行 XXX 的 offset 不能小于 0")
-        if length < 1:
-            raise ValueError(f"第 {row_number} 行 XXX 的 length 必须至少为 1")
-        if offset + length > grid_count:
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的 offset + length 不能超过 grid_count"
-            )
-        if raw["unit"] != "minute":
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的 linspace-slice-v1 unit 必须是 minute"
-            )
-
-        with np.errstate(over="ignore", invalid="ignore"):
-            full_axis = np.linspace(
-                grid_start, grid_stop, grid_count, dtype=np.float64
-            )
-        if not np.all(np.isfinite(full_axis)) or np.any(np.diff(full_axis) <= 0):
-            raise ValueError(
-                f"第 {row_number} 行 XXX 的完整固定轴必须有限且严格递增"
-            )
-        selected_axis = full_axis[offset : offset + length]
-        if (
-            selected_axis.size == 0
-            or not np.all(np.isfinite(selected_axis))
-            or (selected_axis.size > 1 and np.any(np.diff(selected_axis) <= 0))
-        ):
-            raise ValueError(
-                f"第 {row_number} 行 XXX 展开的时间轴必须非空、有限且严格递增"
-            )
-        return selected_axis.tolist()
-
-    if descriptor_type != "linspace-v1":
-        raise ValueError(f"第 {row_number} 行 XXX 使用了不支持的轴描述类型")
-    try:
-        start = float(raw["start"])
-        stop = float(raw["stop"])
-        count_raw = raw["count"]
-        count = int(count_raw)
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"第 {row_number} 行 XXX 的等距轴描述参数无效") from exc
-    if isinstance(count_raw, bool) or float(count_raw) != count:
-        raise ValueError(f"第 {row_number} 行 XXX 的 count 必须是整数")
-    if not np.isfinite(start) or not np.isfinite(stop) or start >= stop:
-        raise ValueError(f"第 {row_number} 行 XXX 的 start/stop 必须是有限递增数值")
-    if not 2 <= count <= MAX_AXIS_DESCRIPTOR_POINTS:
+def _parse_wide_axis_headers(feature_headers: list[str]) -> list[float]:
+    if not feature_headers:
+        raise ValueError("建模 CSV 至少需要 1 个真实 XXX 特征列")
+    if len(feature_headers) > MAX_WIDE_FEATURE_COUNT:
         raise ValueError(
-            f"第 {row_number} 行 XXX 的 count 必须在 2 到 {MAX_AXIS_DESCRIPTOR_POINTS} 之间"
+            f"建模 CSV 含 {len(feature_headers)} 个特征，连同 3 个元数据列共 "
+            f"{len(feature_headers) + len(MODELING_METADATA_COLUMNS)} 列，超过 Excel 上限 "
+            f"{EXCEL_WORKSHEET_MAX_COLUMNS}；请先按业务要求缩小数据范围"
         )
-    unit = raw.get("unit")
-    if unit is not None and (not isinstance(unit, str) or not unit.strip()):
-        raise ValueError(f"第 {row_number} 行 XXX 的 unit 必须是非空字符串")
-    return np.linspace(start, stop, count, dtype=np.float64).tolist()
 
+    axis: list[float] = []
+    for position, header in enumerate(feature_headers, start=1):
+        if not header:
+            raise ValueError(f"第 {position} 个 XXX 特征列名为空")
+        try:
+            value = float(header)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"第 {position} 个特征列名 {header!r} 不是有效的真实 XXX 数值"
+            ) from exc
+        if not np.isfinite(value):
+            raise ValueError(f"第 {position} 个 XXX 特征列名必须是有限数值，当前为 {header!r}")
+        axis.append(value)
 
-def _normalise_sample_id_column(frame: pd.DataFrame) -> pd.DataFrame:
-    """把旧分组列收敛为 Sample_ID；冲突双列拒绝猜测。"""
-    has_current = "Sample_ID" in frame.columns
-    has_legacy = LEGACY_SAMPLE_ID_COLUMN in frame.columns
-    if has_current and has_legacy:
-        current = frame["Sample_ID"].astype("string").fillna("").str.strip()
-        legacy = frame[LEGACY_SAMPLE_ID_COLUMN].astype("string").fillna("").str.strip()
-        mismatch = current.ne(legacy)
-        if bool(mismatch.any()):
-            rows = ", ".join(str(int(index) + 2) for index in frame.index[mismatch][:5])
-            raise ValueError(f"Sample_ID 与旧分组列内容不一致，请检查第 {rows} 行")
-        return frame.drop(columns=[LEGACY_SAMPLE_ID_COLUMN])
-    if has_legacy:
-        return frame.rename(columns={LEGACY_SAMPLE_ID_COLUMN: "Sample_ID"})
-    return frame
+    differences = np.diff(np.asarray(axis, dtype=np.float64))
+    invalid = np.flatnonzero(differences <= 0)
+    if invalid.size:
+        index = int(invalid[0])
+        if axis[index] == axis[index + 1]:
+            raise ValueError(
+                f"XXX 特征坐标数值重复：第 {index + 1}、{index + 2} 个特征列 "
+                f"{feature_headers[index]!r} 与 {feature_headers[index + 1]!r} 表示同一坐标"
+            )
+        raise ValueError(
+            f"XXX 特征坐标必须按列严格递增；第 {index + 1}、{index + 2} 个坐标为 "
+            f"{axis[index]:.17g}、{axis[index + 1]:.17g}"
+        )
+    return axis
 
 
 def load_modeling_csv(path: str | Path) -> ModelingDataset:
-    """解析并严格校验统一建模 CSV，返回可直接训练的数据结构。"""
+    """解析并严格校验 ``wide-feature-v1``，返回可直接训练的数据结构。"""
     path = Path(path)
-    frame = _read_csv_flexible(path)
-    frame = _normalise_sample_id_column(frame)
-    if "Index" not in frame.columns and REQUIRED_MODELING_COLUMNS.difference({"Index"}).issubset(frame.columns):
-        frame = frame.rename(columns={frame.columns[0]: "Index"})
-    missing = REQUIRED_MODELING_COLUMNS.difference(frame.columns)
-    if missing:
-        raise ValueError(f"建模数据缺少字段: {', '.join(sorted(missing))}")
+    raw_frame, raw_header = _read_modeling_csv_flexible(path)
+    stripped_header = [item.strip() for item in raw_header]
+    if len(set(stripped_header)) != len(stripped_header):
+        duplicates = sorted(
+            {item for item in stripped_header if stripped_header.count(item) > 1}
+        )
+        raise ValueError(f"建模 CSV 表头包含重复列名: {', '.join(repr(item) for item in duplicates)}")
+    if set(LEGACY_MODELING_ARRAY_COLUMNS).issubset(stripped_header):
+        raise ValueError(
+            "检测到旧六列数组格式（XXX/Intensity 单元格存数组）；新训练只接受 "
+            "wide-feature-v1：前三列为 Index, Label, Sample_ID，第 4 列起为真实 XXX 坐标"
+        )
+    actual_prefix = tuple(stripped_header[: len(MODELING_METADATA_COLUMNS)])
+    if actual_prefix != MODELING_METADATA_COLUMNS:
+        raise ValueError(
+            "建模 CSV 前三列及顺序必须是 Index, Label, Sample_ID；"
+            f"当前为 {', '.join(actual_prefix) if actual_prefix else '空表头'}"
+        )
 
-    x_axis: list[list[float]] = []
-    y_values: list[list[float]] = []
-    labels: list[str] = []
-    sample_ids: list[str] = []
-    for idx, row in frame.iterrows():
-        row_number = idx + 2
-        x = _parse_modeling_axis(row["XXX"], row_number)
-        y = _parse_array(row["Intensity"], "Intensity", row_number)
-        if len(x) != len(y):
-            raise ValueError(f"第 {row_number} 行 XXX 和 Intensity 长度不一致")
-        label = str(row["Label"]).strip()
+    feature_headers = stripped_header[len(MODELING_METADATA_COLUMNS) :]
+    shared_axis = _parse_wide_axis_headers(feature_headers)
+    if raw_frame.empty:
+        raise ValueError("建模 CSV 没有数据行")
+
+    metadata = raw_frame.loc[:, list(MODELING_METADATA_COLUMNS)].copy()
+    for column in MODELING_METADATA_COLUMNS:
+        metadata[column] = (
+            metadata[column].where(metadata[column].notna(), "").astype(str).str.strip()
+        )
+    empty_index = metadata["Index"].eq("")
+    if bool(empty_index.any()):
+        row_number = int(np.flatnonzero(empty_index.to_numpy())[0]) + 2
+        raise ValueError(f"第 {row_number} 行 Index 为空")
+    duplicate_index = metadata["Index"].duplicated(keep=False)
+    if bool(duplicate_index.any()):
+        value = str(metadata.loc[duplicate_index, "Index"].iloc[0])
+        raise ValueError(f"Index 必须唯一，检测到重复值 {value!r}")
+
+    labels = metadata["Label"].tolist()
+    sample_ids = metadata["Sample_ID"].tolist()
+    for idx, (label, sample_id) in enumerate(zip(labels, sample_ids), start=2):
         if not label or label.lower() == "nan":
-            raise ValueError(f"第 {row_number} 行 Label 为空，建模前请补充标签")
-        sample_id = str(row["Sample_ID"]).strip()
+            raise ValueError(f"第 {idx} 行 Label 为空，建模前请补充标签")
         if not sample_id or sample_id.lower() == "nan":
-            raise ValueError(f"第 {row_number} 行 Sample_ID 为空，建模前请补充样品编号")
-        x_axis.append(x)
-        y_values.append(y)
-        labels.append(label)
-        sample_ids.append(sample_id)
+            raise ValueError(f"第 {idx} 行 Sample_ID 为空，建模前请补充样品编号")
 
-    lengths = {len(values) for values in y_values}
-    if len(lengths) != 1:
-        raise ValueError(f"当前训练版本要求曲线长度一致，检测到长度: {sorted(lengths)}")
+    feature_text = raw_frame.loc[:, feature_headers]
+    numeric_features = feature_text.apply(pd.to_numeric, errors="coerce")
+    numeric_array = numeric_features.to_numpy(dtype=np.float64)
+    invalid = ~np.isfinite(numeric_array)
+    if bool(invalid.any()):
+        row_index, column_index = np.argwhere(invalid)[0]
+        raw_value = feature_text.iloc[int(row_index), int(column_index)]
+        raise ValueError(
+            f"第 {int(row_index) + 2} 行、XXX={feature_headers[int(column_index)]} 的 "
+            f"Intensity 必须是有限数值，当前为 {raw_value!r}"
+        )
 
-    frame = frame.copy()
-    frame["Label"] = labels
-    frame["Sample_ID"] = sample_ids
-    sample_summary = _sample_id_summary(frame)
+    sample_summary = _sample_id_summary(metadata)
     if sample_summary["inconsistent_labels"]:
         details = ", ".join(f"{item['sample_id']}={item['labels']}" for item in sample_summary["inconsistent_labels"])
         raise ValueError(f"同一个 Sample_ID 内出现多个 Label，请检查: {details}")
@@ -271,9 +205,9 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         raise ValueError(f"Sample_ID 重复测量次数不一致，期望每组 {expected} 条，异常分组: {details}")
 
     return ModelingDataset(
-        frame=frame,
-        x_axis=x_axis,
-        intensity=np.asarray(y_values, dtype=np.float32),
+        frame=metadata,
+        x_axis=[list(shared_axis) for _ in range(len(metadata))],
+        intensity=np.asarray(numeric_array, dtype=np.float32),
         labels=labels,
         sample_id=sample_ids,
     )
@@ -330,12 +264,13 @@ def summarize_modeling_csv(path: str | Path) -> dict:
         "sample_id": sample_summary,
         "curve_length": int(lengths[0]) if lengths else 0,
         "curve_lengths": {str(k): int(v) for k, v in pd.Series(lengths).value_counts().sort_index().items()},
+        "data_format": WIDE_MODELING_FORMAT,
         "columns": list(dataset.frame.columns),
-        "preview": dataset.frame.head(8).drop(columns=["XXX", "Intensity"]).to_dict(orient="records"),
+        "preview": dataset.frame.head(8).to_dict(orient="records"),
         "curves": [
             {
                 "index": int(dataset.frame.iloc[i]["Index"]) if str(dataset.frame.iloc[i]["Index"]).isdigit() else str(dataset.frame.iloc[i]["Index"]),
-                "name": str(dataset.frame.iloc[i]["Name"]),
+                "name": str(dataset.frame.iloc[i]["Index"]),
                 "label": dataset.labels[i],
                 "sample_id": dataset.sample_id[i],
                 "x": dataset.x_axis[i],
@@ -351,7 +286,14 @@ def _read_csv_flexible(path: str | Path) -> pd.DataFrame:
     last_error: Exception | None = None
     for encoding in encodings:
         try:
-            return pd.read_csv(path, sep=None, engine="python", encoding=encoding)
+            return pd.read_csv(
+                path,
+                sep=None,
+                engine="python",
+                encoding=encoding,
+                dtype=str,
+                keep_default_na=False,
+            )
         except Exception as exc:
             last_error = exc
     raise ValueError(f"无法读取 CSV 文件 {Path(path).name}: {last_error}")
@@ -362,7 +304,15 @@ def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
     last_error: Exception | None = None
     for encoding in encodings:
         try:
-            return pd.read_csv(path, header=None, sep=None, engine="python", encoding=encoding)
+            return pd.read_csv(
+                path,
+                header=None,
+                sep=None,
+                engine="python",
+                encoding=encoding,
+                dtype=str,
+                keep_default_na=False,
+            )
         except Exception as exc:
             last_error = exc
     raise ValueError(f"无法读取 CSV 文件 {Path(path).name}: {last_error}")
@@ -371,11 +321,23 @@ def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
 def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarray]:
     """兼容常见编码/表头读取单个拉曼、色谱或 HPLC 二列文件。"""
     path = Path(path)
+
+    def numeric_values(frame: pd.DataFrame) -> pd.DataFrame:
+        def parse_cell(value: object) -> float:
+            try:
+                return float(str(value).strip())
+            except (TypeError, ValueError, OverflowError):
+                return float("nan")
+
+        # 不使用 pandas.to_numeric：其快速转换器会把部分 17 位十进制先舍入
+        # 一个 ULP，破坏真实 XXX 表头的 float64 往返契约。
+        return frame.map(parse_cell)
+
     frame = _read_csv_no_header_flexible(path)
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
+    numeric = numeric_values(frame)
     if numeric.shape[1] < 2 or numeric.iloc[:, :2].dropna().empty:
         frame = _read_csv_flexible(path)
-        numeric = frame.apply(pd.to_numeric, errors="coerce")
+        numeric = numeric_values(frame)
     numeric = numeric.iloc[:, :2].dropna()
     if numeric.empty:
         raise ValueError(f"{path.name} 没有可解析的两列数值数据")
@@ -414,142 +376,144 @@ def _normalize_numeric_array(
     return rounded.astype(float).tolist()
 
 
-def _compact_json_numbers(values: list[float]) -> list[int | float]:
-    """删除不必要的 ``.0``，同时保留更短的合法指数表示。"""
-    compact: list[int | float] = []
-    for value in values:
-        if value == 0.0:
-            compact.append(0)
-            continue
-        if value.is_integer():
-            integer_value = int(value)
-            # 对普通整数去掉 .0；极大数使用更短的浮点指数表示。
-            if len(str(integer_value)) <= len(repr(value)):
-                compact.append(integer_value)
-                continue
-        compact.append(value)
-    return compact
+def _format_wide_axis_header(value: float) -> str:
+    number = float(value)
+    if not np.isfinite(number):
+        raise ValueError("XXX 坐标必须是有限数值")
+    if number == 0.0:
+        return "0"
+    return format(number, ".17g")
 
 
-def _serialize_modeling_array_at_precision(
-    values: np.ndarray,
-    field_name: str,
-    decimal_places: int,
-) -> SerializedModelingArray:
-    normalized = _normalize_numeric_array(values, field_name, decimal_places)
-    compact_values = _compact_json_numbers(normalized)
-    serialized = json.dumps(
-        compact_values,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    # 从最终文本回读，保证 API 预览与实际落盘 JSON 使用完全相同的数值源。
-    final_values = json.loads(serialized)
-    return SerializedModelingArray(
-        values=final_values,
-        serialized=serialized,
-        decimal_places=decimal_places,
-        character_count=len(serialized),
-    )
-
-
-def _serialize_modeling_arrays(
-    arrays: list[np.ndarray],
-    field_name: str,
-    source_names: list[str],
-    max_decimal_places: int = MAX_OUTPUT_DECIMAL_PLACES,
-    character_limit: int | None = None,
-) -> BatchSerializationResult:
-    """为一个批次字段选择 Excel 可容纳的最高统一小数精度。"""
-    if not arrays:
-        raise ValueError(f"{field_name} 没有可序列化的数据")
-    if len(arrays) != len(source_names):
-        raise ValueError(f"{field_name} 数组数量与样本名数量不一致")
-    if not 0 <= max_decimal_places <= MAX_OUTPUT_DECIMAL_PLACES:
+def _wide_axis_headers(values: np.ndarray, source_name: str) -> tuple[list[float], list[str]]:
+    axis = np.asarray(values, dtype=np.float64)
+    if axis.ndim != 1 or axis.size == 0:
+        raise ValueError(f"{source_name} 的 XXX 必须是一维非空数组")
+    if not np.all(np.isfinite(axis)):
+        raise ValueError(f"{source_name} 的 XXX 含有 NaN 或无穷值")
+    invalid = np.flatnonzero(np.diff(axis) <= 0)
+    if invalid.size:
+        index = int(invalid[0])
         raise ValueError(
-            f"{field_name} 最大小数位数必须在 0 到 {MAX_OUTPUT_DECIMAL_PLACES} 之间"
+            f"{source_name} 的 XXX 必须严格递增；第 {index + 1}、{index + 2} 个坐标为 "
+            f"{axis[index]:.17g}、{axis[index + 1]:.17g}"
         )
-    limit = EXCEL_CELL_CHARACTER_LIMIT if character_limit is None else character_limit
-    if limit <= 0:
-        raise ValueError("Excel 单元格字符上限必须为正整数")
+    if axis.size > MAX_WIDE_FEATURE_COUNT:
+        raise ValueError(
+            f"{source_name} 含 {axis.size} 个特征，宽表连同 3 个元数据列共 "
+            f"{axis.size + len(MODELING_METADATA_COLUMNS)} 列，超过 Excel 上限 "
+            f"{EXCEL_WORKSHEET_MAX_COLUMNS}；请先缩小行号或 X 轴范围"
+        )
+    headers = [_format_wide_axis_header(item) for item in axis]
+    if len(set(headers)) != len(headers):
+        raise ValueError(f"{source_name} 的真实 XXX 坐标格式化后出现重复列名")
+    # 从最终表头回读，确保 API 预览与训练加载器看到完全相同的 float64 坐标。
+    return [float(item) for item in headers], headers
 
-    shortest_results: list[SerializedModelingArray] | None = None
-    for decimal_places in range(max_decimal_places, -1, -1):
-        candidate: list[SerializedModelingArray] = []
-        for values, source_name in zip(arrays, source_names):
-            try:
-                item = _serialize_modeling_array_at_precision(
-                    values,
-                    field_name,
-                    decimal_places,
+
+def build_wide_modeling_frame(
+    *,
+    indices: list[int | str],
+    x_arrays: list[np.ndarray],
+    intensity_arrays: list[np.ndarray],
+    source_names: list[str],
+) -> WideModelingFrameResult:
+    """构造以真实 XXX 为表头的统一宽表，并强制一个批次共享公共轴。"""
+
+    count = len(indices)
+    if count == 0:
+        raise ValueError("没有可生成宽表的曲线")
+    if not (len(x_arrays) == len(intensity_arrays) == len(source_names) == count):
+        raise ValueError("宽表的索引、坐标轴、强度和文件名数量不一致")
+
+    reference_axis, feature_headers = _wide_axis_headers(x_arrays[0], source_names[0])
+    reference_header_tuple = tuple(feature_headers)
+    normalized_intensities: list[list[float]] = []
+    for axis_values, intensity_values, source_name in zip(
+        x_arrays, intensity_arrays, source_names
+    ):
+        candidate_axis, candidate_headers = _wide_axis_headers(axis_values, source_name)
+        if tuple(candidate_headers) != reference_header_tuple:
+            first_difference = next(
+                (
+                    index
+                    for index, (left, right) in enumerate(
+                        zip(reference_header_tuple, candidate_headers)
+                    )
+                    if left != right
+                ),
+                min(len(reference_header_tuple), len(candidate_headers)),
+            )
+            if first_difference < min(len(reference_axis), len(candidate_axis)):
+                detail = (
+                    f"第 {first_difference + 1} 个坐标分别为 "
+                    f"{reference_axis[first_difference]:.17g} 与 "
+                    f"{candidate_axis[first_difference]:.17g}"
                 )
-            except ValueError as exc:
-                if "失去全部有效变化" in str(exc):
-                    if decimal_places == max_decimal_places:
-                        raise ValueError(
-                            f"{source_name} 的 {field_name} 保留 {decimal_places} 位小数后"
-                            "失去全部有效变化；请缩小数值缩放范围，或改用更高精度后重试"
-                        ) from exc
-                    raise ValueError(
-                        f"{source_name} 的 {field_name} 为满足 Excel 单元格上限需要降低精度，"
-                        f"但保留 {decimal_places} 位小数会失去全部有效变化；"
-                        "请缩小行号范围或 X 轴数值范围，或改用降采样/非 Excel 格式"
-                    ) from exc
-                raise
-            candidate.append(item)
-        shortest_results = candidate
-        if all(item.character_count <= limit for item in candidate):
-            max_index = max(
-                range(len(candidate)),
-                key=lambda index: candidate[index].character_count,
-            )
-            return BatchSerializationResult(
-                arrays=candidate,
-                decimal_places=decimal_places,
-                max_characters=candidate[max_index].character_count,
-                max_source_name=source_names[max_index],
+            else:
+                detail = (
+                    f"点数分别为 {len(reference_axis)} 与 {len(candidate_axis)}"
+                )
+            raise ValueError(
+                f"{source_name} 的 XXX 与 {source_names[0]} 不一致（{detail}）；"
+                "宽表只能保存一条公共真实轴，请先统一采样轴或开启 HPLC 插值"
             )
 
-    assert shortest_results is not None
-    max_index = max(
-        range(len(shortest_results)),
-        key=lambda index: shortest_results[index].character_count,
+        intensity = np.asarray(intensity_values, dtype=np.float64)
+        if intensity.ndim != 1:
+            raise ValueError(f"{source_name} 的 Intensity 必须是一维数组")
+        if intensity.size != len(reference_axis):
+            raise ValueError(
+                f"{source_name} 的 Intensity 有 {intensity.size} 个点，但公共 XXX 有 "
+                f"{len(reference_axis)} 个点"
+            )
+        normalized_intensities.append(
+            _normalize_numeric_array(
+                intensity,
+                f"{source_name} 的 Intensity",
+                MAX_OUTPUT_DECIMAL_PLACES,
+            )
+        )
+
+    metadata = pd.DataFrame(
+        {
+            "Index": indices,
+            "Label": [""] * count,
+            "Sample_ID": [""] * count,
+        },
+        columns=MODELING_METADATA_COLUMNS,
     )
-    longest = shortest_results[max_index]
-    source_name = source_names[max_index]
-    point_count = len(longest.values)
-    raise ValueError(
-        f"{source_name} 的 {field_name} 含 {point_count} 个点，即使保留 0 位小数并紧凑序列化后仍有 "
-        f"{longest.character_count} 个字符，超过 Excel 单元格上限 {limit}；"
-        "请缩小行号范围或 X 轴数值范围，或改用降采样/非 Excel 格式"
+    feature_frame = pd.DataFrame(
+        np.asarray(normalized_intensities, dtype=np.float64),
+        columns=feature_headers,
+    )
+    frame = pd.concat([metadata, feature_frame], axis=1)
+    total_columns = len(frame.columns)
+    return WideModelingFrameResult(
+        frame=frame,
+        x_axis=reference_axis,
+        intensity=normalized_intensities,
+        output_precision={
+            "format": WIDE_MODELING_FORMAT,
+            "xxx_encoding": WIDE_AXIS_ENCODING,
+            "xxx_precision": "float64-roundtrip",
+            "intensity_decimal_places": MAX_OUTPUT_DECIMAL_PLACES,
+            "adaptive": False,
+            "feature_count": len(feature_headers),
+            "total_column_count": total_columns,
+            "excel_column_limit": EXCEL_WORKSHEET_MAX_COLUMNS,
+            "excel_compatible": total_columns <= EXCEL_WORKSHEET_MAX_COLUMNS,
+        },
     )
 
 
-def _serialize_modeling_array(
-    values: np.ndarray,
-    field_name: str,
-    source_name: str,
-) -> tuple[list[int | float], str]:
-    """兼容单数组调用；内部同样使用自适应最高精度算法。"""
-    result = _serialize_modeling_arrays([values], field_name, [source_name])
-    item = result.arrays[0]
-    return item.values, item.serialized
+def modeling_metadata_preview(frame: pd.DataFrame, limit: int = 5) -> list[dict[str, object]]:
+    """返回紧凑元数据预览，避免把数千个宽表特征塞进 API 响应。"""
 
-
-def _output_precision_metadata(
-    x_result: BatchSerializationResult,
-    intensity_result: BatchSerializationResult,
-) -> dict[str, int | bool]:
-    return {
-        "adaptive": True,
-        "max_decimal_places": MAX_OUTPUT_DECIMAL_PLACES,
-        "xxx_decimal_places": x_result.decimal_places,
-        "intensity_decimal_places": intensity_result.decimal_places,
-        "xxx_max_characters": x_result.max_characters,
-        "intensity_max_characters": intensity_result.max_characters,
-        "excel_cell_character_limit": EXCEL_CELL_CHARACTER_LIMIT,
-    }
+    missing = [column for column in MODELING_METADATA_COLUMNS if column not in frame.columns]
+    if missing:
+        raise ValueError(f"宽表缺少元数据列: {', '.join(missing)}")
+    return frame.loc[:, list(MODELING_METADATA_COLUMNS)].head(limit).to_dict(orient="records")
 
 
 def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
@@ -631,27 +595,13 @@ def preprocess_raw_files(
         )
 
     names = [str(item["name"]) for item in prepared]
-    x_result = _serialize_modeling_arrays(
-        [np.asarray(item["x"]) for item in prepared], "XXX", names
+    wide = build_wide_modeling_frame(
+        indices=[item["index"] for item in prepared],
+        x_arrays=[np.asarray(item["x"]) for item in prepared],
+        intensity_arrays=[np.asarray(item["processed_y"]) for item in prepared],
+        source_names=names,
     )
-    intensity_result = _serialize_modeling_arrays(
-        [np.asarray(item["processed_y"]) for item in prepared], "Intensity", names
-    )
-    records = []
-    for item, x_item, intensity_item in zip(
-        prepared, x_result.arrays, intensity_result.arrays
-    ):
-        records.append(
-            {
-                "Index": item["index"],
-                "Name": item["name"],
-                "XXX": x_item.serialized,
-                "Intensity": intensity_item.serialized,
-                "Label": "",
-                "Sample_ID": "",
-            }
-        )
-    return pd.DataFrame.from_records(records, columns=MODELING_COLUMNS)
+    return wide.frame
 
 
 def preprocess_raw_files_with_preview(
@@ -691,49 +641,36 @@ def preprocess_raw_files_with_preview(
         )
 
     names = [str(item["name"]) for item in prepared]
-    x_result = _serialize_modeling_arrays(
-        [np.asarray(item["x"]) for item in prepared], "XXX", names
+    wide = build_wide_modeling_frame(
+        indices=[item["index"] for item in prepared],
+        x_arrays=[np.asarray(item["x"]) for item in prepared],
+        intensity_arrays=[np.asarray(item["processed_y"]) for item in prepared],
+        source_names=names,
     )
-    intensity_result = _serialize_modeling_arrays(
-        [np.asarray(item["processed_y"]) for item in prepared], "Intensity", names
-    )
-    records = []
     curves = []
-    for item, x_item, intensity_item in zip(
-        prepared, x_result.arrays, intensity_result.arrays
-    ):
+    for position, item in enumerate(prepared):
+        intensity_values = wide.intensity[position]
         raw_values = (
             _normalize_numeric_array(np.asarray(item["raw_y"]), "raw_y")
             if kind == "raman"
-            else intensity_item.values
-        )
-        records.append(
-            {
-                "Index": item["index"],
-                "Name": item["name"],
-                "XXX": x_item.serialized,
-                "Intensity": intensity_item.serialized,
-                "Label": "",
-                "Sample_ID": "",
-            }
+            else intensity_values
         )
         curves.append(
             ({
                 "name": item["name"],
-                "x": x_item.values,
+                "x": wide.x_axis,
                 "raw_y": raw_values,
-                "corrected_y": intensity_item.values,
+                "corrected_y": intensity_values,
             }
             if kind == "raman"
             else {
                 "name": item["name"],
-                "x": x_item.values,
+                "x": wide.x_axis,
                 "raw_y": raw_values,
             })
         )
-    frame = pd.DataFrame.from_records(records, columns=MODELING_COLUMNS)
     return {
-        "frame": frame,
+        "frame": wide.frame,
         "curves": curves,
-        "output_precision": _output_precision_metadata(x_result, intensity_result),
+        "output_precision": wide.output_precision,
     }

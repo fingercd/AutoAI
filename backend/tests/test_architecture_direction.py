@@ -63,3 +63,21 @@ def test_result_page_server_security_and_artifact_contracts_are_documented_consi
     assert '当前没有正式计算 ROC-AUC' in handoff
     assert '--rebind-unowned' in readme
     assert '--rebind-unowned' in deployment
+
+
+def test_wide_feature_v1_csv_contract_is_documented_consistently():
+    documents = [
+        Path('README.md').read_text(encoding='utf-8'),
+        Path('CONTEXT.md').read_text(encoding='utf-8'),
+        Path('docs/frontend_backend_handoff.md').read_text(encoding='utf-8'),
+    ]
+
+    for document in documents:
+        assert 'wide-feature-v1' in document
+        assert 'Index,Label,Sample_ID' in document.replace(', ', ',')
+        assert '16,384' in document
+        assert '16,381' in document
+        assert '公共轴' in document
+    assert 'xxx_encoding=column_headers' in documents[0]
+    assert 'xxx_precision=float64-roundtrip' in documents[1]
+    assert '旧六列数组/JSON' in documents[1]

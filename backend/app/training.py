@@ -256,13 +256,34 @@ def _split_indices(labels: np.ndarray, sample_id: np.ndarray, config: TrainConfi
     }
 
 
-def _validate_external_test_dataset(train_labels: list[str], train_curve_length: int, test_dataset: Any) -> None:
+def _validate_external_test_dataset(
+    train_labels: list[str],
+    train_curve_length: int,
+    train_axis: list[float],
+    test_dataset: Any,
+) -> None:
     unknown_labels = sorted(set(test_dataset.labels).difference(train_labels))
     if unknown_labels:
         raise ValueError(f"测试集包含训练集中不存在的 Label: {', '.join(unknown_labels)}")
     test_lengths = {len(values) for values in test_dataset.x_axis}
     if test_lengths != {train_curve_length}:
         raise ValueError(f"测试集曲线长度必须与训练数据一致，训练长度 {train_curve_length}，测试集长度 {sorted(test_lengths)}")
+    test_axis = test_dataset.x_axis[0] if test_dataset.x_axis else []
+    train_values = np.asarray(train_axis, dtype=np.float64)
+    test_values = np.asarray(test_axis, dtype=np.float64)
+    if train_values.shape != test_values.shape or not np.array_equal(train_values, test_values):
+        if train_values.shape == test_values.shape:
+            difference = np.flatnonzero(train_values != test_values)
+            position = int(difference[0]) if difference.size else 0
+            detail = (
+                f"第 {position + 1} 个坐标分别为 {train_values[position]:.17g} 与 "
+                f"{test_values[position]:.17g}"
+            )
+        else:
+            detail = f"坐标数分别为 {train_values.size} 与 {test_values.size}"
+        raise ValueError(
+            f"独立测试集的真实 XXX 特征轴必须与训练数据完全一致（{detail}）"
+        )
 
 
 def _axis_to_float_list(axis: Any, n_features: int) -> list[float]:
@@ -715,7 +736,7 @@ def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: in
         rows.append(
             {
                 "index": index_value,
-                "name": str(row.get("Name", "")),
+                "name": str(row.get("Name", "") or raw_index),
                 "sample_id": str(row.get("Sample_ID", "")),
                 "sample_x_axis": _axis_to_float_list(axis, n_features),
             }
@@ -1602,7 +1623,12 @@ def _run_legacy_training(
     test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
     test_sample_count = 0
     if test_dataset is not None:
-        _validate_external_test_dataset(label_names, x_raw.shape[1], test_dataset)
+        _validate_external_test_dataset(
+            label_names,
+            x_raw.shape[1],
+            dataset.x_axis[0] if dataset.x_axis else [],
+            test_dataset,
+        )
         test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
         test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
         test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()

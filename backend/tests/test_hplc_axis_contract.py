@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import numpy as np
@@ -167,11 +166,80 @@ def test_hplc_raw_mode_filters_each_original_real_time_axis(tmp_path):
     assert result["common_time"] == []
     assert len(result["curves"][0]["x"]) == len(expected)
     np.testing.assert_allclose(
-        result["curves"][0]["x"], np.round(expected, 5), rtol=0, atol=0
+        result["curves"][0]["x"], expected, rtol=0, atol=1e-12
     )
 
 
-def test_hplc_partial_slice_descriptor_round_trips_exact_full_grid_positions(
+def _expected_axis_headers(axis: np.ndarray) -> list[str]:
+    return ["0" if float(value) == 0.0 else format(float(value), ".17g") for value in axis]
+
+
+def _complete_modeling_metadata(frame: pd.DataFrame) -> pd.DataFrame:
+    modeling = frame.copy()
+    modeling["Label"] = "A"
+    modeling["Sample_ID"] = "S001"
+    return modeling
+
+
+def test_hplc_full_grid_exports_7503_column_wide_table_with_exact_axis_headers(
+    tmp_path,
+):
+    from backend.app.hplc import (
+        DEFAULT_HPLC_GRID,
+        build_hplc_target_axis,
+        preprocess_hplc_files_with_preview,
+    )
+    from backend.app.parsers import load_modeling_csv
+
+    source = _write_hplc_source(tmp_path / "full.csv")
+    result = preprocess_hplc_files_with_preview([source])
+    expected_axis = build_hplc_target_axis(DEFAULT_HPLC_GRID)
+
+    assert result["frame"].shape == (1, 7503)
+    assert list(result["frame"].columns[:3]) == ["Index", "Label", "Sample_ID"]
+    assert list(result["frame"].columns[3:]) == _expected_axis_headers(expected_axis)
+    assert "Name" not in result["frame"].columns
+    assert np.array_equal(np.asarray(result["common_time"]), expected_axis)
+    assert result["hplc_axis"] == {
+        "start": float(expected_axis[0]),
+        "stop": float(expected_axis[-1]),
+        "unit": "minute",
+        "point_count": 7500,
+        "step_minutes": DEFAULT_HPLC_GRID.step_minutes,
+        "mapping": "piecewise_linear",
+        "input_point_count_required": 7500,
+        "encoding": "column_headers",
+        "grid_start": 0.0,
+        "grid_stop": 50.0,
+        "grid_point_count": 7500,
+        "selected_start_row": 1,
+        "selected_end_row": 7500,
+    }
+    assert result["output_precision"] == {
+        "format": "wide-feature-v1",
+        "xxx_encoding": "column_headers",
+        "xxx_precision": "float64-roundtrip",
+        "intensity_decimal_places": 5,
+        "adaptive": False,
+        "feature_count": 7500,
+        "total_column_count": 7503,
+        "excel_column_limit": 16_384,
+        "excel_compatible": True,
+    }
+
+    modeling_path = tmp_path / "modeling.csv"
+    _complete_modeling_metadata(result["frame"]).to_csv(
+        modeling_path, index=False, encoding="utf-8-sig"
+    )
+    loaded = load_modeling_csv(modeling_path)
+    assert np.array_equal(np.asarray(loaded.x_axis[0]), expected_axis)
+    np.testing.assert_array_equal(
+        loaded.intensity[0],
+        np.asarray(result["curves"][0]["processed_y"], dtype=np.float32),
+    )
+
+
+def test_hplc_rows_100_to_4000_export_3904_columns_and_round_trip_exact_headers(
     tmp_path,
 ):
     from backend.app.hplc import (
@@ -186,40 +254,22 @@ def test_hplc_partial_slice_descriptor_round_trips_exact_full_grid_positions(
         [source], start_row=100, end_row=4000
     )
     expected_axis = build_hplc_target_axis(DEFAULT_HPLC_GRID)[99:4000]
-    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
 
-    assert descriptor == {
-        "type": "linspace-slice-v1",
-        "grid_start": 0.0,
-        "grid_stop": 50.0,
-        "grid_count": 7500,
-        "offset": 99,
-        "length": 3901,
-        "unit": "minute",
-    }
+    assert result["frame"].shape == (1, 3904)
+    assert list(result["frame"].columns[:3]) == ["Index", "Label", "Sample_ID"]
+    assert list(result["frame"].columns[3:]) == _expected_axis_headers(expected_axis)
     assert np.array_equal(np.asarray(result["common_time"]), expected_axis)
-    assert result["hplc_axis"] == {
-        "start": float(expected_axis[0]),
-        "stop": float(expected_axis[-1]),
-        "unit": "minute",
-        "point_count": 3901,
-        "step_minutes": DEFAULT_HPLC_GRID.step_minutes,
-        "mapping": "piecewise_linear",
-        "input_point_count_required": 7500,
-        "encoding": "linspace-slice-v1",
-        "grid_start": 0.0,
-        "grid_stop": 50.0,
-        "grid_point_count": 7500,
-        "selected_start_row": 100,
-        "selected_end_row": 4000,
-    }
-    assert len(json.loads(result["frame"].iloc[0]["Intensity"])) == 3901
+    assert result["hplc_axis"]["encoding"] == "column_headers"
+    assert result["hplc_axis"]["selected_start_row"] == 100
+    assert result["hplc_axis"]["selected_end_row"] == 4000
+    assert result["output_precision"]["format"] == "wide-feature-v1"
+    assert result["output_precision"]["feature_count"] == 3901
+    assert result["output_precision"]["total_column_count"] == 3904
 
-    modeling = result["frame"].copy()
-    modeling["Label"] = "A"
-    modeling["Sample_ID"] = "S1"
-    modeling_path = tmp_path / "modeling.csv"
-    modeling.to_csv(modeling_path, index=False, encoding="utf-8-sig")
+    modeling_path = tmp_path / "partial-modeling.csv"
+    _complete_modeling_metadata(result["frame"]).to_csv(
+        modeling_path, index=False, encoding="utf-8-sig"
+    )
     loaded = load_modeling_csv(modeling_path)
     assert np.array_equal(np.asarray(loaded.x_axis[0]), expected_axis)
 
@@ -238,73 +288,33 @@ def test_hplc_time_range_pipeline_reports_actual_grid_points(tmp_path):
     full_axis = build_hplc_target_axis(DEFAULT_HPLC_GRID)
     positions = np.flatnonzero((full_axis >= 0.66) & (full_axis <= 26.67))
     expected_axis = full_axis[positions]
-    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
 
     assert np.array_equal(np.asarray(result["common_time"]), expected_axis)
-    assert descriptor["offset"] == int(positions[0])
-    assert descriptor["length"] == len(positions)
+    assert list(result["frame"].columns[3:]) == _expected_axis_headers(expected_axis)
     assert result["hplc_axis"]["selected_start_row"] == int(positions[0]) + 1
     assert result["hplc_axis"]["selected_end_row"] == int(positions[-1]) + 1
     assert result["hplc_axis"]["start"] == float(expected_axis[0])
     assert result["hplc_axis"]["stop"] == float(expected_axis[-1])
-    assert result["output_precision"]["xxx_max_characters"] == len(
-        result["frame"].iloc[0]["XXX"]
-    )
+    assert result["output_precision"]["feature_count"] == len(expected_axis)
+    assert result["output_precision"]["total_column_count"] == len(expected_axis) + 3
 
 
-def test_modeling_axis_parser_keeps_legacy_formats_and_reads_slice_exactly():
-    from backend.app.parsers import _parse_modeling_axis
+def test_hplc_raw_mode_rejects_different_source_axes_instead_of_exporting(
+    tmp_path,
+):
+    from backend.app.hplc import preprocess_hplc_files_with_preview
 
-    descriptor = {
-        "type": "linspace-slice-v1",
-        "grid_start": 0.0,
-        "grid_stop": 4.0,
-        "grid_count": 5,
-        "offset": 1,
-        "length": 3,
-        "unit": "minute",
-    }
-    assert _parse_modeling_axis(descriptor, 2) == [1.0, 2.0, 3.0]
-    assert _parse_modeling_axis("[0, 0.5, 1]", 2) == [0.0, 0.5, 1.0]
-    assert _parse_modeling_axis(
-        {"type": "linspace-v1", "start": 0, "stop": 1, "count": 3}, 2
-    ) == [0.0, 0.5, 1.0]
+    first_axis = np.linspace(0.0, 50.0, 7500, dtype=np.float64)
+    second_axis = first_axis.copy()
+    second_axis[3500] += 1e-7
+    first = _write_hplc_source(tmp_path / "first.csv", x=first_axis)
+    second = _write_hplc_source(tmp_path / "second.csv", x=second_axis)
 
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"grid_start": "0"},
-        {"grid_start": np.nan},
-        {"grid_stop": 0.0},
-        {"grid_count": True},
-        {"grid_count": 5.0},
-        {"grid_count": 1},
-        {"grid_count": 1_000_001},
-        {"offset": True},
-        {"offset": -1},
-        {"length": True},
-        {"length": 0},
-        {"offset": 4, "length": 2},
-        {"unit": "second"},
-        {"unexpected": 1},
-    ],
-)
-def test_modeling_axis_parser_rejects_malformed_slice_descriptors(changes):
-    from backend.app.parsers import _parse_modeling_axis
-
-    descriptor = {
-        "type": "linspace-slice-v1",
-        "grid_start": 0.0,
-        "grid_stop": 4.0,
-        "grid_count": 5,
-        "offset": 0,
-        "length": 5,
-        "unit": "minute",
-    }
-    descriptor.update(changes)
-    with pytest.raises(ValueError):
-        _parse_modeling_axis(descriptor, 2)
+    with pytest.raises(ValueError, match="XXX 与 first 不一致.*已关闭 HPLC 线性插值.*开启插值"):
+        preprocess_hplc_files_with_preview(
+            [first, second],
+            interpolate=False,
+        )
 
 
 @pytest.mark.parametrize("end_row", [7501, 9000])
@@ -341,6 +351,7 @@ def test_hplc_api_rejects_row_end_beyond_grid_without_output(
 def test_hplc_api_writes_only_one_self_contained_modeling_csv(
     tmp_path, monkeypatch
 ):
+    from backend.app.hplc import DEFAULT_HPLC_GRID, build_hplc_target_axis
     from backend.app.main import app
     from backend.app.parsers import load_modeling_csv
     from backend.app.routers import preprocess as preprocess_router
@@ -370,15 +381,14 @@ def test_hplc_api_writes_only_one_self_contained_modeling_csv(
     assert generated[0].suffix == ".csv"
     assert "_xxx" not in generated[0].name
 
-    frame = pd.read_csv(generated[0])
-    assert list(frame.columns) == [
-        "Index",
-        "Name",
-        "XXX",
-        "Intensity",
-        "Label",
-        "Sample_ID",
-    ]
+    frame = pd.read_csv(generated[0], dtype=str, keep_default_na=False)
+    assert list(frame.columns[:3]) == ["Index", "Label", "Sample_ID"]
+    assert len(frame.columns) == 3904
+    assert "Name" not in frame.columns
+    assert "XXX" not in frame.columns
+    assert "Intensity" not in frame.columns
+    expected_axis = build_hplc_target_axis(DEFAULT_HPLC_GRID)[99:4000]
+    assert list(frame.columns[3:]) == _expected_axis_headers(expected_axis)
     frame["Label"] = "A"
     frame["Sample_ID"] = "S1"
     modeling_path = tmp_path / "roundtrip.csv"
@@ -387,3 +397,5 @@ def test_hplc_api_writes_only_one_self_contained_modeling_csv(
     assert np.array_equal(
         np.asarray(loaded.x_axis[0]), np.asarray(payload["common_time"])
     )
+    assert payload["output_precision"]["format"] == "wide-feature-v1"
+    assert payload["output_precision"]["feature_count"] == 3901

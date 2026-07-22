@@ -102,16 +102,20 @@ def test_v2_hplc_preprocess_preserves_range_and_interpolation_controls() -> None
     assert "selected_start_row" in workbench
     assert "selected_end_row" in workbench
     assert "真实保留时间" in workbench
-    assert "linspace-slice-v1" in workbench
+    assert "每个真实时间坐标逐列保存在 CSV 特征表头中" in workbench
+    assert "lastResult.output_precision.format" in workbench
+    assert "lastResult.output_precision.feature_count" in workbench
+    assert "lastResult.output_precision.total_column_count" in workbench
     assert "保留时间下限（分钟）" in workbench
     assert "保留时间上限（分钟）" in workbench
     assert "保留时间（分钟）" in workbench
     assert "最大终止行 7500" in workbench
     assert workbench.count("下载统一建模 CSV") == 1
-    for removed in ("xxx_download_url", "downloadVisibleAxis", "下载可见 XXX 时间轴", "归一化 X 坐标"):
+    for removed in ("linspace-slice-v1", "xxx_download_url", "downloadVisibleAxis", "下载可见 XXX 时间轴", "归一化 X 坐标"):
         assert removed not in workbench
-    assert "linspace-slice-v1 JSON" in manual
-    assert "只保留一个“下载统一建模 CSV”入口" in manual
+    assert "wide-feature-v1 宽表" in manual
+    assert "旧的六列数组/JSON CSV 不再可训练" in manual
+    assert "16,384" in manual and "16,381" in manual
     assert "warning-panel" in workbench
     assert "不做面积归一化" in workbench
     for removed in ("hplc_subtract_min", "hplc_normalize_area", "减最小值"):
@@ -132,6 +136,8 @@ def test_v2_modeling_summary_and_business_tables_use_unified_terms() -> None:
     assert "类别分布" in modeling
     assert "el('th', { text: '类别'" in modeling
     assert "el('th', { text: '数据量'" in modeling
+    assert "wide-feature-v1 CSV" in modeling
+    assert "前三列固定为 Index、Label、Sample_ID" in modeling
     assert "模型目录已加载" not in modeling
     for old_term in ("曲线数（行）", "Sample_ID 组数", "曲线长度", "标签分布"):
         assert old_term not in modeling

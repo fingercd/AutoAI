@@ -25,12 +25,13 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 预处理与接口事实
 
-- 统一建模 CSV 字段为 `Index, Name, XXX, Intensity, Label, Sample_ID`；普通数组形式的 `XXX` 与 `Intensity` 最多保留 5 位小数，并按批次字段从 5 到 0 自动选择不超过 Excel 单元格 32767 字符上限的最高统一精度。该过程不删点、不降采样；0 位仍超限或量化会使有效变化全部消失时拒绝导出。开启插值的 HPLC `XXX` 使用下述紧凑可逆描述，不走数组小数降精度。
+- 统一建模 CSV 使用 `wide-feature-v1`：前三列固定为 `Index, Label, Sample_ID`，第 4 列起的列名是 float64 可往返的真实 `XXX` 坐标，单元格是标量 `Intensity`。坐标必须有限、唯一、严格递增，强度必须有限；预处理强度最多保留 5 位小数且不自适应降精度。原文件名仅保留在 `curves[].name`，不写入 CSV。
+- 所有曲线必须共享表头表示的公共轴，主数据集与独立测试集也必须逐点同轴。旧六列数组/JSON、`linspace-v1`、`linspace-slice-v1` 文件不再可训练，也不自动迁移。
+- Excel 总列数上限为 16,384，扣除三个元数据列后最多 16,381 个特征。`output_precision` 固定报告 `format=wide-feature-v1`、`xxx_encoding=column_headers`、`xxx_precision=float64-roundtrip`、强度位数、特征/总列数和 Excel 兼容性。
 - 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
 - HPLC 固定轴由 `HplcGridConfig` 配置，默认覆盖 0–50 分钟并包含 7500 点；每个原始文件必须有配置要求的完整有效点数且 X 严格递增。行号为 1 基、首尾包含且严格限制在 1–7500，终止行留空才使用 7500；100–4000 实际输出 3901 点。
-- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算，不能用 `n/7500` 代替。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，轴不一致仍生成并警告。均不消负或做面积归一化。
-- 开启时 HPLC `XXX` 使用 `linspace-slice-v1` 紧凑描述完整真实分钟网格及本次 `offset/length`，并返回实际选择的 `common_time`/`hplc_axis`；关闭时保存普通 X 数组，`common_time=[]`、`hplc_axis=null`。读取器继续兼容历史 `linspace-v1` 和普通数组。
-- HPLC 成功请求只生成一个六列统一建模 CSV，并只返回主 `download_url`；不再生成逐点 `_xxx.csv`，也不再返回 `xxx_download_url`/`xxx_rows`。
+- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算，不能用 `n/7500` 代替。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，但多文件所选轴必须完全一致，否则拒绝导出。均不消负或做面积归一化。
+- HPLC 的实际目标/原始公共轴逐点写入宽表特征表头；`common_time`/`hplc_axis` 继续描述预览所用的真实轴。成功请求只生成一个宽表建模 CSV 并只返回主 `download_url`；不生成逐点 `_xxx.csv`，也不返回 `xxx_download_url`/`xxx_rows`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
 - server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
 

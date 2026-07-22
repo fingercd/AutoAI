@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
-import pandas as pd
 
 from .parsers import (
-    EXCEL_CELL_CHARACTER_LIMIT,
-    MAX_OUTPUT_DECIMAL_PLACES,
-    MODELING_COLUMNS,
-    _output_precision_metadata,
-    _serialize_modeling_arrays,
+    WIDE_AXIS_ENCODING,
+    build_wide_modeling_frame,
     read_raw_spectrum,
 )
 
@@ -303,25 +298,6 @@ def hplc_x_axes_consistent(x_axes: list[np.ndarray]) -> bool:
     )
 
 
-def _axis_descriptor(selection: HplcAxisSelection, config: HplcGridConfig) -> str:
-    if config.unit != "minute":
-        raise ValueError("linspace-slice-v1 HPLC 时间轴单位必须是 minute")
-    return json.dumps(
-        {
-            "type": "linspace-slice-v1",
-            "grid_start": float(config.start_minutes),
-            "grid_stop": float(config.stop_minutes),
-            "grid_count": int(config.point_count),
-            "offset": selection.offset,
-            "length": selection.length,
-            "unit": config.unit,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
 def _axis_metadata(
     selection: HplcAxisSelection,
     config: HplcGridConfig,
@@ -335,7 +311,7 @@ def _axis_metadata(
         "step_minutes": config.step_minutes,
         "mapping": "piecewise_linear",
         "input_point_count_required": config.point_count,
-        "encoding": "linspace-slice-v1",
+        "encoding": WIDE_AXIS_ENCODING,
         "grid_start": float(config.start_minutes),
         "grid_stop": float(config.stop_minutes),
         "grid_point_count": int(config.point_count),
@@ -440,42 +416,30 @@ def preprocess_hplc_files_with_preview(
         x_arrays = [pair[0] for pair in selected_pairs]
         intensity_arrays = [pair[1] for pair in selected_pairs]
         x_axis_consistent = hplc_x_axes_consistent(x_arrays)
-        if not x_axis_consistent:
-            warnings.append(
-                "已关闭线性插值，检测到各文件 X 轴或点数不一致；CSV 已按各文件所选原始 X 轴正常生成，"
-                "后续建模前请确认这些曲线可以直接比较。"
-            )
 
     n_files = len(files)
-    records = []
-    intensity_result = _serialize_modeling_arrays(
-        intensity_arrays, "Intensity", names
-    )
-    axis_descriptor = _axis_descriptor(selection, config) if selection is not None else ""
-    x_result = None if interpolate else _serialize_modeling_arrays(x_arrays, "XXX", names)
-    processed_values: list[list[int | float]] = []
-    for i in range(n_files):
-        intensity_item = intensity_result.arrays[i]
-        processed_values.append(intensity_item.values)
-        records.append(
-            {
-                "Index": i + 1,
-                "Name": names[i],
-                "XXX": axis_descriptor if interpolate else x_result.arrays[i].serialized,
-                "Intensity": intensity_item.serialized,
-                "Label": "",
-                "Sample_ID": "",
-            }
+    try:
+        wide = build_wide_modeling_frame(
+            indices=list(range(1, n_files + 1)),
+            x_arrays=x_arrays,
+            intensity_arrays=intensity_arrays,
+            source_names=names,
         )
-
-    frame = pd.DataFrame.from_records(
-        records, columns=MODELING_COLUMNS
-    )
+    except ValueError as exc:
+        if not interpolate and "XXX 与" in str(exc):
+            raise ValueError(
+                f"{exc}；当前已关闭 HPLC 线性插值，请开启插值后重试"
+            ) from exc
+        raise
+    frame = wide.frame
+    processed_values = wide.intensity
+    # 能成功写成一张宽表就必然只有一条共享真实轴。
+    x_axis_consistent = True
 
     curves = []
-    target_values = selection.target_x.tolist() if selection is not None else []
+    target_values = wide.x_axis if selection is not None else []
     for i in range(n_files):
-        curve_x = target_values if interpolate else x_result.arrays[i].values
+        curve_x = wide.x_axis
         curve_data: dict = {
             "name": names[i],
             "x": curve_x,
@@ -491,17 +455,5 @@ def preprocess_hplc_files_with_preview(
         "hplc_axis": _axis_metadata(selection, config) if selection is not None else None,
         "x_axis_consistent": x_axis_consistent,
         "warnings": warnings,
-        "output_precision": (
-            {
-                "adaptive": True,
-                "max_decimal_places": MAX_OUTPUT_DECIMAL_PLACES,
-                "xxx_encoding": "linspace-slice-v1",
-                "xxx_max_characters": len(axis_descriptor),
-                "intensity_decimal_places": intensity_result.decimal_places,
-                "intensity_max_characters": intensity_result.max_characters,
-                "excel_cell_character_limit": EXCEL_CELL_CHARACTER_LIMIT,
-            }
-            if interpolate
-            else _output_precision_metadata(x_result, intensity_result)
-        ),
+        "output_precision": wide.output_precision,
     }

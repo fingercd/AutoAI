@@ -146,15 +146,21 @@ worker 当前收敛的稳定错误码包括：数据完整性变化用 `dataset_
 
 ## 4. 数据上传与预处理
 
-建模 CSV 固定为：
+建模 CSV 固定使用 `wide-feature-v1` 宽表，一条曲线占一行：
 
-```text
-Index, Name, XXX, Intensity, Label, Sample_ID
+```csv
+Index,Label,Sample_ID,0,0.0066675556740898788,...,50
+1,A,S001,0.12,0.15,...,0.08
+2,A,S001,0.11,0.16,...,0.09
 ```
 
-- `Intensity` 是数值数组；`XXX` 是等长数值数组，或后端可逆解析的固定轴 JSON 描述。
-- `Label` 必填且始终按分类类别处理。
-- 同一 `Sample_ID` 只能对应一个 Label；重复测量组不能跨 train/valid/test。
+- 前三列名称与顺序固定为 `Index, Label, Sample_ID`；`Label` 必填且始终按分类类别处理。
+- 第 4 列起均为特征列。列名必须能解析为有限浮点数，数值唯一且严格递增；它们就是逐点真实 `XXX` 坐标，生成端使用 float64 可往返文本。
+- 每个特征单元格是对应坐标处的有限标量 `Intensity`，不是数组或 JSON。预处理输出的强度最多保留 5 位小数，不再按单元格字符数自适应降低精度。
+- 同一 `Sample_ID` 只能对应一个 Label；重复测量组不能跨 train/valid/test。所有行共享同一特征表头所表示的公共轴。
+- 原始文件名不进入 CSV；预处理响应仍通过 `curves[].name` 保留名称用于预览。需要训练结果显示名称时，以 `Index` 作为稳定回退。
+- Excel 总列数最多 16,384；扣除三个元数据列后最多 16,381 个特征。超过上限必须由业务侧先做明确的范围选择或降采样，导出器不得静默删点。
+- 新上传与 worker 训练只接受宽表。旧 `Index,Name,XXX,Intensity,Label,Sample_ID` 数组/JSON 文件（包括 `linspace-v1`、`linspace-slice-v1`）返回明确迁移错误，不自动取首行坐标或有损转换。
 - 上传使用 `multipart/form-data`，文件字段名为 `file`；预处理多文件字段名为重复的 `files`。
 
 上传建模数据：
@@ -175,31 +181,37 @@ POST /api/preprocess/chromatography   # 简单截取兼容接口
 
 拉曼顺序固定为先选择行号/X 轴范围，再执行基线校正。HPLC 同样保留行号/X 轴范围选择和 `hplc_interpolate` 开关。固定轴使用服务端 `HplcGridConfig`，默认是包含首尾端点的 0–50 分钟、7500 点；业务值集中在配置对象中，算法函数不内嵌这些数值。
 
-每个原始 HPLC 文件必须解析到配置要求的完整点数且源 X 严格递增。行号为 1 基、首尾包含，起止都必须在 `1..point_count` 内；默认最大终止行为 7500，留空才按 7500 处理，7501/9000 返回 HTTP 400。开启插值时，范围参数选择固定目标轴的对应切片：行号 1–4000 产生 4000 个目标点，100–4000 产生 3901 个目标点，而不是把所选源点重新扩展为完整 7500 点。第 n 点的真实保留时间为 `start_minutes + (n-1)*(stop_minutes-start_minutes)/(point_count-1)`；强度始终从完整源曲线中寻找左右邻点。仪器轴与目标轴在边界只有不超过一个采样间隔的相位差时，允许使用首两个或末两个源点线性延伸，超过一个间隔则拒绝。关闭插值时按每条文件自己的原始轴导出所选 X/Y，即使多文件 X 轴不一致也返回 200，并通过 `x_axis_consistent=false` 和 `warnings` 提示。两种模式都不执行消负或面积归一化。
+每个原始 HPLC 文件必须解析到配置要求的完整点数且源 X 严格递增。行号为 1 基、首尾包含，起止都必须在 `1..point_count` 内；默认最大终止行为 7500，留空才按 7500 处理，7501/9000 返回 HTTP 400。开启插值时，范围参数选择固定目标轴的对应切片：行号 1–4000 产生 4000 个目标点，100–4000 产生 3901 个目标点，而不是把所选源点重新扩展为完整 7500 点。第 n 点的真实保留时间为 `start_minutes + (n-1)*(stop_minutes-start_minutes)/(point_count-1)`；强度始终从完整源曲线中寻找左右邻点。仪器轴与目标轴在边界只有不超过一个采样间隔的相位差时，允许使用首两个或末两个源点线性延伸，超过一个间隔则拒绝。
 
-普通数组形式的 `XXX` 与 `Intensity` 最多保留 5 位小数。后端以一个预处理批次为单位，分别按 `5 → 4 → 3 → 2 → 1 → 0` 生成最终紧凑 JSON，选择能让该字段所有样本均不超过 Excel 单元格 32,767 字符上限的最高统一精度。该过程只量化数值，不删点、不降采样；同一字段不会对不同样本使用不同精度。若 0 位仍超限，或降低精度会使原本有变化的数据变为常量，则返回 HTTP 400 且不生成结果 CSV。
+宽表只有一组特征表头，所以同一预处理批次必须共享公共轴：
 
-开启 HPLC 插值时，固定轴不走小数降精度，而是在 `XXX` 中写入可逆描述。例如 100–4000 行为 `{"type":"linspace-slice-v1","grid_start":0.0,"grid_stop":50.0,"grid_count":7500,"offset":99,"length":3901,"unit":"minute"}`。`load_modeling_csv()` 先构造完整 float64 网格再切片，可与 API `common_time` 逐位恢复一致；普通数组和历史 `linspace-v1` 继续兼容。关闭插值时 `XXX` 保存所选原数组。HPLC 的 `Intensity` 始终使用上述最高 Excel 安全统一精度，不因新的 X 描述额外改变。
+- HPLC 开启插值时使用所选固定目标轴，真实分钟坐标逐点写入特征表头。
+- HPLC 关闭插值时保留所选原始 X/Y，但只有所有文件所选轴逐点完全一致才允许导出；不一致返回 HTTP 400，并提示开启插值或先对齐数据。
+- 拉曼和简单色谱多文件也执行相同公共轴校验；不得把第一条曲线的坐标静默套到其他曲线。
+- 独立测试集的特征坐标和顺序必须与主数据集完全一致，仅特征数相同不够。
+- 所有预处理模式都不执行消负或面积归一化。
 
-一次成功的 HPLC 预处理只原子写入一个 `hplc_<token>.csv`。响应只通过 `download_url` 提供这个六列主文件，不再生成 `_xxx.csv`，也不再返回 `xxx_download_url`/`xxx_rows`。
+一次成功的预处理只原子写入一个宽表主 CSV。HPLC 文件名仍为 `hplc_<token>.csv`，响应只通过 `download_url` 提供主文件，不生成 `_xxx.csv`，也不返回 `xxx_download_url`/`xxx_rows`。`preview` 只展示 `Index/Label/Sample_ID` 等样品与待填字段；完整真实轴继续在 `curves[].x`、`common_time` 或 `hplc_axis` 中用于前端曲线与摘要显示。
 
 成功响应包含实际输出精度：
 
 ```json
 {
   "output_precision": {
-    "adaptive": true,
-    "max_decimal_places": 5,
-    "xxx_encoding": "linspace-slice-v1",
-    "intensity_decimal_places": 4,
-    "xxx_max_characters": 122,
-    "intensity_max_characters": 32110,
-    "excel_cell_character_limit": 32767
+    "format": "wide-feature-v1",
+    "xxx_encoding": "column_headers",
+    "xxx_precision": "float64-roundtrip",
+    "intensity_decimal_places": 5,
+    "adaptive": false,
+    "feature_count": 7500,
+    "total_column_count": 7503,
+    "excel_column_limit": 16384,
+    "excel_compatible": true
   }
 }
 ```
 
-其中最大字符数来自最终写入 CSV 的实际 JSON。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是本次实际选择的固定分钟轴；`hplc_axis.start/stop/point_count` 描述实际输出，`grid_start/grid_stop/grid_point_count` 描述完整网格，`selected_start_row/selected_end_row` 是完整网格中的 1 基位置。CSV `XXX` 保存其可逆描述；关闭时 `curves[].x` 对应 CSV 普通 X 数组、`common_time=[]`、`hplc_axis=null`。
+`adaptive=false` 表示宽表不再为适应单元格字符限制降精度；`xxx_encoding=column_headers` 表示真实坐标直接位于第 4 列起的表头。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是本次实际选择的固定分钟轴；`hplc_axis.start/stop/point_count` 描述实际输出，`grid_start/grid_stop/grid_point_count` 描述完整网格，`selected_start_row/selected_end_row` 是完整网格中的 1 基位置。关闭时 `curves[].x` 对应已验证一致的原始公共轴，`common_time=[]`、`hplc_axis=null`。
 
 预处理主文件统一使用响应中的 `download_url`；两套前端都只展示“下载统一建模 CSV”。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 不生成第二时间轴文件或 `common_time_path`。
 
@@ -466,10 +478,10 @@ Hash 页面：
 
 - 拉曼页：上传、范围、先截取后基线、下载。
 - HPLC 页：输入、三步默认流程、何时调整参数、下载。
-- AI 建模页：六列 CSV、评估方式、queued/worker、提交。
+- AI 建模页：`wide-feature-v1` 宽表、真实坐标表头、评估方式、queued/worker、提交。
 - 建模结果页：Run ID、交叉验证测试主口径、结果完整性、逐项下载。
 - 训练记录页：测试集 Macro F1、训练时间、查看、取消、删除和不可恢复提示。
-- 全局帮助：只保留六列格式、Sample_ID 整组原则、worker 排查和服务器认证等跨页面规则。
+- 全局帮助：只保留宽表格式、公共轴与 Excel 列数限制、Sample_ID 整组原则、worker 排查和服务器认证等跨页面规则。
 
 容易误操作的字段使用就近提示；页面内说明不复制本技术契约。
 

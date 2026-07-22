@@ -81,7 +81,7 @@ function uploadBox({ inputId, buttonClass, onUploaded }) {
       onUploaded(result);
     } catch (error) {
       status.textContent = '';
-      errorBox.textContent = `上传失败：${error?.message || '未知错误'}。下一步：确认 CSV 为六列（Index, Name, XXX, Intensity, Label, Sample_ID）后重试。`;
+      errorBox.textContent = `上传失败：${error?.message || '未知错误'}。下一步：确认前三列依次为 Index、Label、Sample_ID，第 4 列起为严格递增的真实数值坐标，数据单元格均为标量强度后重试。`;
     } finally {
       button.disabled = false;
     }
@@ -211,7 +211,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         el('h2', { className: 'card-title', text: '上传建模 CSV' }),
         el('span', { className: 'badge', text: '第 1 步，共 4 步' }),
       ]),
-      el('p', { className: 'hint', text: '使用预处理工作台下载并补齐 Label / Sample_ID 后的六列 CSV（Index, Name, XXX, Intensity, Label, Sample_ID）。' }),
+      el('p', { className: 'hint', text: '使用预处理工作台下载并填写 Label / Sample_ID 后的 wide-feature-v1 CSV：前三列固定为 Index、Label、Sample_ID，第 4 列起的列名是真实 XXX 坐标，单元格是标量 Intensity。' }),
       wizard.datasetId
         ? el('div', { className: 'stack' }, [
           wizard.datasetSummary
@@ -222,7 +222,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       wizard.datasetSummary ? el('p', { className: 'hint', text: '需要更换数据集？重新选择文件并上传校验即可替换。' }) : null,
       mainBox.node,
       el('details', { className: 'advanced' }, [
-        el('summary', { text: '可选：独立测试 CSV（仅评估口径选“独立测试集”时需要）' }),
+        el('summary', { text: '可选：独立测试 CSV（必须与主数据使用完全相同的真实坐标表头）' }),
         wizard.testDatasetId
           ? el('p', { className: 'hint', text: `当前独立测试集：${wizard.testDatasetName || wizard.testDatasetId}` })
           : null,
