@@ -33,20 +33,21 @@ def test_wide_modeling_frame_round_trips_real_axis_scalar_intensity_and_zero_pad
         "Index",
         "Label",
         "Sample_ID",
+        "Name",
         "0",
         "0.125",
         "1.2345678901234567",
     ]
-    assert "Name" not in result.frame.columns
-    assert result.frame.iloc[0, 3:].tolist() == [1.23457, 2.0, 3.0]
+    assert result.frame["Name"].tolist() == ["first.csv", "second.csv"]
+    assert result.frame.iloc[0, 4:].tolist() == [1.23457, 2.0, 3.0]
     assert result.output_precision == {
-        "format": "wide-feature-v1",
+        "format": "wide-feature-v2",
         "xxx_encoding": "column_headers",
         "xxx_precision": "float64-roundtrip",
         "intensity_decimal_places": 5,
         "adaptive": False,
         "feature_count": 3,
-        "total_column_count": 6,
+        "total_column_count": 7,
         "excel_column_limit": 16_384,
         "excel_compatible": True,
     }
@@ -57,7 +58,9 @@ def test_wide_modeling_frame_round_trips_real_axis_scalar_intensity_and_zero_pad
     result.frame.to_csv(path, index=False, encoding="utf-8-sig")
 
     loaded = load_modeling_csv(path)
-    assert loaded.frame.columns.tolist() == ["Index", "Label", "Sample_ID"]
+    assert loaded.frame.columns.tolist() == ["Index", "Label", "Sample_ID", "Name"]
+    assert loaded.frame["Name"].tolist() == ["first.csv", "second.csv"]
+    assert loaded.data_format == "wide-feature-v2"
     assert loaded.sample_id == ["001", "001"]
     assert loaded.labels == ["A", "A"]
     assert loaded.x_axis == [x_axis.tolist(), x_axis.tolist()]
@@ -80,6 +83,35 @@ def test_load_modeling_csv_strictly_rejects_legacy_six_column_arrays(tmp_path):
     )
 
     with pytest.raises(ValueError, match="旧六列数组格式.*wide-feature-v1"):
+        load_modeling_csv(path)
+
+
+def test_load_modeling_csv_keeps_wide_feature_v1_compatibility(tmp_path):
+    from backend.app.parsers import load_modeling_csv
+
+    path = _write_csv(
+        tmp_path / "v1.csv",
+        ["Index", "Label", "Sample_ID", "0", "1"],
+        [[1, "A", "S1", 10, 20]],
+    )
+
+    loaded = load_modeling_csv(path)
+
+    assert loaded.data_format == "wide-feature-v1"
+    assert loaded.frame.columns.tolist() == ["Index", "Label", "Sample_ID"]
+    np.testing.assert_array_equal(loaded.intensity, [[10, 20]])
+
+
+def test_load_modeling_csv_rejects_empty_v2_name(tmp_path):
+    from backend.app.parsers import load_modeling_csv
+
+    path = _write_csv(
+        tmp_path / "empty-name.csv",
+        ["Index", "Label", "Sample_ID", "Name", "0"],
+        [[1, "A", "S1", "", 10]],
+    )
+
+    with pytest.raises(ValueError, match="Name 为空"):
         load_modeling_csv(path)
 
 

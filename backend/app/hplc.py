@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -44,15 +45,28 @@ class HplcAxisSelection:
     range_label: str
 
 
-DEFAULT_HPLC_GRID = HplcGridConfig(
-    start_minutes=0.0,
-    stop_minutes=50.0,
-    point_count=7500,
-    tolerance_minutes=1e-8,
-)
+HPLC_GRID_START_MINUTES = 0.0
+HPLC_GRID_STOP_MINUTES = 50.0
+HPLC_GRID_TOLERANCE_MINUTES = 1e-8
+HPLC_GRID_UNIT = "minute"
 
 
-def build_hplc_target_axis(config: HplcGridConfig = DEFAULT_HPLC_GRID) -> np.ndarray:
+def hplc_grid_config(point_count: int) -> HplcGridConfig:
+    """按当前批次实际点数构造 HPLC 目标网格配置。"""
+    if isinstance(point_count, bool) or not isinstance(point_count, (int, np.integer)):
+        raise ValueError(f"HPLC 批次点数必须是整数；当前为 {point_count!r}")
+    if int(point_count) < 2:
+        raise ValueError(f"HPLC 批次至少需要 2 个有效色谱点；当前为 {point_count}")
+    return HplcGridConfig(
+        start_minutes=HPLC_GRID_START_MINUTES,
+        stop_minutes=HPLC_GRID_STOP_MINUTES,
+        point_count=int(point_count),
+        tolerance_minutes=HPLC_GRID_TOLERANCE_MINUTES,
+        unit=HPLC_GRID_UNIT,
+    )
+
+
+def build_hplc_target_axis(config: HplcGridConfig) -> np.ndarray:
     """根据注入配置构造包含首尾端点的固定 float64 时间轴。"""
     if config.point_count < 2:
         raise ValueError("HPLC 固定轴点数必须至少为 2")
@@ -134,7 +148,7 @@ def _select_hplc_target_axis(
     range_mode: str = "row",
     x_min: float | None = None,
     x_max: float | None = None,
-    config: HplcGridConfig = DEFAULT_HPLC_GRID,
+    config: HplcGridConfig,
 ) -> HplcAxisSelection:
     """在完整固定分钟轴上严格选择连续点，并保留原始整数位置。"""
 
@@ -209,6 +223,8 @@ def _validated_hplc_source(
     y = np.asarray(source_y, dtype=np.float64)
     if x.ndim != 1 or y.ndim != 1 or len(x) != len(y):
         raise ValueError(f"{source_name} 的时间轴和强度必须是一维且长度一致")
+    if len(x) < 2:
+        raise ValueError(f"{source_name} 解析到 {len(x)} 个有效色谱点，至少需要 2 个点")
     if require_point_count and len(x) != config.point_count:
         raise ValueError(
             f"{source_name} 解析到 {len(x)} 个有效色谱点，HPLC 固定流程要求恰好 "
@@ -241,11 +257,166 @@ def _validated_hplc_source(
     return x, y
 
 
+def _hplc_batch_message(
+    file_results: list[dict[str, object]],
+    point_count_groups: list[dict[str, object]],
+    expected_point_count: int | None,
+) -> str | None:
+    invalid = [item for item in file_results if item["status"] == "invalid"]
+    if invalid:
+        details = "；".join(
+            f"{item['name']}（{item.get('message') or '无法解析'}）" for item in invalid
+        )
+        return f"以下 HPLC 文件无法解析：{details}；未生成结果文件"
+
+    mismatched = [
+        item for item in file_results if item["status"] == "point_count_mismatch"
+    ]
+    if expected_point_count is not None and mismatched:
+        details = "、".join(
+            f"{item['name']}（{item['point_count']} 点）" for item in mismatched
+        )
+        return (
+            f"批次多数文件为 {expected_point_count} 个有效色谱点；以下文件点数不一致："
+            f"{details}；未生成结果文件"
+        )
+
+    if len(point_count_groups) > 1 and expected_point_count is None:
+        details = "；".join(
+            f"{item['point_count']} 点（{', '.join(item['files'])}）"
+            for item in point_count_groups
+        )
+        return f"批次没有唯一多数点数：{details}；未生成结果文件"
+    return None
+
+
+def _inspect_hplc_batch(
+    files: Iterable[str | Path],
+    display_names: list[str] | None = None,
+) -> tuple[dict[str, object], list[tuple[np.ndarray, np.ndarray] | None]]:
+    """按正式解析规则检查批次，并保留成功解析的数组供预处理复用。"""
+    paths = [Path(item) for item in files]
+    if not paths:
+        raise ValueError("至少需要上传一个文件")
+
+    file_results: list[dict[str, object]] = []
+    parsed_pairs: list[tuple[np.ndarray, np.ndarray] | None] = []
+    for index, path in enumerate(paths):
+        name = (
+            str(display_names[index])
+            if display_names and index < len(display_names)
+            else path.name
+        )
+        try:
+            source_x, source_y = read_raw_spectrum(path, kind="hplc")
+            provisional_config = hplc_grid_config(len(source_x))
+            validated_x, validated_y = _validated_hplc_source(
+                source_x,
+                source_y,
+                name,
+                provisional_config,
+                require_point_count=False,
+                require_coverage=False,
+            )
+            point_count = int(len(validated_x))
+            file_results.append(
+                {
+                    "name": name,
+                    "point_count": point_count,
+                    "x_start": float(validated_x[0]),
+                    "x_stop": float(validated_x[-1]),
+                    "status": "ready",
+                    "message": None,
+                }
+            )
+            parsed_pairs.append((validated_x, validated_y))
+        except Exception as exc:
+            file_results.append(
+                {
+                    "name": name,
+                    "point_count": None,
+                    "x_start": None,
+                    "x_stop": None,
+                    "status": "invalid",
+                    "message": str(exc),
+                }
+            )
+            parsed_pairs.append(None)
+
+    valid_counts = [
+        int(item["point_count"])
+        for item in file_results
+        if item["status"] != "invalid" and item["point_count"] is not None
+    ]
+    count_frequency = Counter(valid_counts)
+    highest_frequency = max(count_frequency.values(), default=0)
+    modes = sorted(
+        count for count, frequency in count_frequency.items() if frequency == highest_frequency
+    )
+    expected_point_count = modes[0] if len(modes) == 1 else None
+
+    point_count_groups = [
+        {
+            "point_count": int(point_count),
+            "file_count": int(count_frequency[point_count]),
+            "files": [
+                str(item["name"])
+                for item in file_results
+                if item["point_count"] == point_count
+            ],
+        }
+        for point_count in sorted(count_frequency)
+    ]
+    if expected_point_count is not None and len(count_frequency) > 1:
+        for item in file_results:
+            if (
+                item["status"] == "ready"
+                and item["point_count"] != expected_point_count
+            ):
+                item["status"] = "point_count_mismatch"
+                item["message"] = (
+                    f"实际 {item['point_count']} 点，批次多数文件为 "
+                    f"{expected_point_count} 点"
+                )
+
+    processable = (
+        bool(file_results)
+        and all(item["status"] == "ready" for item in file_results)
+        and len(count_frequency) == 1
+    )
+    common_point_count = expected_point_count if processable else None
+    message = _hplc_batch_message(
+        file_results,
+        point_count_groups,
+        expected_point_count,
+    )
+    return (
+        {
+            "files": file_results,
+            "point_count_groups": point_count_groups,
+            "expected_point_count": expected_point_count,
+            "common_point_count": common_point_count,
+            "processable": processable,
+            "message": message,
+        },
+        parsed_pairs,
+    )
+
+
+def inspect_hplc_files(
+    files: Iterable[str | Path],
+    display_names: list[str] | None = None,
+) -> dict[str, object]:
+    """返回可直接给前端展示的逐文件 HPLC 点数检查结果。"""
+    inspection, _pairs = _inspect_hplc_batch(files, display_names=display_names)
+    return inspection
+
+
 def map_hplc_intensity(
     source_x: np.ndarray,
     source_y: np.ndarray,
     source_name: str,
-    config: HplcGridConfig = DEFAULT_HPLC_GRID,
+    config: HplcGridConfig,
     target_x: np.ndarray | None = None,
 ) -> np.ndarray:
     """把源强度映射到固定轴或其范围切片，边界仅允许一个采样间隔内线性延伸。"""
@@ -329,12 +500,30 @@ def preprocess_hplc_files_with_preview(
     x_max: float | None = None,
     display_names: list[str] | None = None,
     interpolate: bool = True,
-    config: HplcGridConfig = DEFAULT_HPLC_GRID,
+    config: HplcGridConfig | None = None,
 ) -> dict:
     """保留既有范围/开关交互；开启时映射到配置轴，关闭时导出所选原轴。"""
+    files = list(files)
     if not files:
         raise ValueError("至少需要上传一个文件")
-    files = list(files)
+    names = [
+        str(display_names[index])
+        if display_names and index < len(display_names)
+        else Path(file_path).name
+        for index, file_path in enumerate(files)
+    ]
+    inspection, inspected_pairs = _inspect_hplc_batch(files, display_names=names)
+    if not bool(inspection["processable"]):
+        raise ValueError(str(inspection["message"] or "HPLC 批次检查未通过"))
+    detected_point_count = int(inspection["common_point_count"])
+    if config is None:
+        config = hplc_grid_config(detected_point_count)
+    elif config.point_count != detected_point_count:
+        raise ValueError(
+            f"HPLC 批次统一为 {detected_point_count} 个有效色谱点，但显式配置要求 "
+            f"{config.point_count} 点；未生成结果文件"
+        )
+    full_pairs = [pair for pair in inspected_pairs if pair is not None]
 
     if interpolate:
         selection = _select_hplc_target_axis(
@@ -359,46 +548,20 @@ def preprocess_hplc_files_with_preview(
         else:
             raise ValueError("HPLC range_mode 必须是 row 或 x_value")
         selection = None
-    full_pairs: list[tuple[np.ndarray, np.ndarray]] = []
-    names: list[str] = []
-    for idx, file_path in enumerate(files):
-        path = Path(file_path)
-        name = (
-            display_names[idx]
-            if display_names and idx < len(display_names)
-            else path.stem
-        )
-        names.append(name)
-        full_x, full_y = read_raw_spectrum(path, kind="hplc")
-        validated_x, validated_y = _validated_hplc_source(
-            full_x,
-            full_y,
-            path.name,
-            config,
-            require_coverage=False,
-        )
-        full_pairs.append((validated_x, validated_y))
-
     warnings: list[str] = []
     if interpolate:
         assert selection is not None
         target_x = selection.target_x
         mapped_intensities = [
-            map_hplc_intensity(
-                full_x,
-                full_y,
-                Path(file_path).name,
-                config,
-                target_x,
-            )
-            for (full_x, full_y), file_path in zip(full_pairs, files)
+            map_hplc_intensity(full_x, full_y, name, config, target_x)
+            for (full_x, full_y), name in zip(full_pairs, names)
         ]
         x_arrays = [target_x] * len(full_pairs)
         intensity_arrays = mapped_intensities
         x_axis_consistent = True
     else:
         selected_pairs: list[tuple[np.ndarray, np.ndarray]] = []
-        for (validated_x, validated_y), file_path in zip(full_pairs, files):
+        for (validated_x, validated_y), name in zip(full_pairs, names):
             indices, range_label = _select_hplc_original_axis(
                 validated_x,
                 start_row=start_row,
@@ -411,7 +574,7 @@ def preprocess_hplc_files_with_preview(
             selected_x = validated_x[indices]
             selected_y = validated_y[indices]
             if len(selected_x) == 0:
-                raise ValueError(f"{Path(file_path).name} 在所选{range_label}内没有数据")
+                raise ValueError(f"{name} 在所选{range_label}内没有数据")
             selected_pairs.append((selected_x, selected_y))
         x_arrays = [pair[0] for pair in selected_pairs]
         intensity_arrays = [pair[1] for pair in selected_pairs]
@@ -456,4 +619,5 @@ def preprocess_hplc_files_with_preview(
         "x_axis_consistent": x_axis_consistent,
         "warnings": warnings,
         "output_precision": wide.output_precision,
+        "inspection": inspection,
     }

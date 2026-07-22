@@ -25,12 +25,12 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 预处理与接口事实
 
-- 统一建模 CSV 使用 `wide-feature-v1`：前三列固定为 `Index, Label, Sample_ID`，第 4 列起的列名是 float64 可往返的真实 `XXX` 坐标，单元格是标量 `Intensity`。坐标必须有限、唯一、严格递增，强度必须有限；预处理强度最多保留 5 位小数且不自适应降精度。原文件名仅保留在 `curves[].name`，不写入 CSV。
+- 新预处理统一输出 `wide-feature-v2`：前四列固定为 `Index, Label, Sample_ID, Name`，`Name` 写入原始文件名，第 5 列起的列名是 float64 可往返的真实 `XXX` 坐标，单元格是标量 `Intensity`。坐标必须有限、唯一、严格递增，强度必须有限；预处理强度最多保留 5 位小数且不自适应降精度。训练读取继续兼容没有 `Name` 的 `wide-feature-v1`。
 - 所有曲线必须共享表头表示的公共轴，主数据集与独立测试集也必须逐点同轴。旧六列数组/JSON、`linspace-v1`、`linspace-slice-v1` 文件不再可训练，也不自动迁移。
-- Excel 总列数上限为 16,384，扣除三个元数据列后最多 16,381 个特征。`output_precision` 固定报告 `format=wide-feature-v1`、`xxx_encoding=column_headers`、`xxx_precision=float64-roundtrip`、强度位数、特征/总列数和 Excel 兼容性。
+- Excel 总列数上限为 16,384，v2 扣除四个元数据列后最多 16,380 个特征。`output_precision` 固定报告 `format=wide-feature-v2`、`xxx_encoding=column_headers`、`xxx_precision=float64-roundtrip`、强度位数、特征/总列数和 Excel 兼容性。
 - 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
-- HPLC 固定轴由 `HplcGridConfig` 配置，默认覆盖 0–50 分钟并包含 7500 点；每个原始文件必须有配置要求的完整有效点数且 X 严格递增。行号为 1 基、首尾包含且严格限制在 1–7500，终止行留空才使用 7500；100–4000 实际输出 3901 点。
-- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算，不能用 `n/7500` 代替。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，但多文件所选轴必须完全一致，否则拒绝导出。均不消负或做面积归一化。
+- HPLC 固定轴由 `HplcGridConfig` 配置，覆盖 0–50 分钟，点数来自当前批次检测出的公共点数。选择文件后逐一显示原文件名、点数、时间范围和状态；任意一致且不少于 2 的点数均可处理。不一致时以唯一众数为期望值，列出异常文件及实际点数后拒绝；没有唯一众数时列出全部点数组。行号为 1 基、首尾包含，终止行留空时使用动态完整点数。
+- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，但多文件所选轴必须完全一致，否则拒绝导出。均不消负或做面积归一化。
 - HPLC 的实际目标/原始公共轴逐点写入宽表特征表头；`common_time`/`hplc_axis` 继续描述预览所用的真实轴。成功请求只生成一个宽表建模 CSV 并只返回主 `download_url`；不生成逐点 `_xxx.csv`，也不返回 `xxx_download_url`/`xxx_rows`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
 - server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
@@ -41,7 +41,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 15 个目标模型是 catalog 契约，不表示每个依赖在本机都可用。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而禁用并跳过训练验收；不得回退成近似模型。`dscarnet` 支持 SAR、CAR、dual 三模式；二分类深度模型使用单 logit + `BCEWithLogitsLoss`。
 
-`stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 的外层 test 留一个 `Sample_ID`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。交叉验证测试集的 Precision、Recall 和 Macro F1 以全部折 OOF 预测合并后计算，逐折均值/标准差只作审计。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+`stratified_holdout` 以 8:1:1 为目标；当 10% 的组数不足以覆盖全部类别时，Valid/Test 自动提高到每类至少 1 个 `Sample_ID`，Train 同样保留全部类别，因此每类至少需要 3 个不同 `Sample_ID`，不足时明确拒绝。`leave_one_sample_id_cv` 的外层 test 留一个 `Sample_ID`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。交叉验证测试集的 Precision、Recall 和 Macro F1 以全部折 OOF 预测合并后计算，逐折均值/标准差只作审计。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
 
 训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
 
@@ -52,7 +52,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 六个传统模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`。
 - 当前八个可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
 - 模型 profile 同时按训练样本数 N 和特征数 L 分档：N 为 `<=100`、`101-299`、`>=300`；L 为 `<=1000`、`1001-2999`、`>=3000`。模型输入范围会另行给出警告，但不会把警告阈值误当成 profile 分档。
-- 分类评估支持三种口径：`stratified_holdout` 为无独立测试集时按标签比例 8:1:1 划分 train/valid/test；`leave_one_sample_id_cv` 为无独立测试集时按 `Sample_ID` 留一作 test，其余按 8:2 划分 train/valid；`external_test_holdout` 为有独立测试集时主数据 8:2 划分 train/valid、独立测试集作最终 test。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
+- 分类评估支持三种口径：`stratified_holdout` 为无独立测试集时以 8:1:1 为目标划分 train/valid/test，并强制三个集合都包含全部类别；Valid/Test 的每类 1 个 `Sample_ID` 是高于比例的硬下限。`leave_one_sample_id_cv` 为无独立测试集时按 `Sample_ID` 留一作 test，其余按 8:2 划分 train/valid；`external_test_holdout` 为有独立测试集时主数据 8:2 划分 train/valid、独立测试集作最终 test。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
 - 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。
 - 新训练只生成并展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条、中文色标和 Top 区间，不再生成全局重要性。历史 `feature_importance.json/csv` 仅保留原 Manifest、Principal 和完整性约束下的直接下载兼容，不进入新 catalog 或结果页。
 - DSCARNet 使用仅由当前训练折拟合的 AggMap/PCA 生成 SAR/CAR 2D 输入，额外写入 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。

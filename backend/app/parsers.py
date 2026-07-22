@@ -1,7 +1,9 @@
 """建模 CSV 与原始拉曼/色谱 CSV 的解析和统一导出。
 
-新建模文件使用 ``wide-feature-v1``：前三列固定为 ``Index, Label,
-Sample_ID``，后续列名是共享的真实 XXX 坐标，每个单元格保存一个强度标量。
+新建模文件使用 ``wide-feature-v2``：前三列固定为 ``Index, Label,
+Sample_ID``，第 4 列 ``Name`` 保存原文件名，后续列名是共享的真实 XXX
+坐标，每个单元格保存一个强度标量。旧 ``wide-feature-v1``（无 Name）
+继续只读兼容。
 宽表无法表达逐行不同的坐标轴，因此预处理导出前必须确认批次内所有曲线共享
 同一轴；不一致时明确拒绝，绝不静默套用首条曲线的坐标。
 """
@@ -19,11 +21,14 @@ import pandas as pd
 
 
 MODELING_METADATA_COLUMNS = ("Index", "Label", "Sample_ID")
-WIDE_MODELING_FORMAT = "wide-feature-v1"
+SOURCE_NAME_COLUMN = "Name"
+WIDE_MODELING_METADATA_COLUMNS = (*MODELING_METADATA_COLUMNS, SOURCE_NAME_COLUMN)
+WIDE_MODELING_FORMAT = "wide-feature-v2"
+LEGACY_WIDE_MODELING_FORMAT = "wide-feature-v1"
 WIDE_AXIS_ENCODING = "column_headers"
 LEGACY_MODELING_ARRAY_COLUMNS = ("XXX", "Intensity")
 EXCEL_WORKSHEET_MAX_COLUMNS = 16_384
-MAX_WIDE_FEATURE_COUNT = EXCEL_WORKSHEET_MAX_COLUMNS - len(MODELING_METADATA_COLUMNS)
+MAX_WIDE_FEATURE_COUNT = EXCEL_WORKSHEET_MAX_COLUMNS - len(WIDE_MODELING_METADATA_COLUMNS)
 MAX_OUTPUT_DECIMAL_PLACES = 5
 
 
@@ -35,6 +40,7 @@ class ModelingDataset:
     intensity: np.ndarray
     labels: list[str]
     sample_id: list[str]
+    data_format: str
 
 
 @dataclass(frozen=True)
@@ -94,13 +100,18 @@ def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[st
     raise ValueError(f"无法读取 CSV 文件 {path.name}: {last_error}")
 
 
-def _parse_wide_axis_headers(feature_headers: list[str]) -> list[float]:
+def _parse_wide_axis_headers(
+    feature_headers: list[str],
+    *,
+    metadata_column_count: int,
+) -> list[float]:
     if not feature_headers:
         raise ValueError("建模 CSV 至少需要 1 个真实 XXX 特征列")
-    if len(feature_headers) > MAX_WIDE_FEATURE_COUNT:
+    max_feature_count = EXCEL_WORKSHEET_MAX_COLUMNS - metadata_column_count
+    if len(feature_headers) > max_feature_count:
         raise ValueError(
-            f"建模 CSV 含 {len(feature_headers)} 个特征，连同 3 个元数据列共 "
-            f"{len(feature_headers) + len(MODELING_METADATA_COLUMNS)} 列，超过 Excel 上限 "
+            f"建模 CSV 含 {len(feature_headers)} 个特征，连同 {metadata_column_count} "
+            f"个元数据列共 {len(feature_headers) + metadata_column_count} 列，超过 Excel 上限 "
             f"{EXCEL_WORKSHEET_MAX_COLUMNS}；请先按业务要求缩小数据范围"
         )
 
@@ -135,7 +146,7 @@ def _parse_wide_axis_headers(feature_headers: list[str]) -> list[float]:
 
 
 def load_modeling_csv(path: str | Path) -> ModelingDataset:
-    """解析并严格校验 ``wide-feature-v1``，返回可直接训练的数据结构。"""
+    """解析 v2 带 Name 宽表或兼容的 v1 宽表，返回训练数据结构。"""
     path = Path(path)
     raw_frame, raw_header = _read_modeling_csv_flexible(path)
     stripped_header = [item.strip() for item in raw_header]
@@ -147,7 +158,8 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     if set(LEGACY_MODELING_ARRAY_COLUMNS).issubset(stripped_header):
         raise ValueError(
             "检测到旧六列数组格式（XXX/Intensity 单元格存数组）；新训练只接受 "
-            "wide-feature-v1：前三列为 Index, Label, Sample_ID，第 4 列起为真实 XXX 坐标"
+            "wide-feature-v2（含 Name）或兼容的 wide-feature-v1：前三列为 "
+            "Index, Label, Sample_ID，元数据列之后为真实 XXX 坐标"
         )
     actual_prefix = tuple(stripped_header[: len(MODELING_METADATA_COLUMNS)])
     if actual_prefix != MODELING_METADATA_COLUMNS:
@@ -156,13 +168,24 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
             f"当前为 {', '.join(actual_prefix) if actual_prefix else '空表头'}"
         )
 
-    feature_headers = stripped_header[len(MODELING_METADATA_COLUMNS) :]
-    shared_axis = _parse_wide_axis_headers(feature_headers)
+    has_source_name = (
+        len(stripped_header) > len(MODELING_METADATA_COLUMNS)
+        and stripped_header[len(MODELING_METADATA_COLUMNS)] == SOURCE_NAME_COLUMN
+    )
+    metadata_columns = (
+        WIDE_MODELING_METADATA_COLUMNS if has_source_name else MODELING_METADATA_COLUMNS
+    )
+    data_format = WIDE_MODELING_FORMAT if has_source_name else LEGACY_WIDE_MODELING_FORMAT
+    feature_headers = stripped_header[len(metadata_columns) :]
+    shared_axis = _parse_wide_axis_headers(
+        feature_headers,
+        metadata_column_count=len(metadata_columns),
+    )
     if raw_frame.empty:
         raise ValueError("建模 CSV 没有数据行")
 
-    metadata = raw_frame.loc[:, list(MODELING_METADATA_COLUMNS)].copy()
-    for column in MODELING_METADATA_COLUMNS:
+    metadata = raw_frame.loc[:, list(metadata_columns)].copy()
+    for column in metadata_columns:
         metadata[column] = (
             metadata[column].where(metadata[column].notna(), "").astype(str).str.strip()
         )
@@ -174,6 +197,11 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     if bool(duplicate_index.any()):
         value = str(metadata.loc[duplicate_index, "Index"].iloc[0])
         raise ValueError(f"Index 必须唯一，检测到重复值 {value!r}")
+    if has_source_name:
+        empty_name = metadata[SOURCE_NAME_COLUMN].eq("") | metadata[SOURCE_NAME_COLUMN].str.lower().eq("nan")
+        if bool(empty_name.any()):
+            row_number = int(np.flatnonzero(empty_name.to_numpy())[0]) + 2
+            raise ValueError(f"第 {row_number} 行 Name 为空，必须保留原始文件名")
 
     labels = metadata["Label"].tolist()
     sample_ids = metadata["Sample_ID"].tolist()
@@ -210,6 +238,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         intensity=np.asarray(numeric_array, dtype=np.float32),
         labels=labels,
         sample_id=sample_ids,
+        data_format=data_format,
     )
 
 
@@ -264,13 +293,18 @@ def summarize_modeling_csv(path: str | Path) -> dict:
         "sample_id": sample_summary,
         "curve_length": int(lengths[0]) if lengths else 0,
         "curve_lengths": {str(k): int(v) for k, v in pd.Series(lengths).value_counts().sort_index().items()},
-        "data_format": WIDE_MODELING_FORMAT,
+        "data_format": dataset.data_format,
         "columns": list(dataset.frame.columns),
         "preview": dataset.frame.head(8).to_dict(orient="records"),
         "curves": [
             {
                 "index": int(dataset.frame.iloc[i]["Index"]) if str(dataset.frame.iloc[i]["Index"]).isdigit() else str(dataset.frame.iloc[i]["Index"]),
-                "name": str(dataset.frame.iloc[i]["Index"]),
+                "name": str(
+                    dataset.frame.iloc[i].get(
+                        SOURCE_NAME_COLUMN,
+                        dataset.frame.iloc[i]["Index"],
+                    )
+                ),
                 "label": dataset.labels[i],
                 "sample_id": dataset.sample_id[i],
                 "x": dataset.x_axis[i],
@@ -400,8 +434,8 @@ def _wide_axis_headers(values: np.ndarray, source_name: str) -> tuple[list[float
         )
     if axis.size > MAX_WIDE_FEATURE_COUNT:
         raise ValueError(
-            f"{source_name} 含 {axis.size} 个特征，宽表连同 3 个元数据列共 "
-            f"{axis.size + len(MODELING_METADATA_COLUMNS)} 列，超过 Excel 上限 "
+            f"{source_name} 含 {axis.size} 个特征，宽表连同 4 个元数据列共 "
+            f"{axis.size + len(WIDE_MODELING_METADATA_COLUMNS)} 列，超过 Excel 上限 "
             f"{EXCEL_WORKSHEET_MAX_COLUMNS}；请先缩小行号或 X 轴范围"
         )
     headers = [_format_wide_axis_header(item) for item in axis]
@@ -425,6 +459,8 @@ def build_wide_modeling_frame(
         raise ValueError("没有可生成宽表的曲线")
     if not (len(x_arrays) == len(intensity_arrays) == len(source_names) == count):
         raise ValueError("宽表的索引、坐标轴、强度和文件名数量不一致")
+    if any(not str(name).strip() for name in source_names):
+        raise ValueError("宽表 Name 必须保留每条曲线的原始文件名")
 
     reference_axis, feature_headers = _wide_axis_headers(x_arrays[0], source_names[0])
     reference_header_tuple = tuple(feature_headers)
@@ -480,8 +516,9 @@ def build_wide_modeling_frame(
             "Index": indices,
             "Label": [""] * count,
             "Sample_ID": [""] * count,
+            SOURCE_NAME_COLUMN: source_names,
         },
-        columns=MODELING_METADATA_COLUMNS,
+        columns=WIDE_MODELING_METADATA_COLUMNS,
     )
     feature_frame = pd.DataFrame(
         np.asarray(normalized_intensities, dtype=np.float64),
@@ -510,10 +547,13 @@ def build_wide_modeling_frame(
 def modeling_metadata_preview(frame: pd.DataFrame, limit: int = 5) -> list[dict[str, object]]:
     """返回紧凑元数据预览，避免把数千个宽表特征塞进 API 响应。"""
 
-    missing = [column for column in MODELING_METADATA_COLUMNS if column not in frame.columns]
+    metadata_columns = list(MODELING_METADATA_COLUMNS)
+    if SOURCE_NAME_COLUMN in frame.columns:
+        metadata_columns.append(SOURCE_NAME_COLUMN)
+    missing = [column for column in metadata_columns if column not in frame.columns]
     if missing:
         raise ValueError(f"宽表缺少元数据列: {', '.join(missing)}")
-    return frame.loc[:, list(MODELING_METADATA_COLUMNS)].head(limit).to_dict(orient="records")
+    return frame.loc[:, metadata_columns].head(limit).to_dict(orient="records")
 
 
 def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
@@ -581,7 +621,7 @@ def preprocess_raw_files(
     prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
-        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
+        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.name
         x, y = read_raw_spectrum(path, kind=kind)
         indexer, range_label = _range_indexer(x, start_row, end_row, range_mode, x_min, x_max)
         x = x[indexer]
@@ -619,7 +659,7 @@ def preprocess_raw_files_with_preview(
     prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
-        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.stem
+        display_name = display_names[index - 1] if display_names and index - 1 < len(display_names) else path.name
         full_x, full_y = read_raw_spectrum(path, kind=kind)
         indexer, range_label = _range_indexer(full_x, start_row, end_row, range_mode, x_min, x_max)
         x = full_x[indexer]

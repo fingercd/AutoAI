@@ -730,9 +730,15 @@ def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
     assert set(result["metrics"]).issuperset({"accuracy", "train", "valid", "test"})
     assert result["metrics"]["test"]["accuracy"] == result["metrics"]["accuracy"]
     assert all("accuracy" in result["metrics"][split] for split in ("train", "valid", "test"))
-    assert len(split_payload[0]["splits"]["train"]) == 16
-    assert len(split_payload[0]["splits"]["valid"]) == 2
-    assert len(split_payload[0]["splits"]["test"]) == 2
+    assert len(split_payload[0]["splits"]["train"]) == 12
+    assert len(split_payload[0]["splits"]["valid"]) == 4
+    assert len(split_payload[0]["splits"]["test"]) == 4
+    for split_name in ("train", "valid", "test"):
+        split_labels = {
+            "A" if int(sample_id) <= 5 else "B"
+            for sample_id in split_payload[0][f"{split_name}_sample_ids"]
+        }
+        assert split_labels == {"A", "B"}
 
 
 def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
@@ -1206,8 +1212,9 @@ def test_raman_baseline_is_applied_after_range_selection(tmp_path, monkeypatch):
     )
 
     assert received == {"x": [2.0, 3.0], "y": [14.0, 19.0]}
-    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "2", "3"]
-    assert result["frame"].iloc[0, 3:].tolist() == [214.0, 219.0]
+    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "Name", "2", "3"]
+    assert result["frame"].iloc[0]["Name"] == source.name
+    assert result["frame"].iloc[0, 4:].tolist() == [214.0, 219.0]
     assert result["curves"][0]["raw_y"] == [14.0, 19.0]
     assert result["curves"][0]["corrected_y"] == [214.0, 219.0]
 
@@ -1230,8 +1237,8 @@ def test_preprocess_x_value_range_selects_by_axis(tmp_path):
 
     assert result["curves"][0]["x"] == [1.0, 1.5, 2.0]
     assert result["curves"][0]["raw_y"] == [20.0, 30.0, 40.0]
-    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "1", "1.5", "2"]
-    assert result["frame"].iloc[0, 3:].tolist() == [20.0, 30.0, 40.0]
+    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "Name", "1", "1.5", "2"]
+    assert result["frame"].iloc[0, 4:].tolist() == [20.0, 30.0, 40.0]
 
 
 def test_preprocess_writes_float64_axis_headers_and_fixed_five_decimal_scalars(tmp_path, monkeypatch):
@@ -1252,24 +1259,26 @@ def test_preprocess_writes_float64_axis_headers_and_fixed_five_decimal_scalars(t
     precision = result["output_precision"]
 
     assert frame.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
-    header_axis = np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64)
+    assert frame.columns[3] == "Name"
+    assert frame.iloc[0]["Name"] == source.name
+    header_axis = np.asarray([float(item) for item in frame.columns[4:]], dtype=np.float64)
     np.testing.assert_array_equal(header_axis, result["curves"][0]["x"])
     np.testing.assert_array_equal(header_axis, x_values)
     np.testing.assert_allclose(
-        frame.iloc[0, 3:].to_numpy(dtype=np.float64),
+        frame.iloc[0, 4:].to_numpy(dtype=np.float64),
         np.round(y_values.astype(np.float64), 5),
         rtol=0,
         atol=1e-12,
     )
-    assert all(np.isscalar(value) for value in frame.iloc[0, 3:])
+    assert all(np.isscalar(value) for value in frame.iloc[0, 4:])
     assert precision == {
-        "format": "wide-feature-v1",
+        "format": "wide-feature-v2",
         "xxx_encoding": "column_headers",
         "xxx_precision": "float64-roundtrip",
         "intensity_decimal_places": 5,
         "adaptive": False,
         "feature_count": 3,
-        "total_column_count": 6,
+        "total_column_count": 7,
         "excel_column_limit": 16384,
         "excel_compatible": True,
     }
@@ -1337,11 +1346,11 @@ def test_wide_frame_metadata_preview_excludes_feature_cells():
         indices=["curve-1"],
         x_arrays=[np.array([0.1, 0.2])],
         intensity_arrays=[np.array([10.0, 20.0])],
-        source_names=["source-name-not-written"],
+        source_names=["source-name.csv"],
     )
 
     assert modeling_metadata_preview(result.frame) == [
-        {"Index": "curve-1", "Label": "", "Sample_ID": ""}
+        {"Index": "curve-1", "Label": "", "Sample_ID": "", "Name": "source-name.csv"}
     ]
     assert "source-name-not-written" not in result.frame.astype(str).to_string()
 
@@ -1361,23 +1370,23 @@ def test_7500_point_chromatography_wide_table_round_trips(tmp_path):
     precision = result["output_precision"]
     frame = result["frame"]
 
-    assert precision["format"] == "wide-feature-v1"
+    assert precision["format"] == "wide-feature-v2"
     assert precision["xxx_encoding"] == "column_headers"
     assert precision["xxx_precision"] == "float64-roundtrip"
     assert precision["intensity_decimal_places"] == 5
     assert precision["adaptive"] is False
     assert precision["feature_count"] == 7500
-    assert precision["total_column_count"] == 7503
-    assert frame.shape == (2, 7503)
+    assert precision["total_column_count"] == 7504
+    assert frame.shape == (2, 7504)
     np.testing.assert_array_equal(
-        np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64),
+        np.asarray([float(item) for item in frame.columns[4:]], dtype=np.float64),
         np.asarray(result["curves"][0]["x"], dtype=np.float64),
     )
     for row_index, curve in enumerate(result["curves"]):
         assert len(curve["x"]) == 7500
         assert len(curve["raw_y"]) == 7500
         np.testing.assert_allclose(
-            frame.iloc[row_index, 3:].to_numpy(dtype=np.float64),
+            frame.iloc[row_index, 4:].to_numpy(dtype=np.float64),
             curve["raw_y"],
             rtol=0,
             atol=0,
@@ -1483,10 +1492,15 @@ def test_preprocess_preserves_original_names_and_returns_all_curves(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert len(payload["curves"]) == 12
-    assert payload["curves"][0]["name"] == "sample_00_original"
-    assert payload["curves"][-1]["name"] == "sample_11_original"
-    assert payload["preview"][0] == {"Index": 1, "Label": "", "Sample_ID": ""}
-    assert all(set(row) == {"Index", "Label", "Sample_ID"} for row in payload["preview"])
+    assert payload["curves"][0]["name"] == "sample_00_original.csv"
+    assert payload["curves"][-1]["name"] == "sample_11_original.csv"
+    assert payload["preview"][0] == {
+        "Index": 1,
+        "Label": "",
+        "Sample_ID": "",
+        "Name": "sample_00_original.csv",
+    }
+    assert all(set(row) == {"Index", "Label", "Sample_ID", "Name"} for row in payload["preview"])
 
 
 def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
@@ -1758,24 +1772,26 @@ def test_hplc_linear_mapping_uses_bracketing_source_points():
     np.testing.assert_allclose(mapped, [100, 130, 160, 190], rtol=0, atol=1e-10)
 
 
-def test_hplc_fixed_axis_default_contract():
-    from backend.app.hplc import DEFAULT_HPLC_GRID, build_hplc_target_axis
+def test_hplc_axis_contract_is_built_from_detected_point_count():
+    from backend.app.hplc import build_hplc_target_axis, hplc_grid_config
 
-    axis = build_hplc_target_axis()
-    assert len(axis) == DEFAULT_HPLC_GRID.point_count
-    assert axis[0] == DEFAULT_HPLC_GRID.start_minutes
-    assert axis[-1] == DEFAULT_HPLC_GRID.stop_minutes
+    config = hplc_grid_config(8000)
+    axis = build_hplc_target_axis(config)
+    assert len(axis) == config.point_count
+    assert axis[0] == config.start_minutes
+    assert axis[-1] == config.stop_minutes
     assert np.all(np.diff(axis) > 0)
-    np.testing.assert_allclose(np.diff(axis), DEFAULT_HPLC_GRID.step_minutes, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(np.diff(axis), config.step_minutes, rtol=1e-12, atol=1e-14)
 
 
 @pytest.mark.parametrize("point_count", [7499, 7501])
-def test_hplc_rejects_non_configured_point_count(tmp_path, point_count):
+def test_hplc_accepts_any_consistent_batch_point_count(tmp_path, point_count):
     from backend.app.hplc import preprocess_hplc_files_with_preview
 
     source = _make_hplc_fixture(tmp_path, n_files=1, n_points=point_count)[0]
-    with pytest.raises(ValueError, match=rf"解析到 {point_count} 个有效色谱点.*恰好 7500"):
-        preprocess_hplc_files_with_preview([source])
+    result = preprocess_hplc_files_with_preview([source])
+    assert result["inspection"]["common_point_count"] == point_count
+    assert result["hplc_axis"]["grid_point_count"] == point_count
 
 
 def test_hplc_rejects_non_increasing_source_axis(tmp_path):
@@ -1800,7 +1816,7 @@ def test_hplc_rejects_source_that_cannot_cover_configured_range(tmp_path):
 
 
 def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_path):
-    from backend.app.hplc import DEFAULT_HPLC_GRID, build_hplc_target_axis, preprocess_hplc_files_with_preview
+    from backend.app.hplc import build_hplc_target_axis, hplc_grid_config, preprocess_hplc_files_with_preview
 
     source = tmp_path / "instrument_phase.csv"
     source_x = 0.0020833333333333 + np.arange(7500, dtype=np.float64) * (50 / 7500)
@@ -1809,7 +1825,7 @@ def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_
 
     result = preprocess_hplc_files_with_preview([source], start_row=1, end_row=4000)
 
-    expected_x = build_hplc_target_axis(DEFAULT_HPLC_GRID)[:4000]
+    expected_x = build_hplc_target_axis(hplc_grid_config(7500))[:4000]
     assert result["hplc_axis"]["point_count"] == 4000
     assert len(result["common_time"]) == 4000
     np.testing.assert_allclose(result["common_time"], expected_x, rtol=0, atol=0)
@@ -1821,14 +1837,14 @@ def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_
         atol=0.5 * 10 ** (-digits) + 1e-12,
     )
     frame = result["frame"]
-    assert frame.shape == (1, 4003)
-    assert frame.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    assert frame.shape == (1, 4004)
+    assert frame.columns[:4].tolist() == ["Index", "Label", "Sample_ID", "Name"]
     np.testing.assert_array_equal(
-        np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64),
+        np.asarray([float(item) for item in frame.columns[4:]], dtype=np.float64),
         expected_x,
     )
     np.testing.assert_allclose(
-        frame.iloc[0, 3:].to_numpy(dtype=np.float64),
+        frame.iloc[0, 4:].to_numpy(dtype=np.float64),
         result["curves"][0]["processed_y"],
         rtol=0,
         atol=0,
@@ -1845,10 +1861,10 @@ def test_hplc_pipeline_writes_fixed_real_axis_headers_and_preserves_scale(tmp_pa
     assert result["hplc_axis"]["point_count"] == 7500
     assert result["hplc_axis"]["mapping"] == "piecewise_linear"
     assert len(result["common_time"]) == 7500
-    assert result["frame"].shape == (2, 7503)
-    assert result["frame"].columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    assert result["frame"].shape == (2, 7504)
+    assert result["frame"].columns[:4].tolist() == ["Index", "Label", "Sample_ID", "Name"]
     np.testing.assert_array_equal(
-        np.asarray([float(item) for item in result["frame"].columns[3:]], dtype=np.float64),
+        np.asarray([float(item) for item in result["frame"].columns[4:]], dtype=np.float64),
         np.asarray(result["common_time"], dtype=np.float64),
     )
     for curve in result["curves"]:
@@ -1954,15 +1970,15 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     assert payload["intensity_summary"][0]["all_zero"] is False
     assert payload["intensity_summary"][0]["max"] > payload["intensity_summary"][0]["min"]
     assert payload["baseline_method"] is None
-    assert payload["preview"][0] == {"Index": 1, "Label": "", "Sample_ID": ""}
+    assert payload["preview"][0] == {"Index": 1, "Label": "", "Sample_ID": "", "Name": "hplc_0.csv"}
     precision = payload["output_precision"]
-    assert precision["format"] == "wide-feature-v1"
+    assert precision["format"] == "wide-feature-v2"
     assert precision["xxx_encoding"] == "column_headers"
     assert precision["xxx_precision"] == "float64-roundtrip"
     assert precision["intensity_decimal_places"] == 5
     assert precision["adaptive"] is False
     assert precision["feature_count"] == 7500
-    assert precision["total_column_count"] == 7503
+    assert precision["total_column_count"] == 7504
     assert precision["excel_column_limit"] == 16384
     assert precision["excel_compatible"] is True
 
@@ -2054,11 +2070,12 @@ def test_hplc_csv_downloadable(tmp_path):
     dl_resp = client.get(download_url)
     assert dl_resp.status_code == 200
     downloaded = pd.read_csv(io.StringIO(dl_resp.text))
-    assert downloaded.shape == (1, 7503)
-    assert downloaded.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
-    feature_headers = np.asarray([float(item) for item in downloaded.columns[3:]], dtype=np.float64)
+    assert downloaded.shape == (1, 7504)
+    assert downloaded.columns[:4].tolist() == ["Index", "Label", "Sample_ID", "Name"]
+    assert downloaded.iloc[0]["Name"] == files[0].name
+    feature_headers = np.asarray([float(item) for item in downloaded.columns[4:]], dtype=np.float64)
     np.testing.assert_array_equal(feature_headers, resp.json()["common_time"])
-    intensity = downloaded.iloc[0, 3:].to_numpy(dtype=np.float64)
+    intensity = downloaded.iloc[0, 4:].to_numpy(dtype=np.float64)
     assert len(intensity) == 7500
     assert np.all(np.isfinite(intensity))
     assert np.any(np.abs(intensity) > 1e-12)

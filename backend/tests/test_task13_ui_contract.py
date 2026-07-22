@@ -231,7 +231,13 @@ def test_preprocess_ui_preserves_hplc_warning_and_axis_metadata():
     assert "每个真实时间坐标逐列保存在 CSV 特征表头中" in html
     assert "result.xxx_download_url" not in html
     assert "下载可见 XXX 时间轴" not in html
-    assert 'id="chromEnd" type="number" value="7500" min="1" max="7500" step="1"' in html
+    assert '/api/preprocess/hplc/inspect' in html
+    assert 'id="chromFileInspection"' in html
+    assert 'table-scroll hplc-inspection-scroll' in html
+    assert '.hplc-inspection-scroll' in html
+    assert 'id="chromEnd" type="number" min="1" step="1"' in html
+    assert 'hplcPointCount,' in html
+    assert 'max="7500"' not in html
     assert "validateHplcRowRange" in html
     assert 'if (!xMin && !xMax && effectiveKind !== "hplc")' in html
     assert "真实保留时间" in html

@@ -617,6 +617,22 @@
         overflow-x: auto;
         overscroll-behavior-inline: contain;
       }
+      .hplc-inspection-scroll {
+        --hplc-inspection-row-height: 44px;
+        max-height: calc(var(--hplc-inspection-row-height) * 6 + 2px);
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+      }
+      .hplc-inspection-scroll tr {
+        height: var(--hplc-inspection-row-height);
+      }
+      .hplc-inspection-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #fff;
+      }
       .truncate-text {
         display: inline-block;
         max-width: 260px;
@@ -1259,7 +1275,7 @@
           <details class="page-help">
             <summary>AI 建模操作说明</summary>
             <ol>
-              <li>加载 wide-feature-v1 宽表：前三列为 Index、Label、Sample_ID，第 4 列起是真实 XXX 坐标；有独立测试集时一并加载。</li>
+              <li>加载 wide-feature-v2 宽表：前三列为 Index、Label、Sample_ID，第 4 列 Name 保留原文件名，第 5 列起是真实 XXX 坐标；旧 wide-feature-v1 仍可加载。</li>
               <li>选择模型和评估方式。相同 Sample_ID 会整组进入同一数据分区。</li>
               <li>提交后只创建排队任务，训练由独立 worker 执行；完成后可进入专属结果页。</li>
             </ol>
@@ -1297,7 +1313,7 @@
                 </div>
               </div>
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                默认 8:1:1；加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
+                默认目标为 8:1:1；Valid 和 Test 至少各包含每类 1 个样品，数据较少时实际占比会自动提高。加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
               </p>
               <div id="cvOptions">
                 <label class="checkbox-line">
@@ -1491,17 +1507,18 @@
               <h2>色谱预处理</h2>
               <label for="chromFiles">上传色谱 CSV，可多选</label>
               <input id="chromFiles" type="file" multiple accept=".csv" />
+              <div id="chromFileInspection" class="section-note" role="status">选择文件后自动检测每个 CSV 的有效点数。</div>
               <label for="chromRangeMode">范围选择方式</label>
               <select id="chromRangeMode">
                 <option value="row">按行号范围</option>
                 <option value="x_value">按保留时间范围</option>
               </select>
               <div id="chromRowRange">
-                <label for="chromStart">起始行（1–7500）</label>
-                <input id="chromStart" type="number" value="1" min="1" max="7500" step="1" />
-                <label for="chromEnd">终止行（最多 7500）</label>
-                <input id="chromEnd" type="number" value="7500" min="1" max="7500" step="1" />
-                <p class="section-note">每个 HPLC 文件固定 7500 点，范围首尾都包含；例如 100–4000 共 3901 点。</p>
+                <label id="chromStartLabel" for="chromStart">起始行（选择文件后确定）</label>
+                <input id="chromStart" type="number" value="1" min="1" step="1" />
+                <label id="chromEndLabel" for="chromEnd">终止行（选择文件后确定）</label>
+                <input id="chromEnd" type="number" min="1" step="1" placeholder="选择文件后自动填写" />
+                <p id="chromRowRangeHint" class="section-note">范围上限由所选批次的统一有效点数决定，起止行首尾都包含。</p>
               </div>
               <div id="chromValueRange" class="hidden">
                 <label for="chromXMin">保留时间下限（分钟，留空不限制）</label>
@@ -1516,7 +1533,7 @@
                 </div>
               </div>
               <div class="actions">
-                <button class="primary" data-preprocess="chromatography">生成整理 CSV</button>
+                <button id="chromPreprocessButton" class="primary" data-preprocess="chromatography" disabled>生成整理 CSV</button>
               </div>
             </div>
             <div class="panel wide">
@@ -1569,7 +1586,7 @@
             <h2>全局使用说明</h2>
             <p>各功能页顶部都提供与当前操作直接相关的简短说明。这里仅保留跨页面规则和故障排查入口。</p>
             <h3>统一数据格式</h3>
-            <p>建模 CSV 使用 wide-feature-v1 宽表：前三列固定为 Index、Label、Sample_ID，第 4 列起的列名为有限、唯一、严格递增的真实 XXX 坐标，单元格为标量 Intensity。原文件名不写入 CSV；旧六列数组/JSON 文件不再可训练。总列数最多 16,384（最多 16,381 个特征）。Label 始终按分类类别处理；相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合。</p>
+            <p>新建模 CSV 使用 wide-feature-v2 宽表：前三列固定为 Index、Label、Sample_ID，第 4 列 Name 保留每条曲线的原文件名，第 5 列起的列名为有限、唯一、严格递增的真实 XXX 坐标，单元格为标量 Intensity。旧 wide-feature-v1 宽表仍可训练；旧六列数组/JSON 文件继续拒绝。总列数最多 16,384（新格式最多 16,380 个特征）。Label 始终按分类类别处理；相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合。</p>
             <h3>训练与结果</h3>
             <p>提交训练只会创建排队任务，独立 worker 负责执行。完成后使用唯一 Run ID 进入建模结果；结果页刷新或服务重启后仍可重新获取。</p>
             <h3>服务器访问</h3>
@@ -1636,6 +1653,8 @@
       let loadedRunSummaries = [];
       let runsNextCursor = null;
       let resizeFrame = null;
+      let hplcInspectionState = null;
+      let hplcInspectionSequence = 0;
 
       // 通用 DOM 与 API 辅助。模块未就绪时 api() 保留 fetch 兜底，确保健康检查
       // 和目录错误仍能给出可读 detail，而不是只显示 HTTP 状态码。
@@ -2449,12 +2468,119 @@
         $(`${prefix}ValueRange`).classList.toggle("hidden", mode !== "x_value");
       }
 
+      function hplcFileSelectionKey(files) {
+        return [...files]
+          .map((file) => `${file.name}\u0000${file.size}\u0000${file.lastModified}`)
+          .join("\u0001");
+      }
+
+      function applyHplcPointCount(pointCount) {
+        const count = Number(pointCount);
+        if (!Number.isInteger(count) || count < 2) {
+          for (const id of ["chromStart", "chromEnd"]) $(id).removeAttribute("max");
+          $("chromStart").value = "1";
+          $("chromEnd").value = "";
+          $("chromStartLabel").textContent = "起始行（检测后确定范围）";
+          $("chromEndLabel").textContent = "终止行（留空使用完整点数）";
+          $("chromRowRangeHint").textContent = "选择文件并检测通过后，自动显示当前批次的完整点数。";
+          return;
+        }
+        for (const id of ["chromStart", "chromEnd"]) $(id).max = String(count);
+        $("chromStart").value = "1";
+        $("chromEnd").value = String(count);
+        $("chromStartLabel").textContent = `起始行（1–${count}）`;
+        $("chromEndLabel").textContent = `终止行（最多 ${count}）`;
+        $("chromRowRangeHint").textContent = `当前批次统一为 ${count} 个有效点；范围首尾都包含。`;
+      }
+
+      function renderHplcInspection(payload, message = "") {
+        const host = $("chromFileInspection");
+        host.replaceChildren();
+        if (message) {
+          const note = document.createElement("p");
+          note.textContent = message;
+          host.append(note);
+        }
+        const files = Array.isArray(payload?.files) ? payload.files : [];
+        if (!files.length) return;
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-scroll hplc-inspection-scroll";
+        const table = document.createElement("table");
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        ["原文件名", "有效点数", "时间范围（分钟）", "状态"].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headRow.append(th);
+        });
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        files.forEach((item) => {
+          const row = document.createElement("tr");
+          const range = Number.isFinite(Number(item.x_start)) && Number.isFinite(Number(item.x_stop))
+            ? `${Number(item.x_start).toPrecision(8)}–${Number(item.x_stop).toPrecision(8)}`
+            : "—";
+          const status = item.status === "ready" ? "通过" : item.message || "异常";
+          [item.name || "—", item.point_count ?? "—", range, status].forEach((value) => {
+            const cell = document.createElement("td");
+            cell.textContent = String(value);
+            row.append(cell);
+          });
+          body.append(row);
+        });
+        table.append(head, body);
+        wrapper.append(table);
+        host.append(wrapper);
+      }
+
+      async function inspectSelectedHplcFiles() {
+        const filesInput = $("chromFiles");
+        const files = [...filesInput.files];
+        const key = hplcFileSelectionKey(files);
+        const sequence = ++hplcInspectionSequence;
+        hplcInspectionState = null;
+        applyHplcPointCount(null);
+        $("chromPreprocessButton").disabled = true;
+        if (!files.length) {
+          renderHplcInspection(null, "选择文件后自动检测每个 CSV 的有效点数。");
+          return null;
+        }
+        renderHplcInspection(null, "正在检测每个文件的有效点数…");
+        const form = new FormData();
+        files.forEach((file) => form.append("files", file));
+        try {
+          const payload = await api("/api/preprocess/hplc/inspect", { method: "POST", body: form });
+          if (sequence !== hplcInspectionSequence || key !== hplcFileSelectionKey(filesInput.files)) return null;
+          hplcInspectionState = { key, payload };
+          renderHplcInspection(payload, payload.message || (payload.processable ? "批次点数一致，可以开始预处理。" : "批次检查未通过。"));
+          if (payload.processable) {
+            applyHplcPointCount(payload.common_point_count);
+            $("chromPreprocessButton").disabled = false;
+          }
+          return payload;
+        } catch (error) {
+          if (sequence !== hplcInspectionSequence) return null;
+          renderHplcInspection(null, `检测失败：${error.message}`);
+          throw error;
+        }
+      }
+
       async function preprocessEnhanced(kind) {
         const isChrom = kind === "chromatography";
         const effectiveKind = isChrom ? "hplc" : kind;
         const prefix = preprocessPrefix(kind);
         const filesInput = $(`${prefix}Files`);
         if (!filesInput.files.length) throw new Error("请选择文件");
+        let hplcPointCount = null;
+        if (effectiveKind === "hplc") {
+          const key = hplcFileSelectionKey(filesInput.files);
+          if (!hplcInspectionState || hplcInspectionState.key !== key) {
+            await inspectSelectedHplcFiles();
+          }
+          const inspection = hplcInspectionState?.payload;
+          if (!inspection?.processable) throw new Error(inspection?.message || "HPLC 文件点数检查未通过");
+          hplcPointCount = Number(inspection.common_point_count);
+        }
         const form = new FormData();
         [...filesInput.files].forEach((file) => form.append("files", file));
         const rangeMode = $(`${prefix}RangeMode`).value;
@@ -2465,6 +2591,7 @@
             const selected = window.SpecAutoAIUI.validateHplcRowRange(
               $(`${prefix}Start`).value,
               $(`${prefix}End`).value,
+              hplcPointCount,
             );
             form.append("start_row", String(selected.startRow));
             form.append("end_row", String(selected.endRow));
@@ -2550,7 +2677,7 @@
           const featureCount = Number(precision.feature_count);
           const totalColumnCount = Number(precision.total_column_count);
           const excelColumnLimit = Number(precision.excel_column_limit);
-          precisionInfo.textContent = `输出格式 ${precision.format || "wide-feature-v1"}：真实 XXX 坐标按 float64 可往返文本逐列写入表头，Intensity ${Number.isFinite(intensityDigits) ? `最多 ${intensityDigits} 位小数` : "使用标量数值"}；共 ${Number.isFinite(featureCount) ? featureCount : "—"} 个特征、${Number.isFinite(totalColumnCount) ? totalColumnCount : "—"} 列${Number.isFinite(excelColumnLimit) ? `，Excel 上限 ${excelColumnLimit} 列` : ""}。`;
+          precisionInfo.textContent = `输出格式 ${precision.format || "wide-feature-v2"}：前三列后保留原文件名 Name，真实 XXX 坐标按 float64 可往返文本逐列写入表头，Intensity ${Number.isFinite(intensityDigits) ? `最多 ${intensityDigits} 位小数` : "使用标量数值"}；共 ${Number.isFinite(featureCount) ? featureCount : "—"} 个特征、${Number.isFinite(totalColumnCount) ? totalColumnCount : "—"} 列${Number.isFinite(excelColumnLimit) ? `，Excel 上限 ${excelColumnLimit} 列` : ""}。`;
           resultTarget.append(precisionInfo);
         }
         if (effectiveKind === "hplc" && result.hplc_axis) {
@@ -2742,6 +2869,10 @@
         $("runsTable").replaceChildren();
         $("preprocessResult").replaceChildren();
         $("chromPreprocessResult").replaceChildren();
+        hplcInspectionState = null;
+        hplcInspectionSequence += 1;
+        $("chromPreprocessButton").disabled = true;
+        renderHplcInspection(null, "选择文件后自动检测每个 CSV 的有效点数。");
         $("runStatus").textContent = "尚未开始";
         $("runStatus").className = "status";
         $("trainingProgress").replaceChildren();
@@ -2798,7 +2929,7 @@
         } else if (cvEnabled) {
           $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余固定按 8:2 训练/验证。";
         } else {
-          $("splitModeHint").textContent = "默认 8:1:1 单次划分；可自定义训练、验证、测试比例，三项相加必须等于 10。";
+          $("splitModeHint").textContent = "默认以 8:1:1 单次划分；Valid/Test 至少各包含每类 1 个样品，三项比例相加必须等于 10。";
         }
       }
 
@@ -2847,6 +2978,9 @@
         } catch (err) {
           alert(err.message);
         }
+      });
+      $("chromFiles").addEventListener("change", () => {
+        inspectSelectedHplcFiles().catch(() => undefined);
       });
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));

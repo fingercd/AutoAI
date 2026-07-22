@@ -65,7 +65,7 @@ def test_result_page_server_security_and_artifact_contracts_are_documented_consi
     assert '--rebind-unowned' in deployment
 
 
-def test_wide_feature_v1_csv_contract_is_documented_consistently():
+def test_wide_feature_v2_csv_contract_is_documented_consistently():
     documents = [
         Path('README.md').read_text(encoding='utf-8'),
         Path('CONTEXT.md').read_text(encoding='utf-8'),
@@ -73,10 +73,11 @@ def test_wide_feature_v1_csv_contract_is_documented_consistently():
     ]
 
     for document in documents:
+        assert 'wide-feature-v2' in document
         assert 'wide-feature-v1' in document
-        assert 'Index,Label,Sample_ID' in document.replace(', ', ',')
+        assert 'Index,Label,Sample_ID,Name' in document.replace(', ', ',')
         assert '16,384' in document
-        assert '16,381' in document
+        assert '16,380' in document
         assert '公共轴' in document
     assert 'xxx_encoding=column_headers' in documents[0]
     assert 'xxx_precision=float64-roundtrip' in documents[1]

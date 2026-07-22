@@ -1,6 +1,5 @@
 export const DEFAULT_SAMPLE_ID_LIMIT = 10;
 export const MAX_CURVE_SELECTION = 5000;
-export const HPLC_POINT_COUNT = 7500;
 const SAMPLE_ID_BATCH_SIZE = 200;
 
 const naturalCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
@@ -10,12 +9,12 @@ export const naturalCompare = (first, second) => (
 );
 
 /**
- * 校验 HPLC 1 基、首尾包含的行号范围。终止行留空时使用完整固定点数。
+ * 校验 HPLC 1 基、首尾包含的行号范围。pointCount 必须来自当前批次检测。
  * 返回值可直接用于 multipart 请求和前端实际点数摘要。
  */
-export function validateHplcRowRange(startValue, endValue, pointCount = HPLC_POINT_COUNT) {
+export function validateHplcRowRange(startValue, endValue, pointCount) {
   const limit = Number(pointCount);
-  if (!Number.isInteger(limit) || limit < 1) throw new Error('HPLC 固定点数配置无效');
+  if (!Number.isInteger(limit) || limit < 2) throw new Error('请先完成 HPLC 文件点数检测');
   const parseRow = (value, label, fallback) => {
     if (value == null || String(value).trim() === '') return fallback;
     const parsed = Number(value);
@@ -236,7 +235,6 @@ export function formatTime(value) {
 if (typeof window !== 'undefined') {
   window.SpecAutoAIUI = {
     DEFAULT_SAMPLE_ID_LIMIT,
-    HPLC_POINT_COUNT,
     buildSampleIdViewModel,
     element,
     formatMetric,

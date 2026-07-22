@@ -13,11 +13,17 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from ..hplc import preprocess_hplc_files_with_preview
+from ..hplc import inspect_hplc_files, preprocess_hplc_files_with_preview
 from ..parsers import modeling_metadata_preview, preprocess_raw_files_with_preview
 from ..paths import PREPROCESSED_DIR, UPLOADS_DIR
 
 router = APIRouter()
+
+
+def _upload_display_name(file: UploadFile, index: int) -> str:
+    """只保留客户端基础文件名，兼容浏览器提交的两种路径分隔符。"""
+    raw_name = str(file.filename or f'sample_{index}.csv').replace('\\', '/')
+    return Path(raw_name).name
 
 
 def _save_upload(file: UploadFile) -> Path:
@@ -59,6 +65,26 @@ def _curve_intensity_summary(curves: list[dict[str, Any]]) -> list[dict[str, Any
     return summary
 
 
+@router.post('/api/preprocess/hplc/inspect')
+def inspect_hplc_uploads(files: list[UploadFile] = File(...)) -> dict[str, object]:
+    """按正式解析规则返回逐文件点数；检测文件不会保留在上传目录。"""
+    original_names = [
+        _upload_display_name(file, index)
+        for index, file in enumerate(files, start=1)
+    ]
+    saved_files = [_save_upload(file) for file in files]
+    try:
+        return inspect_hplc_files(saved_files, display_names=original_names)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        for path in saved_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 @router.post('/api/preprocess/{kind}')
 def preprocess(
     kind: str,
@@ -74,7 +100,10 @@ def preprocess(
     """校验 kind 与范围参数，执行对应管线并返回预览及下载地址。"""
     if kind not in {'raman', 'chromatography', 'hplc'}:
         raise HTTPException(status_code=400, detail='kind 必须是 raman、chromatography 或 hplc')
-    original_names = [Path(file.filename or f'sample_{idx}').stem for idx, file in enumerate(files, start=1)]
+    original_names = [
+        _upload_display_name(file, index)
+        for index, file in enumerate(files, start=1)
+    ]
     saved_files = [_save_upload(file) for file in files]
     temporary_output: Path | None = None
     try:
@@ -125,6 +154,7 @@ def preprocess(
                     'common_time': result.get('common_time', []),
                     'hplc_axis': result.get('hplc_axis'),
                     'x_axis_consistent': result.get('x_axis_consistent', True),
+                    'inspection': result.get('inspection'),
                 }
             )
         elif kind == 'raman':

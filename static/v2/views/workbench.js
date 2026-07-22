@@ -1,12 +1,16 @@
 /** 预处理工作台：三张卡走完全程（上传文件 → 一键处理 → 下载/去建模），高级参数默认折叠。 */
 import { el, clear, saveBlob, svgEl } from '../lib/dom.js';
 import { lineChart } from '../lib/charts.js';
-import { preprocess, download } from '../api.js';
+import { preprocess, inspectHplc, download } from '../api.js';
 import { validateHplcRowRange } from '../../js/ui-utils.js';
 
 const RAMAN_BASELINE_METHODS = ['arPLS', 'airPLS', 'als', 'drPLS', 'poly'];
 const COLOR_RAW = '#94a3b8';
 const COLOR_PROCESSED = '#0f766e';
+
+const fileSelectionKey = (files) => files
+  .map((file) => `${file.name}\u0000${file.size}\u0000${file.lastModified}`)
+  .join('\u0001');
 
 function processedSeries(curve) {
   return curve?.processed_y ?? curve?.corrected_y ?? null;
@@ -50,13 +54,14 @@ function curveChart(curve, kind) {
 /** 范围截取 + 各类型的方法/开关，收进高级参数并附带实时摘要。 */
 function paramForm(kind) {
   const isHplc = kind === 'hplc';
+  let detectedPointCount = null;
   const rangeMode = el('select', { className: 'select', attrs: { id: 'v2-pp-range-mode' } }, [
     el('option', { text: '全部数据（不截取）', attrs: { value: 'row' } }),
     el('option', { text: '按行号截取', attrs: { value: 'row_range' } }),
     el('option', { text: isHplc ? '按保留时间截取' : '按 X 轴数值截取', attrs: { value: 'x_value' } }),
   ]);
-  const startRow = el('input', { className: 'input', attrs: { id: 'v2-pp-start-row', type: 'number', min: '1', max: isHplc ? '7500' : null, step: '1', value: '1' } });
-  const endRow = el('input', { className: 'input', attrs: { id: 'v2-pp-end-row', type: 'number', min: '1', max: isHplc ? '7500' : null, step: '1', placeholder: isHplc ? '留空按 7500' : '留空到末尾' } });
+  const startRow = el('input', { className: 'input', attrs: { id: 'v2-pp-start-row', type: 'number', min: '1', step: '1', value: '1' } });
+  const endRow = el('input', { className: 'input', attrs: { id: 'v2-pp-end-row', type: 'number', min: '1', step: '1', placeholder: isHplc ? '选择文件后自动确定' : '留空到末尾' } });
   const xMin = el('input', { className: 'input', attrs: { id: 'v2-pp-x-min', type: 'number', step: 'any', placeholder: '下限，可留空' } });
   const xMax = el('input', { className: 'input', attrs: { id: 'v2-pp-x-max', type: 'number', step: 'any', placeholder: '上限，可留空' } });
   const rowBox = el('div', { className: 'grid grid-2' }, [
@@ -101,8 +106,9 @@ function paramForm(kind) {
         const selected = validateHplcRowRange(
           rangeMode.value === 'row_range' ? startRow.value : 1,
           rangeMode.value === 'row_range' ? endRow.value : null,
+          detectedPointCount,
         );
-        return `范围：第 ${selected.startRow}–${selected.endRow} 行，共 ${selected.pointCount} 点；最大终止行 7500`;
+        return `范围：第 ${selected.startRow}–${selected.endRow} 行，共 ${selected.pointCount} 点；最大终止行 ${detectedPointCount}`;
       } catch (error) {
         return `范围错误：${error?.message || '请检查 HPLC 行号'}`;
       }
@@ -132,7 +138,7 @@ function paramForm(kind) {
     const params = { range_mode: rangeMode.value === 'x_value' ? 'x_value' : 'row' };
     if (rangeMode.value === 'row_range') {
       if (isHplc) {
-        const selected = validateHplcRowRange(startRow.value, endRow.value);
+        const selected = validateHplcRowRange(startRow.value, endRow.value, detectedPointCount);
         params.start_row = selected.startRow;
         params.end_row = selected.endRow;
       } else {
@@ -144,7 +150,7 @@ function paramForm(kind) {
       params.x_max = xMax.value === '' ? null : Number(xMax.value);
     } else {
       if (isHplc) {
-        const selected = validateHplcRowRange(1, null);
+        const selected = validateHplcRowRange(1, null, detectedPointCount);
         params.start_row = selected.startRow;
         params.end_row = selected.endRow;
       } else {
@@ -170,7 +176,24 @@ function paramForm(kind) {
       extras,
     ]),
   ]);
-  return { node, collect };
+  const setPointCount = (pointCount) => {
+    const parsed = Number(pointCount);
+    detectedPointCount = Number.isInteger(parsed) && parsed >= 2 ? parsed : null;
+    if (detectedPointCount) {
+      startRow.max = String(detectedPointCount);
+      endRow.max = String(detectedPointCount);
+      startRow.value = '1';
+      endRow.value = String(detectedPointCount);
+      endRow.placeholder = `留空按 ${detectedPointCount}`;
+    } else {
+      startRow.removeAttribute('max');
+      endRow.removeAttribute('max');
+      endRow.value = '';
+      endRow.placeholder = '选择文件后自动确定';
+    }
+    update();
+  };
+  return { node, collect, setPointCount };
 }
 
 function previewTable(preview) {
@@ -186,11 +209,33 @@ function previewTable(preview) {
   ]);
 }
 
+function hplcInspectionTable(inspection) {
+  const files = Array.isArray(inspection?.files) ? inspection.files : [];
+  if (!files.length) return null;
+  return el('div', { className: 'table-wrap hplc-inspection-scroll' }, [
+    el('table', { className: 'data-table' }, [
+      el('caption', { text: 'HPLC 文件点数检测' }),
+      el('thead', {}, el('tr', {}, ['原文件名', '有效点数', '时间范围（分钟）', '状态']
+        .map((text) => el('th', { text, attrs: { scope: 'col' } })))),
+      el('tbody', {}, files.map((item) => {
+        const hasRange = Number.isFinite(Number(item.x_start)) && Number.isFinite(Number(item.x_stop));
+        const range = hasRange ? `${Number(item.x_start).toPrecision(8)}–${Number(item.x_stop).toPrecision(8)}` : '—';
+        const status = item.status === 'ready' ? '通过' : item.message || '异常';
+        return el('tr', {}, [item.name || '—', item.point_count ?? '—', range, status]
+          .map((text) => el('td', { text: String(text) })));
+      })),
+    ]),
+  ]);
+}
+
 export function mountWorkbench(container, { announce, toast }) {
   let kind = 'raman';
   let files = [];
   let lastResult = null;
   let busy = false;
+  let hplcInspection = null;
+  let hplcInspectionMessage = '';
+  let hplcInspectionSequence = 0;
 
   const root = el('section', { className: 'stack view-workbench', attrs: { 'aria-labelledby': 'v2-view-title' } });
   container.append(root);
@@ -220,8 +265,14 @@ export function mountWorkbench(container, { announce, toast }) {
     on: {
       change: () => {
         files = Array.from(fileInput.files || []);
+        hplcInspection = null;
+        hplcInspectionMessage = '';
+        hplcInspectionSequence += 1;
+        form?.setPointCount?.(null);
         renderFileList();
         syncSteps();
+        updateSubmitAvailability();
+        if (kind === 'hplc' && files.length) void inspectSelectedFiles();
       },
     },
   });
@@ -250,6 +301,15 @@ export function mountWorkbench(container, { announce, toast }) {
         el('span', { text: file.name }),
         el('span', { className: 'badge', text: `${(file.size / 1024).toFixed(1)} KB` }),
       ]))));
+    if (kind === 'hplc' && hplcInspectionMessage) {
+      fileList.append(el('p', {
+        className: hplcInspection?.processable ? 'hint' : 'error-text',
+        text: hplcInspectionMessage,
+        attrs: { role: 'status' },
+      }));
+    }
+    const inspectionTable = kind === 'hplc' ? hplcInspectionTable(hplcInspection) : null;
+    if (inspectionTable) fileList.append(inspectionTable);
   }
 
   /* 卡片 ②：一键预处理（高级参数折叠） */
@@ -257,7 +317,7 @@ export function mountWorkbench(container, { announce, toast }) {
   let form = paramForm(kind);
   paramsHost.append(form.node);
 
-  const submitButton = el('button', { className: 'btn btn-primary', text: '开始预处理', attrs: { type: 'button' }, on: { click: runPreprocess } });
+  const submitButton = el('button', { className: 'btn btn-primary', text: '开始预处理', attrs: { type: 'button', disabled: true }, on: { click: runPreprocess } });
   const errorBox = el('p', { className: 'error-text', attrs: { role: 'alert' } });
   const processCard = el('div', { className: 'card' }, [
     el('div', { className: 'row spread' }, [
@@ -273,6 +333,33 @@ export function mountWorkbench(container, { announce, toast }) {
   /* 卡片 ③：结果（处理成功后出现） */
   const resultsHost = el('div', { className: 'stack' });
 
+  function updateSubmitAvailability() {
+    submitButton.disabled = busy || !files.length || (kind === 'hplc' && !hplcInspection?.processable);
+  }
+
+  async function inspectSelectedFiles() {
+    const sequence = ++hplcInspectionSequence;
+    const key = fileSelectionKey(files);
+    hplcInspection = null;
+    hplcInspectionMessage = '正在检测每个文件的有效点数…';
+    form.setPointCount?.(null);
+    updateSubmitAvailability();
+    renderFileList();
+    try {
+      const result = await inspectHplc(files);
+      if (sequence !== hplcInspectionSequence || key !== fileSelectionKey(files) || kind !== 'hplc') return;
+      hplcInspection = result;
+      hplcInspectionMessage = result.message || (result.processable ? '批次点数一致，可以开始预处理。' : '批次检查未通过。');
+      form.setPointCount?.(result.processable ? result.common_point_count : null);
+    } catch (error) {
+      if (sequence !== hplcInspectionSequence) return;
+      hplcInspection = null;
+      hplcInspectionMessage = `检测失败：${error?.message || '未知错误'}`;
+    }
+    updateSubmitAvailability();
+    renderFileList();
+  }
+
   function switchKind(next) {
     if (next === kind || busy) return;
     kind = next;
@@ -287,6 +374,12 @@ export function mountWorkbench(container, { announce, toast }) {
     clear(resultsHost);
     lastResult = null;
     errorBox.textContent = '';
+    hplcInspection = null;
+    hplcInspectionMessage = '';
+    hplcInspectionSequence += 1;
+    renderFileList();
+    updateSubmitAvailability();
+    if (kind === 'hplc' && files.length) void inspectSelectedFiles();
     syncSteps();
     announce(`已切换到 ${next === 'raman' ? '拉曼' : 'HPLC'} 预处理`);
   }
@@ -298,6 +391,10 @@ export function mountWorkbench(container, { announce, toast }) {
       fileInput.focus();
       return;
     }
+    if (kind === 'hplc' && !hplcInspection?.processable) {
+      errorBox.textContent = hplcInspection?.message || '请等待 HPLC 文件点数检测通过后再开始预处理。';
+      return;
+    }
     let params;
     try {
       params = form.collect();
@@ -307,7 +404,7 @@ export function mountWorkbench(container, { announce, toast }) {
       return;
     }
     busy = true;
-    submitButton.disabled = true;
+    updateSubmitAvailability();
     submitButton.textContent = '处理中…';
     clear(resultsHost);
     resultsHost.append(el('div', { className: 'card' }, [
@@ -332,7 +429,7 @@ export function mountWorkbench(container, { announce, toast }) {
       announce('预处理失败');
     } finally {
       busy = false;
-      submitButton.disabled = false;
+      updateSubmitAvailability();
       submitButton.textContent = '开始预处理';
     }
   }
@@ -381,7 +478,7 @@ export function mountWorkbench(container, { announce, toast }) {
       ['数据量', String(curves.length)],
     ];
     if (lastResult.output_precision) {
-      metaCards.push(['输出格式', lastResult.output_precision.format || 'wide-feature-v1']);
+      metaCards.push(['输出格式', lastResult.output_precision.format || 'wide-feature-v2']);
       metaCards.push(['特征数', String(lastResult.output_precision.feature_count ?? '—')]);
       metaCards.push(['总列数', String(lastResult.output_precision.total_column_count ?? '—')]);
     }
@@ -435,7 +532,7 @@ export function mountWorkbench(container, { announce, toast }) {
       curves.length ? chartHost : el('div', { className: 'empty', text: '响应中没有曲线预览，可直接下载 CSV 查看数据。' }),
       infoLine,
       previewTable(lastResult.preview),
-      el('p', { className: 'hint', text: '下一步：下载 CSV 后只需填写 Label 和 Sample_ID 两列（同一 Sample_ID 的重复测量会整组划分，不会跨 train/valid/test）；不要改动第 4 列起的真实坐标表头，然后到建模页上传训练。' }),
+      el('p', { className: 'hint', text: '下一步：下载 CSV 后只需填写 Label 和 Sample_ID 两列；Name 已保留每行原文件名，请不要改动。第 5 列起是真实坐标表头，然后到建模页上传训练。' }),
       el('div', { className: 'card-actions' }, [
         downloadButton,
         el('a', { className: 'btn btn-ghost', text: '填写后去建模页 →', attrs: { href: '#/modeling' } }),
@@ -452,6 +549,7 @@ export function mountWorkbench(container, { announce, toast }) {
     resultsHost,
   );
   renderFileList();
+  updateSubmitAvailability();
   syncSteps();
 
   return {

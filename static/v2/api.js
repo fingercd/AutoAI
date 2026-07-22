@@ -48,6 +48,13 @@ export function preprocess(kind, files, params = {}, options = {}) {
   return request(`/api/preprocess/${encodeURIComponent(kind)}`, { method: 'POST', body: form, ...options });
 }
 
+/** HPLC 文件选择后的只读批次检测：返回逐文件点数和可处理状态。 */
+export function inspectHplc(files, options = {}) {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  return request('/api/preprocess/hplc/inspect', { method: 'POST', body: form, ...options });
+}
+
 /** 创建训练 Run：只入队 queued，由独立 worker 执行。 */
 export function createRun(payload, options = {}) {
   return request('/api/training/runs', {
