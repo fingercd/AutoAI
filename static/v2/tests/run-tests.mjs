@@ -101,16 +101,17 @@ test('三种评估口径常量齐备', () => {
 // ---------- HPLC 行号门禁 ----------
 
 test('HPLC 行号范围规范化并计算实际点数', () => {
-  assert.deepEqual(validateHplcRowRange('', ''), { startRow: 1, endRow: 7500, pointCount: 7500 });
-  assert.deepEqual(validateHplcRowRange('100', '4000'), { startRow: 100, endRow: 4000, pointCount: 3901 });
+  assert.deepEqual(validateHplcRowRange('', '', 8000), { startRow: 1, endRow: 8000, pointCount: 8000 });
+  assert.deepEqual(validateHplcRowRange('100', '4000', 8000), { startRow: 100, endRow: 4000, pointCount: 3901 });
 });
 
 test('HPLC 行号范围拒绝越界、小数和倒序', () => {
-  assert.throws(() => validateHplcRowRange(0, 100), /1–7500/);
-  assert.throws(() => validateHplcRowRange(1, 7501), /不能超过 7500/);
-  assert.throws(() => validateHplcRowRange(1, 9000), /不能超过 7500/);
-  assert.throws(() => validateHplcRowRange(1, 3.5), /必须是整数/);
-  assert.throws(() => validateHplcRowRange(4000, 100), /不能大于终止行/);
+  assert.throws(() => validateHplcRowRange(0, 100, 8000), /1–8000/);
+  assert.throws(() => validateHplcRowRange(1, 8001, 8000), /不能超过 8000/);
+  assert.throws(() => validateHplcRowRange(1, 9000, 8000), /不能超过 8000/);
+  assert.throws(() => validateHplcRowRange(1, 3.5, 8000), /必须是整数/);
+  assert.throws(() => validateHplcRowRange(4000, 100, 8000), /不能大于终止行/);
+  assert.throws(() => validateHplcRowRange('', '', undefined), /完成 HPLC 文件点数检测/);
 });
 
 // ---------- CV 口径守卫 ----------

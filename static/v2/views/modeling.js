@@ -81,7 +81,7 @@ function uploadBox({ inputId, buttonClass, onUploaded }) {
       onUploaded(result);
     } catch (error) {
       status.textContent = '';
-      errorBox.textContent = `上传失败：${error?.message || '未知错误'}。下一步：确认前三列依次为 Index、Label、Sample_ID，第 4 列起为严格递增的真实数值坐标，数据单元格均为标量强度后重试。`;
+      errorBox.textContent = `上传失败：${error?.message || '未知错误'}。下一步：新文件应为 Index、Label、Sample_ID、Name 四个元数据列，第 5 列起为严格递增的真实数值坐标；旧无 Name 宽表仍兼容。`;
     } finally {
       button.disabled = false;
     }
@@ -211,7 +211,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         el('h2', { className: 'card-title', text: '上传建模 CSV' }),
         el('span', { className: 'badge', text: '第 1 步，共 4 步' }),
       ]),
-      el('p', { className: 'hint', text: '使用预处理工作台下载并填写 Label / Sample_ID 后的 wide-feature-v1 CSV：前三列固定为 Index、Label、Sample_ID，第 4 列起的列名是真实 XXX 坐标，单元格是标量 Intensity。' }),
+      el('p', { className: 'hint', text: '使用预处理工作台下载并填写 Label / Sample_ID 后的 wide-feature-v2 CSV：前三列固定为 Index、Label、Sample_ID，第 4 列 Name 保留原文件名，第 5 列起是真实 XXX 坐标；旧 wide-feature-v1 仍兼容。' }),
       wizard.datasetId
         ? el('div', { className: 'stack' }, [
           wizard.datasetSummary
@@ -339,7 +339,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       seed: el('input', { className: 'input', attrs: { type: 'number', step: '1', value: wizard.params.seed === '' ? '' : String(wizard.params.seed), placeholder: '留空使用默认', id: 'v2-p-seed' } }),
     };
     const splitInfo = {
-      stratified_holdout: 'train/valid/test = 8:1:1（按 Sample_ID 整组分层）',
+      stratified_holdout: 'train/valid/test 目标 8:1:1（按 Sample_ID 整组；Valid/Test 每类至少 1 个）',
       leave_one_sample_id_cv: '每折留 1 个 Sample_ID 作 test，其余 8:2；Test 主指标为合并交叉验证预测',
       external_test_holdout: '主数据 8:2 划分 train/valid，独立测试集作 test',
     }[wizard.strategy];

@@ -16,7 +16,7 @@ export function mountManual(container) {
     el('p', { className: 'page-sub', text: '常见问题速查；每条只讲一件事，看完即可回到工作台操作。' }),
 
     faq('建模 CSV 需要什么格式？',
-      el('p', { text: '使用 wide-feature-v1 宽表。前三列名称与顺序固定，第 4 列起每一列代表一个真实坐标：' }),
+      el('p', { text: '预处理新导出使用 wide-feature-v2 宽表。前四列名称与顺序固定，第 5 列起每一列代表一个真实坐标：' }),
       el('div', { className: 'table-wrap' }, [
         el('table', { className: 'data-table' }, [
           el('thead', {}, el('tr', {}, ['列名', '含义', '要求'].map((head) => el('th', { text: head, attrs: { scope: 'col' } })))),
@@ -24,12 +24,13 @@ export function mountManual(container) {
             ['Index', '曲线标识', '第 1 列；不可为空'],
             ['Label', '类别标签', '第 2 列；必填，即使为数字也始终按分类类别处理'],
             ['Sample_ID', '样品组标识', '第 3 列；同一组重复测量必须使用相同 Sample_ID'],
-            ['第 4 列起', '真实 XXX 坐标 / 标量 Intensity', '列名必须是有限、唯一、严格递增的数值；每个单元格必须是有限强度值'],
+            ['Name', '原始文件名', '第 4 列；预处理自动写入，保留扩展名'],
+            ['第 5 列起', '真实 XXX 坐标 / 标量 Intensity', '列名必须是有限、唯一、严格递增的数值；每个单元格必须是有限强度值'],
           ].map((row) => el('tr', {}, row.map((cell) => el('td', { text: cell }))))),
         ]),
       ]),
-      el('p', { className: 'hint', text: '预处理导出的 CSV 中 Label 与 Sample_ID 为空，需要人工填写后再上传。原文件名只保留在曲线预览的 name 中，不写入建模 CSV。' }),
-      el('p', { className: 'hint', text: '所有行必须共享同一真实坐标轴；HPLC 关闭插值时若多文件轴不一致会拒绝导出。旧的六列数组/JSON CSV 不再可训练。Excel 最多 16,384 列，因此最多支持 16,381 个特征。' }),
+      el('p', { className: 'hint', text: '预处理导出的 CSV 中 Label 与 Sample_ID 为空，需要人工填写后再上传；Name 已写入各自原始文件名。已有 wide-feature-v1（三列元数据）仍可训练，但新的预处理结果统一输出 v2。' }),
+      el('p', { className: 'hint', text: '所有行必须共享同一真实坐标轴；HPLC 关闭插值时若多文件轴不一致会拒绝导出。旧的六列数组/JSON CSV 不再可训练。Excel 最多 16,384 列，v2 扣除四列元数据后最多支持 16,380 个特征。' }),
     ),
 
     faq('为什么 Sample_ID 必须整组划分？',
@@ -38,7 +39,7 @@ export function mountManual(container) {
 
     faq('三种评估口径怎么选？',
       el('ul', {}, [
-        el('li', { text: 'stratified_holdout：按 Sample_ID 整组分层 8:1:1 划分 train/valid/test，常规首选。' }),
+        el('li', { text: 'stratified_holdout：按 Sample_ID 整组、以 8:1:1 为目标划分；Valid/Test 至少各包含每类 1 个样品组，因此每类至少需要 3 个不同 Sample_ID。' }),
         el('li', { text: 'leave_one_sample_id_cv：每折留一个 Sample_ID 作 test，适合小样本；Test 主指标由全部交叉验证折的测试预测合并计算，逐折均值只作审计。' }),
         el('li', { text: 'external_test_holdout：主数据 8:2 划分 train/valid，独立测试集作为最终 test；与交叉验证互斥。' }),
       ]),

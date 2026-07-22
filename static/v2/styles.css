@@ -425,6 +425,23 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+.hplc-inspection-scroll {
+  --hplc-inspection-row-height: 44px;
+  max-height: calc(var(--hplc-inspection-row-height) * 7 + 2px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.hplc-inspection-scroll tr { height: var(--hplc-inspection-row-height); }
+.hplc-inspection-scroll caption {
+  box-sizing: border-box;
+  height: var(--hplc-inspection-row-height);
+}
+.hplc-inspection-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
 .data-table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 13.5px; }
 .data-table caption {
   text-align: left;

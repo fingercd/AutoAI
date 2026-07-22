@@ -93,7 +93,7 @@ export const EVALUATION_STRATEGIES = {
   stratified_holdout: {
     label: '分层留出 stratified_holdout',
     shortLabel: '分层留出 8:1:1',
-    description: '按 Sample_ID 整组、按标签比例划分 8:1:1 的 train/valid/test。',
+    description: '按 Sample_ID 整组、以 8:1:1 为目标划分；Valid/Test 至少各包含每类 1 个样品组。',
   },
   leave_one_sample_id_cv: {
     label: '留一样本交叉验证 leave_one_sample_id_cv',

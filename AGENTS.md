@@ -28,21 +28,21 @@
 
 ## 预处理规则
 
-- 统一建模 CSV 使用 `wide-feature-v1` 宽表：前三列固定为 `Index, Label, Sample_ID`，第 4 列起的列名是真实、有限、唯一、严格递增的 `XXX` 坐标，单元格是有限标量 `Intensity`。原文件名只保留在预处理响应 `curves[].name`，不写入 CSV。
+- 新预处理统一输出 `wide-feature-v2` 宽表：前四列固定为 `Index, Label, Sample_ID, Name`，`Name` 保留原始文件名；第 5 列起的列名是真实、有限、唯一、严格递增的 `XXX` 坐标，单元格是有限标量 `Intensity`。建模读取继续兼容没有 `Name` 的 `wide-feature-v1`。
 - 批次内所有曲线必须共享公共轴；独立测试集也必须与主数据逐点同轴。旧六列数组/JSON、`linspace-v1`、`linspace-slice-v1` 文件不再可训练，不得自动取首条轴迁移。
-- Excel 总列数上限为 16,384，扣除三个元数据列后最多 16,381 个特征。表头坐标使用 float64 可往返文本；强度最多 5 位小数且 `adaptive=false`，不得为适应单元格字符限制静默降精度或删点。
+- Excel 总列数上限为 16,384，v2 扣除四个元数据列后最多 16,380 个特征。表头坐标使用 float64 可往返文本；强度最多 5 位小数且 `adaptive=false`，不得为适应单元格字符限制静默降精度或删点。
 - 拉曼支持行号或 X 轴范围截取，处理顺序固定为先选择数据范围，再执行基线校正。
-- HPLC 固定轴业务值集中在 `HplcGridConfig`，算法函数只接收配置；默认配置为 0–50 分钟、7500 点（包含首尾端点），不得在算法函数体内散落硬编码。
-- HPLC 保留行号/X 轴范围选择和 `hplc_interpolate` 开关；每个原始文件仍必须解析出配置要求的完整点数且 X 严格递增。行号为 1 基、首尾包含，起止都必须位于 `1..point_count`，终止行留空才按完整点数处理，禁止把 7501、9000 等越界值静默截到末尾。
+- HPLC 固定轴业务值集中在 `HplcGridConfig`，算法函数只接收配置；时间范围为 0–50 分钟，点数由当前批次检测出的公共点数动态构造，不得在算法或前端中写死。
+- HPLC 保留行号/X 轴范围选择和 `hplc_interpolate` 开关；选择文件后先解析每个文件并展示原文件名、点数、时间范围与状态。批次点数一致时支持任意不少于 2 的点数；不一致时，以唯一众数作为期望点数并列出全部异常文件及其实际点数，众数并列时列出全部分组并拒绝预处理。源 X 必须严格递增。行号为 1 基、首尾包含，起止都必须位于 `1..point_count`，终止行留空才按检测出的完整点数处理，禁止静默截断越界值。
 - 开启 HPLC 插值时，范围选择作用于固定目标轴：第 1–4000 行输出 4000 个目标点，第 100–4000 行输出 3901 个目标点；第 n 点的真实时间为 `start_minutes + (n - 1) * (stop_minutes - start_minutes) / (point_count - 1)`。强度使用完整源曲线的左右邻点做 float64 线性映射，边界相位差不超过一个采样间隔时允许用首尾两点线性延伸。关闭时导出所选原始 X/Y，但多文件所选轴不一致必须拒绝。两种模式都不执行消负或面积归一化。
-- HPLC 的实际固定/原始公共轴逐点写入宽表特征表头。一次预处理只生成一个宽表主 CSV，不生成 `_xxx.csv` 或返回第二下载地址；`output_precision` 使用 `format=wide-feature-v1`、`xxx_encoding=column_headers` 和 `xxx_precision=float64-roundtrip`。
+- HPLC 的实际固定/原始公共轴逐点写入宽表特征表头。一次预处理只生成一个宽表主 CSV，不生成 `_xxx.csv` 或返回第二下载地址；`output_precision` 使用 `format=wide-feature-v2`、`xxx_encoding=column_headers` 和 `xxx_precision=float64-roundtrip`。
 
 ## 建模与可解释性规则
 
 - 当前建模任务仅支持分类；`Label` 即使为数字也按类别名编码，不作为连续回归目标。`PLSR`、`SVR` 是回归变体，本版训练入口不启用。
 - 分类模型 v2 的能力目录固定公开 15 个目标模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。
 - 当前环境稳定可训练其中 14 个；`cnn_mamba1d` 因 `mamba-ssm` 依赖不可用，只在能力目录中返回 `available=false`，不得用近似网络静默替代。新增模型、网络结构、二分类输出形式、DSCARNet 映射策略和传统模型搜索空间必须使用独立模型计划，并提供固定数据集上的对比验收。
-- 支持三种分类评估口径：无独立测试集时可选 `stratified_holdout`（按标签比例 8:1:1 划分 train/valid/test）或 `leave_one_sample_id_cv`（每折留 1 个 `Sample_ID` 作 test，其余按 8:2 划分 train/valid）；有独立测试集时使用 `external_test_holdout`（主数据 8:2 划分 train/valid，独立测试集作最终 test）。交叉验证测试集的主指标必须用所有折 OOF 预测合并计算。
+- 支持三种分类评估口径：无独立测试集时可选 `stratified_holdout`（以 8:1:1 为目标按 `Sample_ID` 整组划分 train/valid/test；Valid 和 Test 至少各分到每类 1 个 `Sample_ID`，Train 也必须类别完整，因此每类至少需要 3 个不同 `Sample_ID`，不足则拒绝训练）或 `leave_one_sample_id_cv`（每折留 1 个 `Sample_ID` 作 test，其余按 8:2 划分 train/valid）；有独立测试集时使用 `external_test_holdout`（主数据 8:2 划分 train/valid，独立测试集作最终 test）。交叉验证测试集的主指标必须用所有折 OOF 预测合并计算。
 - 所有标准化参数只由当前训练集拟合，并应用于同一评估口径下的验证集和测试集。
 - 当前可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`，均支持 test 集单样品可解释性分析；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
 - `cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM / Grad-CAM-like，并保留输入梯度 sanity check。

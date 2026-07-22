@@ -7,9 +7,9 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 ## 正式功能
 
 - 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
-- HPLC：保留行号/保留时间范围和线性插值开关；默认完整输入固定为 7500 点，行号严格限制在 1–7500，每个原始文件点数不符或 X 非严格递增直接报错。
+- HPLC：保留行号/保留时间范围和线性插值开关；选择文件后逐个检测原文件名、点数与时间范围，支持任意一致且不少于 2 的点数，行号上限随当前批次动态变化。点数不一致时列出异常文件和实际点数，X 非严格递增时直接报错。
 - 开启插值时，范围只选择固定 0–50 分钟轴上的实际目标点（例如 100–4000 共 3901 点），再按完整源 X 左右邻点线性映射；仪器轴与固定轴仅有一个采样间隔内的边界相位差时使用首尾两点线性延伸。关闭时保留所选原始 X/Y，但批次内轴不一致会拒绝导出。均不消负或做面积归一化。
-- 分类评估：分层 8:1:1、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
+- 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
 - 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
@@ -182,29 +182,29 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
 
-评估策略固定为：`stratified_holdout` 默认 8:1:1；`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
+评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
 解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
 ## 建模 CSV
 
-建模文件使用 `wide-feature-v1` 宽表。一条曲线占一行，前三列名称与顺序固定；第 4 列起的列名是真实 `XXX` 坐标，单元格是对应的标量 `Intensity`：
+新预处理文件使用 `wide-feature-v2` 宽表。一条曲线占一行，前四列名称与顺序固定；第 5 列起的列名是真实 `XXX` 坐标，单元格是对应的标量 `Intensity`：
 
 ```csv
-Index,Label,Sample_ID,0,0.0066675556740898788,...,50
-1,A,S001,0.12,0.15,...,0.08
-2,A,S001,0.11,0.16,...,0.09
+Index,Label,Sample_ID,Name,0,0.0066675556740898788,...,50
+1,A,S001,GSGC-001.csv,0.12,0.15,...,0.08
+2,A,S001,GSGC-002.csv,0.11,0.16,...,0.09
 ```
 
-- `Index`、`Label`、`Sample_ID` 必须依次位于前三列；`Label` 必填并始终作为分类类别。
-- 第 4 列起的表头必须能解析为有限浮点数，数值唯一且严格递增；生成器使用 float64 可往返文本保存真实坐标。
+- `Index`、`Label`、`Sample_ID`、`Name` 必须依次位于前四列；`Name` 保存原始文件名，`Label` 必填并始终作为分类类别。
+- 第 5 列起的表头必须能解析为有限浮点数，数值唯一且严格递增；生成器使用 float64 可往返文本保存真实坐标。
 - 每个特征单元格必须是有限标量强度；预处理输出最多保留 5 位小数，不再把整条数组塞入单元格，也不自适应降低精度。
 - `Sample_ID` 表示同一样品的重复测量组；同组不得混入多个 `Label`，不同样品的重复次数应一致。
 - 所有行必须共享表头所表示的公共轴。拉曼、简单色谱及关闭插值的 HPLC 在多文件轴不一致时拒绝导出；开启插值的 HPLC 使用公共固定目标轴。
-- 独立测试集必须与主数据集具有完全相同的特征坐标及顺序。旧 `Index,Name,XXX,Intensity,Label,Sample_ID` 数组/JSON 文件会被明确拒绝，不做有损自动迁移。
-- Excel 工作表最多 16,384 列；扣除三个元数据列后，单个文件最多 16,381 个特征。原文件名只保留在预处理响应 `curves[].name` 中，不写入建模 CSV。
+- 独立测试集必须与主数据集具有完全相同的特征坐标及顺序。没有 `Name` 的 `wide-feature-v1` 宽表仍可训练；旧 `Index,Name,XXX,Intensity,Label,Sample_ID` 数组/JSON 文件会被明确拒绝，不做有损自动迁移。
+- Excel 工作表最多 16,384 列；扣除四个元数据列后，v2 单个文件最多 16,380 个特征。
 
-一次预处理仍只生成并下载一个统一建模 CSV。响应中的 `output_precision` 以 `format=wide-feature-v1`、`xxx_encoding=column_headers` 描述宽表，报告特征数、总列数和 Excel 兼容性。
+一次预处理仍只生成并下载一个统一建模 CSV。响应中的 `output_precision` 以 `format=wide-feature-v2`、`xxx_encoding=column_headers` 描述宽表，报告特征数、总列数和 Excel 兼容性。
 
 最小工作流程：
 
@@ -326,7 +326,7 @@ python -m backend.app.runs.migration --dry-run \
 
 ### 上传后提示 Label 或 Sample_ID 无效
 
-检查前三列是否依次为 `Index,Label,Sample_ID` 且没有空值；第 4 列起的坐标表头是否为有限、唯一、严格递增的数值；所有强度是否为有限标量；同一 `Sample_ID` 是否只对应一个标签。旧六列数组/JSON 文件需要重新预处理导出。
+检查前四列是否依次为 `Index,Label,Sample_ID,Name` 且没有空值；第 5 列起的坐标表头是否为有限、唯一、严格递增的数值；所有强度是否为有限标量；同一 `Sample_ID` 是否只对应一个标签。已有 `wide-feature-v1` 仍兼容；旧六列数组/JSON 文件需要重新预处理导出。
 
 ## 协作与发布
 
