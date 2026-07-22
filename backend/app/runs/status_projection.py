@@ -161,7 +161,12 @@ def _recover_sample_count(config: dict[str, Any]) -> int | None:
             reader = csv.DictReader(handle)
             fieldnames = reader.fieldnames or []
             group_field = 'Sample_ID' if 'Sample_ID' in fieldnames else 'Repeat_index'
-            required = ('Index', 'Name', 'Label', group_field)
+            # 新 wide-feature-v1 不再包含 Name；历史六列文件仍按原字段恢复。
+            required = (
+                ('Index', 'Label', group_field)
+                if tuple(fieldnames[:3]) == ('Index', 'Label', 'Sample_ID')
+                else ('Index', 'Name', 'Label', group_field)
+            )
             if not all(name in fieldnames for name in required):
                 return None
             samples = {tuple(row.get(name, '') for name in required) for row in reader}

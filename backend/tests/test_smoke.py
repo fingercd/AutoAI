@@ -1,6 +1,4 @@
 from pathlib import Path
-import ast
-import csv
 import io
 import json
 
@@ -26,12 +24,12 @@ def test_data_csv_summary(tmp_path):
     assert summary["curve_length"] == 160
 
 
-def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
+def test_modeling_csv_accepts_gbk_wide_feature_table(tmp_path):
     source = tmp_path / "gbk_modeling.csv"
     frame = (
-        "SpecAutoAI 谱学建模平台,Name,XXX,Intensity,Label,Repeat_index\n"
-        '1,s1,"[1, 2, 3]","[4, 5, 6]",A,1\n'
-        '2,s2,"[1, 2, 3]","[6, 5, 4]",B,2\n'
+        "Index,Label,Sample_ID,1,2,3\n"
+        "1,甲,1,4,5,6\n"
+        "2,乙,2,6,5,4\n"
     )
     source.write_bytes(frame.encode("gbk"))
 
@@ -40,16 +38,17 @@ def test_modeling_csv_accepts_gbk_and_index_alias(tmp_path):
     assert summary["samples"] == 2
     assert summary["classes"] == 2
     assert summary["curve_length"] == 3
-    assert summary["columns"][0] == "Index"
-    assert "Sample_ID" in summary["columns"]
-    assert "Repeat_index" not in summary["columns"]
+    assert summary["data_format"] == "wide-feature-v1"
+    assert summary["columns"] == ["Index", "Label", "Sample_ID"]
+    assert summary["curves"][0]["x"] == [1.0, 2.0, 3.0]
+    assert summary["curves"][0]["y"] == [4.0, 5.0, 6.0]
 
 
 def test_sample_id_summary_uses_natural_numeric_order(tmp_path):
     source = tmp_path / "natural_order.csv"
-    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
+    rows = ["Index,Label,Sample_ID,1,2"]
     for index, sample_id in enumerate(("1", "10", "11", "2", "3"), start=1):
-        rows.append(f'{index},s{sample_id},"[1,2]","[{index},{index + 1}]",A,{sample_id}')
+        rows.append(f"{index},A,{sample_id},{index},{index + 1}")
     source.write_text("\n".join(rows), encoding="utf-8")
 
     summary = summarize_modeling_csv(source)
@@ -57,36 +56,37 @@ def test_sample_id_summary_uses_natural_numeric_order(tmp_path):
     assert [item["sample_id"] for item in summary["sample_id"]["groups"]] == ["1", "2", "3", "10", "11"]
 
 
-def test_modeling_csv_rejects_conflicting_sample_id_and_legacy_column(tmp_path):
-    source = tmp_path / "conflicting_sample_id.csv"
+def test_modeling_csv_rejects_legacy_six_column_array_format(tmp_path):
+    source = tmp_path / "legacy_six_column.csv"
     source.write_text(
-        "Index,Name,XXX,Intensity,Label,Sample_ID,Repeat_index\n"
-        '1,s1,"[1,2]","[3,4]",A,1,2\n',
+        "Index,Name,XXX,Intensity,Label,Sample_ID\n"
+        '1,s1,"[1,2]","[3,4]",A,1\n',
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Sample_ID.*不一致"):
+    with pytest.raises(ValueError, match="旧六列数组格式.*wide-feature-v1"):
         load_modeling_csv(source)
 
 
 def _write_grouped_modeling_csv(path: Path, group_count: int = 11, repeats: int = 2, curve_length: int = 4) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
+    rows: list[list[object]] = []
     index = 1
-    x_axis = list(range(curve_length))
     for group in range(1, group_count + 1):
         label = "A" if group <= (group_count + 1) // 2 else "B"
         for repeat in range(repeats):
             y = [float(group + point + repeat * 0.01) for point in range(curve_length)]
             if label == "B" and curve_length:
                 y[curve_length // 2] += 5.0
-            rows.append(f'{index},s{group}_{repeat},"{x_axis}","{y}",{label},{group}')
+            rows.append([index, label, group, *y])
             index += 1
-    path.write_text("\n".join(rows), encoding="utf-8")
+    pd.DataFrame(
+        rows,
+        columns=["Index", "Label", "Sample_ID", *[str(point) for point in range(curve_length)]],
+    ).to_csv(path, index=False, encoding="utf-8")
 
 
 def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
-    x_axis = list(range(40))
+    rows: list[list[object]] = []
     index = 1
     for group in range(1, group_count + 1):
         label = "A" if group <= group_count // 2 else "B"
@@ -95,30 +95,12 @@ def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 
             y += group * 0.01 + repeat * 0.001
             if label == "B":
                 y[25] += 3.0
-            rows.append(
-                f'{index},signal_{group}_{repeat},"{x_axis}",'
-                f'"{y.round(6).tolist()}",{label},{group}'
-            )
+            rows.append([index, label, group, *y.round(6).tolist()])
             index += 1
-    path.write_text("\n".join(rows), encoding="utf-8")
-
-
-def _write_inconsistent_axis_csv(path: Path, group_count: int = 12, repeats: int = 2) -> None:
-    rows = ["Index,Name,XXX,Intensity,Label,Sample_ID"]
-    index = 1
-    for group in range(1, group_count + 1):
-        label = "A" if group <= group_count // 2 else "B"
-        for repeat in range(repeats):
-            x_axis = [0.0, 1.0, 2.0, 3.0, 10.0 + index]
-            y = [0.0, 0.1 * group, 0.2 * group, 0.3 * group, 0.4 * group]
-            if label == "B":
-                y[2] += 4.0
-            rows.append(
-                f'{index},axis_{group}_{repeat},"{x_axis}",'
-                f'"{y}",{label},{group}'
-            )
-            index += 1
-    path.write_text("\n".join(rows), encoding="utf-8")
+    pd.DataFrame(
+        rows,
+        columns=["Index", "Label", "Sample_ID", *[str(point) for point in range(40)]],
+    ).to_csv(path, index=False, encoding="utf-8")
 
 
 class _FakeAggMap:
@@ -915,40 +897,27 @@ def test_training_writes_only_sample_importance_artifacts_and_downloads(tmp_path
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
 
 
-def test_training_warns_when_sample_x_axes_are_inconsistent(tmp_path, monkeypatch):
+def test_external_test_dataset_rejects_different_wide_feature_axis(tmp_path, monkeypatch):
     import backend.app.training as training
 
-    source = tmp_path / "inconsistent_axis.csv"
-    _write_inconsistent_axis_csv(source)
+    source = tmp_path / "train_axis.csv"
+    test_source = tmp_path / "test_axis.csv"
+    _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=5)
+    _write_grouped_modeling_csv(test_source, group_count=2, repeats=2, curve_length=5)
+    test_frame = pd.read_csv(test_source)
+    test_frame = test_frame.rename(columns={"4": "4.5"})
+    test_frame.to_csv(test_source, index=False)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
-    result = train_model(
-        source,
-        {
-            "model_type": "cnn1d",
-            "normalization": "none",
-            "epochs": 1,
-            "batch_size": 8,
-            "split_train": 6,
-            "split_valid": 2,
-            "split_test": 2,
-            "feature_window_count": 3,
-            "feature_top_k": 2,
-            "feature_n_repeats": 1,
-        },
-    )
-    run_dir = Path(result["run_dir"])
-    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-
-    assert result["x_axis_warning"]["status"] == "inconsistent"
-    assert not (run_dir / "feature_importance.json").exists()
-    assert sample_payload["x_axis_warning"]["status"] == "inconsistent"
-    assert sample_payload["samples"]
-    assert all("sample_x_axis" in sample for sample in sample_payload["samples"])
-    assert any(
-        sample["sample_x_axis"][-1] != sample_payload["x_axis"][-1]
-        for sample in sample_payload["samples"]
-    )
+    with pytest.raises(ValueError, match="独立测试集的真实 XXX 特征轴必须与训练数据完全一致"):
+        train_model(
+            source,
+            {
+                "model_type": "pls_da",
+                "test_data_path": str(test_source),
+                "feature_selection_enabled": False,
+            },
+        )
 
 
 @pytest.mark.parametrize("model_type", ["pls_da", "svm", "random_forest", "xgboost", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"])
@@ -1237,7 +1206,8 @@ def test_raman_baseline_is_applied_after_range_selection(tmp_path, monkeypatch):
     )
 
     assert received == {"x": [2.0, 3.0], "y": [14.0, 19.0]}
-    assert ast.literal_eval(result["frame"].iloc[0]["Intensity"]) == [214.0, 219.0]
+    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "2", "3"]
+    assert result["frame"].iloc[0, 3:].tolist() == [214.0, 219.0]
     assert result["curves"][0]["raw_y"] == [14.0, 19.0]
     assert result["curves"][0]["corrected_y"] == [214.0, 219.0]
 
@@ -1260,59 +1230,60 @@ def test_preprocess_x_value_range_selects_by_axis(tmp_path):
 
     assert result["curves"][0]["x"] == [1.0, 1.5, 2.0]
     assert result["curves"][0]["raw_y"] == [20.0, 30.0, 40.0]
-    assert ast.literal_eval(result["frame"].iloc[0]["XXX"]) == [1.0, 1.5, 2.0]
+    assert result["frame"].columns.tolist() == ["Index", "Label", "Sample_ID", "1", "1.5", "2"]
+    assert result["frame"].iloc[0, 3:].tolist() == [20.0, 30.0, 40.0]
 
 
-def test_preprocess_csv_arrays_are_excel_safe_and_rounded_to_five_decimals(tmp_path, monkeypatch):
+def test_preprocess_writes_float64_axis_headers_and_fixed_five_decimal_scalars(tmp_path, monkeypatch):
     from backend.app import parsers
 
     source = tmp_path / "raman.csv"
-    x_values = np.round(180.91 + np.arange(2048) * 0.73, 2)
-    y_values = (np.arange(2048, dtype=np.float32) * np.float32(0.1234567)) - 100
+    x_values = np.array([180.91, 181.64000000000001, 182.37], dtype=np.float64)
+    y_values = np.array([0.1234567, -0.000004, 9.8765432], dtype=np.float32)
     source.write_text(
         "RamanShift,Intensity\n"
-        + "\n".join(f"{x:.2f},{float(y):.9g}" for x, y in zip(x_values, y_values)),
+        + "\n".join(f"{x:.17g},{float(y):.9g}" for x, y in zip(x_values, y_values)),
         encoding="utf-8",
     )
     monkeypatch.setattr(parsers, "_baseline_correct", lambda x, y, method: y)
 
-    result = parsers.preprocess_raw_files_with_preview(
-        [source],
-        kind="raman",
-        start_row=100,
-        end_row=2000,
+    result = parsers.preprocess_raw_files_with_preview([source], kind="raman")
+    frame = result["frame"]
+    precision = result["output_precision"]
+
+    assert frame.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    header_axis = np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64)
+    np.testing.assert_array_equal(header_axis, result["curves"][0]["x"])
+    np.testing.assert_array_equal(header_axis, x_values)
+    np.testing.assert_allclose(
+        frame.iloc[0, 3:].to_numpy(dtype=np.float64),
+        np.round(y_values.astype(np.float64), 5),
+        rtol=0,
+        atol=1e-12,
     )
-    row = result["frame"].iloc[0]
-    serialized_x = json.loads(row["XXX"])
-    serialized_y = json.loads(row["Intensity"])
-    expected_x = x_values[99:2000]
-    expected_y = y_values[99:2000]
-
-    assert len(row["XXX"]) <= parsers.EXCEL_CELL_CHARACTER_LIMIT
-    assert len(row["Intensity"]) <= parsers.EXCEL_CELL_CHARACTER_LIMIT
-    assert "450.82000732421875" not in row["XXX"]
-    np.testing.assert_allclose(serialized_x, expected_x, rtol=1e-9, atol=1e-9)
-    np.testing.assert_allclose(serialized_y, np.round(expected_y.astype(np.float64), 5), rtol=0, atol=1e-12)
-    assert result["curves"][0]["x"] == serialized_x
-    assert result["curves"][0]["corrected_y"] == serialized_y
-
-    output = tmp_path / "result.csv"
-    result["frame"].to_csv(output, index=False, encoding="utf-8-sig")
-    with output.open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
-    assert len(rows) == 2
-    assert all(len(item) == 6 for item in rows)
+    assert all(np.isscalar(value) for value in frame.iloc[0, 3:])
+    assert precision == {
+        "format": "wide-feature-v1",
+        "xxx_encoding": "column_headers",
+        "xxx_precision": "float64-roundtrip",
+        "intensity_decimal_places": 5,
+        "adaptive": False,
+        "feature_count": 3,
+        "total_column_count": 6,
+        "excel_column_limit": 16384,
+        "excel_compatible": True,
+    }
 
 
-def test_preprocess_rejects_9000_point_arrays_over_excel_cell_limit(tmp_path, monkeypatch):
+def test_preprocess_rejects_more_than_excel_wide_feature_limit(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from backend.app.main import app
     from backend.app.routers import preprocess as preprocess_router
 
-    source = tmp_path / "chromatography_9000_points.csv"
+    source = tmp_path / "chromatography_16382_points.csv"
     source.write_text(
         "Time,Intensity\n"
-        + "\n".join(f"{idx},{idx}" for idx in range(9000)),
+        + "\n".join(f"{idx},{idx}" for idx in range(16382)),
         encoding="utf-8",
     )
     uploads = tmp_path / "uploads"
@@ -1329,94 +1300,53 @@ def test_preprocess_rejects_9000_point_arrays_over_excel_cell_limit(tmp_path, mo
 
     assert response.status_code == 400
     detail = response.json()["detail"]
-    assert "超过 Excel 单元格上限 32767" in detail
-    assert "请缩小行号范围或 X 轴数值范围" in detail
+    assert "16382 个特征" in detail
+    assert "超过 Excel 上限 16384" in detail
+    assert "请先缩小行号或 X 轴范围" in detail
     assert not outputs.exists() or not list(outputs.iterdir())
 
 
-def test_adaptive_serialization_selects_highest_fitting_precision():
-    from backend.app.parsers import _serialize_modeling_arrays
+def test_wide_frame_requires_one_shared_real_axis():
+    from backend.app.parsers import build_wide_modeling_frame
 
-    values = np.array([1.23456, 2.34567, 3.45678], dtype=np.float64)
-
-    result = _serialize_modeling_arrays(
-        [values],
-        "XXX",
-        ["sample"],
-        character_limit=17,
-    )
-
-    assert result.decimal_places == 2
-    assert result.max_characters == 16
-    assert result.arrays[0].serialized == "[1.23,2.35,3.46]"
-    assert result.arrays[0].values == json.loads(result.arrays[0].serialized)
-
-
-def test_adaptive_serialization_uses_one_precision_for_the_whole_batch():
-    from backend.app.parsers import _serialize_modeling_arrays
-
-    short_values = np.array([1.2, 2.3, 3.4], dtype=np.float64)
-    long_values = np.array([1.23456, 2.34567, 3.45678], dtype=np.float64)
-
-    result = _serialize_modeling_arrays(
-        [short_values, long_values],
-        "Intensity",
-        ["short", "long"],
-        character_limit=17,
-    )
-
-    assert result.decimal_places == 2
-    assert all(item.decimal_places == 2 for item in result.arrays)
-    assert result.max_source_name == "long"
-
-
-def test_adaptive_serialization_compacts_integral_values_and_negative_zero():
-    from backend.app.parsers import _serialize_modeling_arrays
-
-    values = np.array([-0.0, 1.49, 2.49], dtype=np.float64)
-
-    result = _serialize_modeling_arrays(
-        [values],
-        "XXX",
-        ["sample"],
-        character_limit=7,
-    )
-
-    assert result.decimal_places == 0
-    assert result.arrays[0].serialized == "[0,1,2]"
-    assert ".0" not in result.arrays[0].serialized
-    assert "-0" not in result.arrays[0].serialized
-
-
-def test_adaptive_serialization_rejects_precision_that_erases_variation():
-    from backend.app.parsers import _serialize_modeling_arrays
-
-    values = np.array([0.01, 0.02], dtype=np.float64)
-
-    with pytest.raises(ValueError, match="失去全部有效变化"):
-        _serialize_modeling_arrays(
-            [values],
-            "Intensity",
-            ["sample"],
-            character_limit=9,
+    with pytest.raises(ValueError, match="宽表只能保存一条公共真实轴"):
+        build_wide_modeling_frame(
+            indices=[1, 2],
+            x_arrays=[np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 3.5])],
+            intensity_arrays=[np.array([4.0, 5.0, 6.0]), np.array([7.0, 8.0, 9.0])],
+            source_names=["first", "second"],
         )
 
 
-def test_adaptive_serialization_rejects_when_zero_decimals_are_still_too_long():
-    from backend.app.parsers import _serialize_modeling_arrays
+def test_wide_frame_rejects_non_increasing_real_axis():
+    from backend.app.parsers import build_wide_modeling_frame
 
-    values = np.array([100, 200], dtype=np.float64)
-
-    with pytest.raises(ValueError, match="即使保留 0 位小数.*超过 Excel 单元格上限 8"):
-        _serialize_modeling_arrays(
-            [values],
-            "XXX",
-            ["sample"],
-            character_limit=8,
+    with pytest.raises(ValueError, match="XXX 必须严格递增"):
+        build_wide_modeling_frame(
+            indices=[1],
+            x_arrays=[np.array([1.0, 1.0, 2.0])],
+            intensity_arrays=[np.array([4.0, 5.0, 6.0])],
+            source_names=["duplicate-axis"],
         )
 
 
-def test_7500_point_chromatography_adapts_precision_and_round_trips(tmp_path):
+def test_wide_frame_metadata_preview_excludes_feature_cells():
+    from backend.app.parsers import build_wide_modeling_frame, modeling_metadata_preview
+
+    result = build_wide_modeling_frame(
+        indices=["curve-1"],
+        x_arrays=[np.array([0.1, 0.2])],
+        intensity_arrays=[np.array([10.0, 20.0])],
+        source_names=["source-name-not-written"],
+    )
+
+    assert modeling_metadata_preview(result.frame) == [
+        {"Index": "curve-1", "Label": "", "Sample_ID": ""}
+    ]
+    assert "source-name-not-written" not in result.frame.astype(str).to_string()
+
+
+def test_7500_point_chromatography_wide_table_round_trips(tmp_path):
     from backend.app.parsers import preprocess_raw_files_with_preview
 
     x = np.linspace(0, 75, 7500, dtype=np.float64)
@@ -1429,27 +1359,38 @@ def test_7500_point_chromatography_adapts_precision_and_round_trips(tmp_path):
 
     result = preprocess_raw_files_with_preview(files, kind="chromatography")
     precision = result["output_precision"]
+    frame = result["frame"]
 
-    assert precision["xxx_decimal_places"] < 5
-    assert precision["intensity_decimal_places"] < 5
-    assert precision["xxx_max_characters"] <= 32767
-    assert precision["intensity_max_characters"] <= 32767
+    assert precision["format"] == "wide-feature-v1"
+    assert precision["xxx_encoding"] == "column_headers"
+    assert precision["xxx_precision"] == "float64-roundtrip"
+    assert precision["intensity_decimal_places"] == 5
+    assert precision["adaptive"] is False
+    assert precision["feature_count"] == 7500
+    assert precision["total_column_count"] == 7503
+    assert frame.shape == (2, 7503)
+    np.testing.assert_array_equal(
+        np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64),
+        np.asarray(result["curves"][0]["x"], dtype=np.float64),
+    )
     for row_index, curve in enumerate(result["curves"]):
-        row = result["frame"].iloc[row_index]
         assert len(curve["x"]) == 7500
         assert len(curve["raw_y"]) == 7500
-        assert json.loads(row["XXX"]) == curve["x"]
-        assert json.loads(row["Intensity"]) == curve["raw_y"]
+        np.testing.assert_allclose(
+            frame.iloc[row_index, 3:].to_numpy(dtype=np.float64),
+            curve["raw_y"],
+            rtol=0,
+            atol=0,
+        )
 
-    frame = result["frame"].copy()
     frame["Label"] = ["A", "B"]
     frame["Sample_ID"] = ["1", "2"]
-    output = tmp_path / "adaptive_modeling.csv"
+    output = tmp_path / "wide_modeling.csv"
     frame.to_csv(output, index=False, encoding="utf-8-sig")
 
     loaded = load_modeling_csv(output)
     assert loaded.intensity.shape == (2, 7500)
-    assert len(loaded.x_axis[0]) == 7500
+    np.testing.assert_array_equal(loaded.x_axis[0], result["curves"][0]["x"])
 
 
 def test_read_raw_spectrum_no_header_preserves_first_row(tmp_path):
@@ -1544,7 +1485,8 @@ def test_preprocess_preserves_original_names_and_returns_all_curves(tmp_path):
     assert len(payload["curves"]) == 12
     assert payload["curves"][0]["name"] == "sample_00_original"
     assert payload["curves"][-1]["name"] == "sample_11_original"
-    assert payload["preview"][0]["Name"] == "sample_00_original"
+    assert payload["preview"][0] == {"Index": 1, "Label": "", "Sample_ID": ""}
+    assert all(set(row) == {"Index", "Label", "Sample_ID"} for row in payload["preview"])
 
 
 def test_chromatography_preprocess_api_returns_curve_preview(tmp_path):
@@ -1878,13 +1820,22 @@ def test_hplc_row_range_maps_to_same_fixed_axis_slice_with_small_edge_phase(tmp_
         rtol=0,
         atol=0.5 * 10 ** (-digits) + 1e-12,
     )
-    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
-    assert descriptor["grid_count"] == 7500
-    assert descriptor["offset"] == 0
-    assert descriptor["length"] == 4000
+    frame = result["frame"]
+    assert frame.shape == (1, 4003)
+    assert frame.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    np.testing.assert_array_equal(
+        np.asarray([float(item) for item in frame.columns[3:]], dtype=np.float64),
+        expected_x,
+    )
+    np.testing.assert_allclose(
+        frame.iloc[0, 3:].to_numpy(dtype=np.float64),
+        result["curves"][0]["processed_y"],
+        rtol=0,
+        atol=0,
+    )
 
 
-def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
+def test_hplc_pipeline_writes_fixed_real_axis_headers_and_preserves_scale(tmp_path):
     from backend.app.hplc import preprocess_hplc_files_with_preview
     from backend.app.parsers import load_modeling_csv
 
@@ -1894,17 +1845,12 @@ def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
     assert result["hplc_axis"]["point_count"] == 7500
     assert result["hplc_axis"]["mapping"] == "piecewise_linear"
     assert len(result["common_time"]) == 7500
-    descriptor = json.loads(result["frame"].iloc[0]["XXX"])
-    assert descriptor == {
-        "type": "linspace-slice-v1",
-        "grid_start": 0.0,
-        "grid_stop": 50.0,
-        "grid_count": 7500,
-        "offset": 0,
-        "length": 7500,
-        "unit": "minute",
-    }
-    assert len(result["frame"].iloc[0]["XXX"]) < 32767
+    assert result["frame"].shape == (2, 7503)
+    assert result["frame"].columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    np.testing.assert_array_equal(
+        np.asarray([float(item) for item in result["frame"].columns[3:]], dtype=np.float64),
+        np.asarray(result["common_time"], dtype=np.float64),
+    )
     for curve in result["curves"]:
         assert len(curve["x"]) == len(curve["processed_y"]) == 7500
         assert curve["raw_y"] == curve["processed_y"]
@@ -1917,7 +1863,7 @@ def test_hplc_pipeline_uses_fixed_axis_descriptor_and_preserves_scale(tmp_path):
     modeling.to_csv(output, index=False, encoding="utf-8-sig")
     loaded = load_modeling_csv(output)
     assert len(loaded.x_axis[0]) == 7500
-    np.testing.assert_allclose(loaded.x_axis[0], result["common_time"], rtol=0, atol=0)
+    np.testing.assert_array_equal(loaded.x_axis[0], result["common_time"])
 
 
 # ---- API integration tests ----
@@ -2008,14 +1954,17 @@ def test_hplc_preprocess_api_response_fields(tmp_path):
     assert payload["intensity_summary"][0]["all_zero"] is False
     assert payload["intensity_summary"][0]["max"] > payload["intensity_summary"][0]["min"]
     assert payload["baseline_method"] is None
+    assert payload["preview"][0] == {"Index": 1, "Label": "", "Sample_ID": ""}
     precision = payload["output_precision"]
-    assert precision["adaptive"] is True
-    assert precision["max_decimal_places"] == 5
-    assert precision["xxx_encoding"] == "linspace-slice-v1"
-    assert 0 <= precision["intensity_decimal_places"] <= 5
-    assert precision["xxx_max_characters"] <= 32767
-    assert precision["intensity_max_characters"] <= 32767
-    assert precision["excel_cell_character_limit"] == 32767
+    assert precision["format"] == "wide-feature-v1"
+    assert precision["xxx_encoding"] == "column_headers"
+    assert precision["xxx_precision"] == "float64-roundtrip"
+    assert precision["intensity_decimal_places"] == 5
+    assert precision["adaptive"] is False
+    assert precision["feature_count"] == 7500
+    assert precision["total_column_count"] == 7503
+    assert precision["excel_column_limit"] == 16384
+    assert precision["excel_compatible"] is True
 
 
 def test_hplc_preprocess_api_row_range_selects_matching_target_axis_slice(tmp_path):
@@ -2041,7 +1990,7 @@ def test_hplc_preprocess_api_row_range_selects_matching_target_axis_slice(tmp_pa
     assert len(payload["curves"][0]["processed_y"]) == 100
 
 
-def test_hplc_preprocess_api_interpolation_off_exports_selected_original_axes(tmp_path):
+def test_hplc_preprocess_api_interpolation_off_rejects_inconsistent_original_axes(tmp_path):
     from fastapi.testclient import TestClient
     from backend.app.main import app
 
@@ -2061,15 +2010,10 @@ def test_hplc_preprocess_api_interpolation_off_exports_selected_original_axes(tm
         for handle in opened:
             handle.close()
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["hplc_interpolate"] is False
-    assert payload["x_axis_consistent"] is False
-    assert payload["common_time"] == []
-    assert payload["hplc_axis"] is None
-    assert payload["warnings"]
-    assert "所选原始 X 轴正常生成" in payload["warnings"][0]
-    assert all(len(curve["x"]) == 7500 for curve in payload["curves"])
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "宽表只能保存一条公共真实轴" in detail
+    assert "当前已关闭 HPLC 线性插值，请开启插值后重试" in detail
 
 
 def test_hplc_preprocess_rejects_invalid_kind():
@@ -2109,17 +2053,15 @@ def test_hplc_csv_downloadable(tmp_path):
     download_url = resp.json()["download_url"]
     dl_resp = client.get(download_url)
     assert dl_resp.status_code == 200
-    assert "Index,Name,XXX,Intensity,Label,Sample_ID" in dl_resp.text
     downloaded = pd.read_csv(io.StringIO(dl_resp.text))
-    x_descriptor = ast.literal_eval(downloaded.iloc[0]["XXX"])
-    intensity = ast.literal_eval(downloaded.iloc[0]["Intensity"])
-    assert x_descriptor["type"] == "linspace-slice-v1"
-    assert x_descriptor["grid_count"] == 7500
-    assert x_descriptor["offset"] == 0
-    assert x_descriptor["length"] == 7500
+    assert downloaded.shape == (1, 7503)
+    assert downloaded.columns[:3].tolist() == ["Index", "Label", "Sample_ID"]
+    feature_headers = np.asarray([float(item) for item in downloaded.columns[3:]], dtype=np.float64)
+    np.testing.assert_array_equal(feature_headers, resp.json()["common_time"])
+    intensity = downloaded.iloc[0, 3:].to_numpy(dtype=np.float64)
     assert len(intensity) == 7500
-    assert not any(pd.isna(value) for value in intensity)
-    assert any(abs(float(value)) > 1e-12 for value in intensity)
+    assert np.all(np.isfinite(intensity))
+    assert np.any(np.abs(intensity) > 1e-12)
 
     assert "xxx_download_url" not in resp.json()
     assert "xxx_rows" not in resp.json()

@@ -198,7 +198,10 @@ def sample_summary() -> dict[str, object]:
     """读取可选根目录 data.csv，仅供本地兼容与人工验证。"""
     if not DEFAULT_DATA.exists():
         raise HTTPException(status_code=404, detail='项目根目录未找到 data.csv')
-    return summarize_modeling_csv(DEFAULT_DATA)
+    try:
+        return summarize_modeling_csv(DEFAULT_DATA)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get('/api/files')

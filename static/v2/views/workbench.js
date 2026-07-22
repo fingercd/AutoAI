@@ -88,7 +88,7 @@ function paramForm(kind) {
     });
     extras.append(
       el('label', { className: 'row', attrs: { for: 'v2-pp-hplc_interpolate' } }, [interpolate, ' 启用共同时间轴线性插值']),
-      el('p', { className: 'hint', text: '开启时在 0–50 分钟固定目标时间轴上选择并插值；关闭时按每条文件自己的原始时间轴筛选。两种模式都不做面积归一化或消负。' }),
+      el('p', { className: 'hint', text: '开启时在 0–50 分钟固定目标时间轴上选择并插值；关闭时保留原始时间轴，但多文件所选轴必须完全一致，否则拒绝导出。两种模式都不做面积归一化或消负。' }),
     );
     extras.hplcInterpolate = interpolate;
   }
@@ -179,7 +179,7 @@ function previewTable(preview) {
   const columns = Object.keys(rows[0]);
   return el('div', { className: 'table-wrap' }, [
     el('table', { className: 'data-table' }, [
-      el('caption', { text: '统一 CSV 前 5 行预览（Label 与 Sample_ID 待人工补齐）' }),
+      el('caption', { text: '预处理样品与待填字段预览（Label、Sample_ID 待人工填写）' }),
       el('thead', {}, el('tr', {}, columns.map((column) => el('th', { text: column, attrs: { scope: 'col' } })))),
       el('tbody', {}, rows.map((row) => el('tr', {}, columns.map((column) => el('td', { text: String(row[column] ?? '') }))))),
     ]),
@@ -322,13 +322,13 @@ export function mountWorkbench(container, { announce, toast }) {
       renderResults();
       syncSteps();
       announce(`预处理完成，共 ${result.rows ?? files.length} 行数据`);
-      toast('预处理完成。下一步：下载统一 CSV，补齐 Label / Sample_ID 后去建模。', {
+      toast('预处理完成。下一步：下载统一 CSV，填写 Label / Sample_ID 后去建模。', {
         type: 'success',
         action: { label: '下载 CSV', onClick: () => downloadResult() },
       });
     } catch (error) {
       clear(resultsHost);
-      errorBox.textContent = `预处理失败：${error?.message || '未知错误'}。下一步：确认每个文件都是两列数值数据（X, 强度）后重试；仍失败请在高级参数中改用“全部数据”。`;
+      errorBox.textContent = `预处理失败：${error?.message || '未知错误'}。下一步：确认每个文件都是两列数值数据（X, 强度）；多文件轴不一致时请先对齐，HPLC 也可启用共同时间轴插值。`;
       announce('预处理失败');
     } finally {
       busy = false;
@@ -380,10 +380,15 @@ export function mountWorkbench(container, { announce, toast }) {
       ['输出行数', String(lastResult.rows ?? '—')],
       ['数据量', String(curves.length)],
     ];
+    if (lastResult.output_precision) {
+      metaCards.push(['输出格式', lastResult.output_precision.format || 'wide-feature-v1']);
+      metaCards.push(['特征数', String(lastResult.output_precision.feature_count ?? '—')]);
+      metaCards.push(['总列数', String(lastResult.output_precision.total_column_count ?? '—')]);
+    }
     if (kind === 'raman') metaCards.push(['基线方法', lastResult.baseline_method || '—']);
     if (kind === 'hplc') {
       metaCards.push(['插值', lastResult.hplc_interpolate ? '开' : '关']);
-      metaCards.push(['X 轴', lastResult.x_axis_consistent ? '一致' : '不一致']);
+      metaCards.push(['X 轴', lastResult.x_axis_consistent === false ? '不一致' : '共同轴已验证']);
       if (lastResult.hplc_axis) {
         metaCards.push(['实际点数', String(lastResult.hplc_axis.point_count ?? '—')]);
         metaCards.push(['完整网格点数', String(lastResult.hplc_axis.grid_point_count ?? lastResult.hplc_axis.input_point_count_required ?? '—')]);
@@ -396,7 +401,7 @@ export function mountWorkbench(container, { announce, toast }) {
       return Number.isFinite(number) ? number.toFixed(6).replace(/\.?0+$/, '') : '—';
     };
     const axisSummary = axis
-      ? `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟，第 ${axis.selected_start_row ?? '—'}–${axis.selected_end_row ?? '—'} 点，共 ${axis.point_count ?? '—'} 点；CSV 使用 ${axis.encoding || lastResult.output_precision?.xxx_encoding || 'linspace-slice-v1'} JSON 保存。`
+      ? `XXX：真实保留时间 ${axisNumber(axis.start)}–${axisNumber(axis.stop)} 分钟，第 ${axis.selected_start_row ?? '—'}–${axis.selected_end_row ?? '—'} 点，共 ${axis.point_count ?? '—'} 点；每个真实时间坐标逐列保存在 CSV 特征表头中。`
       : null;
 
     const warnings = Array.isArray(lastResult.warnings) ? lastResult.warnings : [];
@@ -430,10 +435,10 @@ export function mountWorkbench(container, { announce, toast }) {
       curves.length ? chartHost : el('div', { className: 'empty', text: '响应中没有曲线预览，可直接下载 CSV 查看数据。' }),
       infoLine,
       previewTable(lastResult.preview),
-      el('p', { className: 'hint', text: '下一步：下载 CSV 后用表格软件补齐 Label 和 Sample_ID 两列（同一 Sample_ID 的重复测量会整组划分，不会跨 train/valid/test），然后到建模页上传训练。' }),
+      el('p', { className: 'hint', text: '下一步：下载 CSV 后只需填写 Label 和 Sample_ID 两列（同一 Sample_ID 的重复测量会整组划分，不会跨 train/valid/test）；不要改动第 4 列起的真实坐标表头，然后到建模页上传训练。' }),
       el('div', { className: 'card-actions' }, [
         downloadButton,
-        el('a', { className: 'btn btn-ghost', text: '补齐后去建模页 →', attrs: { href: '#/modeling' } }),
+        el('a', { className: 'btn btn-ghost', text: '填写后去建模页 →', attrs: { href: '#/modeling' } }),
       ]),
     ]));
     if (curves.length) renderCurve(0);

@@ -47,7 +47,7 @@ def test_dataset_hash_is_recomputed_before_training(tmp_path) -> None:
     storage = tmp_path / 'storage'
     upload = storage / 'uploads' / 'data.csv'
     upload.parent.mkdir(parents=True)
-    upload.write_text('Index,Name,XXX,Intensity,Label,Sample_ID\n', encoding='utf-8')
+    upload.write_text('Index,Label,Sample_ID,0\n', encoding='utf-8')
     repository = DatasetRepository(tmp_path / 'datasets.sqlite3', storage_root=storage)
     repository.initialize()
     record = repository.register(upload, original_name='data.csv', principal=Principal())

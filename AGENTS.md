@@ -28,12 +28,14 @@
 
 ## 预处理规则
 
-- 统一建模 CSV 固定为 `Index, Name, XXX, Intensity, Label, Sample_ID`。
+- 统一建模 CSV 使用 `wide-feature-v1` 宽表：前三列固定为 `Index, Label, Sample_ID`，第 4 列起的列名是真实、有限、唯一、严格递增的 `XXX` 坐标，单元格是有限标量 `Intensity`。原文件名只保留在预处理响应 `curves[].name`，不写入 CSV。
+- 批次内所有曲线必须共享公共轴；独立测试集也必须与主数据逐点同轴。旧六列数组/JSON、`linspace-v1`、`linspace-slice-v1` 文件不再可训练，不得自动取首条轴迁移。
+- Excel 总列数上限为 16,384，扣除三个元数据列后最多 16,381 个特征。表头坐标使用 float64 可往返文本；强度最多 5 位小数且 `adaptive=false`，不得为适应单元格字符限制静默降精度或删点。
 - 拉曼支持行号或 X 轴范围截取，处理顺序固定为先选择数据范围，再执行基线校正。
 - HPLC 固定轴业务值集中在 `HplcGridConfig`，算法函数只接收配置；默认配置为 0–50 分钟、7500 点（包含首尾端点），不得在算法函数体内散落硬编码。
 - HPLC 保留行号/X 轴范围选择和 `hplc_interpolate` 开关；每个原始文件仍必须解析出配置要求的完整点数且 X 严格递增。行号为 1 基、首尾包含，起止都必须位于 `1..point_count`，终止行留空才按完整点数处理，禁止把 7501、9000 等越界值静默截到末尾。
-- 开启 HPLC 插值时，范围选择作用于固定目标轴：第 1–4000 行输出 4000 个目标点，第 100–4000 行输出 3901 个目标点；第 n 点的真实时间为 `start_minutes + (n - 1) * (stop_minutes - start_minutes) / (point_count - 1)`。强度使用完整源曲线的左右邻点做 float64 线性映射，边界相位差不超过一个采样间隔时允许用首尾两点线性延伸。关闭时导出所选原始 X/Y，轴不一致只警告。两种模式都不执行消负或面积归一化。
-- 开启插值的新 HPLC CSV 使用可逆 `linspace-slice-v1` 描述完整分钟网格和本次 `offset/length`，避免 Excel 单元格上限；读取器继续兼容普通数组和历史 `linspace-v1`。关闭时 `XXX` 保存原数组。`Intensity` 继续使用最高 Excel 安全统一精度。一次 HPLC 预处理只生成一个六列主 CSV，不再生成 `_xxx.csv` 或返回第二下载地址。
+- 开启 HPLC 插值时，范围选择作用于固定目标轴：第 1–4000 行输出 4000 个目标点，第 100–4000 行输出 3901 个目标点；第 n 点的真实时间为 `start_minutes + (n - 1) * (stop_minutes - start_minutes) / (point_count - 1)`。强度使用完整源曲线的左右邻点做 float64 线性映射，边界相位差不超过一个采样间隔时允许用首尾两点线性延伸。关闭时导出所选原始 X/Y，但多文件所选轴不一致必须拒绝。两种模式都不执行消负或面积归一化。
+- HPLC 的实际固定/原始公共轴逐点写入宽表特征表头。一次预处理只生成一个宽表主 CSV，不生成 `_xxx.csv` 或返回第二下载地址；`output_precision` 使用 `format=wide-feature-v1`、`xxx_encoding=column_headers` 和 `xxx_precision=float64-roundtrip`。
 
 ## 建模与可解释性规则
 

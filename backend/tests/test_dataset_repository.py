@@ -5,7 +5,7 @@ import pytest
 
 def test_dataset_id_resolves_only_for_its_server_derived_principal(tmp_path):
     source = tmp_path / 'source.csv'
-    source.write_text('Index,Name,XXX,Intensity,Label,Sample_ID\n', encoding='utf-8')
+    source.write_text('Index,Label,Sample_ID,0\n', encoding='utf-8')
     repo = DatasetRepository(tmp_path / 'datasets.sqlite3', storage_root=tmp_path)
     repo.initialize()
     dataset = repo.register(source, original_name='source.csv', principal=Principal(owner_id='owner-a'))
@@ -17,7 +17,7 @@ def test_dataset_id_resolves_only_for_its_server_derived_principal(tmp_path):
 
 def test_local_principal_resolves_a_local_dataset(tmp_path):
     source = tmp_path / 'source.csv'
-    source.write_text('Index,Name,XXX,Intensity,Label,Sample_ID\n', encoding='utf-8')
+    source.write_text('Index,Label,Sample_ID,0\n', encoding='utf-8')
     repo = DatasetRepository(tmp_path / 'datasets.sqlite3', storage_root=tmp_path)
     repo.initialize()
     dataset = repo.register(source, original_name='source.csv', principal=Principal())
