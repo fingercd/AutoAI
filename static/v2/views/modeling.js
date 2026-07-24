@@ -1,4 +1,26 @@
-/** AI 建模向导：四步门禁（数据 → 评估口径 → 模型 → 参数确认提交），每步只保留必要选择。 */
+/**
+ * 【模块说明】AI 建模向导视图（static/v2 工作台）
+ *
+ * 职责：渲染"AI 建模"四步向导页——上传数据 → 评估口径 → 选择模型 → 参数确认提交。
+ * 这是 v2 前端（static/v2/index.html）的一个视图组件，由 Hash 路由 #/modeling 挂载。
+ *
+ * 系统位置与协作：
+ * - 通过 ../api.js 调用后端接口：uploadDataset（POST /api/datasets 上传并校验 CSV）、
+ *   getModels（GET /api/training/models 模型能力目录）、createRun（POST /api/training/runs 创建 queued Run）。
+ * - 通过 ../store.js 的 consumeModelingDraft 读取"从历史 Run 复制配置"的草稿（训练记录页跳转过来时携带），
+ *   markRunCreated 记录本次会话新建的 run_id（用于训练记录页高亮/识别）。
+ * - 通过 ../components/model-catalog.js 渲染模型目录卡片（含 available=false 的不可用模型折叠展示）。
+ * - EVALUATION_STRATEGIES 来自 ../lib/format.js，定义三种评估口径的展示文案：
+ *   stratified_holdout（分层留出 8:1:1）、leave_one_sample_id_cv（留一样本交叉验证）、
+ *   external_test_holdout（独立测试集，需要第 1 步上传独立测试 CSV）。
+ *
+ * 关键设计约束（与后端契约一致）：
+ * - 训练 HTTP 请求只创建 queued Run，不直接启动训练；成功响应不代表训练已开始或完成（见 renderSuccess）。
+ * - 上传的 CSV 必须满足 wide-feature-v2 宽表契约：Index, Label, Sample_ID, Name 四个元数据列 +
+ *   第 5 列起严格递增的真实数值坐标表头；旧 wide-feature-v1（无 Name 列）仍兼容。
+ * - external_test_holdout 必须携带 test_dataset_id；未上传独立测试集时该口径禁用并自动回退。
+ * - Label 始终按分类处理；同一 Sample_ID 整组划分，不会跨 train/valid/test。
+ */
 import { el, clear } from '../lib/dom.js';
 import { EVALUATION_STRATEGIES } from '../lib/format.js';
 import { uploadDataset, getModels, createRun } from '../api.js';
@@ -6,12 +28,36 @@ import { renderModelCatalog, findModel } from '../components/model-catalog.js';
 import { markRunCreated, consumeModelingDraft } from '../store.js';
 import { naturalCompare, renderSampleIdList } from '../../js/ui-utils.js';
 
+/** 向导四步的展示标题，顺序即路由内步骤顺序。 */
 const STEPS = ['上传数据', '评估口径', '选择模型', '参数与提交'];
+/** 提交成功后自动跳转到结果页前的倒计时秒数。 */
 const REDIRECT_SECONDS = 3;
+/**
+ * 单调递增序号，为每张数据集摘要卡片的 Sample_ID 列表生成页面内唯一的 listId，
+ * 避免同一页多张卡片的 aria/id 冲突。
+ */
 let summaryListSerial = 0;
 
+/**
+ * 渲染数据集校验摘要卡片。
+ *
+ * 用途：上传并校验成功（或沿用了历史 Run 数据集草稿）后，就地展示后端返回的数据集
+ * 统计信息，让用户在提交前确认数据规模、样本分组与类别分布。
+ *
+ * @param {object} options
+ * @param {string} options.name 数据集显示名（通常是上传的文件名）。
+ * @param {object|null} options.summary 后端 upload 接口返回的 summary：
+ *   samples（数据量/行数）、classes（类别数）、curve_length（特征数）、
+ *   label_counts（各类别数据量字典）、sample_id（Sample_ID 分组信息：
+ *   group_count / groups / expected_repeats_per_group）。
+ * @param {boolean} [options.reuse] 为 true 时表示沿用历史 Run 的数据集（展示"沿用原 Run 数据集"
+ *   徽章），否则展示"校验通过"徽章。
+ * @returns {HTMLElement} 组装好的卡片节点。
+ * 边界：summary 中任一字段缺失时显示 '—'；label_counts 为空时显示提示文案而不是空表。
+ */
 function datasetSummaryCard({ name, summary, reuse }) {
   const sampleSummary = summary?.sample_id || {};
+  // 五项核心指标；任一缺失用 '—' 占位，保证卡片结构稳定。
   const metrics = [
     ['数据量', summary?.samples ?? '—'],
     ['类别数', summary?.classes ?? '—'],
@@ -19,9 +65,11 @@ function datasetSummaryCard({ name, summary, reuse }) {
     ['每样本测量数', sampleSummary.expected_repeats_per_group ?? '—'],
     ['特征数', summary?.curve_length ?? '—'],
   ];
+  // 类别分布按类别名自然序排序（naturalCompare 保证 "class2" 排在 "class10" 前）。
   const labelRows = Object.entries(summary?.label_counts || {})
     .sort(([first], [second]) => naturalCompare(first, second));
   const groupsHost = el('div');
+  // Sample_ID 分组列表单独渲染到宿主节点；listId 用递增序号保证全页唯一。
   renderSampleIdList(groupsHost, sampleSummary.groups || [], {
     listId: `v2-sample-groups-${summaryListSerial += 1}`,
   });
@@ -56,7 +104,22 @@ function datasetSummaryCard({ name, summary, reuse }) {
   return card;
 }
 
-/** 单个 CSV 上传区：选文件 → 点“上传并校验”，结果卡片就地展示。 */
+/**
+ * 构造单个 CSV 上传区（选文件 → 点"上传并校验"，结果卡片就地展示）。
+ *
+ * 主数据集与独立测试集各用一个实例。上传成功后会清空宿主区域并替换为
+ * datasetSummaryCard，同时通过 onUploaded 回调把后端结果回写给向导状态。
+ *
+ * @param {object} options
+ * @param {string} options.inputId 文件 input 的 id（label 的 for 属性需要对应，保证无障碍）。
+ * @param {string} options.buttonClass 按钮样式类（主数据集用主按钮，测试集用次要按钮）。
+ * @param {(result: object) => void} options.onUploaded 上传校验成功回调，
+ *   result 为后端响应：{ dataset_id, dataset_name, summary }。
+ * @returns {{ node: HTMLElement, host: HTMLElement }} node 为完整上传区节点，
+ *   host 为结果卡片的宿主容器（外部一般只用 node）。
+ * 边界：未选文件直接点按钮时给出错误提示并聚焦 input；上传失败时错误文案中
+ * 附带 wide-feature-v2 格式要求作为"下一步"指引。
+ */
 function uploadBox({ inputId, buttonClass, onUploaded }) {
   const input = el('input', { className: 'input', attrs: { type: 'file', accept: '.csv', id: inputId } });
   const button = el('button', { className: buttonClass, text: '上传并校验', attrs: { type: 'button' } });
@@ -71,11 +134,13 @@ function uploadBox({ inputId, buttonClass, onUploaded }) {
       input.focus();
       return;
     }
+    // 上传期间禁用按钮防重复提交；finally 中恢复。
     button.disabled = true;
     status.textContent = '上传并校验中…';
     try {
       const result = await uploadDataset(file);
       status.textContent = '';
+      // 成功后替换掉旧的结果卡片（重新上传即替换数据集）。
       clear(host);
       host.append(datasetSummaryCard({ name: result.dataset_name, summary: result.summary }));
       onUploaded(result);
@@ -98,7 +163,21 @@ function uploadBox({ inputId, buttonClass, onUploaded }) {
   ]), host };
 }
 
+/**
+ * 挂载"AI 建模"视图（四步向导），v2 路由进入 #/modeling 时调用。
+ *
+ * 状态集中在 wizard 对象：当前步骤、主/测试数据集 id 与摘要、评估口径、
+ * 模型目录与所选模型、训练参数、提交成功后的倒计时与对话框引用。
+ * 每次状态变化通过 render() 全量重绘 body（简单可靠，向导数据量小）。
+ *
+ * @param {HTMLElement} container 视图挂载点。
+ * @param {object} deps 由 v2 外壳注入的依赖：
+ *   announce(msg) 向屏幕阅读器播报；toast(msg, opts) 弹全局提示；
+ *   navigate(hash) 进行 Hash 路由跳转。
+ * @returns {{ unmount: () => void }} 卸载句柄；路由离开时调用，清理倒计时与成功对话框。
+ */
 export function mountModeling(container, { announce, toast, navigate }) {
+  // 从训练记录页"复制配置"跳转过来时，草稿里带有原 Run 的 datasetId/config 等。
   const draft = consumeModelingDraft();
   const wizard = {
     step: 1,
@@ -110,12 +189,14 @@ export function mountModeling(container, { announce, toast, navigate }) {
     testDatasetName: draft?.testDatasetName || null,
     testSummary: null,
     testReuse: Boolean(draft?.testDatasetId),
+    // 草稿里的 split_mode 若不在当前能力目录的三种口径内则忽略，回退默认分层留出。
     strategy: draft?.config?.split_mode && EVALUATION_STRATEGIES[draft.config.split_mode]
       ? draft.config.split_mode
       : 'stratified_holdout',
     models: null,
     modelsError: null,
     modelId: draft?.config?.model_type || null,
+    // 参数默认值与后端约定一致：epochs 200 / batch_size 8 / lr 0.001 / zscore；seed 留空表示用默认。
     params: {
       epochs: Number(draft?.config?.epochs) || 200,
       batch_size: Number(draft?.config?.batch_size) || 8,
@@ -138,6 +219,11 @@ export function mountModeling(container, { announce, toast, navigate }) {
   }
   root.append(stepper, body);
 
+  /**
+   * 清理提交成功后的自动跳转倒计时与模态对话框。
+   * 在跳转、留页、卸载、再次创建 Run 等任何脱离成功态的路径上都必须调用，
+   * 避免计时器在组件销毁后仍触发导航。
+   */
   function cleanupCountdown() {
     if (wizard.countdownTimer) {
       clearInterval(wizard.countdownTimer);
@@ -149,6 +235,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     }
   }
 
+  /** 重绘顶部步骤条：当前步高亮（aria-current="step"），已过步标记完成态。 */
   function renderStepper() {
     clear(stepper);
     STEPS.forEach((label, index) => {
@@ -161,6 +248,11 @@ export function mountModeling(container, { announce, toast, navigate }) {
     });
   }
 
+  /**
+   * 构造每步底部的"上一步 / 下一步"按钮行。
+   * @param {object} options prev=false 隐藏上一步（第 1 步）；nextDisabled 时可用
+   *   nextHint 在按钮旁解释为何不能前进（门禁式向导：不满足条件不给走）。
+   */
   function navButtons({ prev = true, nextLabel = '下一步', onNext, nextDisabled = false, nextHint = '' }) {
     return el('div', { className: 'card-actions' }, [
       prev ? el('button', { className: 'btn btn-ghost', text: '上一步', attrs: { type: 'button' }, on: { click: () => goto(wizard.step - 1) } }) : null,
@@ -169,11 +261,13 @@ export function mountModeling(container, { announce, toast, navigate }) {
     ]);
   }
 
+  /** 跳转到指定步骤并钳制在 1..4，随后全量重绘。 */
   function goto(step) {
     wizard.step = Math.min(4, Math.max(1, step));
     render();
   }
 
+  /** 全量重绘：步骤条 + 当前步骤内容。 */
   function render() {
     renderStepper();
     clear(body);
@@ -183,6 +277,11 @@ export function mountModeling(container, { announce, toast, navigate }) {
     if (wizard.step === 4) renderStep4();
   }
 
+  /**
+   * 第 1 步：上传建模 CSV（必传）+ 可选独立测试 CSV（折叠在 details 里）。
+   * 门禁：未上传并校验主 CSV 前禁用"下一步"。
+   * 草稿沿用场景：已有 datasetId 但没有新 summary 时只显示沿用提示，可重新上传替换。
+   */
   function renderStep1() {
     const mainBox = uploadBox({
       inputId: 'v2-up-main',
@@ -237,6 +336,11 @@ export function mountModeling(container, { announce, toast, navigate }) {
     ]));
   }
 
+  /**
+   * 第 2 步：选择评估口径（三种互斥单选）。
+   * external_test_holdout 依赖第 1 步上传的独立测试集：未上传时该选项禁用；
+   * 若当前恰好选中它（例如草稿带入），自动回退为 stratified_holdout，避免提交无效配置。
+   */
   function renderStep2() {
     if (wizard.strategy === 'external_test_holdout' && !wizard.testDatasetId) {
       wizard.strategy = 'stratified_holdout';
@@ -271,6 +375,12 @@ export function mountModeling(container, { announce, toast, navigate }) {
     ]));
   }
 
+  /**
+   * 第 3 步：选择模型。模型目录异步拉取（getModels），有三种 UI 状态：
+   * 加载中（骨架屏）、失败（错误 + 重试按钮）、成功（renderModelCatalog 渲染卡片）。
+   * 门禁：未选模型时"下一步"禁用；目录加载后若草稿带入的 modelId 已不可用
+   * （available=false，例如 cnn_mamba1d 缺依赖），自动清空选择而不是静默替代。
+   */
   function renderStep3() {
     const host = el('div', { className: 'stack' });
     const nextButton = el('button', {
@@ -292,6 +402,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         wizard.modelId ? null : el('span', { className: 'hint', text: '请先选择一个可训练模型。' }),
       ]),
     ]));
+    // 状态一：目录加载失败 —— 显示错误与重试（重试清空缓存状态后重新 render 触发再次拉取）。
     if (wizard.modelsError) {
       host.append(
         el('p', { className: 'error-text', attrs: { role: 'alert' }, text: `模型目录加载失败：${wizard.modelsError}。请检查网络后重试。` }),
@@ -299,6 +410,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       );
       return;
     }
+    // 状态二：目录已就绪 —— 渲染模型卡片；选中后即刻解锁"下一步"。
     if (wizard.models) {
       renderModelCatalog(host, {
         models: wizard.models,
@@ -307,6 +419,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       });
       return;
     }
+    // 状态三：尚未拉取 —— 骨架屏 + 发起异步请求。
     host.append(
       el('div', { className: 'skeleton' }),
       el('div', { className: 'skeleton' }),
@@ -315,6 +428,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     getModels()
       .then((result) => {
         wizard.models = Array.isArray(result?.models) ? result.models : [];
+        // 草稿带入的模型当前不可用时清空选择，强制用户重新选可训练模型。
         if (wizard.modelId && !findModel(wizard.models, wizard.modelId)?.available) {
           wizard.modelId = null;
         }
@@ -323,11 +437,20 @@ export function mountModeling(container, { announce, toast, navigate }) {
         wizard.modelsError = error?.message || '模型目录加载失败';
       })
       .finally(() => {
+        // 只在用户仍停留在第 3 步时重绘；若期间已切走则丢弃本次结果渲染。
         if (wizard.step === 3 && !wizard.models && !wizard.modelsError) return;
         if (wizard.step === 3) render();
       });
   }
 
+  /**
+   * 第 4 步：参数确认与提交。
+   * 上半部分是只读确认表（数据集/口径/划分方式/模型），高级训练参数折叠在 details 里；
+   * 底部"提交训练"调用 createRun 创建 queued Run，成功后进入 renderSuccess。
+   *
+   * 提交契约要点：只传 dataset_id / test_dataset_id（external_test_holdout 时才传）与 config；
+   * 不在浏览器侧传 data_path（server 模式安全约束）。seed 留空时不出现在 config 中。
+   */
   function renderStep4() {
     const model = findModel(wizard.models, wizard.modelId);
     const inputs = {
@@ -338,6 +461,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         ['zscore', 'minmax', 'area', 'none'].map((value) => el('option', { text: value, attrs: { value, selected: wizard.params.normalization === value ? true : null } }))),
       seed: el('input', { className: 'input', attrs: { type: 'number', step: '1', value: wizard.params.seed === '' ? '' : String(wizard.params.seed), placeholder: '留空使用默认', id: 'v2-p-seed' } }),
     };
+    // 各评估口径的划分方式说明，展示在确认表中帮助用户最终核对。
     const splitInfo = {
       stratified_holdout: 'train/valid/test 目标 8:1:1（按 Sample_ID 整组；Valid/Test 每类至少 1 个）',
       leave_one_sample_id_cv: '每折留 1 个 Sample_ID 作 test，其余 8:2；Test 主指标为合并交叉验证预测',
@@ -352,6 +476,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     ];
     const errorBox = el('p', { className: 'error-text', attrs: { role: 'alert' } });
     const submit = el('button', { className: 'btn btn-primary', text: '提交训练', attrs: { type: 'button' } });
+    // 把输入框当前值同步回 wizard.params；无效数字回退到原值，保证往返第 3 步不丢参数。
     const syncParams = () => {
       wizard.params = {
         epochs: Number(inputs.epochs.value) || wizard.params.epochs,
@@ -362,6 +487,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       };
     };
     const paramsHint = el('p', { className: 'hint' });
+    // 实时摘要行：参数修改即时反映，未填项回退默认值展示。
     const updateParamsHint = () => {
       paramsHint.textContent = `训练参数：epochs ${inputs.epochs.value || 200} · batch_size ${inputs.batch_size.value || 8} · learning_rate ${inputs.learning_rate.value || 0.001} · normalization ${inputs.normalization.value}${inputs.seed.value === '' ? '' : ` · seed ${inputs.seed.value}`}（默认值已适合大多数情况）`;
     };
@@ -381,6 +507,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         normalization: inputs.normalization.value,
         split_mode: wizard.strategy,
       };
+      // seed 可选：留空则不传，由后端使用默认随机种子。
       if (inputs.seed.value !== '') config.seed = Number(inputs.seed.value);
       if (!config.model_type) {
         errorBox.textContent = '还没有选择模型。请返回第 3 步选择一个可训练模型。';
@@ -389,6 +516,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       submit.disabled = true;
       submit.textContent = '提交中…';
       try {
+        // 只创建 queued Run；test_dataset_id 仅在独立测试口径下传递，其余口径传 null。
         const result = await createRun({
           dataset_id: wizard.datasetId,
           test_dataset_id: wizard.strategy === 'external_test_holdout' ? wizard.testDatasetId : null,
@@ -442,11 +570,18 @@ export function mountModeling(container, { announce, toast, navigate }) {
     ]));
   }
 
+  /** 清理倒计时/对话框后跳转到专属结果页（Hash 路由契约：#/results?run_id=...）。 */
   function goResult(runId) {
     cleanupCountdown();
     navigate(`#/results?run_id=${encodeURIComponent(runId)}`);
   }
 
+  /**
+   * 提交成功后的成功态：body 内展示成功卡片，同时弹出模态对话框，
+   * 并在 REDIRECT_SECONDS 倒计时后自动跳转到结果页。
+   * "立即查看进度"立即跳转；"留在本页"/Esc 仅取消倒计时与对话框。
+   * 后端 warnings（如有）逐条展示在成功卡片里。
+   */
   function renderSuccess(result) {
     cleanupCountdown();
     clear(body);
@@ -489,6 +624,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     );
     document.body.append(dialog);
     wizard.successDialog = dialog;
+    // 焦点移入对话框主按钮，保证键盘/读屏用户立即可操作。
     dialog.querySelector('button.btn-primary')?.focus();
     let remaining = REDIRECT_SECONDS;
     countdownText.textContent = `${remaining} 秒后自动跳转到建模结果（仅本次新建 Run 自动跳转）`;

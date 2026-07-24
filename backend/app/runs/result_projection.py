@@ -1,4 +1,17 @@
-"""把规范 Run、真实训练产物和 Manifest 投影为稳定的结果页契约。"""
+"""把规范 Run、真实训练产物和 Manifest 投影为稳定的结果页契约（run-result-v1）。
+
+系统位置：runs 包的“结果页投影层”，对应 GET /api/training/runs/{run_id}/result。
+与 status_projection 的单向写投影不同，本模块是只读投影：每次请求实时从
+status.json / metrics.json / cv_metrics.json / manifest 等产物组装响应。
+
+关键设计约束：
+
+- 可刷新、可降级：产物缺失/损坏时降级为 warnings + unavailable，而不是 500；
+- 不泄露服务器路径：所有外挂 payload 递归经 _without_paths 过滤；
+- CV 口径严格区分 pooled OOF（主指标）、fold_mean 与 fold_std；
+- 当前没有 ROC / Precision-Recall 产物，固定返回 available=False，前端不得伪造空图；
+- 未成功 Run 不读取任何训练产物，artifact 一律不可下载。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +27,9 @@ from .contracts import RunRecord, public_error_message
 from .status_projection import build_training_status_projection
 
 
+# schema_version 直接复用全局契约常量，保证结果页契约只有一处定义。
 RESULT_SCHEMA_VERSION = RUN_RESULT_CONTRACT_VERSION
+# 六个主指标键：投影只暴露这些标量，防止内部中间指标外泄。
 SCALAR_METRIC_KEYS = (
     'accuracy',
     'balanced_accuracy',
@@ -26,6 +41,7 @@ SCALAR_METRIC_KEYS = (
 
 
 def _read_json_object(path: Path, warnings: list[str]) -> dict[str, Any]:
+    """读取 JSON 对象；解析失败记录 warning 并返回 {}（结果页降级：能展示多少展示多少）。"""
     if not path.is_file():
         return {}
     try:
@@ -40,6 +56,7 @@ def _read_json_object(path: Path, warnings: list[str]) -> dict[str, Any]:
 
 
 def _read_json_list(path: Path, warnings: list[str]) -> list[Any]:
+    """读取 JSON 数组；失败时记录 warning 并返回 []。"""
     if not path.is_file():
         return []
     try:
@@ -54,7 +71,11 @@ def _read_json_list(path: Path, warnings: list[str]) -> list[Any]:
 
 
 def _without_paths(value: Any) -> Any:
-    """递归移除服务器绝对路径字段，避免结果 API 暴露部署目录。"""
+    """递归移除服务器绝对路径字段，避免结果 API 暴露部署目录。
+
+    同时剔除字面键 data_path/test_data_path/run_dir/path 以及所有 *_path 结尾的键；
+    列表与字典递归处理，标量原样返回。这是 server 模式安全契约的一部分。
+    """
     if isinstance(value, dict):
         return {
             key: _without_paths(item)
@@ -68,6 +89,7 @@ def _without_paths(value: Any) -> Any:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
+    """解析 ISO 时间戳，兼容结尾 Z；非法输入返回 None 而非抛异常（历史数据可能脏）。"""
     if not value:
         return None
     try:
@@ -77,6 +99,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 
 def _duration_seconds(record: RunRecord) -> float | None:
+    """由规范 RunRecord 的起止时间算耗时（秒），钳制为非负；缺任一时间返回 None。"""
     started = _parse_datetime(record.started_at)
     finished = _parse_datetime(record.finished_at)
     if started is None or finished is None:
@@ -85,6 +108,7 @@ def _duration_seconds(record: RunRecord) -> float | None:
 
 
 def _duration_between(started_value: str | None, finished_value: str | None) -> float | None:
+    """同上，但接受原始字符串——用于数据库时间缺失时回退 status.json 的历史时间。"""
     started = _parse_datetime(started_value)
     finished = _parse_datetime(finished_value)
     if started is None or finished is None:
@@ -93,6 +117,7 @@ def _duration_between(started_value: str | None, finished_value: str | None) -> 
 
 
 def _coerce_csv(value: str | None) -> Any:
+    """把 CSV 单元格文本尽力转成 bool/int/float，转不动就保留原字符串。"""
     if value is None or value == '':
         return None
     lowered = value.casefold()
@@ -108,6 +133,11 @@ def _coerce_csv(value: str | None) -> Any:
 
 
 def _read_history(path: Path, warnings: list[str], *, limit: int = 1000) -> dict[str, Any]:
+    """读取 history.csv 为前端可直接画曲线的结构。
+
+    limit 截断防止超大文件拖垮结果页；文件缺失/空文件与解析失败给出不同的
+    reason 文案；available=False 时 rows 一定为空。
+    """
     if not path.is_file() or path.stat().st_size == 0:
         return {
             'available': False,
@@ -146,12 +176,18 @@ def _read_history(path: Path, warnings: list[str], *, limit: int = 1000) -> dict
 
 
 def _metric_scalars(payload: Any) -> dict[str, Any]:
+    """从任意 metrics payload 抽取白名单标量指标；非 dict 或缺键安全跳过。"""
     if not isinstance(payload, dict):
         return {}
     return {key: payload.get(key) for key in SCALAR_METRIC_KEYS if payload.get(key) is not None}
 
 
 def _prediction_distribution(confusion: Any, labels: list[str]) -> dict[str, Any] | None:
+    """由混淆矩阵推导真实/预测类别计数，供前端画分布图。
+
+    矩阵非方阵或含非整数值时返回 None（不展示比展示错数据好）；labels 数量
+    对不上时回退为数字序号，保证图形始终可渲染。
+    """
     if not isinstance(confusion, list) or not confusion:
         return None
     try:
@@ -176,7 +212,11 @@ def _sample_id_count_from_splits(
     *,
     evaluation_strategy: str,
 ) -> int | None:
-    """从公开的划分 artifact 恢复主数据集 Sample_ID 数，不读取原始 CSV。"""
+    """从公开的划分 artifact 恢复主数据集 Sample_ID 数，不读取原始 CSV。
+
+    external_test_holdout 的 test_sample_ids 属于独立测试集，不计入主数据；
+    空集合返回 None 表示“未知”，避免与真实的 0 混淆。
+    """
     sample_ids: set[str] = set()
     allowed_fields = {'train_sample_ids', 'valid_sample_ids'}
     if evaluation_strategy != 'external_test_holdout':
@@ -197,6 +237,11 @@ def _analysis_split(
     labels: list[str],
     aggregation: str,
 ) -> dict[str, Any]:
+    """组装单个划分（train/valid/test）的图表数据：混淆矩阵、分类报告、预测分布。
+
+    aggregation 标明口径：direct（单次划分）、pooled_oof（CV 合并 OOF）、
+    pooled_cross_fold（CV 跨折合并的 train/valid）。
+    """
     split_payload = payload if isinstance(payload, dict) else {}
     confusion = split_payload.get('confusion_matrix')
     return {
@@ -211,6 +256,11 @@ def _sample_explainability_summary(
     status: dict[str, Any],
     descriptors: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+    """汇总单样品特征重要性的可用状态。
+
+    优先取 status.json 内嵌摘要；否则看 manifest 描述符：json 存在且完整性
+    ok/volatile 视为 ready，并附带同名 csv 下载线索；都没有则返回 None。
+    """
     summary = status.get('sample_feature_importance')
     if isinstance(summary, dict):
         return _without_paths(summary)
@@ -253,6 +303,12 @@ def _result_state(
     descriptors: list[dict[str, Any]],
     manifest_error: str | None,
 ) -> str:
+    """把规范 state + manifest 健康状况折叠成结果页 result_state。
+
+    进行中：pending/running/failed/cancelled 直接映射；成功后再看 manifest：
+    缺失→missing_manifest，损坏→corrupt_manifest；必需/适用 artifact 有
+    missing/corrupt → partial，否则 ready。
+    """
     if record.state == 'queued':
         return 'pending'
     if record.state == 'running':
@@ -276,10 +332,16 @@ def _result_state(
 
 
 def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | None = None) -> dict[str, Any]:
-    """生成可刷新、可降级、不会泄露服务器路径的结果页响应。"""
+    """生成可刷新、可降级、不会泄露服务器路径的结果页响应。
+
+    组装顺序：读状态与产物（仅成功 Run）→ 校验 manifest → 定 result_state →
+    按评估口径（CV 用 pooled OOF 作主指标）整理 metrics → 数据集快照 →
+    分析图表 → 训练审计 → 时间/耗时。全程收集 warnings 并在末尾去重返回。
+    """
     run_dir = Path(run_dir)
     warnings: list[str] = []
     status = _read_json_object(run_dir / 'status.json', warnings)
+    # 未成功 Run 一律不读训练产物：半成品不具备展示资格，也避免读到写一半的文件。
     is_succeeded = record.state == 'succeeded'
     metrics_file = _read_json_object(run_dir / 'metrics.json', warnings) if is_succeeded else {}
     cv_file = _read_json_object(run_dir / 'cv_metrics.json', warnings) if is_succeeded else {}
@@ -328,9 +390,11 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         descriptors=descriptors,
         manifest_error=manifest_error,
     )
+    # partial 说明有必需产物缺失或完整性校验失败，提示用户结果不完整。
     if result_state == 'partial':
         warnings.append('部分结果文件缺失或完整性校验失败')
 
+    # 评估策略多来源择优：status → 训练 config → cv_metrics → 默认 stratified_holdout。
     strategy = str(
         status.get('evaluation_strategy')
         or record.config.get('evaluation_strategy')
@@ -356,6 +420,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     pooled_oof = cv_summary.get('pooled_test') if is_cv and isinstance(cv_summary.get('pooled_test'), dict) else None
     fold_mean = cv_summary.get('fold_mean') if isinstance(cv_summary.get('fold_mean'), dict) else {}
     fold_std = cv_summary.get('fold_std') if isinstance(cv_summary.get('fold_std'), dict) else {}
+    # CV 口径：test 主指标必须是 pooled OOF（所有折合并计算），不能取 fold mean。
     if is_cv:
         split_metrics = {
             name: {
@@ -388,6 +453,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         primary = raw_split_metrics.get('test') or raw_metrics
 
     labels: list[str] = []
+    # label_map 键是字符串化的整数编码，按数值排序还原类别名顺序。
     if label_map:
         try:
             labels = [str(label_map[key]) for key in sorted(label_map, key=lambda key: int(key))]
@@ -448,6 +514,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     primary_analysis = analysis_splits['test']
     model_type = status.get('model_type') or record.config.get('model_type') or model_metadata.get('model_type')
     model_family = status.get('model_family') or model_metadata.get('model_family')
+    # 只有深度模型有 epoch 曲线；传统模型固定返回 available=False 并提示看参数选择审计。
     if is_succeeded and model_family == 'deep_learning':
         history = _read_history(run_dir / 'history.csv', warnings)
     else:
@@ -480,6 +547,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         else None
     )
     duration_seconds = _duration_seconds(record)
+    # 数据库缺终态时间时回退 status.json，并显式 warning 说明耗时口径不严格。
     if duration_seconds is None:
         duration_seconds = _duration_between(started_at, finished_at)
         if duration_seconds is not None:

@@ -187,8 +187,16 @@ def fit_dscarnet_2d_mapping(
     seed: int = 42,
     aggmap_factory: Any | None = None,
     mode: str = "dual",
+    cancel_check: Any | None = None,
+    progress_callback: Any | None = None,
 ) -> DSCARNetMappedInputs:
     """仅在 train 上拟合 SAR/CAR 映射，再转换三组输入为 NCHW 张量。"""
+    def checkpoint(stage: str, label: str) -> None:
+        if progress_callback is not None:
+            progress_callback(stage, label)
+        if cancel_check is not None:
+            cancel_check()
+
     x = np.asarray(x, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
         raise ValueError("DSCARNet 需要非空二维特征矩阵")
@@ -206,20 +214,27 @@ def fit_dscarnet_2d_mapping(
     sar_mapper = None
     x_sar = None
     if mode in {"sar", "dual"}:
+        checkpoint("dscarnet_sar_layout", "正在构建 DSCARNet SAR 二维布局")
         sar_mapper = _fit_mapper(x[train_indices], feature_columns, cluster_channels=cluster_channels, aggmap_factory=aggmap_factory)
+        checkpoint("dscarnet_sar_transform", "正在转换 DSCARNet SAR 输入")
         x_sar = _nhwc_to_nchw(sar_mapper.batch_transform(x, scale_method="minmax", n_jobs=1))
+        checkpoint("dscarnet_sar_ready", "DSCARNet SAR 映射已完成")
 
     pca = None
     car_mapper = None
     x_car = None
     component_columns: list[str] = []
     if mode in {"car", "dual"}:
+        checkpoint("dscarnet_pca", "正在拟合 DSCARNet CAR 主成分")
         pca = PCA(n_components=n_components, random_state=int(seed))
         train_pca = pca.fit_transform(x[train_indices])
         all_pca = pca.transform(x).astype(np.float32)
         component_columns = _component_columns(n_components)
+        checkpoint("dscarnet_car_layout", "正在构建 DSCARNet CAR 二维布局")
         car_mapper = _fit_mapper(train_pca.astype(np.float32), component_columns, cluster_channels=cluster_channels, aggmap_factory=aggmap_factory)
+        checkpoint("dscarnet_car_transform", "正在转换 DSCARNet CAR 输入")
         x_car = _nhwc_to_nchw(car_mapper.batch_transform(all_pca, scale_method="minmax", n_jobs=1))
+        checkpoint("dscarnet_car_ready", "DSCARNet CAR 映射已完成")
 
     metadata = {
         "method": f"dscarnet_aggmap_{mode}",

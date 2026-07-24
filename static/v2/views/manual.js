@@ -1,6 +1,29 @@
 /** 使用手册：短 FAQ，覆盖数据格式、评估口径、队列语义、令牌与下载边界。 */
+/*
+ * 模块说明
+ * ========
+ * 本文件是 v2 工作台的“使用手册”视图（纯静态内容，无网络请求、无交互状态）。
+ *
+ * 在系统中的位置：
+ * - 属于 static/v2 原生 JS 前端的 views 层，由路由层调用 `mountManual(container)` 挂载。
+ * - 只依赖 `lib/dom.js` 的 `el` 助手构建 DOM，是三个视图中最简单的一个。
+ *
+ * 内容定位：
+ * - 以 FAQ 形式向用户解释平台的关键业务契约，文案必须与后端真实行为一致：
+ *   wide-feature-v2 宽表格式、Sample_ID 整组划分、三种评估口径、queued 队列语义、
+ *   Bearer 令牌边界、artifact 下载白名单、ROC/PR 暂不可用等。
+ * - 修改后端规则（如宽表契约、评估口径、下载白名单）时应同步更新这里的说明，
+ *   否则手册会误导用户。
+ */
 import { el } from '../lib/dom.js';
 
+/**
+ * 构造一条 FAQ 卡片。
+ *
+ * @param {string} question 问题标题，渲染为卡片标题（h2）。
+ * @param {...HTMLElement} children 正文内容（段落、列表、表格等），按序追加。
+ * @returns {HTMLElement} `<section class="card">`，每条 FAQ 独立成卡，便于扫读。
+ */
 function faq(question, ...children) {
   return el('section', { className: 'card' }, [
     el('h2', { className: 'card-title', text: question }),
@@ -8,6 +31,15 @@ function faq(question, ...children) {
   ]);
 }
 
+/**
+ * 挂载“使用手册”视图。
+ *
+ * 全部内容一次性静态渲染，没有任何异步逻辑或事件监听；
+ * 因此返回的 unmount 是空操作，DOM 清理由路由层统一处理。
+ *
+ * @param {HTMLElement} container 路由层提供的挂载容器。
+ * @returns {{ unmount(): void }} 与其他视图保持一致的卸载接口（此处为空实现）。
+ */
 export function mountManual(container) {
   const root = el('div', { className: 'stack', attrs: { 'aria-labelledby': 'v2-view-title' } });
   container.append(root);
@@ -15,6 +47,10 @@ export function mountManual(container) {
   root.append(
     el('p', { className: 'page-sub', text: '常见问题速查；每条只讲一件事，看完即可回到工作台操作。' }),
 
+    // 以下每条 faq 对应平台的一条业务契约，文案按后端当前实际行为撰写：
+    // wide-feature-v2 宽表列结构、Sample_ID 整组划分、三种评估口径、
+    // 异步队列语义、CV 主指标口径、Run 操作边界、令牌存储边界、下载白名单、
+    // 以及“没有真实产物就不展示”的 ROC/PR 原则。
     faq('建模 CSV 需要什么格式？',
       el('p', { text: '预处理新导出使用 wide-feature-v2 宽表。前四列名称与顺序固定，第 5 列起每一列代表一个真实坐标：' }),
       el('div', { className: 'table-wrap' }, [

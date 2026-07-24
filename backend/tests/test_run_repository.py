@@ -15,13 +15,17 @@ def test_cancelled_run_cannot_be_reclaimed_or_completed(tmp_path):
 
     cancelled = repo.cancel(run.run_id, now=datetime.now(timezone.utc))
     assert cancelled.state == 'cancelled'
+    assert cancelled.progress['stop_status'] == 'stopped'
+    assert cancelled.progress['stop_reason'] == 'user_requested'
+    assert cancelled.claim_token is None
+    assert cancelled.worker_id is None
     assert repo.claim_next(worker_id='worker-b', now=datetime.now(timezone.utc)) is None
 
     with pytest.raises(InvalidRunTransition):
         repo.finish_success(run.run_id, claim_token=claim.claim_token, now=datetime.now(timezone.utc))
 
 
-def test_expired_lease_is_requeued_once_and_claimed_once(tmp_path):
+def test_expired_lease_is_stopped_once_and_never_reclaimed(tmp_path):
     repo = RunRepository(tmp_path / 'runs.sqlite3')
     repo.initialize()
     repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
@@ -29,11 +33,13 @@ def test_expired_lease_is_requeued_once_and_claimed_once(tmp_path):
     first = repo.claim_next(worker_id='dead-worker', now=now, lease_seconds=1)
     assert first is not None
 
-    repo.requeue_expired(now=now + timedelta(seconds=2))
-    second = repo.claim_next(worker_id='live-worker', now=now + timedelta(seconds=2))
-    assert second is not None
-    assert second.run_id == first.run_id
-    assert second.claim_token != first.claim_token
+    assert repo.stop_expired(now=now + timedelta(seconds=2)) == [first.run_id]
+    assert repo.stop_expired(now=now + timedelta(seconds=3)) == []
+    stopped = repo.get(first.run_id)
+    assert stopped.state == 'cancelled'
+    assert stopped.progress['stop_reason'] == 'worker_interrupted'
+    assert stopped.progress['stop_status'] == 'stopped'
+    assert repo.claim_next(worker_id='live-worker', now=now + timedelta(seconds=3)) is None
 
 
 @pytest.mark.parametrize('state', ['succeeded', 'failed', 'cancelled'])

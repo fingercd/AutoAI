@@ -504,6 +504,8 @@ def test_dscarnet_aggmap_mapping_fits_train_only_and_saves(tmp_path):
 
     _FakeAggMap.instances = []
     x = np.arange(6 * 8, dtype=np.float32).reshape(6, 8)
+    stages = []
+    cancellation_checks = []
 
     mapped = fit_dscarnet_2d_mapping(
         x,
@@ -512,6 +514,8 @@ def test_dscarnet_aggmap_mapping_fits_train_only_and_saves(tmp_path):
         cluster_channels=9,
         seed=7,
         aggmap_factory=_FakeAggMap,
+        cancel_check=lambda: cancellation_checks.append(True),
+        progress_callback=lambda stage, label: stages.append((stage, label)),
     )
 
     assert len(_FakeAggMap.instances) == 2
@@ -525,6 +529,16 @@ def test_dscarnet_aggmap_mapping_fits_train_only_and_saves(tmp_path):
     assert mapped.metadata["fit_scope"] == "train"
     assert mapped.metadata["pca_components"] == 3
     assert "github.com/songlinlu/DSCAR" in mapped.metadata["source_url"]
+    assert [stage for stage, _label in stages] == [
+        "dscarnet_sar_layout",
+        "dscarnet_sar_transform",
+        "dscarnet_sar_ready",
+        "dscarnet_pca",
+        "dscarnet_car_layout",
+        "dscarnet_car_transform",
+        "dscarnet_car_ready",
+    ]
+    assert len(cancellation_checks) == len(stages)
 
     save_dscarnet_mapping_artifacts(tmp_path, mapped)
 
@@ -1615,9 +1629,9 @@ def test_main_ui_handles_cancelled_runs_and_bounds_explainability_lists():
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
     assert '["cancelled", "paused"].includes(canonicalState)' in content
-    assert "训练已取消" in content
-    assert "run.pause_reason" in content
-    assert "run.replaced_by" in content
+    assert '"STOP"' in content
+    assert "run.stop_message" in content
+    assert "stopTrainingRun" in content
     assert "sample?.fold_index" in results
     assert "第 ${sample.fold_index} 折" in results
     assert ".filter(Boolean).slice(0, 8)" in results

@@ -1,9 +1,51 @@
 <!doctype html>
+<!--
+  ============================================================================
+  SpecAutoAI 谱学建模平台 —— 主前端单页应用（static/index.html）
+  ============================================================================
+  【文件职责】
+    本文件是平台的旧版（也是当前正式版）主界面，由 FastAPI 后端静态托管。
+    页面采用"单文件 SPA"形态：HTML 骨架 + 内联 CSS + 内联经典 <script>，
+    并配合三个 ES module（/static/js/ui-utils.js、training-store.js、
+    run-results.js）共同完成全部交互。
+
+  【在整个系统中的位置】
+    数据流主线：
+      拉曼/色谱 CSV 上传 → /api/preprocess/* 预处理 → wide-feature-v2 宽表
+      → 用户填写 Label/Sample_ID 后上传为数据集（/api/datasets/upload）
+      → 创建训练 Run（POST 仅创建 queued 任务，由独立 worker 执行）
+      → 轮询 Run 状态 → 专属结果页（#/results?run_id=...，run-result-v1 契约）
+    并行新前端 static/v2/index.html 复用同一契约；本文件受既有字符串契约
+    测试保护，因此任何字符串字面量都不可随意改动。
+
+  【协作模块】
+    - window.SpecAutoAIRequest   （api-client / 认证模块注入的统一请求入口，
+                                   负责附加访问令牌；令牌只存 sessionStorage）
+    - window.SpecAutoAITrainingStore（training-store.js：createRun / pollRun）
+    - window.SpecAutoAIResults   （run-results.js：结果页渲染、Hash 路由、
+                                   训练完成跳转与退避重试轮询）
+    - window.SpecAutoAIUI        （ui-utils.js：曲线 Index 表达式解析、
+                                   按样本分组渲染、HPLC 行号校验等纯函数）
+
+  【关键设计约束】
+    - 原生 Hash 路由，导航顺序固定为"AI 建模 → 建模结果 → 训练记录"，
+      不引入 React/Vue/Vite 等框架。
+    - 训练请求只创建 queued Run，前端绝不直接触发训练执行。
+    - 色谱 UI 固定走服务端配置驱动的 HPLC 管线（/api/preprocess/hplc）。
+    - server 模式下数据集以 dataset_id 引用，不接受浏览器传入的 data_path；
+      local 模式才回退到绝对路径兼容。
+  ============================================================================
+-->
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SpecAutoAI 谱学建模平台</title>
+    <!-- 内联样式：全站设计令牌（:root 变量）+ 各视图组件样式 + 响应式断点。
+         采用 CSS 自定义属性集中管理配色（brand/warn/bad/good 等语义色），
+         布局以 CSS Grid 为主（main 双栏、panel 网格、metrics 卡片），
+         并通过 1180px / 900px / 600px 三档媒体查询逐级降为单栏布局。
+         所有类名同时被内联脚本中的字符串引用，改名需同步检查 JS。 -->
     <style>
       :root {
         color-scheme: light;
@@ -1250,6 +1292,8 @@
     </style>
   </head>
   <body>
+    <!-- 页头：平台标题、使用说明入口、认证状态徽章（authStatus/authButton，
+         server 模式下由认证模块控制显隐）与后端健康状态徽章（health）。 -->
     <header>
       <div class="title-row">
         <h1>SpecAutoAI 谱学数据预处理及 AI 建模平台</h1>
@@ -1262,6 +1306,9 @@
       </div>
     </header>
     <main>
+      <!-- 左侧导航：data-view 与下方各 .view 容器 id（view-<name>）一一对应。
+           点击时优先经 SpecAutoAIResults.navigateToView 写入 Hash 路由，
+           模块未就绪时回退到本地 showView() 直接切换。 -->
       <nav>
         <button class="active" data-view="raman">拉曼预处理</button>
         <button data-view="chromatography">色谱预处理</button>
@@ -1427,7 +1474,10 @@
               </div>
             </div>
             <div class="panel wide">
-              <h2>当前训练</h2>
+              <div class="panel-title">
+                <h2>当前训练</h2>
+                <button id="stopTrain" class="danger hidden" type="button">停止训练</button>
+              </div>
               <div id="runStatus" class="status" aria-live="polite">尚未开始</div>
               <div id="trainingProgress" aria-live="polite"></div>
               <div id="metrics" style="margin-top:14px"></div>
@@ -1543,6 +1593,10 @@
           </div>
         </div>
 
+        <!-- 建模结果视图：专属结果页容器，按 run-result-v1 契约渲染。
+             六个 result-section 分别由 run-results.js 填充：加载状态、Run 概览、
+             汇总指标、分折/分集合指标、分析图表（混淆矩阵/分布等）、可解释性、
+             产物下载清单；空 section 被 CSS（.result-section:empty）自动隐藏。 -->
         <div id="view-results" class="view hidden">
           <details class="page-help">
             <summary>建模结果查看说明</summary>
@@ -1563,12 +1617,14 @@
           </div>
         </div>
 
+        <!-- 训练记录视图：历史 Run 列表（projection=summary 分页加载），
+             仅终态 Run 允许删除；queued/running 删除按钮被禁用。 -->
         <div id="view-runs" class="view hidden">
           <details class="page-help">
             <summary>训练记录操作说明</summary>
             <ol>
               <li>从列表打开任一 Run 的进度或专属建模结果。</li>
-              <li>排队中和训练中的任务不可删除；终态删除会永久移除记录及产物。</li>
+              <li>排队中和训练中的任务可停止；STOP 后不保留结果产物，并可删除记录。</li>
               <li>失败时请复制 Run ID，便于服务器日志和诊断信息关联。</li>
             </ol>
           </details>
@@ -1601,6 +1657,8 @@
       </section>
     </main>
 
+    <!-- 服务器认证对话框：server 模式下要求输入访问令牌。
+         令牌仅写入当前标签页 sessionStorage，不进 URL/localStorage/日志。 -->
     <div id="authDialog" class="auth-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="authDialogTitle" aria-hidden="true">
       <form id="authForm" class="auth-card">
         <h2 id="authDialogTitle">服务器访问认证</h2>
@@ -1615,6 +1673,8 @@
       </form>
     </div>
 
+    <!-- 训练完成提示对话框：训练成功后由 run-results.js 控制弹出，
+         倒计时结束自动跳转到该 Run 的专属结果页（#/results?run_id=...）。 -->
     <div id="trainingResultDialog" class="auth-dialog training-result-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="trainingResultDialogTitle" aria-describedby="trainingResultDialogDescription" aria-hidden="true">
       <div class="auth-card training-result-card">
         <span class="status success">训练完成</span>
@@ -1629,10 +1689,35 @@
       </div>
     </div>
 
+    <!-- 三个 ES module 先行加载（type=module 默认 defer，在 DOM 解析后、
+         下方经典脚本之前按顺序执行）：向 window 注入 SpecAutoAIUI /
+         SpecAutoAITrainingStore / SpecAutoAIResults 等命名空间。
+         就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
     <script type="module" src="/static/js/run-results.js"></script>
     <script>
+      /*
+       * ====================================================================
+       * 主脚本（经典 script，非 module）：页面状态、视图编排与全部业务交互。
+       *
+       * 结构总览（按出现顺序）：
+       *   1. 页面级状态变量        —— 数据集引用、当前 Run、轮询/重绘锁
+       *   2. 通用 DOM 与 API 辅助  —— $、escapeHtml、api() 兜底 fetch
+       *   3. 模型目录              —— /api/models 驱动的下拉与分组展示
+       *   4. Canvas 绘图公共层     —— HiDPI 适配 + 曲线/对比图绘制
+       *   5. 数据集摘要与上传      —— renderSummary / uploadDataset
+       *   6. 健康检查与版本契约    —— run-result-v1 契约与 worker 兼容性
+       *   7. TrainConfig 组装      —— 三种评估口径的互斥与比例校验
+       *   8. Run 生命周期          —— 创建 queued Run、轮询、进度渲染
+       *   9. 预处理表单编排        —— 拉曼 / HPLC 管线提交与结果预览
+       *  10. 训练记录与删除       —— projection=summary 列表、终态删除
+       *  11. 视图派生状态与事件绑定 —— 集中在脚本末尾统一注册
+       *
+       * 注意：本文件受后端字符串契约测试保护，DOM id、提示文案、
+       * 字段名（如 split_mode、dataset_id）均属契约，修改需同步测试。
+       * ====================================================================
+       */
       // 页面级状态：数据集引用、当前 Run、轮询锁和曲线缓存都集中在这里。
       // 训练规范状态仍来自后端 SQLite；这些变量只管理当前浏览器会话的展示。
       let datasetPath = null;
@@ -1640,6 +1725,7 @@
       let datasetId = null;
       let testDatasetId = null;
       let currentRunId = null;
+      const CURRENT_RUN_STORAGE_KEY = "specautoai.current-run-id";
       let trainingRequestInFlight = false;
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
@@ -1660,7 +1746,11 @@
       // 和目录错误仍能给出可读 detail，而不是只显示 HTTP 状态码。
       const $ = (id) => document.getElementById(id);
       const naturalCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+      // 自然排序比较器：numeric:true 使 "Sample2" 排在 "Sample10" 之前，
+      // 用于类别名、Sample_ID 等混合中英文数字字段的展示排序。
       const naturalCompare = (first, second) => naturalCollator.compare(String(first ?? ""), String(second ?? ""));
+      // HTML 转义：任何服务端返回的文本写入 innerHTML 场景前必须过它，
+      // 防止文件名/类别名中的 <>&"' 造成 XSS 或破坏 DOM 结构。
       const escapeHtml = (value) => String(value ?? "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
@@ -1668,6 +1758,16 @@
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
 
+      /**
+       * 统一 API 请求入口。
+       * 优先委托给认证模块注入的 window.SpecAutoAIRequest（自动附加 Bearer
+       * 令牌、处理 401 跳认证框）；模块尚未加载时退化为裸 fetch，保证健康
+       * 检查等早期请求仍可用，且错误时尽量解析后端 {detail} 给出可读信息。
+       * @param {string} url 相对路径，如 "/health"、"/api/models"
+       * @param {RequestInit} [options] fetch 选项
+       * @returns {Promise<any>} 解析后的 JSON 响应体
+       * @throws {Error} HTTP 非 2xx 时抛出，message 优先取 body.detail
+       */
       const api = async (url, options = {}) => {
         if (window.SpecAutoAIRequest) return window.SpecAutoAIRequest(url, options);
         const response = await fetch(url, options);
@@ -1677,6 +1777,13 @@
         }
         return response.json();
       };
+      /**
+       * 带超时的 api() 封装：用 AbortController 在 timeoutMs 后中止请求，
+       * 并把 AbortError 翻译成中文超时提示。用于模型目录等启动期请求，
+       * 避免后端不可达时界面永远停在"正在加载"。
+       * @param {string} url
+       * @param {number} timeoutMs 超时毫秒数
+       */
       const apiWithTimeout = async (url, timeoutMs) => {
         const controller = new AbortController();
         const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1689,8 +1796,36 @@
           window.clearTimeout(timer);
         }
       };
+      // 训练 Store 的薄封装：createRun 只创建 queued Run（不启动训练），
+      // fetchRun 用于轮询单个 Run 状态；实现见 training-store.js。
       const createRun = (...args) => window.SpecAutoAITrainingStore.createRun(...args);
       const fetchRun = (...args) => window.SpecAutoAITrainingStore.pollRun(...args);
+      const stopRun = (...args) => {
+        const store = window.SpecAutoAITrainingStore;
+        if (typeof store?.stopRun === "function") {
+          return store.stopRun(...args);
+        }
+        // 兼容已打开页面仍命中旧 training-store.js 缓存的情况。旧模块只有
+        // cancelRun，但后端 /cancel 与 /stop 具有相同的 STOP 语义。
+        if (typeof store?.cancelRun === "function") {
+          return store.cancelRun(...args);
+        }
+        throw new Error("训练停止模块尚未加载，请刷新页面后重试");
+      };
+
+      function rememberCurrentRun(runId) {
+        currentRunId = runId ? String(runId) : null;
+        try {
+          if (currentRunId) window.sessionStorage.setItem(CURRENT_RUN_STORAGE_KEY, currentRunId);
+          else window.sessionStorage.removeItem(CURRENT_RUN_STORAGE_KEY);
+        } catch (_) {
+          // 禁用站点存储时仍保留当前页面内存态。
+        }
+      }
+
+      function clearRememberedCurrentRun() {
+        try { window.sessionStorage.removeItem(CURRENT_RUN_STORAGE_KEY); } catch (_) {}
+      }
 
       // 模型目录由 /api/models 驱动。分组只控制展示顺序，不决定后端可训练能力；
       // available=false 的模型由 option.disabled 明确呈现。
@@ -1814,6 +1949,7 @@
         apiBackedUiInitialized = true;
         loadHealth();
         loadModelCatalog().catch(() => undefined);
+        restoreCurrentRun().catch(() => undefined);
       }
       window.addEventListener("specautoai:modules-ready", initializeApiBackedUi, { once: true });
       window.addEventListener("DOMContentLoaded", () => {
@@ -1843,6 +1979,14 @@
         return { ctx, width, height };
       }
 
+      /**
+       * 在建模页"曲线预览"画布上绘制一条或多条数据/测试集曲线。
+       * 预览只看形状：Y 轴按全部曲线的 min/max 归一化，X 按点序号均匀铺开
+       * （不画真实 XXX 坐标轴）；每条曲线顶部标注
+       * "Index 文件名 / Label / Sample_ID" 方便核对分组是否正确。
+       * 预览面板收起或画布无尺寸时直接跳过，避免无效绘制。
+       * @param {Array<{index,name,label,sample_id,y:number[]}>} curves
+       */
       function drawCurves(curves) {
         const canvas = $("curveCanvas");
         if (!canvas || $("curvePreviewBody").classList.contains("hidden")) return;
@@ -1878,14 +2022,17 @@
         });
       }
 
+      /** 当前曲线预览数据源：跟随 curveSourceSelect 在主数据集/测试集之间切换。 */
       function activeCurveList() {
         return currentCurveSource === "test" ? lastTestSummaryCurves : lastSummaryCurves;
       }
 
+      /** 曲线在下拉框中的展示名："Index | 文件名 | Label | Sample_ID xxx"。 */
       function curveDisplayName(curve) {
         return `${curve.index ?? ""} | ${curve.name} | ${curve.label} | Sample_ID ${curve.sample_id ?? ""}`;
       }
 
+      /** 重建曲线下拉框的 option 列表并立即绘制当前选中曲线。 */
       function populateCurveSelect() {
         const curves = activeCurveList();
         $("curveSourceSelect").value = currentCurveSource;
@@ -1899,6 +2046,7 @@
         drawSelectedCurve();
       }
 
+      /** 绘制下拉框当前选中的单条曲线，并把预览模式记为 "selected"。 */
       function drawSelectedCurve() {
         currentCurveMode = "selected";
         const curves = activeCurveList();
@@ -1906,11 +2054,22 @@
         drawCurves(selected ? [selected] : []);
       }
 
+      /**
+       * 解析 "1,3,5 或 1-5" 形式的 Index 表达式，委托给 ui-utils 的纯函数
+       * （该纯函数同时被前端单元测试覆盖，保证解析规则单一来源）。
+       * @returns {Set<string>} 请求展示的 Index 集合
+       * @throws {Error} ui-utils 模块未加载时抛出
+       */
       function parseIndexExpression(input) {
         if (!window.SpecAutoAIUI?.parseCurveIndexExpression) throw new Error("曲线选择组件尚未加载");
         return window.SpecAutoAIUI.parseCurveIndexExpression(input);
       }
 
+      /**
+       * 按 Index 表达式绘制多条曲线（对比视图）。
+       * 表达式为空时退回单条选中模式；解析出的 Index 一条都匹配不到时
+       * 抛出错误（由调用方 alert 提示）。
+       */
       function drawCurvesByIndex() {
         const requested = parseIndexExpression($("curveIndexInput").value);
         if (!requested.size) {
@@ -1923,6 +2082,11 @@
         drawCurves(curves);
       }
 
+      /**
+       * 窗口尺寸变化后的重绘入口：保持用户当前的预览模式——
+       * 若处于 "index" 模式且表达式仍在，则按表达式重绘（失败时静默回退
+       * 到单条模式），否则重绘下拉框选中的曲线。
+       */
       function redrawCurrentCurvePreview() {
         if (currentCurveMode === "index" && $("curveIndexInput").value.trim()) {
           try {
@@ -1935,6 +2099,16 @@
         }
       }
 
+      /**
+       * 预处理结果对比图：按预处理类型绘制不同系列——
+       *  - raman：原始光谱 + 基线校正后光谱（双系列对比）；
+       *  - hplc：处理后的色谱强度（单系列）；
+       *  - chromatography：原始色谱曲线（兼容旧接口）。
+       * 与 drawCurves 一样是归一化预览，仅用于人眼核对处理效果。
+       * @param {object} curve 预处理接口返回的单条曲线对象
+       * @param {string} [canvasId] 目标画布 id（结果区动态创建）
+       * @param {string} [kind] "raman" | "hplc" | "chromatography"
+       */
       function drawPreprocessComparison(curve, canvasId = "preprocessCurveCanvas", kind = "raman") {
         const canvas = $(canvasId);
         if (!canvas || !curve) return;
@@ -1987,6 +2161,17 @@
       }
 
       // 数据集摘要与上传：稳定 dataset_id 优先用于创建 Run，绝对路径仅作本地兼容。
+      /**
+       * 渲染数据集上传后的摘要信息（数据量/类别数/样本数/特征数等指标卡、
+       * 按样本分组列表、类别分布表），并缓存曲线供"曲线预览"使用。
+       * 关键副作用：
+       *  - 曲线按 Sample_ID 自然排序缓存到 lastSummaryCurves / lastTestSummaryCurves；
+       *  - 测试集加载后把预览数据源切到 "test"，主数据集则切回 "train"；
+       *  - 刷新划分选项可见性（加载独立测试集会强制 external_test_holdout）。
+       * @param {object} summary /api/datasets/upload 返回的 summary
+       * @param {{kind?: string}} [options] kind="test" 表示独立测试集
+       * @throws {Error} ui-utils 的 Sample_ID 渲染组件未加载时抛出
+       */
       function renderSummary(summary, options = {}) {
         const isTest = options.kind === "test";
         if (isTest) {
@@ -2104,6 +2289,12 @@
         else if (!trainingRequestInFlight) startButton.disabled = false;
       }
 
+      /**
+       * 上传主训练数据集（wide-feature-v2 宽表 CSV）。
+       * 成功后保存 dataset_id（server 模式创建 Run 的唯一合法引用）与
+       * dataset_path（仅 local 模式兼容回退），并渲染摘要。
+       * @param {File} file 用户选择的 CSV 文件
+       */
       async function uploadDataset(file) {
         const form = new FormData();
         form.append("file", file);
@@ -2113,6 +2304,12 @@
         renderSummary(result.summary);
       }
 
+      /**
+       * 上传独立测试集。加载后评估口径固定为 external_test_holdout：
+       * 主数据 8:2 划分 train/valid，该测试集作为唯一最终测试集，
+       * 且必须与主数据逐点同轴（由后端校验）。
+       * @param {File} file
+       */
       async function uploadTestDataset(file) {
         const form = new FormData();
         form.append("file", file);
@@ -2122,30 +2319,46 @@
         renderSummary(result.summary, { kind: "test" });
       }
 
+      /** 当前选中模型是否属于传统机器学习组（决定显示深度/传统哪组超参数）。 */
       function isTraditionalModel(modelType = $("modelType").value) {
         return modelCatalogGroupId(modelCatalogItem(modelType)?.family) === "traditional";
       }
 
+      /**
+       * 是否显示"重要性分段数"输入：目前只有传统模型使用窗口遮挡
+       * Log-loss 增量做可解释性，分段数即遮挡窗口数。
+       */
       function usesFeatureWindowCount(modelType = $("modelType").value) {
         return isTraditionalModel(modelType);
       }
 
+      /** 读取数字输入，留空返回 null（如 dropout 留空表示"自动"）。 */
       function numberOrNull(id) {
         const value = $(id).value.trim();
         return value === "" ? null : Number(value);
       }
 
+      /** 读取允许 "scale"/"auto" 关键字的数字输入（如 SVM gamma）。 */
       function textNumberOrKeyword(id) {
         const value = $(id).value.trim();
         if (value === "scale" || value === "auto") return value;
         return Number(value);
       }
 
+      /** 读取划分比例输入，非法值（非数字）回退到 fallback。 */
       function readSplitNumber(id, fallback) {
         const value = Number($(id).value);
         return Number.isFinite(value) ? value : fallback;
       }
 
+      /**
+       * 按评估口径写入划分比例预设：
+       *  - "external"：有独立测试集，主数据固定 8:2（test=0，测试集独立），
+       *    同时强制关闭交叉验证（两种口径互斥）；
+       *  - "loo"：留一样本交叉验证，每折内部按 8:2 划分 train/valid；
+       *  - 其他（holdout）：默认 8:1:1 单次分层划分。
+       * 这些只是表单预设，最终校验在 configPayload() 和后端。
+       */
       function applySplitPreset(mode) {
         if (mode === "external") {
           $("cvEnabled").checked = false;
@@ -2167,6 +2380,18 @@
 
       // 将表单转换成后端 TrainConfig。三种评估模式在这里先做互斥和比例校验，
       // 后端 classification_policy 会再次校验，前端校验不能替代服务端约束。
+      /**
+       * 把整个训练配置表单组装成后端 TrainConfig JSON。
+       * 评估口径推导规则（与 AGENTS.md 契约一致）：
+       *  - 有独立测试集 → external_test_holdout，比例强制 8/2/0；
+       *  - 开启交叉验证 → leave_one_sample_id_cv（每折留 1 个 Sample_ID）；
+       *  - 否则 → stratified_holdout，三项比例之和必须等于 10。
+       * 校验：无外部测试集时 train+valid+test==10；train 必须 >0；
+       * 外部测试或 CV 时 valid 必须 >0（CV 需要 valid 做早停/选参）。
+       * 传统模型额外附带 feature_window_count（重要性分段数）。
+       * @returns {object} TrainConfig
+       * @throws {Error} 比例不满足约束时抛出中文错误（调用方 alert）
+       */
       function configPayload() {
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
@@ -2218,6 +2443,11 @@
         return payload;
       }
 
+      /**
+       * 计算一次 Run 的总目标 Epoch 数：优先用后端直接给的 total_target_epochs；
+       * 否则按 折数 × 每折目标 epoch 估算（CV 任务总进度 = fold_count × epochs）。
+       * 无法估算时返回 "-" 占位。
+       */
       function runTotalTargetEpochs(run) {
         if (Number.isFinite(Number(run.total_target_epochs))) return Number(run.total_target_epochs);
         const foldCount = Number(run.fold_count || 1);
@@ -2226,6 +2456,8 @@
         return "-";
       }
 
+      /** 折进度文本（如 "3/10"）：优先用后端 fold_progress_text，否则按
+       *  current_fold/fold_count 自行拼接；单折任务返回 "-"。 */
       function runFoldProgressText(run) {
         if (run.fold_progress_text) return run.fold_progress_text;
         const currentFold = Number(run.current_fold || run.completed_folds);
@@ -2236,10 +2468,13 @@
         return "-";
       }
 
+      /** 判断 Run 是否为 external_test_holdout 口径（影响进度文案：
+       *  外部测试集模式下不显示折进度，而显示"独立测试集最终评估"）。 */
       function isExternalTestHoldout(run) {
         const strategy = run?.evaluation_strategy || run?.config?.evaluation_strategy || run?.config?.split_mode;
         return strategy === "external_test_holdout";
       }
+      /** 时间戳本地化为 "zh-CN" 24 小时制；空值返回 "-"，非法日期原样返回。 */
       function formatTime(value) {
         if (!value) return "-";
         const date = new Date(value);
@@ -2247,12 +2482,16 @@
         return date.toLocaleString("zh-CN", { hour12: false });
       }
 
+      /** 训练时间展示：优先 started_at；尚未开始的任务显示 created_at
+       *  并标注"（任务创建）"，区分"已开跑"与"仅排队"。 */
       function formatTrainingTime(run) {
         if (run?.started_at) return formatTime(run.started_at);
         if (run?.created_at) return `${formatTime(run.created_at)}（任务创建）`;
         return "—";
       }
 
+      /** 耗时展示：优先用后端 duration_seconds；缺失时用 started/finished
+       *  时间差兜底（负值钳到 0）；小于 60 秒按秒、否则按分钟显示。 */
       function formatDuration(run) {
         let seconds = Number(run?.duration_seconds);
         if (!Number.isFinite(seconds)) {
@@ -2265,15 +2504,29 @@
       }
 
       // Run 生命周期：清空旧结果、创建 queued Run，并用单飞锁避免重复 POST。
+      /** 重置"当前训练"面板：取消上一次训练的自动跳转与轮询，
+       *  清空旧指标/图表/下载区，显示"正在创建新的训练任务"加载提示。 */
       function resetTrainingPanel(message = "模型正在训练") {
         window.SpecAutoAIResults?.cancelAutoRedirect();
         window.SpecAutoAIResults?.stopTrainingWatch();
         $("runStatus").textContent = "准备开始";
         $("runStatus").className = "status pending";
+        $("stopTrain").classList.add("hidden");
         $("trainingProgress").replaceChildren(currentRunNotice("loading", message, "正在创建新的训练任务，旧结果已清空。"));
         clearCurrentRunDetails();
       }
 
+      /**
+       * "开始训练"主流程：
+       *  1. 单飞锁（trainingRequestInFlight）防止双击重复提交；
+       *  2. 确保健康信息已加载，契约不一致时直接拒绝（旧后端/版本混部
+       *     会产生无法渲染的结果，必须在创建前拦截）；
+       *  3. 组装请求体：dataset_id 优先，仅 local 兼容回退 data_path；
+       *     独立测试集同理（test_dataset_id / test_data_path）；
+       *  4. createRun 仅创建 queued Run，训练由独立 worker 执行；
+       *  5. 记录 currentRunId 并开始轮询（watchCurrentRun）。
+       * @throws {Error} 未加载数据集或契约不匹配时抛出（调用方 alert）
+       */
       async function startTrain() {
         if (trainingRequestInFlight) return;
         if (!window.SpecAutoAIHealth || !Object.keys(window.SpecAutoAIHealth).length) await loadHealth();
@@ -2291,7 +2544,7 @@
           if (testDatasetId) body.test_dataset_id = testDatasetId;
           else if (testDatasetPath) body.test_data_path = testDatasetPath;
           const result = await createRun(body);
-          currentRunId = result.run_id;
+          rememberCurrentRun(result.run_id);
           window.SpecAutoAIResults?.markNewRun(currentRunId);
           watchCurrentRun();
         } finally {
@@ -2300,11 +2553,20 @@
         }
       }
 
+      /** 清空当前 Run 的明细区域（指标卡/审计/图表/混淆矩阵/下载）。 */
       function clearCurrentRunDetails() {
         ["metrics", "trainingAudit", "trainingCharts", "confusionMatrix", "downloads"]
           .forEach((id) => $(id).replaceChildren());
       }
 
+      /**
+       * 构造一条通知条 DOM（notice-<kind>）。
+       * @param {string} kind "loading"|"success"|"error"|"warning"，决定配色；
+       *   "error" 额外设置 role="alert" 供读屏器立即播报，其余为 role="status"
+       * @param {string} title 加粗标题
+       * @param {string} message 说明文字
+       * @param {HTMLElement[]} [actions] 可选操作按钮/链接
+       */
       function currentRunNotice(kind, title, message, actions = []) {
         const notice = document.createElement("div");
         notice.className = `notice notice-${kind}`;
@@ -2325,6 +2587,8 @@
         return notice;
       }
 
+      /** 把 [label, value] 列表渲染为指标卡网格，写入 #metrics；
+       *  空值统一显示 "-"，避免界面出现 undefined/null。 */
       function renderCurrentRunMetrics(items) {
         const grid = document.createElement("div");
         grid.className = "metrics";
@@ -2341,6 +2605,20 @@
       }
 
       // 建模页只呈现任务进度和完成跳转；完整指标统一放到独立结果页。
+      /**
+       * 渲染当前 Run 的状态面板（轮询回调的核心）。
+       * 守卫：run_id 与 currentRunId 不一致时直接忽略，防止过期轮询响应
+       * 覆盖用户已切换到的新任务。
+       * 状态分三支：
+       *  - pending/queued/running：显示进度卡片（传统模型显示参数搜索文案，
+       *    深度模型显示"最多 N Epoch"；CV 显示折进度，外部测试集显示
+       *    "独立测试集最终评估"）；同一 run_id 的进度条只做文本更新，
+       *    避免每轮轮询重建 DOM 造成闪烁；
+       *  - succeeded：交给 run-results.js 弹出完成对话框并倒计时跳转结果页，
+       *    模块缺失时退化为"查看建模结果"链接；同时后台刷新训练记录列表；
+       *  - failed / cancelled：显示错误或取消原因通知。
+       * @param {object} run 后端返回的 Run 对象
+       */
       function renderRun(run) {
         if (!run || String(run.run_id || "") !== String(currentRunId || "")) return;
         const canonicalState = String(run.state || run.status || "pending").toLowerCase();
@@ -2349,13 +2627,15 @@
           : canonicalState === "failed"
             ? "训练失败"
             : ["cancelled", "paused"].includes(canonicalState)
-              ? "训练已取消"
+              ? "STOP"
               : canonicalState === "running" ? "训练中" : "等待训练";
         const statusClass = ["succeeded", "success"].includes(canonicalState)
           ? "success"
           : canonicalState === "failed" ? "failed" : ["cancelled", "paused"].includes(canonicalState) ? "cancelled" : canonicalState === "running" ? "running" : "pending";
         $("runStatus").textContent = `${run.run_id || ""} ${statusText}`;
         $("runStatus").className = `status ${statusClass}`;
+        $("stopTrain").classList.toggle("hidden", !["pending", "queued", "running"].includes(canonicalState));
+        $("stopTrain").disabled = false;
 
         if (["pending", "queued", "running"].includes(canonicalState)) {
           const traditionalModel = run.model_family === "traditional_ml" || isTraditionalModel(run.model_type || run.config?.model_type);
@@ -2363,9 +2643,10 @@
           const foldProgress = runFoldProgressText(run);
           const isExternal = isExternalTestHoldout(run);
           const progressText = isExternal ? "独立测试集最终评估" : `折进度 ${foldProgress}`;
+          const stageLabel = String(run.training_stage_label || "").trim();
           const trainingDetail = traditionalModel
             ? `${(run.model_type || run.config?.model_type) === "random_forest" ? "正在进行 OOB 随机参数搜索" : "正在进行参数搜索与模型拟合"} · ${progressText}`
-            : `最多 ${totalTargetEpochs} Epoch · ${progressText}`;
+            : `${stageLabel || `最多 ${totalTargetEpochs} Epoch`} · ${progressText}`;
           const liveTrainingTime = formatTrainingTime(run);
           const detailText = `${run.model_type || run.config?.model_type || "分类模型"} · ${trainingDetail} · 训练时间 ${liveTrainingTime}`;
           const activeState = $("trainingProgress").querySelector("[data-active-training-run]");
@@ -2399,6 +2680,7 @@
         }
 
         clearCurrentRunDetails();
+        clearRememberedCurrentRun();
         if (["succeeded", "success"].includes(canonicalState)) {
           const handled = window.SpecAutoAIResults?.showNewRunSuccess(run);
           if (!handled) {
@@ -2417,11 +2699,13 @@
           return;
         }
         if (["cancelled", "paused"].includes(canonicalState)) {
-          const message = run.pause_reason || (run.replaced_by ? `任务已被 ${run.replaced_by} 替换。` : "此任务不会继续执行。")
-          $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练已取消", message));
+          const message = run.stop_message || "本次训练已停止，模型、指标和其他中间产物均不会保留。";
+          $("trainingProgress").replaceChildren(currentRunNotice("warning", "STOP", message));
         }
       }
 
+      /** 单次轮询当前 Run；响应返回前用户可能已切换任务，
+       *  因此渲染前再次比对 run_id（requestedRunId 快照）。 */
       async function pollCurrentRun() {
         if (!currentRunId) return;
         const requestedRunId = currentRunId;
@@ -2429,6 +2713,11 @@
         if (currentRunId === requestedRunId) renderRun(run);
       }
 
+      /**
+       * 开始监听当前 Run：优先用 run-results.js 的 watchTrainingRun
+       * （带自动退避重试的持续轮询，网络中断时显示"连接暂时中断"并自动恢复）；
+       * 模块未加载时退化为单次 pollCurrentRun。
+       */
       function watchCurrentRun() {
         if (!currentRunId) return;
         if (window.SpecAutoAIResults?.watchTrainingRun) {
@@ -2445,9 +2734,62 @@
         } else pollCurrentRun().catch((error) => $("trainingProgress").replaceChildren(currentRunNotice("error", "任务查询失败", error.message)));
       }
 
+      /** 刷新页面后恢复当前标签页正在跟踪的 Run，并继续轮询。 */
+      async function restoreCurrentRun() {
+        let savedRunId = null;
+        try { savedRunId = window.sessionStorage.getItem(CURRENT_RUN_STORAGE_KEY); } catch (_) {}
+        if (!savedRunId) {
+          // 升级前页面没有写 sessionStorage；刷新后从当前 Principal 最近的活跃
+          // Run 中恢复，优先正在运行，其次排队任务。
+          const response = await api("/api/training/runs?projection=summary&limit=20");
+          const items = Array.isArray(response) ? response : response?.items || [];
+          const activeRuns = items.filter((item) => (
+            ["queued", "pending", "running"].includes(String(item.state || item.status || "").toLowerCase())
+          ));
+          const recovered = activeRuns.find((item) => String(item.state || item.status).toLowerCase() === "running")
+            || activeRuns[0];
+          savedRunId = recovered?.run_id || null;
+        }
+        if (!savedRunId) return;
+        rememberCurrentRun(savedRunId);
+        try {
+          const run = await fetchRun(savedRunId);
+          if (currentRunId !== savedRunId) return;
+          renderRun(run);
+          const state = String(run.state || run.status || "").toLowerCase();
+          if (["queued", "pending", "running"].includes(state)) watchCurrentRun();
+        } catch (error) {
+          clearRememberedCurrentRun();
+          if (currentRunId === savedRunId) currentRunId = null;
+          $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练状态恢复失败", error.message));
+        }
+      }
+
+      /** 用户主动 STOP；后端终止 worker、清理本次产物，只保留历史状态。 */
+      async function stopTrainingRun(runId) {
+        if (!runId) return;
+        if (!window.confirm(`确定停止训练 ${runId} 吗？\n本次模型、指标和中间产物都不会保留。`)) return;
+        if (currentRunId === runId) $("stopTrain").disabled = true;
+        try {
+          const stopped = await stopRun(runId);
+          window.SpecAutoAIResults?.stopTrainingWatch();
+          if (currentRunId === runId) renderRun(stopped);
+          await loadRuns();
+        } catch (error) {
+          window.alert(`停止失败：${error.message}`);
+        } finally {
+          if (currentRunId === runId) $("stopTrain").disabled = false;
+        }
+      }
+
+      window.stopTrainingRun = stopTrainingRun;
+
+      // 暴露给训练记录列表行内按钮：跳转到指定 Run 的专属结果页。
       window.openRun = (runId) => window.SpecAutoAIResults?.navigateToResult(runId);
 
       // 预处理表单编排：色谱 UI 固定映射到服务端配置驱动的 HPLC 管线。
+      /** 读取拉曼基线校正方法："custom" 时取用户输入（空则回退 arPLS），
+       *  默认固定 arPLS；处理顺序永远是先截取范围再基线校正（后端保证）。 */
       function selectedRamanBaselineMethod() {
         if ($("ramanBaselineMethodMode").value === "custom") {
           return $("ramanCustomMethod").value.trim() || "arPLS";
@@ -2455,12 +2797,15 @@
         return "arPLS";
       }
 
+      /** 预处理类型到表单 id 前缀的映射：拉曼为 "raman"；
+       *  色谱（含旧 chromatography）统一为 "chrom"（对应 chromFiles 等元素 id）。 */
       function preprocessPrefix(kind) {
         if (kind === "raman") return "raman";
         if (kind === "hplc") return "chrom";
         return "chrom";
       }
 
+      /** 按范围选择方式切换"行号范围 / X 轴数值范围"两组输入的显隐。 */
       function updatePreprocessRangeMode(kind) {
         const prefix = preprocessPrefix(kind);
         const mode = $(`${prefix}RangeMode`).value;
@@ -2468,12 +2813,23 @@
         $(`${prefix}ValueRange`).classList.toggle("hidden", mode !== "x_value");
       }
 
+      /** 用 文件名+大小+最后修改时间 拼出当前文件选择指纹
+       *  （\u0000/\u0001 作分隔符避免与文件名冲突），用于判断用户是否
+       *  在检测之后又改选了文件，从而决定缓存的检测结果是否仍然有效。 */
       function hplcFileSelectionKey(files) {
         return [...files]
           .map((file) => `${file.name}\u0000${file.size}\u0000${file.lastModified}`)
           .join("\u0001");
       }
 
+      /**
+       * 按检测出的批次统一点数更新行号范围输入的边界与提示：
+       *  - 合法点数（整数且 ≥2）：起止行 max 锁定为该点数，默认全选 1..N，
+       *    标签和提示同步显示"当前批次统一为 N 个有效点；范围首尾都包含"；
+       *  - 非法/未知：清除 max 与终止行默认值，提示"检测后确定范围"。
+       * 行号为 1 基、首尾包含，与后端 HPLC 行号校验规则一致。
+       * @param {number|null} pointCount inspect 接口返回的 common_point_count
+       */
       function applyHplcPointCount(pointCount) {
         const count = Number(pointCount);
         if (!Number.isInteger(count) || count < 2) {
@@ -2493,6 +2849,13 @@
         $("chromRowRangeHint").textContent = `当前批次统一为 ${count} 个有效点；范围首尾都包含。`;
       }
 
+      /**
+       * 渲染 HPLC 文件检测表格：每个文件的 原文件名 / 有效点数 /
+       * 时间范围（分钟，8 位有效数字）/ 状态（"通过"或异常信息）。
+       * 点数不一致等异常文件会在状态列直接给出后端返回的 message。
+       * @param {object|null} payload /api/preprocess/hplc/inspect 的响应
+       * @param {string} [message] 表格上方附加的提示（加载中/失败原因等）
+       */
       function renderHplcInspection(payload, message = "") {
         const host = $("chromFileInspection");
         host.replaceChildren();
@@ -2533,6 +2896,16 @@
         host.append(wrapper);
       }
 
+      /**
+       * 选择色谱文件后自动检测：POST /api/preprocess/hplc/inspect。
+       * 并发与过期响应防护（双保险）：
+       *  - hplcInspectionSequence 自增序号：慢请求返回时若序号已变（用户又
+       *    改选了文件），直接丢弃结果；
+       *  - hplcFileSelectionKey 指纹：响应到达时再次比对当前文件列表。
+       * 检测通过（processable）才把统一点数写入行号范围并启用
+       * "生成整理 CSV"按钮；任何状态下都先禁用按钮，防止未检测直接提交。
+       * @returns {Promise<object|null>} 有效时返回 inspect 响应，否则 null
+       */
       async function inspectSelectedHplcFiles() {
         const filesInput = $("chromFiles");
         const files = [...filesInput.files];
@@ -2565,6 +2938,25 @@
         }
       }
 
+      /**
+       * 预处理提交主流程（"生成整理 CSV"按钮）。
+       * 类型归一：UI 上的 "chromatography" 实际固定走 HPLC 管线
+       * （effectiveKind="hplc"，提交 /api/preprocess/hplc）。
+       * HPLC 前置校验：文件指纹变化时先重新 inspect；批次不可处理
+       * （点数不一致且无唯一众数等）直接拒绝。
+       * 表单字段：
+       *  - range_mode=row：HPLC 经 ui-utils 的 validateHplcRowRange 校验
+       *    （1 基、首尾包含、禁止越界静默截断），拉曼直接透传起止行；
+       *  - range_mode=x_value：上下限至少填一个（HPLC 允许都留空=全轴）；
+       *  - raman 附 baseline_method；hplc 附 hplc_interpolate 开关。
+       * 结果渲染：指标卡 + "下载统一建模 CSV"按钮（经 SpecAutoAIDownload
+       * 带认证下载为 Blob 再触发浏览器保存）；附加展示 output_precision
+       * （wide-feature-v2 / float64 表头 / Excel 列上限）与 hplc_axis
+       * （真实时间轴范围、步长、所选行段）说明；有多条曲线时生成下拉 +
+       * canvas 预览。warnings 逐条以提示条展示。
+       * @param {string} kind "raman" | "chromatography"（按钮 data-preprocess）
+       * @throws {Error} 未选文件、校验失败或接口报错（调用方 alert）
+       */
       async function preprocessEnhanced(kind) {
         const isChrom = kind === "chromatography";
         const effectiveKind = isChrom ? "hplc" : kind;
@@ -2729,6 +3121,17 @@
       }
 
       // 历史 Run 列表与终态删除。queued/running 禁止删除，避免破坏 worker 状态机。
+      /**
+       * 加载并渲染训练记录表格。
+       * 数据源：GET /api/training/runs?projection=summary&limit=50（summary
+       * 投影含可空 test_macro_f1，仅成功且 Manifest 完整的 Run 才有值；
+       * CV 取 pooled test 而非 fold mean）；接口不支持分页参数的旧后端
+       * 自动回退到无参请求。有 next_cursor 时渲染"加载更多"按钮追加分页。
+       * 每行：训练时间/耗时/Run ID/数据集名/模型显示名/测试集 Macro F1/
+       * 状态徽章 + 操作（查看结果或进度、复制 ID、删除）。
+       * 删除按钮仅终态（succeeded/failed/cancelled/paused）可用。
+       * @param {{append?: boolean}} [options] append=true 表示追加下一页
+       */
       async function loadRuns(options = {}) {
         const append = options.append === true;
         const cursor = append ? runsNextCursor : null;
@@ -2761,6 +3164,8 @@
           const modelName = String(window.SpecAutoAIModelMeta?.(modelId)?.displayName || modelId || "-");
           const canonicalState = String(run.state || run.status || "unknown").toLowerCase();
           const terminal = ["succeeded", "success", "failed", "cancelled", "paused"].includes(canonicalState);
+          const stopped = ["cancelled", "paused"].includes(canonicalState);
+          const active = ["queued", "pending", "running"].includes(canonicalState);
           const row = document.createElement("tr");
           const values = [
             formatTrainingTime(run),
@@ -2781,8 +3186,8 @@
           });
           const statusCell = document.createElement("td");
           const status = document.createElement("span");
-          status.className = `status ${["running", "pending", "failed", "success"].includes(run.status) ? run.status : terminal && canonicalState === "succeeded" ? "success" : ""}`;
-          status.textContent = run.status || canonicalState;
+          status.className = `status ${stopped ? "cancelled" : ["running", "pending", "failed", "success"].includes(run.status) ? run.status : terminal && canonicalState === "succeeded" ? "success" : ""}`;
+          status.textContent = stopped ? "STOP" : run.status || canonicalState;
           statusCell.append(status);
           row.append(statusCell);
           const actionCell = document.createElement("td");
@@ -2791,8 +3196,9 @@
           const viewButton = document.createElement("button");
           viewButton.className = "secondary";
           viewButton.type = "button";
-          viewButton.textContent = terminal ? "查看结果" : "查看进度";
-          viewButton.addEventListener("click", () => window.openRun(run.run_id));
+          viewButton.textContent = stopped ? "无结果" : terminal ? "查看结果" : "查看进度";
+          viewButton.disabled = stopped;
+          if (!stopped) viewButton.addEventListener("click", () => window.openRun(run.run_id));
           const copy = document.createElement("button");
           copy.className = "secondary";
           copy.type = "button";
@@ -2801,6 +3207,13 @@
             try { await navigator.clipboard.writeText(String(run.run_id)); copy.textContent = "已复制"; }
             catch (_) { copy.textContent = "复制失败"; }
           });
+          const stopButton = document.createElement("button");
+          stopButton.type = "button";
+          stopButton.textContent = "停止";
+          stopButton.className = active ? "danger" : "secondary";
+          stopButton.disabled = !active;
+          stopButton.title = active ? "立即停止训练并丢弃本次产物" : "仅排队中或运行中的任务可停止";
+          if (active) stopButton.addEventListener("click", () => window.stopTrainingRun(run.run_id));
           const deleteButton = document.createElement("button");
           deleteButton.type = "button";
           deleteButton.textContent = "删除";
@@ -2808,7 +3221,7 @@
           deleteButton.disabled = !terminal;
           deleteButton.title = terminal ? "永久删除该训练记录及产物" : "排队中或运行中的任务不能删除";
           if (terminal) deleteButton.addEventListener("click", () => window.deleteRun(run.run_id));
-          actionWrap.append(viewButton, copy, deleteButton);
+          actionWrap.append(viewButton, copy, stopButton, deleteButton);
           actionCell.append(actionWrap);
           row.append(actionCell);
           body.append(row);
@@ -2842,21 +3255,29 @@
         }
       }
 
+      /** 被删除的正是"当前训练"面板上显示的 Run 时，停止轮询、
+       *  清空 currentRunId 并把面板切换为"记录已删除"提示。 */
       function clearDeletedRunPanel(runId) {
         window.SpecAutoAIResults?.stopTrainingWatch();
-        currentRunId = null;
+        rememberCurrentRun(null);
         $("runStatus").textContent = `${runId} 记录已删除`;
         $("runStatus").className = "status";
         $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练记录已删除", "该记录及全部产物已永久删除。"));
         clearCurrentRunDetails();
       }
 
+      /**
+       * 清空全部浏览器会话级 UI 状态（供认证模块在令牌失效/切换身份后调用）。
+       * 复位数据集引用、当前 Run、曲线缓存、Run 列表分页、HPLC 检测缓存
+       * （同时递增 hplcInspectionSequence 使在途检测响应失效），并清空
+       * 各结果区 DOM——保证换身份后看不到上一个 Principal 的任何数据。
+       */
       window.SpecAutoAIClearSessionUi = () => {
         datasetPath = null;
         testDatasetPath = null;
         datasetId = null;
         testDatasetId = null;
-        currentRunId = null;
+        rememberCurrentRun(null);
         lastSummaryCurves = [];
         lastTestSummaryCurves = [];
         lastPreprocessCurve = null;
@@ -2983,6 +3404,7 @@
         inspectSelectedHplcFiles().catch(() => undefined);
       });
       $("startTrain").addEventListener("click", () => startTrain().catch((err) => alert(err.message)));
+      $("stopTrain").addEventListener("click", () => stopTrainingRun(currentRunId));
       $("refreshRuns").addEventListener("click", () => loadRuns().catch((err) => alert(err.message)));
       $("manualButton").addEventListener("click", () => {
         if (window.SpecAutoAIResults?.navigateToView) window.SpecAutoAIResults.navigateToView("manual");

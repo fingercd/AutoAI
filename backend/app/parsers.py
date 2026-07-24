@@ -8,6 +8,30 @@ Sample_ID``，第 4 列 ``Name`` 保存原文件名，后续列名是共享的�
 同一轴；不一致时明确拒绝，绝不静默套用首条曲线的坐标。
 """
 
+# =============================================================================
+# 模块级说明（教学注释）
+# -----------------------------------------------------------------------------
+# 本模块是整个 AutoAI 数据层的"地基"，承担两类职责：
+#   1. 读取方向：load_modeling_csv / summarize_modeling_csv 解析建模宽表
+#      （wide-feature-v2 为主、v1 只读兼容），供训练入口与前端摘要使用；
+#      read_raw_spectrum 解析仪器导出的二列原始拉曼/色谱/HPLC 文件。
+#   2. 写出方向：build_wide_modeling_frame 把预处理后的多条曲线组装成
+#      wide-feature-v2 宽表；preprocess_raw_files* 是拉曼/普通色谱的预处理
+#      出口（HPLC 走 hplc.py 的专用管线，但同样复用这里的宽表构造）。
+# 协作模块：backend.app.hplc（HPLC 固定轴管线）、训练入口（读取 ModelingDataset）、
+# 预处理路由层（调用 preprocess_* 与 summarize_*）。
+# 关键设计约束：
+#   - wide-feature-v2 契约：前四列固定为 Index, Label, Sample_ID, Name，
+#     第 5 列起列名是真实、有限、唯一、严格递增的 XXX 坐标文本（float64 可
+#     往返），单元格是最多 5 位小数的有限强度标量，adaptive=false，绝不为了
+#     适应单元格字符限制而静默降精度或删点。
+#   - Excel 总列数上限 16,384：v2 扣除 4 个元数据列后最多 16,380 个特征。
+#   - 批次内所有曲线必须共享公共轴；宽表写不出两条不同的轴，所以比对失败时
+#     必须拒绝，禁止自动取首条轴迁移。
+#   - 旧六列数组格式（XXX/Intensity 单元格存数组）、linspace-v1 等历史格式
+#     不再可训练，读取时明确报错而不是尝试兼容。
+# =============================================================================
+
 from __future__ import annotations
 
 import csv
@@ -20,21 +44,34 @@ import numpy as np
 import pandas as pd
 
 
+# 元数据列契约常量：前三列是所有建模表的固定前缀
 MODELING_METADATA_COLUMNS = ("Index", "Label", "Sample_ID")
 SOURCE_NAME_COLUMN = "Name"
+# v2 在 v1 基础上追加 Name 列，保留浏览器端原始文件名
 WIDE_MODELING_METADATA_COLUMNS = (*MODELING_METADATA_COLUMNS, SOURCE_NAME_COLUMN)
 WIDE_MODELING_FORMAT = "wide-feature-v2"
 LEGACY_WIDE_MODELING_FORMAT = "wide-feature-v1"
+# 轴编码方式：真实坐标直接写在列名里（而不是另存一行/一个文件）
 WIDE_AXIS_ENCODING = "column_headers"
+# 旧六列数组格式的标志列，出现即拒绝训练
 LEGACY_MODELING_ARRAY_COLUMNS = ("XXX", "Intensity")
 EXCEL_WORKSHEET_MAX_COLUMNS = 16_384
+# v2 可用特征数上限 = Excel 上限 - 4 个元数据列 = 16,380
 MAX_WIDE_FEATURE_COUNT = EXCEL_WORKSHEET_MAX_COLUMNS - len(WIDE_MODELING_METADATA_COLUMNS)
+# 强度输出最多 5 位小数（adaptive=false 契约的一部分）
 MAX_OUTPUT_DECIMAL_PLACES = 5
 
 
 @dataclass
 class ModelingDataset:
     """解析后的表格元数据、二维强度矩阵和逐行 X 轴。"""
+    # 训练入口消费的标准结构：
+    #   frame       仅元数据列的 DataFrame（Index/Label/Sample_ID[/Name]）
+    #   x_axis      逐行的 X 坐标列表（宽表下每行内容相同，但结构保持逐行，
+    #               兼容历史上逐行不同轴的数据形态）
+    #   intensity   (n_samples, n_features) 的 float32 强度矩阵
+    #   labels/sample_id  逐行标签与样品编号（分类任务按类别名处理，不回归）
+    #   data_format "wide-feature-v2" 或 "wide-feature-v1"
     frame: pd.DataFrame
     x_axis: list[list[float]]
     intensity: np.ndarray
@@ -47,6 +84,8 @@ class ModelingDataset:
 class WideModelingFrameResult:
     """预处理宽表以及与落盘内容完全一致的轴和强度值。"""
 
+    # 构造宽表的一次性产物；x_axis / intensity 直接来自最终表头与单元格，
+    # 保证 API 预览、下载文件、训练加载器三方看到的数值完全一致（所见即所存）。
     frame: pd.DataFrame
     x_axis: list[float]
     intensity: list[list[float]]
@@ -56,6 +95,11 @@ class WideModelingFrameResult:
 def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[str]]:
     """读取宽表并保留原始表头，避免 pandas 静默改写重复列名。"""
 
+    # 参数：建模 CSV 路径。返回：(DataFrame[全字符串], 原始表头列表)。
+    # 异常：空文件、无法识别分隔符、表头列数与数据列数不一致、所有编码都
+    #       失败时抛 ValueError。
+    # 为什么要手工嗅探：pandas 对重复列名会自动追加 .1/.2，而"重复 XXX 坐标"
+    # 正是我们要检测并拒绝的错误，必须先拿到用户真实写入的表头。
     path = Path(path)
     encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
     last_error: Exception | None = None
@@ -71,6 +115,8 @@ def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[st
                 raise ValueError(f"建模 CSV {path.name} 无法识别列分隔符") from exc
             raw_header = next(csv.reader([header_line], dialect=dialect))
             normalized_header = [str(item).strip() for item in raw_header]
+            # dtype=str + keep_default_na=False：全部按原文本读入，
+            # 数值解析与空值判定留到后面的显式校验，避免 pandas 抢先转换
             frame = pd.read_csv(
                 path,
                 sep=dialect.delimiter,
@@ -89,6 +135,7 @@ def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[st
             frame.columns = normalized_header
             return frame, normalized_header
         except UnicodeDecodeError as exc:
+            # 解码失败才值得尝试下一种编码
             last_error = exc
         except (OSError, csv.Error, pd.errors.ParserError, ValueError) as exc:
             last_error = exc
@@ -105,6 +152,12 @@ def _parse_wide_axis_headers(
     *,
     metadata_column_count: int,
 ) -> list[float]:
+    # 把宽表第 N 列起的特征列名解析为共享 XXX 坐标轴。
+    # 参数：feature_headers —— 元数据列之后的全部列名文本；
+    #       metadata_column_count —— 3（v1）或 4（v2），用于 Excel 上限核算。
+    # 返回：float 坐标列表（保证非空、有限、严格递增）。
+    # 异常：无特征列、超出 Excel 上限、列名为空/非数值/非有限、坐标重复或
+    #       未严格递增时抛 ValueError。
     if not feature_headers:
         raise ValueError("建模 CSV 至少需要 1 个真实 XXX 特征列")
     max_feature_count = EXCEL_WORKSHEET_MAX_COLUMNS - metadata_column_count
@@ -129,6 +182,7 @@ def _parse_wide_axis_headers(
             raise ValueError(f"第 {position} 个 XXX 特征列名必须是有限数值，当前为 {header!r}")
         axis.append(value)
 
+    # 严格递增检查：重复坐标与非单调分别给出不同的错误文案，便于用户定位
     differences = np.diff(np.asarray(axis, dtype=np.float64))
     invalid = np.flatnonzero(differences <= 0)
     if invalid.size:
@@ -147,6 +201,10 @@ def _parse_wide_axis_headers(
 
 def load_modeling_csv(path: str | Path) -> ModelingDataset:
     """解析 v2 带 Name 宽表或兼容的 v1 宽表，返回训练数据结构。"""
+    # 建模数据读取主入口。校验链：表头唯一 → 拒绝旧六列数组格式 → 固定前缀
+    # → 判定 v1/v2 → 解析共享轴 → 元数据非空/Index 唯一/Name 非空 → Label 与
+    # Sample_ID 逐行非空 → 强度全部有限 → Sample_ID 分组一致性。
+    # 异常：任一环节不满足契约即抛 ValueError，训练入口不做二次猜测。
     path = Path(path)
     raw_frame, raw_header = _read_modeling_csv_flexible(path)
     stripped_header = [item.strip() for item in raw_header]
@@ -168,6 +226,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
             f"当前为 {', '.join(actual_prefix) if actual_prefix else '空表头'}"
         )
 
+    # 第 4 列恰为 "Name" 则按 v2 解析，否则按 v1 只读兼容
     has_source_name = (
         len(stripped_header) > len(MODELING_METADATA_COLUMNS)
         and stripped_header[len(MODELING_METADATA_COLUMNS)] == SOURCE_NAME_COLUMN
@@ -184,6 +243,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
     if raw_frame.empty:
         raise ValueError("建模 CSV 没有数据行")
 
+    # 元数据统一转成去空白字符串；缺失值先填空串，再由下面的显式检查拒绝
     metadata = raw_frame.loc[:, list(metadata_columns)].copy()
     for column in metadata_columns:
         metadata[column] = (
@@ -191,6 +251,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         )
     empty_index = metadata["Index"].eq("")
     if bool(empty_index.any()):
+        # +2 换算到用户视角的行号：1 行表头 + 0 基转 1 基
         row_number = int(np.flatnonzero(empty_index.to_numpy())[0]) + 2
         raise ValueError(f"第 {row_number} 行 Index 为空")
     duplicate_index = metadata["Index"].duplicated(keep=False)
@@ -198,6 +259,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         value = str(metadata.loc[duplicate_index, "Index"].iloc[0])
         raise ValueError(f"Index 必须唯一，检测到重复值 {value!r}")
     if has_source_name:
+        # v2 契约：Name 必须保留原始文件名，空串和字面 "nan" 都算缺失
         empty_name = metadata[SOURCE_NAME_COLUMN].eq("") | metadata[SOURCE_NAME_COLUMN].str.lower().eq("nan")
         if bool(empty_name.any()):
             row_number = int(np.flatnonzero(empty_name.to_numpy())[0]) + 2
@@ -211,6 +273,7 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
         if not sample_id or sample_id.lower() == "nan":
             raise ValueError(f"第 {idx} 行 Sample_ID 为空，建模前请补充样品编号")
 
+    # 强度矩阵：逐单元格转数值，任何无法转换或非有限的值都定位到行/列报错
     feature_text = raw_frame.loc[:, feature_headers]
     numeric_features = feature_text.apply(pd.to_numeric, errors="coerce")
     numeric_array = numeric_features.to_numpy(dtype=np.float64)
@@ -223,6 +286,8 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
             f"Intensity 必须是有限数值，当前为 {raw_value!r}"
         )
 
+    # Sample_ID 分组一致性：同一样品多标签、或各组重复测量次数不一致，
+    # 都会破坏按 Sample_ID 整组划分 train/valid/test 的评估口径，必须前置拒绝
     sample_summary = _sample_id_summary(metadata)
     if sample_summary["inconsistent_labels"]:
         details = ", ".join(f"{item['sample_id']}={item['labels']}" for item in sample_summary["inconsistent_labels"])
@@ -244,6 +309,8 @@ def load_modeling_csv(path: str | Path) -> ModelingDataset:
 
 def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
     """生成稳定自然排序键，使 2 排在 10 前，并兼容 S2/S10。"""
+    # 把文本切成"数字段/非数字段"交替序列：数字段按整数值比（标记 0 优先），
+    # 非数字段按 casefold 文本比（标记 1 靠后），元组逐段比较即得自然序。
     parts = re.split(r"(\d+)", str(value).strip())
     return tuple(
         (0, int(part)) if part.isdigit() else (1, part.casefold())
@@ -253,6 +320,10 @@ def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
 
 
 def _sample_id_summary(frame: pd.DataFrame) -> dict:
+    # 汇总 Sample_ID 分组信息，同时服务于"数据摘要展示"和"训练前一致性校验"。
+    # 返回：group_count（样品数）、expected_repeats_per_group（期望重复次数，
+    # 取各组行数的众数）、groups（逐组明细）、inconsistent_labels（同组多标签）、
+    # incomplete_groups（行数偏离众数的组）。
     grouped = frame.groupby("Sample_ID", sort=False)
     group_rows = []
     inconsistent_labels = []
@@ -281,6 +352,8 @@ def _sample_id_summary(frame: pd.DataFrame) -> dict:
 
 def summarize_modeling_csv(path: str | Path) -> dict:
     """生成前端所需的类别、Sample_ID、长度与曲线预览摘要。"""
+    # 建模数据"摘要接口"：在 load_modeling_csv 的全量校验之上，组装前端
+    # 数据卡片与曲线预览所需的全部字段；curves 逐行携带 x/y，供前端直接绘图。
     dataset = load_modeling_csv(path)
     labels = pd.Series(dataset.labels)
     lengths = [len(item) for item in dataset.x_axis]
@@ -316,6 +389,8 @@ def summarize_modeling_csv(path: str | Path) -> dict:
 
 
 def _read_csv_flexible(path: str | Path) -> pd.DataFrame:
+    # 原始文件读取（带表头假设）：依次尝试 utf-8-sig / utf-8 / gbk / gb18030，
+    # sep=None 让 python 引擎自动嗅探分隔符；全部按文本读入。
     encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
     last_error: Exception | None = None
     for encoding in encodings:
@@ -334,6 +409,8 @@ def _read_csv_flexible(path: str | Path) -> pd.DataFrame:
 
 
 def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
+    # 原始文件读取（无表头假设）：与上面成对存在，先按"无表头纯数据"尝试，
+    # 失败再由调用方退回带表头解析，兼容两类仪器导出格式。
     encodings = ("utf-8-sig", "utf-8", "gbk", "gb18030")
     last_error: Exception | None = None
     for encoding in encodings:
@@ -354,6 +431,9 @@ def _read_csv_no_header_flexible(path: str | Path) -> pd.DataFrame:
 
 def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarray]:
     """兼容常见编码/表头读取单个拉曼、色谱或 HPLC 二列文件。"""
+    # 参数：kind ∈ {"raman", "chromatography", "hplc"}，决定强度的 dtype 策略。
+    # 返回：(x, y)；x 恒为 float64，y 在 HPLC 下为 float64、其余为 float32。
+    # 异常：解析不出两列数值、或 kind 非法时抛 ValueError。
     path = Path(path)
 
     def numeric_values(frame: pd.DataFrame) -> pd.DataFrame:
@@ -367,6 +447,8 @@ def read_raw_spectrum(path: str | Path, kind: str) -> tuple[np.ndarray, np.ndarr
         # 一个 ULP，破坏真实 XXX 表头的 float64 往返契约。
         return frame.map(parse_cell)
 
+    # 先按"无表头"解析；若前两列没有任何数值，再按"带表头"重试。
+    # 表头行在第一次尝试中会变成 NaN 行，dropna 后即被剔除。
     frame = _read_csv_no_header_flexible(path)
     numeric = numeric_values(frame)
     if numeric.shape[1] < 2 or numeric.iloc[:, :2].dropna().empty:
@@ -391,6 +473,10 @@ def _normalize_numeric_array(
     field_name: str,
     decimal_places: int = MAX_OUTPUT_DECIMAL_PLACES,
 ) -> list[float]:
+    # 把一维数值数组规范化为"最多 decimal_places 位小数"的 float 列表，
+    # 是强度落盘前的统一精度闸门（adaptive=false：固定位数，不自动降级）。
+    # 异常：非一维、含 NaN/inf、位数越界、或舍入后丢失全部有效变化时抛
+    #       ValueError——最后一条防止把小信号 silently 舍成全零。
     array = np.asarray(values, dtype=np.float64)
     if array.ndim != 1:
         raise ValueError(f"{field_name} 必须是一维数组")
@@ -401,6 +487,7 @@ def _normalize_numeric_array(
             f"{field_name} 小数位数必须在 0 到 {MAX_OUTPUT_DECIMAL_PLACES} 之间"
         )
     rounded = np.round(array, decimals=decimal_places)
+    # 消除 -0.0，避免 CSV 里出现 "-0" 这类易引发误会的文本
     rounded[rounded == 0.0] = 0.0
     if array.size > 1 and float(np.ptp(array)) > 0.0 and float(np.ptp(rounded)) == 0.0:
         raise ValueError(
@@ -411,6 +498,8 @@ def _normalize_numeric_array(
 
 
 def _format_wide_axis_header(value: float) -> str:
+    # 单个 XXX 坐标 → 列名文本。".17g" 是 float64 可往返的最短精度保证：
+    # 读回 float(header) 必然得到与原值完全相同的 double。
     number = float(value)
     if not np.isfinite(number):
         raise ValueError("XXX 坐标必须是有限数值")
@@ -420,6 +509,10 @@ def _format_wide_axis_header(value: float) -> str:
 
 
 def _wide_axis_headers(values: np.ndarray, source_name: str) -> tuple[list[float], list[str]]:
+    # 校验一条 X 轴并生成宽表特征列名。
+    # 返回：(从最终表头回读的 float64 坐标列表, 列名文本列表)。
+    # 异常：非一维/空、非有限、非严格递增、超出 Excel 特征上限、格式化后
+    #       列名重复（两个不同 double 落到同一文本）时抛 ValueError。
     axis = np.asarray(values, dtype=np.float64)
     if axis.ndim != 1 or axis.size == 0:
         raise ValueError(f"{source_name} 的 XXX 必须是一维非空数组")
@@ -454,6 +547,14 @@ def build_wide_modeling_frame(
 ) -> WideModelingFrameResult:
     """构造以真实 XXX 为表头的统一宽表，并强制一个批次共享公共轴。"""
 
+    # wide-feature-v2 宽表唯一构造入口：拉曼、普通色谱、HPLC 三条预处理管线
+    # 最终都汇到这里，保证输出契约只有一份实现。
+    # 参数：indices（Index 列）、x_arrays（逐曲线 X 轴）、intensity_arrays
+    # （逐曲线强度）、source_names（Name 列，原始文件名），四者必须等长。
+    # 返回：WideModelingFrameResult，Label/Sample_ID 留空由用户后续填写。
+    # 异常：任一曲线轴与首条曲线表头逐点不一致时抛 ValueError——宽表物理上
+    #       只能保存一条公共轴，这里绝不静默取首条轴套用（静默迁移会导致
+    #       其他曲线的强度被标到错误坐标上）。
     count = len(indices)
     if count == 0:
         raise ValueError("没有可生成宽表的曲线")
@@ -462,6 +563,7 @@ def build_wide_modeling_frame(
     if any(not str(name).strip() for name in source_names):
         raise ValueError("宽表 Name 必须保留每条曲线的原始文件名")
 
+    # 首条曲线的轴即公共轴基准；其余曲线逐一与它比表头文本
     reference_axis, feature_headers = _wide_axis_headers(x_arrays[0], source_names[0])
     reference_header_tuple = tuple(feature_headers)
     normalized_intensities: list[list[float]] = []
@@ -470,6 +572,7 @@ def build_wide_modeling_frame(
     ):
         candidate_axis, candidate_headers = _wide_axis_headers(axis_values, source_name)
         if tuple(candidate_headers) != reference_header_tuple:
+            # 定位第一个不同点：能给出坐标值差异就给坐标，否则说明是点数不同
             first_difference = next(
                 (
                     index
@@ -503,6 +606,7 @@ def build_wide_modeling_frame(
                 f"{source_name} 的 Intensity 有 {intensity.size} 个点，但公共 XXX 有 "
                 f"{len(reference_axis)} 个点"
             )
+        # 强度统一走固定 5 位小数闸门（adaptive=false 契约）
         normalized_intensities.append(
             _normalize_numeric_array(
                 intensity,
@@ -530,6 +634,8 @@ def build_wide_modeling_frame(
         frame=frame,
         x_axis=reference_axis,
         intensity=normalized_intensities,
+        # output_precision 是随结果返回给前端/元数据的精度契约声明：
+        # 格式、轴编码、float64 往返、强度位数、不自适应降级、Excel 兼容性
         output_precision={
             "format": WIDE_MODELING_FORMAT,
             "xxx_encoding": WIDE_AXIS_ENCODING,
@@ -547,6 +653,7 @@ def build_wide_modeling_frame(
 def modeling_metadata_preview(frame: pd.DataFrame, limit: int = 5) -> list[dict[str, object]]:
     """返回紧凑元数据预览，避免把数千个宽表特征塞进 API 响应。"""
 
+    # 只取元数据列的前 limit 行；宽表可能有上万个特征列，绝不能整体进响应
     metadata_columns = list(MODELING_METADATA_COLUMNS)
     if SOURCE_NAME_COLUMN in frame.columns:
         metadata_columns.append(SOURCE_NAME_COLUMN)
@@ -557,6 +664,9 @@ def modeling_metadata_preview(frame: pd.DataFrame, limit: int = 5) -> list[dict[
 
 
 def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
+    # rampy 不可用时的兜底基线校正：取首尾各 5%（至少 8 个）锚点拟合
+    # 低阶多项式作为基线，扣除后整体平移到最小值为 0。
+    # 短序列（<8 点）退化为最小值平移，避免过拟合。
     if len(y) < 8:
         return y - float(np.min(y))
     xs = np.arange(len(y), dtype=np.float32)
@@ -571,6 +681,9 @@ def _simple_baseline_correct(y: np.ndarray) -> np.ndarray:
 
 
 def _baseline_correct(x: np.ndarray, y: np.ndarray, method: str) -> np.ndarray:
+    # 拉曼基线校正：优先用 rampy 的指定算法（默认 arPLS）；
+    # rampy 未安装时退回 _simple_baseline_correct；已安装但算法执行失败则
+    # 抛错（不静默降级，避免用户以为自己用了 arPLS 实际却不是）。
     try:
         import rampy
     except Exception:
@@ -591,6 +704,10 @@ def _range_indexer(
     x_min: float | None,
     x_max: float | None,
 ) -> tuple[slice | np.ndarray, str]:
+    # 拉曼/普通色谱的范围选择器（HPLC 走 hplc.py 的严格版本，不走这里）。
+    # 返回：(可直接用于 numpy 索引的 slice 或布尔掩码, 范围标签)。
+    # 与 HPLC 版本的差别：这里对越界行号做钳制（max(0, start-1)、超界取全长），
+    # 属于旧接口的宽松语义，保留以兼容既有行为。
     if range_mode == "row":
         start = max(0, start_row - 1)
         end = end_row if end_row and end_row > 0 else len(x)
@@ -618,6 +735,9 @@ def preprocess_raw_files(
     display_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """批量处理原始文件并生成 Excel 可编辑的统一建模表。"""
+    # 拉曼/普通色谱预处理的简洁出口：只返回宽表 DataFrame。
+    # 处理顺序固定：先选择数据范围，再执行基线校正（仅拉曼）——顺序不能反，
+    # 否则基线会拟合到用户并不关心的区段。
     prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
@@ -635,6 +755,7 @@ def preprocess_raw_files(
         )
 
     names = [str(item["name"]) for item in prepared]
+    # 公共轴校验在 build_wide_modeling_frame 内完成；不一致则整批拒绝
     wide = build_wide_modeling_frame(
         indices=[item["index"] for item in prepared],
         x_arrays=[np.asarray(item["x"]) for item in prepared],
@@ -656,6 +777,9 @@ def preprocess_raw_files_with_preview(
     display_names: list[str] | None = None,
 ) -> dict:
     """在统一表之外返回前端曲线预览和实际范围元数据。"""
+    # 与 preprocess_raw_files 同流程，但额外返回逐曲线预览数据：
+    # 拉曼给 raw_y（原始）与 corrected_y（基线校正后）两条；其他只给 raw_y。
+    # 预览数值与宽表落盘值取自同一份规范化结果，保证"所见即所存"。
     prepared: list[dict[str, object]] = []
     for index, file_path in enumerate(files, start=1):
         path = Path(file_path)
@@ -689,6 +813,8 @@ def preprocess_raw_files_with_preview(
     )
     curves = []
     for position, item in enumerate(prepared):
+        # wide.intensity 是已经过 5 位小数闸门的最终值；raw_y 仅拉曼单独
+        # 规范化后给出，用于前端对比"校正前 vs 校正后"
         intensity_values = wide.intensity[position]
         raw_values = (
             _normalize_numeric_array(np.asarray(item["raw_y"]), "raw_y")
