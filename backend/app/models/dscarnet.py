@@ -18,6 +18,37 @@ that preserves the same architecture topology, channel progression, and
 bottleneck ratios as the original 2D network.
 """
 
+# ============================================================================
+# 模块说明（教学注释）
+#
+# 本文件是 DSCARNet 模型族在 AutoAI 平台中的 PyTorch 实现，位于
+# backend/app/models/ 模型注册目录下，由训练流程通过模型注册表按名称
+# "dscarnet" 实例化（对应能力目录中 15 个公开分类模型之一）。
+#
+# 在整条链路中的位置：
+#   拉曼/HPLC 预处理（wide-feature-v2 宽表）
+#       → 建模读取与标准化（仅用训练集拟合）
+#       → 本文件的 DSCARNet1D（或 AggMap/PCA 映射后的 2D 版本）训练
+#       → 可解释性阶段：DSCARNet 走 AggMap/PCA 的 SAR/CAR 双通路 2D 映射，
+#         再做双通路 2D Grad-CAM 回投到 1D 特征（见 AGENTS.md 建模规则，
+#         不能当作普通 1D CNN 来解释）。
+#
+# 设计约束：
+#   1. 对原始 TensorFlow 实现（songlinlu/DSCAR）做 1:1 结构复刻——
+#      通道数公式（64→96→128 stem、unit = 48×2^i）、5×5 分支 0.5× 瓶颈、
+#      "same/valid" padding 语义都不能随意改动，否则与论文/复现口径不一致。
+#   2. TF 用 kernel/activity L2 正则；PyTorch 惯例是把 L2 放到优化器的
+#      weight_decay，因此本文件的卷积一律 bias=False + 可选 BN，
+#      并在 docstring 中提示调用方在 batchnorm=False 时给优化器配
+#      较大的 weight_decay 来复刻 TF 行为。
+#   3. DSCARNet1D 的构造签名保持与旧注册表调用点兼容：
+#      DSCARNet1D(input_length, class_count, dropout, hidden_size,
+#      inception_blocks)，其中 dropout / hidden_size 仅为兼容而接收，
+#      实际不使用（TF 原版没有 Dropout，通道数是固定公式）。
+#   4. 顶层任务只支持分类：输出层是 n_outputs 个 logits/概率，
+#      不处理回归目标。
+# ============================================================================
+
 from __future__ import annotations
 
 from typing import Sequence
@@ -30,6 +61,11 @@ import torch.nn.functional as F
 # ============================================================================
 # 2D building blocks  —  matching TF conv2d_bn / Conv2D_BN helpers
 # ============================================================================
+# 本节对应 TF 代码里的两个基础助手：
+#   - conv2d_bn   ：Inception 分支内部使用（TF 版本在 batchnorm=False 时带 L2）
+#   - Conv2D_BN   ：stem 使用（两种情况都不带 L2）
+# PyTorch 侧统一返回 nn.Sequential(Conv → [BN] → ReLU)，
+# 结构上保持与 TF 完全相同的"卷积→(归一化)→激活"顺序。
 
 def _conv2d_bn_block(
     in_channels: int,
@@ -52,6 +88,17 @@ def _conv2d_bn_block(
     Pass a higher ``weight_decay`` to the optimizer when ``batchnorm=False``
     to replicate the TF behaviour.
     """
+    # 中文教学注释：
+    # 该函数对应 TF 的 conv2d_bn，用于 Inception 各分支内部。
+    # bias=False 是关键：启用 BN 时偏置会被 BN 的平移参数抵消，属冗余；
+    # 不启用 BN 时也保持 bias=False 是为了与 TF 复刻口径一致（L2 正则
+    # 由优化器 weight_decay 承担，而不是由层内部实现）。
+    # 参数含义：
+    #   in_channels/out_channels —— 输入/输出通道数；
+    #   kernel_size/stride/padding —— 卷积超参数，padding 传 "same" 之类
+    #     字符串时直接透传给 PyTorch（PyTorch 支持 stride=1 的 "same"）；
+    #   batchnorm —— 是否在卷积后插入 BatchNorm2d。
+    # 返回：nn.Sequential(Conv2d → [BatchNorm2d] → ReLU)。
     layers: list[nn.Module] = [
         nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
                   stride=stride, padding=padding, bias=False)
@@ -71,6 +118,11 @@ def _conv2d_bn_stem(
     batchnorm: bool = False,
 ) -> nn.Sequential:
     """TF Conv2D_BN → Conv (+ optional BN) + ReLU.  No L2 in either case."""
+    # 中文教学注释：
+    # 对应 TF 的 Conv2D_BN，专用于 stem（网络最前面的三层卷积）。
+    # 与 _conv2d_bn_block 的区别仅在 TF 原版的正则策略：stem 两种情况
+    # 都不加 L2。PyTorch 实现上两者代码形状相同，拆成两个函数是为了
+    # 与 TF 源码一一对照、便于核对复刻是否忠实。
     layers: list[nn.Module] = [
         nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size,
                   stride=stride, padding=padding, bias=False)
@@ -84,6 +136,9 @@ def _conv2d_bn_stem(
 # ============================================================================
 # 1D building blocks  —  faithful adaptation of the same TF helpers
 # ============================================================================
+# 本节是上面两个 2D 助手的一维版本：Conv2d→Conv1d、BatchNorm2d→BatchNorm1d，
+# 其余（bias=False、可选 BN、ReLU、L2 交由优化器）完全沿用同一套约定。
+# DSCARNet1D 直接用 1D 光谱曲线训练时就走这里的积木。
 
 def _conv1d_bn_block(
     in_channels: int,
@@ -94,6 +149,7 @@ def _conv1d_bn_block(
     batchnorm: bool = False,
 ) -> nn.Sequential:
     """1D equivalent of TF conv2d_bn."""
+    # 中文教学注释：_conv2d_bn_block 的 1D 对应物，用于 1D Inception 分支。
     layers: list[nn.Module] = [
         nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
                   stride=stride, padding=padding, bias=False)
@@ -113,6 +169,7 @@ def _conv1d_bn_stem(
     batchnorm: bool = False,
 ) -> nn.Sequential:
     """1D equivalent of TF Conv2D_BN."""
+    # 中文教学注释：_conv2d_bn_stem 的 1D 对应物，用于 1D stem 三层卷积。
     layers: list[nn.Module] = [
         nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
                   stride=stride, padding=padding, bias=False)
@@ -144,23 +201,48 @@ class InceptionBlock2D(nn.Module):
 
     def __init__(self, in_channels: int, unit: int, batchnorm: bool = False):
         super().__init__()
+        # 中文教学注释：
+        # 参数：
+        #   in_channels —— 输入特征图通道数；
+        #   unit        —— 本块的基准通道数，TF 公式为 48×2^i（i 为块序号），
+        #                  四个分支的输出通道都围绕 unit 定义；
+        #   batchnorm   —— 透传给每个分支的卷积块。
+        # half_unit：5×5 分支先用 1×1 卷积把通道压到 0.5×unit（bottleneck），
+        # 再做 5×5 卷积——这是 Inception 的经典降本设计，大核卷积的计算量
+        # 随通道数平方增长，先压缩通道可显著省算力；max(1, ...) 防止
+        # unit 很小时通道数被压成 0。
         half_unit = max(1, int(unit * 0.5))
 
+        # 分支 1：1×1 卷积，直接提取逐点跨通道特征，输出 unit 通道。
         self.branch1x1 = _conv2d_bn_block(in_channels, unit, 1, batchnorm=batchnorm)
 
+        # 分支 2：1×1 降通道（half_unit）→ 5×5 卷积（恢复 unit），
+        # padding=2 对应 TF 的 'same'（k=5 时 same padding = 2），
+        # 负责捕获较大感受野的空间模式。
         self.branch5x5_reduce = _conv2d_bn_block(in_channels, half_unit, 1, batchnorm=batchnorm)
         self.branch5x5 = _conv2d_bn_block(half_unit, unit, 5, padding=2, batchnorm=batchnorm)
 
+        # 分支 3：1×1 → 3×3 → 3×3 双卷积串联，输出 2×unit 通道。
+        # 两个 3×3 串联的感受野等效一个 5×5，但参数更少、非线性更多；
+        # padding=1 对应 3×3 的 'same'。
         self.branch3x3dbl_reduce = _conv2d_bn_block(in_channels, unit, 1, batchnorm=batchnorm)
         self.branch3x3dbl_a = _conv2d_bn_block(unit, unit * 2, 3, padding=1, batchnorm=batchnorm)
         self.branch3x3dbl_b = _conv2d_bn_block(unit * 2, unit * 2, 3, padding=1, batchnorm=batchnorm)
 
+        # 分支 4：3×3 平均池化（stride=1、same，不改变空间尺寸）→ 1×1 卷积，
+        # 给网络提供一条"平滑/低频"通路，AggMap 热图的局部平滑结构由此保留。
         self.branch_pool_pool = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
         self.branch_pool_conv = _conv2d_bn_block(in_channels, unit, 1, batchnorm=batchnorm)
 
+        # 输出通道数 = unit + unit + 2×unit + unit = 5×unit，
+        # 供外层堆叠下一个 block 时推算 in_channels。
         self.out_channels = unit * 5  # unit + unit + 2*unit + unit
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：
+        # 四条分支并行计算（注意分支 2、3 是先 reduce 再大核卷积），
+        # 最后沿通道维（dim=1，NCHW 中 C 维）拼接。所有分支的空间尺寸
+        # 都通过 same padding 保持一致，因此可以直接 cat。
         b1 = self.branch1x1(x)
         b5 = self.branch5x5_reduce(x)
         b5 = self.branch5x5(b5)
@@ -190,6 +272,10 @@ class InceptionBlock1D(nn.Module):
 
     def __init__(self, in_channels: int, unit: int, batchnorm: bool = False):
         super().__init__()
+        # 中文教学注释：
+        # 与 InceptionBlock2D 完全相同的拓扑和通道公式，只是把每个算子
+        # 换成 1D 版本，作用于 (B, C, L) 的光谱序列：多尺度分支分别捕获
+        # 窄峰（1×1/3×3）与宽峰/包络（5×5、pool）形态。
         half_unit = max(1, int(unit * 0.5))
 
         self.branch1x1 = _conv1d_bn_block(in_channels, unit, 1, batchnorm=batchnorm)
@@ -207,6 +293,7 @@ class InceptionBlock1D(nn.Module):
         self.out_channels = unit * 5
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：与 2D 版一致——四分支并行后沿通道维拼接。
         b1 = self.branch1x1(x)
         b5 = self.branch5x5_reduce(x)
         b5 = self.branch5x5(b5)
@@ -245,8 +332,21 @@ class DSCARStem2D(nn.Module):
         batchnorm: bool = False,
     ):
         super().__init__()
+        # 中文教学注释：
+        # 参数：
+        #   input_height     —— 输入特征图高度（AggMap 图的边长），
+        #                      决定 stem 走"大图分支"还是"小图分支"；
+        #   input_channels   —— 输入通道（SAR/CAR 单通道图为 1）；
+        #   conv1_kernel_size—— 首层大核尺寸，默认 19，大核负责在浅层
+        #                      直接捕获全局相关性结构；
+        #   filter_number    —— 首层通道数 f1（默认 64），f2/f3 由 f1
+        #                      按公式推导，保持 64→96→128 的比例关系；
+        #   batchnorm        —— 是否每层后接 BN。
+        # padding = k//2 即 TF 的 'same'（奇数核时成立）。
         padding = int(conv1_kernel_size) // 2
         f1 = int(filter_number)
+        # f2 ≈ 1.5×f1（且至少 f1+1），f3 = 2×f1（且至少 f2+1）——
+        # 用 max 是为了在 filter_number 极小的情况下仍保证通道严格递增。
         f2 = max(f1 + 1, int(round(f1 * 1.5)))
         f3 = max(f2 + 1, f1 * 2)
         self.out_channels = f3
@@ -258,6 +358,10 @@ class DSCARStem2D(nn.Module):
             batchnorm=batchnorm,
         )
 
+        # 大图（h>25）：第二层用 stride=2 + 'valid' 主动下采样，
+        # 第三层 'valid' 继续压缩边界；小图（h≤25）：两层都 stride=1，
+        # 第三层改 'same' 避免空间尺寸被卷没了——这是 TF 原版针对
+        # 不同 AggMap 尺寸的条件结构，不能统一。
         if input_height > 25:
             self.conv2 = _conv2d_bn_stem(f1, f2, kernel_size=5, stride=2, padding=0, batchnorm=batchnorm)
             self.conv3 = _conv2d_bn_stem(f2, f3, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
@@ -265,9 +369,12 @@ class DSCARStem2D(nn.Module):
             self.conv2 = _conv2d_bn_stem(f1, f2, kernel_size=5, stride=1, padding=0, batchnorm=batchnorm)
             self.conv3 = _conv2d_bn_stem(f2, f3, kernel_size=5, stride=1, padding=2, batchnorm=batchnorm)
 
+        # 末尾 3×3、stride=2 的 MaxPool（same）再做一次下采样，
+        # 输出通道数为 f3（默认 128）。
         self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：三层卷积 + 一次池化，顺序与 TF stem 完全一致。
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -293,6 +400,13 @@ class DSCARStem1D(nn.Module):
 
     def __init__(self, input_length: int, batchnorm: bool = False):
         super().__init__()
+        # 中文教学注释：
+        # 参数：
+        #   input_length —— 1D 光谱曲线长度（wide-feature-v2 宽表的特征列数），
+        #                   用与 2D 版相同的 >25 阈值选择 stride/padding 分支，
+        #                   防止短序列被 'valid' 卷积耗尽长度；
+        #   batchnorm    —— 是否每层后接 BN。
+        # 首层 k=19、padding=9 即 'same'，对应 2D 版的 19×19 大核首层。
         self.conv1 = _conv1d_bn_stem(1, 64, kernel_size=19, padding=9, batchnorm=batchnorm)
 
         if input_length > 25:
@@ -305,6 +419,7 @@ class DSCARStem1D(nn.Module):
         self.pool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：与 2D stem 同序——三卷积 + 一池化。
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -317,6 +432,11 @@ class DSCARStem1D(nn.Module):
 # ============================================================================
 
 def _parse_2d_input_shape(input_shape: tuple[int, ...]) -> tuple[int, int, int]:
+    # 中文教学注释：
+    # 兼容两种 input_shape 写法：(H, W) 默认单通道，(H, W, C) 显式给通道。
+    # 注意返回顺序是 (h, w, c)，而网络前向期望 PyTorch 的 NCHW 输入——
+    # 调用方需自行保证数据布局，本函数只做形状解析不做转置。
+    # 其他长度直接 ValueError，避免静默误解形状。
     if len(input_shape) == 2:
         h, w = input_shape
         return int(h), int(w), 1
@@ -363,6 +483,11 @@ class SingleDSCARNet2D(nn.Module):
         last_avf: str | None = "softmax",
     ):
         super().__init__()
+        # 中文教学注释：
+        # 整体结构 = stem → n_inception 个 InceptionBlock2D 串联
+        #   → AdaptiveMaxPool 到 1×1 → flatten → 可配置 Dense 头。
+        # 这是平台可解释性流程中"SAR/CAR 单视图"路径使用的 2D 网络。
+        # 宽度 _w 未使用：stem 的分支选择只看高度 h，宽度由卷积自适应。
         h, _w, input_channels = _parse_2d_input_shape(input_shape)
 
         self.stem = DSCARStem2D(
@@ -373,6 +498,10 @@ class SingleDSCARNet2D(nn.Module):
             batchnorm=batchnorm,
         )
 
+        # 逐块堆叠 Inception：unit 按 TF 公式 48×2^i 增长（这里写成
+        # filter_number×0.75 的等价形式，默认 64×0.75=48），
+        # max(4, ...) 防止 filter_number 过小时 unit 退化。
+        # 每块的 out_channels（=5×unit）作为下一块的 in_channels。
         in_channels = self.stem.out_channels
         blocks: list[InceptionBlock2D] = []
         for i in range(n_inception):
@@ -382,8 +511,12 @@ class SingleDSCARNet2D(nn.Module):
             in_channels = block.out_channels
         self.inception = nn.Sequential(*blocks)
 
+        # 全局最大池化到 (1,1)：对应 TF 的 GlobalMaxPool2D，
+        # 用 Adaptive 版本是为了对任意输入空间尺寸都成立。
         self.global_pool = nn.AdaptiveMaxPool2d((1, 1))
 
+        # Dense 头：按 dense_layers 依次堆 Linear+激活，最后接
+        # Linear(→n_outputs) 分类层；n_outputs 即类别数（仅分类任务）。
         dense_activation = _get_activation(dense_avf)
         dense_modules: list[nn.Module] = []
         dense_input = in_channels
@@ -397,6 +530,11 @@ class SingleDSCARNet2D(nn.Module):
         self.classifier = nn.Sequential(*dense_modules)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：
+        # 前向顺序：stem → inception → 全局池化 → flatten → dense 头。
+        # last_avf='softmax' 时输出概率（与 TF 行为一致）；置 None 时
+        # 输出 raw logits，供 PyTorch 的 CrossEntropyLoss 直接使用
+        # （CrossEntropyLoss 内部已含 log_softmax，不能再加 softmax）。
         x = self.stem(x)
         x = self.inception(x)
         x = self.global_pool(x)
@@ -460,11 +598,20 @@ class DSCARNet1D(nn.Module):
         batchnorm: bool = False,
     ):
         super().__init__()
+        # 中文教学注释：
+        # 这是平台模型注册表中 "dscarnet" 直接 1D 输入路径使用的类，
+        # 构造签名与旧注册表调用点保持位置参数兼容，因此 dropout 和
+        # hidden_size 必须保留在签名里；但 TF 原版没有 Dropout、通道数
+        # 也是固定公式，所以这里显式丢弃（赋给 _ 并注释说明），
+        # 调用方若想要正则化，应通过优化器 weight_decay 或 batchnorm=True。
         _ = dropout      # not used — TF version has no Dropout
         _ = hidden_size  # not used — TF version uses fixed channel sizes
 
         self.stem = DSCARStem1D(input_length=input_length, batchnorm=batchnorm)
 
+        # stem 输出固定 128 通道；Inception 块数至少为 1（max(1, ...) 防止
+        # 注册表传入 0 或负数导致网络没有特征提取主体），unit 严格按
+        # TF 公式 48×2^i 增长。
         in_channels = 128
         blocks: list[InceptionBlock1D] = []
         for i in range(max(1, int(inception_blocks))):
@@ -477,6 +624,8 @@ class DSCARNet1D(nn.Module):
         self.global_pool = nn.AdaptiveMaxPool1d(1)
 
         # Hidden dense layer: 128 units with ReLU, matching the TF default
+        # 中文教学注释：分类头固定为 Flatten → Linear(→128) → ReLU
+        # → Linear(→class_count)，输出 raw logits 供 CrossEntropyLoss 使用。
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(in_channels, 128),
@@ -492,6 +641,8 @@ class DSCARNet1D(nn.Module):
         Returns:
             (B, class_count) logits.
         """
+        # 中文教学注释：输入是建模流程张量化的单通道光谱 (B, 1, L)，
+        # 依次过 stem → inception → 全局池化 → 分类头，返回 logits。
         x = self.stem(x)
         x = self.inception(x)
         x = self.global_pool(x)
@@ -525,6 +676,14 @@ class DualDSCARNet2D(nn.Module):
     ):
         super().__init__()
 
+        # 中文教学注释：
+        # 双通路版本：input_shape1 / input_shape2 分别是 SAR 与 CAR 两个
+        # AggMap 视图的形状。两条支路各自拥有独立的 stem + inception
+        # （参数不共享——SAR/CAR 的统计特性不同，共享会互相干扰），
+        # 最后把两路 GlobalMaxPool 特征拼接后进共享 dense 头融合。
+        # 这也是 DSCARNet 可解释性"双通路 2D Grad-CAM"的结构基础。
+
+        # ---- 支路 1（SAR 视图）----
         h1, _w1, input_channels1 = _parse_2d_input_shape(input_shape1)
         self.stem1 = DSCARStem2D(
             input_height=h1,
@@ -543,6 +702,7 @@ class DualDSCARNet2D(nn.Module):
         self.inception1 = nn.Sequential(*blocks1)
         self.pool1 = nn.AdaptiveMaxPool2d((1, 1))
 
+        # ---- 支路 2（CAR 视图），结构与支路 1 对称 ----
         h2, _w2, input_channels2 = _parse_2d_input_shape(input_shape2)
         self.stem2 = DSCARStem2D(
             input_height=h2,
@@ -561,6 +721,7 @@ class DualDSCARNet2D(nn.Module):
         self.inception2 = nn.Sequential(*blocks2)
         self.pool2 = nn.AdaptiveMaxPool2d((1, 1))
 
+        # 融合头：输入维度 = 两路特征通道之和 ch1 + ch2。
         dense_activation = _get_activation(dense_avf)
         dense_modules: list[nn.Module] = []
         dense_input = ch1 + ch2
@@ -574,6 +735,11 @@ class DualDSCARNet2D(nn.Module):
         self.classifier = nn.Sequential(*dense_modules)
 
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+        # 中文教学注释：
+        # x1、x2 分别是 SAR / CAR 两个 2D 视图（NCHW）。两路独立提取
+        # 特征、各自全局池化并 flatten 后拼接，再进共享 dense 头；
+        # softmax 语义与 SingleDSCARNet2D 相同（配 CrossEntropyLoss 时
+        # 应把 last_avf 置 None）。
         f1 = self.pool1(self.inception1(self.stem1(x1)))
         f1 = f1.view(f1.size(0), -1)
         f2 = self.pool2(self.inception2(self.stem2(x2)))
@@ -590,6 +756,9 @@ class DualDSCARNet2D(nn.Module):
 # ============================================================================
 
 def _get_activation(name: str) -> nn.Module:
+    # 中文教学注释：
+    # 把字符串激活名映射为模块，仅支持 TF 原版用到的 'relu' / 'gelu'；
+    # 其他名字直接 ValueError，避免静默退回某个默认激活而改变网络行为。
     if name == "relu":
         return nn.ReLU(inplace=True)
     if name == "gelu":
@@ -600,6 +769,8 @@ def _get_activation(name: str) -> nn.Module:
 # ============================================================================
 # Factory helpers  (matching TF signatures)
 # ============================================================================
+# 下面两个工厂函数保持与 TF 原版 single_dscarnet / dual_dscarnet 相同的
+# 参数签名，方便按 TF 论文/源码的调用方式直接构造 PyTorch 模型。
 
 def single_dscarnet(
     input_shape: tuple[int, ...],
@@ -613,6 +784,8 @@ def single_dscarnet(
     last_avf: str | None = "softmax",
 ) -> SingleDSCARNet2D:
     """Drop-in constructor matching TF ``single_dscarnet`` signature."""
+    # 中文教学注释：纯透传工厂——按 TF 签名收参并构造 SingleDSCARNet2D，
+    # 不做任何额外默认值改写，保证"TF 怎么调、这里就怎么调"。
     return SingleDSCARNet2D(
         input_shape=input_shape,
         n_outputs=n_outputs,
@@ -639,6 +812,7 @@ def dual_dscarnet(
     last_avf: str | None = "softmax",
 ) -> DualDSCARNet2D:
     """Drop-in constructor matching TF ``dual_dscarnet`` signature."""
+    # 中文教学注释：与 single_dscarnet 同理，构造双通路 DualDSCARNet2D。
     return DualDSCARNet2D(
         input_shape1=input_shape1,
         input_shape2=input_shape2,

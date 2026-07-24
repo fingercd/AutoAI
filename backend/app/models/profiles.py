@@ -1,7 +1,17 @@
 """按训练样本数 N 与特征长度 L 解析模型 profile。
 
-profile 决定网络宽度、卷积核、池化、dropout 或传统模型候选范围，但不改变模型 ID。
-分档只使用当前训练折的规模，最终解析值会写进 Run 元数据以便复核。
+【模块定位】
+本文件是“超参数分档表”：同一份模型代码要同时适配几十条的小光谱和上万点的
+HPLC 固定轴数据，因此不写死网络宽度，而是按当前训练折的规模（N、L）分档，
+动态给出通道数、卷积核、池化、dropout 或传统模型候选范围。
+
+【设计约束】
+- profile 只改变模型容量/超参数，绝不改变模型 ID——同一个 "cnn1d" 在小数据集上
+  变窄、在大数据集上变宽，对外仍是同一个模型；
+- 分档只使用当前训练折的规模（避免跨折信息泄漏），最终解析值会写进 Run 元数据
+  以便复核与复现；
+- 与 .registry 协作：registry 的构造器在实例化每个模型前先调用本模块拿到
+  ModelProfile，再把 profile.values 里的参数逐项传给具体网络。
 """
 
 from __future__ import annotations
@@ -11,6 +21,8 @@ import math
 from typing import Any
 
 
+# ModelProfile：一次训练折实际采用的样本/特征分档与参数集合（不可变 dataclass，
+# 防止训练途中被意外改写导致元数据与实际模型不一致）。
 @dataclass(frozen=True)
 class ModelProfile:
     """一次训练折实际采用的样本/特征分档与参数集合。"""
@@ -23,6 +35,7 @@ class ModelProfile:
     values: dict[str, Any]
 
 
+# 支持 profile 分档的模型集合：未列入的模型 ID 会被 build_model_profile 直接拒绝。
 PROFILE_MODEL_TYPES = {
     "pls_da",
     "pca_lda",
@@ -42,11 +55,15 @@ PROFILE_MODEL_TYPES = {
     "dscarnet",
 }
 
+# ---- 各类网络在各分档下的结构参数表（查找表，而非运行时计算）----
+# CNN 通道数随样本量增大而加宽：样本越多，模型容量可以越大。
 _CNN_CHANNELS_BY_SAMPLE_BAND = {
     "small": [8, 16, 32],
     "medium": [16, 32, 64],
     "large": [32, 64, 128],
 }
+# 卷积核与池化随特征长度 L 变化：轴越长，首层感受野和下采样步幅越大，
+# 否则长轴（如 HPLC 4000 点）会在深层留下过大的中间张量。
 _CNN_KERNELS_BY_FEATURE_BAND = {
     "short": [7, 5, 3],
     "medium": [9, 5, 3],
@@ -86,17 +103,28 @@ _LONG_RANGE_VALUES = {
 
 
 def sample_band(n: int) -> str:
-    """把当前训练折样本数 N 分成 small/medium/large。"""
+    """把当前训练折样本数 N 分成 small/medium/large。
+
+    分档阈值：N<=100 为 small，100<N<300 为 medium，N>=300 为 large。
+    只使用当前训练折的样本数，避免跨折信息泄漏。
+    """
     return "small" if int(n) <= 100 else ("medium" if int(n) < 300 else "large")
 
 
 def feature_band(length: int) -> str:
-    """把特征长度 L 分成 short/medium/long。"""
+    """把特征长度 L 分成 short/medium/long。
+
+    分档阈值：L<=1000 为 short，1000<L<3000 为 medium，L>=3000 为 long。
+    例如 HPLC 固定轴 4000 点会落入 long，从而使用更大的卷积核与池化。
+    """
     return "short" if int(length) <= 1000 else ("medium" if int(length) < 3000 else "long")
 
 
 def default_dropout(n: int) -> float:
-    """小样本使用更强 dropout，降低深度模型过拟合风险。"""
+    """小样本使用更强 dropout，降低深度模型过拟合风险。
+
+    small=0.5 / medium=0.4 / large=0.3：样本越少正则越强，这是分档的核心动机。
+    """
     return {"small": 0.5, "medium": 0.4, "large": 0.3}[sample_band(n)]
 
 
@@ -106,7 +134,21 @@ def build_model_profile(
     train_sample_count: int,
     feature_count: int,
 ) -> ModelProfile:
-    """解析非 DSCARNet 模型在当前训练折实际使用的 profile。"""
+    """解析非 DSCARNet 模型在当前训练折实际使用的 profile。
+
+    参数：
+        model_type: 模型 ID（允许 "transformer"/"transformer1d" 别名，内部归一化
+            为 "cnn_transformer1d"）。
+        train_sample_count: 当前训练折样本数 N，必须 > 1（否则 PCA 等无法拟合）。
+        feature_count: 特征长度 L，必须 > 0。
+
+    返回：
+        ModelProfile，values 含 dropout、分档名及该模型专属结构参数
+        （channels/kernels/pools、d_model/heads/layers 等）。
+
+    异常：
+        ValueError: 模型 ID 不在 PROFILE_MODEL_TYPES，或 N/L 不合法。
+    """
     model_key = str(model_type or "").strip().lower()
     model_key = {"transformer": "cnn_transformer1d", "transformer1d": "cnn_transformer1d"}.get(model_key, model_key)
     if model_key not in PROFILE_MODEL_TYPES:
@@ -132,6 +174,8 @@ def build_model_profile(
             requested_components, hidden_sizes = 128, [128, 64]
         values.update(
             {
+                # 三重钳制：不超过档位请求值、不超过 N-1（PCA 自由度上限）、不超过特征数 L，
+                # 保证任意规模下 PCA 都一定能拟合。
                 "pca_components": max(1, min(requested_components, int(train_sample_count) - 1, int(feature_count))),
                 "hidden_sizes": hidden_sizes,
             }
@@ -194,7 +238,13 @@ def build_model_profile(
 
 
 def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> dict[str, Any]:
-    """解析 DSCARNet 的 PCA 数量、聚类通道和网络容量。"""
+    """解析 DSCARNet 的 PCA 数量、聚类通道和网络容量。
+
+    返回 dict 而非 ModelProfile（历史接口）：包含 sample_band/feature_band、
+    pca_components（AggMap 映射前的 PCA 降维数）、cluster_channels（AggMap
+    聚类通道数，随 N/L 双分档增大）、conv1_kernel_size（首层卷积核随 L 增大）、
+    filter_number / n_inception / dense_layers（2D 网络容量随 N 分档）。
+    """
     n = int(train_sample_count)
     length = int(feature_count)
     n_band = sample_band(n)
@@ -209,6 +259,9 @@ def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> di
         "medium": {"filter_number": 32, "n_inception": 1, "dense_layers": [64]},
         "large": {"filter_number": 64, "n_inception": 2, "dense_layers": [128]},
     }[n_band]
+    # n_target：把 L 个特征映射成近似正方形 2D 网格所需的边长——
+    # 解方程 n(n+1)/2 ≈ 0.8²·L（AggMap 映射约使用 0.8² 比例的有效面积），
+    # 反解二次方程取 ceil；最终 pca_components 还要受 N-1 与 L 钳制。
     n_target = math.ceil((math.sqrt(8 * (0.8**2) * length + 1) - 1) / 2)
     return {
         "sample_band": n_band,
@@ -221,7 +274,11 @@ def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> di
 
 
 def model_range_warnings(*, train_sample_count: int, feature_count: int) -> list[str]:
-    """报告超出文档验证范围的 N/L，但不擅自拒绝可运行输入。"""
+    """报告超出文档验证范围的 N/L，但不擅自拒绝可运行输入。
+
+    文档验证范围为 N∈[50,1000]、L∈[500,10000]；超出只是提示（warning），
+    因为分档逻辑对任意规模都能给出合法 profile，是否继续由用户决定。
+    """
     warnings: list[str] = []
     if not 50 <= int(train_sample_count) <= 1000:
         warnings.append(f"训练样本数 N={train_sample_count} 超出文档适用范围 50-1000")

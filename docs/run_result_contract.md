@@ -57,7 +57,7 @@ queued | running | succeeded | failed | cancelled
 | `pending` | 已排队，尚未执行 |
 | `running` | 正在训练 |
 | `failed` | 训练失败 |
-| `cancelled` | 已取消 |
+| `cancelled` | STOP；训练已停止且本次产物不保留 |
 | `ready` | 成功且必需结果完整 |
 | `partial` | 成功，但部分必需或已登记文件缺失/损坏 |
 | `missing_manifest` | Run 成功，但 Manifest 缺失 |

@@ -1,9 +1,21 @@
 """生成单样品光谱特征重要性 artifact。
 
+【模块职责与系统位置】
+本模块是训练流水线的“可解释性”层，在模型训练完成后对测试集每个样品计算
+“哪些谱段对预测最重要”，产出 sample_feature_importance.json/csv，
+供结果页的单样品高亮展示。按模型类型分三条技术路线：
+- 传统模型与无卷积深度模型（pca_mlp、cnn_transformer1d 等）：
+  sample_occlusion_importance——窗口遮挡 + 真实类别 Log-loss 增量；
+- 1D 卷积模型（cnn1d/resnet1d/inception1d/tcn1d 等）：
+  sample_deep_attribution_importance——1D Grad-CAM，失败时回退输入梯度；
+- DSCARNet：sample_dscarnet_single/dual_2d_gradcam_importance——
+  在 SAR/CAR 二维分支上做 2D Grad-CAM，再经 AggMap/PCA 回投到一维特征。
+
+【关键算法约定】
 窗口遮挡把特征轴解析成最接近请求数量且能整除长度的等宽窗口，并用训练集均值
 替换窗口。重要性定义为真实类别 ``masked_loss - original_loss``，也就是
 ``log(p_before / p_after)``。卷积模型走 1D Grad-CAM，DSCARNet 走二维分支
-归因后回投到原始一维特征。
+归因后回投到原始一维特征。正值表示遮挡后真实类别置信度受损（该谱段重要）。
 """
 
 from __future__ import annotations
@@ -24,6 +36,8 @@ from .training_explainability import explainability_method
 ScoreFn = Callable[[np.ndarray], np.ndarray]
 
 
+# sample_feature_importance.csv 的固定列顺序契约：结果页与测试都按此解析。
+# 前段是样品级字段（result_id/标签/概率），后段是窗口级字段（区间/重要性/loss）。
 SAMPLE_FEATURE_COLUMNS = [
     "importance_metric",
     "result_id",
@@ -52,6 +66,8 @@ SAMPLE_FEATURE_COLUMNS = [
     "true_probability_drop",
 ]
 
+# 只有窗口遮挡法（sample_occlusion_log_loss）才会产出这些 loss 明细列；
+# 深度归因方法没有遮挡 loss，写 CSV 时要把这些列剔除（见 artifact 写出函数）。
 SAMPLE_FEATURE_LOSS_COLUMNS = [
     "original_loss",
     "masked_loss",
@@ -62,7 +78,12 @@ SAMPLE_FEATURE_LOSS_COLUMNS = [
 
 # 窗口几何与结果分段：所有窗口必须等宽且完整覆盖特征轴。
 def resolve_equal_width_window_count(n_features: int, window_count: int) -> int:
-    """Choose the closest requested window count that divides the feature axis."""
+    """Choose the closest requested window count that divides the feature axis.
+
+    窗口必须等宽且完整覆盖特征轴，因此窗口数必须是 n_features 的约数。
+    本函数在全部约数中找与请求值 window_count 最接近的一个；距离相同时
+    偏向更多窗口（保留更高的归因分辨率）。n_features<=0 时返回 0。
+    """
     if n_features <= 0:
         return 0
     target = max(1, min(int(window_count), int(n_features)))
@@ -78,7 +99,11 @@ def resolve_equal_width_window_count(n_features: int, window_count: int) -> int:
 
 
 def build_feature_windows(n_features: int, window_count: int) -> list[dict[str, int]]:
-    """Split a spectrum into equal-width contiguous importance windows."""
+    """Split a spectrum into equal-width contiguous importance windows.
+
+    返回 [{window_index, start_index, end_index}, ...]，下标为闭区间、0 基，
+    与 wide-feature 宽表的特征列顺序一一对应。
+    """
     if n_features <= 0:
         return []
     count = resolve_equal_width_window_count(n_features, window_count)
@@ -97,7 +122,13 @@ def build_feature_windows(n_features: int, window_count: int) -> list[dict[str, 
 
 
 def merge_ranked_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge adjacent selected windows into larger feature segments."""
+    """Merge adjacent selected windows into larger feature segments.
+
+    把 top_k 中相邻（下标连续）的窗口合并成更大的“重要区段”，方便前端
+    用连续区间高亮。合并策略：importance 取各窗口最大值（区段的代表性
+    强度由最强窗口决定），rank 取最小值（排名由最强窗口决定），
+    关联的 loss 明细跟随最强窗口。返回按 rank 升序的区段列表。
+    """
     if not windows:
         return []
     ordered = sorted(windows, key=lambda item: (item["start_index"], item["end_index"]))
@@ -134,6 +165,8 @@ def merge_ranked_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         current["end_index"] = int(window["end_index"])
         current["end_x"] = float(window["end_x"])
         window_is_stronger = float(window["importance"]) > float(current["importance"])
+        # 相邻窗口并入当前区段：区段边界扩展，importance/rank 跟随更强窗口，
+        # 保证区段的语义是“这一片里最强的信号”。
         current["importance"] = float(max(current["importance"], window["importance"]))
         if window_is_stronger:
             for key in (
@@ -159,7 +192,11 @@ def primary_feature_segment(
     top_segments: list[dict[str, Any]] | None,
     windows: list[dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
-    """Return the single segment used by the UI highlight."""
+    """Return the single segment used by the UI highlight.
+
+    优先取 top_segments 中 rank 最小者；没有区段时从窗口列表中找
+    importance>0 的最优窗口兜底；都没有则返回 None（前端不高亮）。
+    """
     segments = list(top_segments or [])
     if segments:
         return dict(sorted(segments, key=lambda item: int(item.get("rank", 10**9)))[0])
@@ -204,10 +241,26 @@ def sample_occlusion_importance(
     top_k: int = 5,
     max_perturbed_rows: int = 256,
 ) -> dict[str, Any]:
-    """Compute per-sample interval attribution against each sample's true label."""
+    """Compute per-sample interval attribution against each sample's true label.
+
+    算法（窗口遮挡 Log-loss 增量）：
+    1) 取测试集样品的原始预测，计算真实类别 loss（-log p_true）；
+    2) 逐窗口用训练集均值曲线替换该窗口的强度（遮挡）；
+    3) 重新预测，importance = masked_loss - original_loss
+       = log(p_before/p_after)，正值表示遮挡损害了真实类别置信度。
+
+    参数：x/y 为全体样品的特征矩阵与编码标签；splits 提供 test 下标；
+    score_fn 是“特征矩阵→类别概率矩阵”的已训练预测函数；mean_indices
+    是构造遮挡基线所用的 train 下标；window_count/top_k 控制窗口数与
+    返回的高亮区段数；max_perturbed_rows 限制单次前向的行数（内存保护）。
+    返回 dict：status=ready/unavailable，含每个样品的 windows、
+    top_segments、primary_segment。score_fn 返回形状不符时抛 ValueError。
+    """
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
+    # 遮挡基线用 train 均值曲线而不是全零：避免遮挡本身引入分布外输入，
+    # 让 loss 变化只反映“该窗口信息被抹平”的影响。
     baseline_curve = _mean_curve(x, mean_indices)
     metadata = metadata or []
 
@@ -239,6 +292,7 @@ def sample_occlusion_importance(
     y_samples = y[sample_indices]
     base_scores = _as_score_matrix(score_fn(x_samples.copy()))
     original_losses = _true_label_losses(base_scores, y_samples)
+    # 实际窗口数可能小于请求值（见 resolve_equal_width_window_count 的约数约束）。
     windows = build_feature_windows(x.shape[1], window_count)
     top_limit = max(1, int(top_k))
     window_scores: list[np.ndarray] = []
@@ -246,6 +300,8 @@ def sample_occlusion_importance(
     window_true_probabilities: list[np.ndarray] = []
     sample_count = max(1, len(x_samples))
     perturbed_row_limit = max(1, int(max_perturbed_rows))
+    # 内存保护：一次遮挡批次的总行数（窗口数×样品数）不超过 max_perturbed_rows，
+    # 据此反推每批能放多少个窗口，防止大测试集×多窗口时显存/内存爆掉。
     windows_per_batch = max(1, perturbed_row_limit // sample_count)
     true_row_indices = np.arange(len(y_samples))
 
@@ -256,6 +312,8 @@ def sample_occlusion_importance(
         ]
         return np.concatenate(parts, axis=0)
 
+    # 分批遮挡：每批把若干窗口的遮挡结果堆成一个大矩阵一次前向，
+    # 再 reshape 回 (窗口, 样品, 类别) 逐窗口计算 loss 增量。
     for chunk_start in range(0, len(windows), windows_per_batch):
         chunk = windows[chunk_start : chunk_start + windows_per_batch]
         perturbed_blocks = []
@@ -263,16 +321,21 @@ def sample_occlusion_importance(
             start = int(window["start_index"])
             end = int(window["end_index"])
             occluded = x_samples.copy()
+            # 核心遮挡操作：该窗口的强度整体替换为 train 均值。
             occluded[:, start : end + 1] = baseline_curve[start : end + 1]
             perturbed_blocks.append(occluded)
         stacked = np.concatenate(perturbed_blocks, axis=0)
         stacked_scores = score_perturbed(stacked)
         expected_rows = len(chunk) * len(x_samples)
+        # 形状防御：score_fn 必须由调用方保证对任意行数返回 (N, n_classes) 概率，
+        # 形状不符说明模型包装层有 bug，直接报错而不是静默错算重要性。
         if stacked_scores.shape[0] != expected_rows or stacked_scores.shape[1] != base_scores.shape[1]:
             raise ValueError("score_fn 返回的类别概率形状与遮挡批次不一致")
         chunk_scores = stacked_scores.reshape(len(chunk), len(x_samples), base_scores.shape[1])
         for occluded_scores in chunk_scores:
             masked_losses = _true_label_losses(occluded_scores, y_samples)
+            # 重要性定义：masked_loss - original_loss = log(p_before/p_after)，
+            # 正值 = 遮挡后真实类别更不可信 = 该窗口对识别该样品重要。
             window_scores.append(masked_losses - original_losses)
             window_losses.append(masked_losses)
             window_true_probabilities.append(
@@ -310,6 +373,8 @@ def sample_occlusion_importance(
                     "true_probability_drop": float(true_prob - masked_true_probs[local_idx]),
                 }
             )
+        # normalized_importance：按本样品最大正值归一化到 [0,1]，仅用于前端着色，
+        # 不改变 importance 的原始 log-loss 语义。
         importance_values = np.asarray([row["importance"] for row in rows], dtype=np.float64)
         max_importance = float(np.max(importance_values)) if importance_values.size else 0.0
         for row in rows:
@@ -323,6 +388,7 @@ def sample_occlusion_importance(
             row["rank"] = int(rank)
         top_windows = [row for row in ranked if row["importance"] > 0][:top_limit]
         ranked_by_index = sorted(ranked, key=lambda item: item["window_index"])
+        # 相邻的高重要性窗口合并为连续区段，供前端区段级高亮。
         top_segments = merge_ranked_windows(top_windows)
         samples.append(
             {
@@ -376,7 +442,14 @@ def sample_deep_attribution_importance(
     model_type: str = "cnn1d",
     top_k: int = 5,
 ) -> dict[str, Any]:
-    """Compute per-sample deep-model attributions for the true class."""
+    """Compute per-sample deep-model attributions for the true class.
+
+    按 model_type 经 explainability_method 选择归因方法：
+    gradcam_1d（1D 卷积模型）或 input_gradient_attribution（无卷积深度模型）。
+    Grad-CAM 计算失败时返回 status=failed 而不是中断训练结果写出；
+    同时额外计算输入梯度归因作为 sanity check 对照（method_disagreement、
+    edge_top_segment），用于发现“归因全落在谱线边缘”等不可信模式。
+    """
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
     x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
@@ -384,6 +457,8 @@ def sample_deep_attribution_importance(
     metadata = metadata or []
     method = explainability_method(model_type)
 
+    # 路由防御：无卷积模型（pca_mlp、cnn_transformer1d 等）的 Log-loss 遮挡法
+    # 应走 sample_occlusion_importance；传错入口属于调用方 bug，直接报错。
     if method == "window_occlusion_log_loss":
         raise ValueError("该模型应使用 sample_occlusion_importance 计算 Log-loss 窗口重要性")
 
@@ -414,6 +489,8 @@ def sample_deep_attribution_importance(
     x_samples = x[sample_indices]
     y_samples = y[sample_indices]
     if method == "gradcam_1d":
+        # Grad-CAM 内部带降级链：无目标层/激活异常时回退输入梯度归因，
+        # 只有显式声明了 gradcam_target_layer 却失效才抛错。
         try:
             attributions, scores, actual_method = _gradcam_1d_attributions(model, x_samples, y_samples, x.shape[1])
         except Exception as exc:
@@ -434,6 +511,8 @@ def sample_deep_attribution_importance(
         attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
     auxiliary_attributions = None
     if method == "gradcam_1d":
+        # 同时计算输入梯度归因作为对照：两种方法的第一重要区段若不重叠，
+        # sanity_checks 会给出 method_disagreement 警告。
         auxiliary_attributions, _auxiliary_scores = _input_gradient_attributions(model, x_samples, y_samples)
     attributions = np.asarray(attributions, dtype=np.float64)
     if auxiliary_attributions is not None:
@@ -518,7 +597,15 @@ def sample_dscarnet_single_2d_gradcam_importance(
     metadata: list[dict[str, Any]] | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
-    """为 SAR 或 CAR 单分支生成 2D Grad-CAM，并回投到一维特征轴。"""
+    """为 SAR 或 CAR 单分支生成 2D Grad-CAM，并回投到一维特征。
+
+    流程：对 mapped_values（AggMap 二维图）在模型的 inception 层做 2D
+    Grad-CAM → 用 mapper 的像素-特征对应关系把 CAM 平均回投到特征维度
+    （SAR：f_ 前缀，目标维度=特征数；CAR：pc_ 前缀，目标维度=主成分数）
+    → CAR 还需再乘 |PCA.components_| 从主成分空间反投影回原始特征。
+    mapped_values/mapper/pca/mapping_metadata 均来自 dscarnet_mapping 模块
+    在 train 上拟合并保存的对象。
+    """
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
     mode = str(mode).lower()
@@ -531,9 +618,15 @@ def sample_dscarnet_single_2d_gradcam_importance(
     indices = [idx for _split, idx in ordered_items]
     labels_array = y[indices]
     cams, scores = _gradcam_2d_single_attributions(model, np.asarray(mapped_values)[indices], labels_array)
+    # AggMap 网格中的列名前缀决定回投空间：SAR 对应原始特征 f_*，
+    # CAR 对应 PCA 主成分 pc_*（之后还要再过一次 PCA 反投影）。
     prefix = "f_" if mode == "sar" else "pc_"
     target_count = x.shape[1] if mode == "sar" else int(pca.components_.shape[0])
+    # 把 (N,H,W) 的 CAM 按 mapper 中每个特征占据的像素位置取均值，
+    # 得到 (N, target_count) 的特征级归因。
     mapped_attr = _aggmap_cam_to_feature_matrix(cams, mapper, target_count, prefix)
+    # CAR 分支的归因落在主成分空间，乘 |components_| 反投影回原始特征轴；
+    # 取绝对值是因为这里只关心贡献强度，不关心 PCA 载荷的正负号。
     if mode == "car":
         mapped_attr = mapped_attr[:, :target_count] @ np.abs(pca.components_[:target_count, :])
     attributions = _normalize_rows(mapped_attr)
@@ -581,7 +674,14 @@ def sample_dscarnet_dual_2d_gradcam_importance(
     metadata: list[dict[str, Any]] | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
-    """Compute DSCARNet SAR/CAR dual-branch 2D Grad-CAM and project it to 1D features."""
+    """Compute DSCARNet SAR/CAR dual-branch 2D Grad-CAM and project it to 1D features.
+
+    双通路归因：分别在 inception1(SAR)/inception2(CAR) 分支计算 2D Grad-CAM，
+    SAR 经 AggMap 直接回投到特征轴，CAR 经 AggMap→主成分→|PCA components|
+    两级回投到特征轴；两路各自做行归一化后等权平均得到 combined 归因。
+    输出同时保留 sar_top_segments/car_top_segments 与分支一致性 sanity，
+    用于判断两条通路是否“看到”了同一个谱段。
+    """
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
     x_sar = np.asarray(x_sar, dtype=np.float32)
@@ -618,6 +718,7 @@ def sample_dscarnet_dual_2d_gradcam_importance(
 
     sample_indices = [idx for _split, idx in ordered_items]
     y_samples = y[sample_indices]
+    # 一次前向/反向分别拿到两个分支的 CAM；scores 是双通路模型的类别概率。
     sar_cams, car_cams, scores = _dscarnet_dual_2d_gradcam_attributions(
         model,
         x_sar[sample_indices],
@@ -629,9 +730,11 @@ def sample_dscarnet_dual_2d_gradcam_importance(
     component_count = min(car_component_attr.shape[1], pca.components_.shape[0])
     car_feature_attr = np.zeros_like(sar_feature_attr)
     if component_count > 0:
+        # CAR 两级回投的第二级：主成分归因 × |PCA 载荷| → 原始特征空间。
         car_feature_attr = car_component_attr[:, :component_count] @ np.abs(pca.components_[:component_count, :])
     sar_norm = _normalize_rows(sar_feature_attr)
     car_norm = _normalize_rows(car_feature_attr)
+    # 两路先各自 min-max 归一（量纲对齐），再等权平均，避免单通路尺度主导。
     combined_attributions = _normalize_rows((sar_norm + car_norm) / 2.0)
     scores = _as_score_matrix(scores)
     top_limit = max(1, int(top_k))
@@ -699,10 +802,16 @@ def sample_dscarnet_dual_2d_gradcam_importance(
 
 
 def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[str, Any]) -> dict[str, Any]:
-    """写出逐样品、逐窗口的解释性 JSON/CSV，并返回状态摘要。"""
+    """写出逐样品、逐窗口的解释性 JSON/CSV，并返回状态摘要。
+
+    JSON 保留完整嵌套结构（曲线、窗口、区段、sanity），是结果页的数据源；
+    CSV 是“样品×窗口”的扁平长表，列序固定为 SAMPLE_FEATURE_COLUMNS，
+    供 Excel 打开核对。返回的摘要 dict 会并入训练 result，不重复携带大数组。
+    """
     run_path = Path(run_dir)
     json_path = run_path / "sample_feature_importance.json"
     csv_path = run_path / "sample_feature_importance.csv"
+    # 把样品数写回 result 再落盘，让 JSON 自带计数，前端无需遍历统计。
     result["sample_count"] = len(result.get("samples", []))
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     rows: list[dict[str, Any]] = []
@@ -726,11 +835,14 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
         for window in sample.get("windows", []):
             rows.append({**base, **window})
     columns = list(SAMPLE_FEATURE_COLUMNS)
+    # 非遮挡法没有 original_loss/masked_loss 等明细，CSV 中剔除这些列，
+    # 避免整列空值误导阅读。
     if result.get("method") not in {"sample_occlusion_importance", "sample_occlusion_log_loss"}:
         columns = [column for column in columns if column not in SAMPLE_FEATURE_LOSS_COLUMNS]
     pd.DataFrame(rows, columns=columns).to_csv(
         csv_path,
         index=False,
+        # utf-8-sig 带 BOM，保证 Excel 直接打开 CSV 时中文列名/标签不乱码。
         encoding="utf-8-sig",
     )
     return {
@@ -751,6 +863,8 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
 
 
 # 以下辅助函数负责坐标防御、sanity check、AggMap 像素回投和 Grad-CAM hook。
+# X 轴防御：外部传入的 x_axis 长度与特征数不符时回退为 0..n-1 的整数轴，
+# 保证后续 start_x/end_x 永远有值可取，不让脏轴数据中断解释性输出。
 def _safe_x_axis(x_axis: np.ndarray | list[float], n_features: int) -> np.ndarray:
     values = np.asarray(x_axis, dtype=np.float32).reshape(-1)
     if len(values) == n_features:
@@ -758,6 +872,8 @@ def _safe_x_axis(x_axis: np.ndarray | list[float], n_features: int) -> np.ndarra
     return np.arange(n_features, dtype=np.float32)
 
 
+# 计算指定下标（通常是 train）的均值曲线作为遮挡基线；下标全无效时
+# 退化为全体均值，保证基线永远存在。
 def _mean_curve(x: np.ndarray, indices: list[int]) -> np.ndarray:
     if x.ndim != 2 or x.shape[0] == 0:
         return np.asarray([], dtype=np.float32)
@@ -767,12 +883,15 @@ def _mean_curve(x: np.ndarray, indices: list[int]) -> np.ndarray:
     return np.mean(x[valid_indices], axis=0).astype(np.float32)
 
 
+# 统一把数组转成 float list，便于 JSON 序列化（numpy 标量不能直接 json.dumps）。
 def _float_list(values: np.ndarray | list[float] | None) -> list[float]:
     if values is None:
         return []
     return [float(item) for item in np.asarray(values, dtype=np.float32).reshape(-1)]
 
 
+# 优先使用样品元数据里携带的 sample_x_axis（逐样品真实坐标）；
+# 缺失、解析失败或长度不符都回退到批次公共轴。
 def _sample_x_axis_array(sample_meta: dict[str, Any], fallback_axis: np.ndarray) -> np.ndarray:
     raw_axis = sample_meta.get("sample_x_axis")
     if raw_axis is None:
@@ -784,10 +903,14 @@ def _sample_x_axis_array(sample_meta: dict[str, Any], fallback_axis: np.ndarray)
     return axis if axis.size == fallback_axis.size else fallback_axis
 
 
+# 可解释性只针对 test 划分：返回 (split名, 源下标) 的有序列表，
+# 后续所有样品循环都以它为准，保证 result_id 与数据行严格对齐。
 def _ordered_test_indices(splits: dict[str, list[int]]) -> list[tuple[str, int]]:
     return [("test", int(idx)) for idx in splits.get("test", [])]
 
 
+# 预测分数统一为 (N, n_classes) 二维 float64，并拒绝 NaN/Inf——
+# 重要性建立在 log(p) 之上，非有限概率会让整个 artifact 失去意义。
 def _as_score_matrix(values: np.ndarray) -> np.ndarray:
     scores = np.asarray(values, dtype=np.float64)
     if scores.ndim == 1:
@@ -799,18 +922,21 @@ def _as_score_matrix(values: np.ndarray) -> np.ndarray:
     return scores
 
 
+# 逐样品真实类别的 -log(p)；clip 到 [1e-12, 1] 防止 log(0)=inf。
 def _true_label_losses(scores: np.ndarray, labels: np.ndarray) -> np.ndarray:
     row_indices = np.arange(scores.shape[0])
     true_probs = np.clip(scores[row_indices, labels], 1e-12, 1.0)
     return -np.log(true_probs)
 
 
+# class_id 越界时退化为数字字符串，不让异常标签名中断结果写出。
 def _label_at(label_names: list[str], class_id: int) -> str:
     if 0 <= class_id < len(label_names):
         return str(label_names[class_id])
     return str(class_id)
 
 
+# 安全提取区段下标边界；字段缺失/类型错误返回 None，由调用方按“无区段”处理。
 def _segment_bounds(segment: dict[str, Any] | None) -> tuple[int, int] | None:
     if not segment:
         return None
@@ -820,6 +946,7 @@ def _segment_bounds(segment: dict[str, Any] | None) -> tuple[int, int] | None:
         return None
 
 
+# 闭区间重叠判定：用于比较两种归因方法/两个分支的第一重要区段是否一致。
 def _segments_overlap(left: dict[str, Any] | None, right: dict[str, Any] | None) -> bool:
     left_bounds = _segment_bounds(left)
     right_bounds = _segment_bounds(right)
@@ -828,6 +955,8 @@ def _segments_overlap(left: dict[str, Any] | None, right: dict[str, Any] | None)
     return left_bounds[0] <= right_bounds[1] and right_bounds[0] <= left_bounds[1]
 
 
+# 判断区段是否贴近谱线两端（3% 边缘带内）。Grad-CAM 热点若总在边缘，
+# 通常是基线/截断伪影而非真实化学信号，sanity check 会据此告警。
 def _is_edge_segment(segment: dict[str, Any] | None, feature_count: int) -> bool:
     bounds = _segment_bounds(segment)
     if bounds is None or feature_count <= 0:
@@ -836,6 +965,8 @@ def _is_edge_segment(segment: dict[str, Any] | None, feature_count: int) -> bool
     return bounds[0] <= margin or bounds[1] >= feature_count - 1 - margin
 
 
+# 单样品级 sanity：比较 Grad-CAM（primary）与输入梯度（auxiliary）的
+# 第一重要区段——是否贴边缘、是否互不重叠（method_disagreement）。
 def _sample_attribution_sanity(
     primary_top_segments: list[dict[str, Any]],
     auxiliary_top_segments: list[dict[str, Any]],
@@ -857,6 +988,7 @@ def _sample_attribution_sanity(
     }
 
 
+# 把全部测试样品的 sanity 聚合成计数与中文警告，随结果一起展示。
 def _aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
     checks = [sample.get("sanity_checks") for sample in samples if sample.get("sanity_checks")]
     edge_count = sum(1 for item in checks if item.get("edge_top_segment"))
@@ -876,6 +1008,8 @@ def _aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+# 逐行 min-max 归一化到 [0,1]；NaN/Inf 清零，恒定行（max≈min）整行置 0，
+# 避免“处处相等”的归因被归一化成虚假热点。
 def _normalize_rows(values: np.ndarray) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim == 1:
@@ -892,6 +1026,7 @@ def _normalize_rows(values: np.ndarray) -> np.ndarray:
     return normalized
 
 
+# 解析 'f_12' / 'pc_3' 这类带前缀列名中的整数下标；不匹配返回 None。
 def _parse_prefixed_index(value: Any, prefix: str) -> int | None:
     text = str(value)
     if not text.startswith(prefix):
@@ -902,6 +1037,9 @@ def _parse_prefixed_index(value: Any, prefix: str) -> int | None:
         return None
 
 
+# 从 AggMap mapper 中提取“特征下标 → 二维图像素坐标列表”的映射。
+# 优先读 df_grid（含 x/y/v 的网格表），缺失时用 feature_names_reshape
+# 按 fmap_shape 行优先展开兜底；一个特征可能占多个像素，故是列表。
 def _aggmap_positions(mapper: Any, feature_count: int, prefix: str) -> list[list[tuple[int, int]]]:
     positions: list[list[tuple[int, int]]] = [[] for _ in range(int(feature_count))]
     grid = getattr(mapper, "df_grid", None)
@@ -924,6 +1062,8 @@ def _aggmap_positions(mapper: Any, feature_count: int, prefix: str) -> list[list
     return positions
 
 
+# 把 (N,H,W) 的 2D CAM 回投为 (N,feature_count)：每个特征取其所有
+# 对应像素的 CAM 均值；没有有效像素的特征归因保持 0。
 def _aggmap_cam_to_feature_matrix(
     cams: np.ndarray,
     mapper: Any,
@@ -945,6 +1085,10 @@ def _aggmap_cam_to_feature_matrix(
     return output
 
 
+# DSCARNet 单通路 2D Grad-CAM：在 model.inception 输出上挂 forward hook
+# 捕获激活并对真实类别 logit 反传，通道维做全局平均池化得到权重，
+# ReLU(Σ w_k·A_k) 后双线性上采样回输入分辨率。二分类单 logit 与
+# 多分类 softmax 由 _selected_logits_and_scores 统一处理。
 def _gradcam_2d_single_attributions(
     model: nn.Module,
     mapped_samples: np.ndarray,
@@ -974,6 +1118,7 @@ def _gradcam_2d_single_attributions(
         gradients = activation.grad
         if gradients is None:
             raise ValueError("DSCARNet 单通路 Grad-CAM 未捕获到梯度")
+        # 通道权重 = 梯度在 H×W 上的全局平均池化（Grad-CAM 标准做法）。
         weights = gradients.mean(dim=(2, 3), keepdim=True)
         cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
         cam = F.interpolate(cam, size=inputs.shape[-2:], mode="bilinear", align_corners=False).squeeze(1)
@@ -982,6 +1127,8 @@ def _gradcam_2d_single_attributions(
         handle.remove()
 
 
+# 双通路包装：branch=1 取 SAR(inception1)，branch=2 取 CAR(inception2)，
+# scores 以 SAR 分支前向的类别概率为准（两分支共享同一组 logits）。
 def _dscarnet_dual_2d_gradcam_attributions(
     model: nn.Module,
     x_sar_samples: np.ndarray,
@@ -1005,6 +1152,8 @@ def _dscarnet_dual_2d_gradcam_attributions(
     return sar_cams, car_cams, scores
 
 
+# 与单通路同理，但 hook 挂在 model.inception{branch} 上，
+# 前向输入是 (sar, car) 两个张量；CAM 上采样目标尺寸随分支不同而不同。
 def _gradcam_2d_branch_attributions(
     model: nn.Module,
     x_sar_samples: np.ndarray,
@@ -1050,6 +1199,8 @@ def _gradcam_2d_branch_attributions(
         handle.remove()
 
 
+# DSCARNet 分支级 sanity：SAR 与 CAR 的第一重要区段是否重叠、
+# combined 区段是否与各分支一致，用于发现双通路“各看各的”的情况。
 def _dscarnet_branch_sanity(
     combined_top_segments: list[dict[str, Any]],
     sar_top_segments: list[dict[str, Any]],
@@ -1066,6 +1217,7 @@ def _dscarnet_branch_sanity(
     }
 
 
+# 聚合全部样品的分支 sanity，给出 SAR/CAR 不一致样品数与中文警告。
 def _aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
     checks = [sample.get("sanity_checks") for sample in samples if sample.get("sanity_checks")]
     disagreement_count = sum(1 for item in checks if item.get("sar_car_top_disagreement"))
@@ -1082,15 +1234,22 @@ def _aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str
 
 
 def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总普通深度模型归因的非零、边缘与重叠 sanity 指标。"""
+    """汇总普通深度模型归因的非零、边缘与重叠 sanity 指标。
+
+    对外公开入口（训练流水线调用），内部委托 _aggregate_attribution_sanity。
+    """
     return _aggregate_attribution_sanity(samples)
 
 
 def aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总 DSCARNet SAR/CAR 分支是否实际产生有效归因。"""
+    """汇总 DSCARNet SAR/CAR 分支是否实际产生有效归因。
+
+    对外公开入口（训练流水线调用），内部委托 _aggregate_dscarnet_branch_sanity。
+    """
     return _aggregate_dscarnet_branch_sanity(samples)
 
 
+# 取模型所在设备；无参数模型（极端情况）回退 CPU。
 def _model_device(model: nn.Module) -> torch.device:
     try:
         return next(model.parameters()).device
@@ -1098,6 +1257,9 @@ def _model_device(model: nn.Module) -> torch.device:
         return torch.device("cpu")
 
 
+# 统一两种输出形式的“真实类别得分 + 概率矩阵”：
+# 单 logit 二分类按标签取 ±logit（sigmoid 概率），多分类取对应 logit
+#（softmax 概率）；返回值前者带梯度用于 backward，后者已 detach。
 def _selected_logits_and_scores(logits: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     if logits.ndim == 2 and logits.shape[1] == 1:
         signed = torch.where(labels == 1, logits[:, 0], -logits[:, 0])
@@ -1107,6 +1269,8 @@ def _selected_logits_and_scores(logits: torch.Tensor, labels: torch.Tensor) -> t
     return selected, torch.softmax(logits.detach(), dim=1)
 
 
+# 输入梯度归因：对真实类别得分 backward，取 |grad × input| 作为特征强度；
+# 同时充当 Grad-CAM 的 sanity 对照与无卷积模型的主归因方法。
 def _input_gradient_attributions(
     model: nn.Module,
     x_samples: np.ndarray,
@@ -1126,6 +1290,9 @@ def _input_gradient_attributions(
     return attributions.cpu().numpy(), scores.cpu().numpy()
 
 
+# 1D Grad-CAM：目标层由 _find_gradcam_target 决定。模型显式声明了
+# gradcam_target_layer 却拿不到目标/激活/梯度时抛错（声明即承诺）；
+# 未声明时逐级回退到输入梯度归因，并把实际方法名一并返回。
 def _gradcam_1d_attributions(
     model: nn.Module,
     x_samples: np.ndarray,
@@ -1169,6 +1336,7 @@ def _gradcam_1d_attributions(
                 raise RuntimeError("Grad-CAM 目标层未捕获梯度")
             attributions, scores = _input_gradient_attributions(model, x_samples, y_samples)
             return attributions, scores, "input_gradient_attribution"
+        # 通道权重 = 梯度在长度维上的全局平均池化（1D Grad-CAM）。
         weights = gradients.mean(dim=2, keepdim=True)
         cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
         cam = F.interpolate(cam, size=output_length, mode="linear", align_corners=False).squeeze(1)
@@ -1177,6 +1345,8 @@ def _gradcam_1d_attributions(
         handle.remove()
 
 
+# 目标层解析顺序：模型自定义 gradcam_target_layer() → inception 属性 →
+# up_blocks/downs 末块 → 最后一个 Conv1d；都找不到返回 None（走梯度回退）。
 def _find_gradcam_target(model: nn.Module) -> nn.Module | None:
     resolver = getattr(model, "gradcam_target_layer", None)
     if callable(resolver):
@@ -1198,6 +1368,8 @@ def _find_gradcam_target(model: nn.Module) -> nn.Module | None:
     return conv_layers[-1] if conv_layers else None
 
 
+# 把逐点归因向量包装成“每点一个窗口”的窗口列表（与遮挡法输出同构），
+# 做 min-max 归一、排序赋 rank、取 top_k 合并区段，供统一的结果契约消费。
 def _attribution_windows(
     attribution: np.ndarray,
     *,

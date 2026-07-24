@@ -1,21 +1,60 @@
-/** 预处理工作台：三张卡走完全程（上传文件 → 一键处理 → 下载/去建模），高级参数默认折叠。 */
+/**
+ * 【模块说明】预处理工作台视图（static/v2 工作台）
+ *
+ * 职责：渲染"预处理工作台"页——三张卡片走完全程：
+ * ① 上传原始两列曲线文件（X, 强度）→ ② 一键预处理（高级参数默认折叠）→
+ * ③ 预览对照曲线、导出建模文件或跳转建模页。支持拉曼（raman）与 HPLC 色谱两种类型。
+ *
+ * 系统位置与协作：
+ * - 这是 v2 前端（static/v2/index.html）的一个视图组件，由 Hash 路由挂载；
+ *   下载结果后到 #/modeling（modeling.js）继续建模流程。
+ * - 通过 ../api.js 调用后端：inspectHplc（HPLC 批次点数/时间范围预检）、
+ *   preprocess（POST /api/preprocess/raman 或 /api/preprocess/hplc）、download（下载结果 CSV）。
+ * - 曲线图用 ../lib/charts.js 的 lineChart（SVG）；validateHplcRowRange 来自
+ *   ../../js/ui-utils.js，与旧前端共用同一份 HPLC 行号范围校验逻辑（前后端行为一致的关键）。
+ *
+ * 关键业务约束（与后端契约一致）：
+ * - 预处理统一输出 wide-feature-v2 宽表：Index, Label, Sample_ID, Name 四个元数据列 +
+ *   第 5 列起真实、严格递增的坐标表头；Label/Sample_ID 由用户下载后人工填写，Name 已保留原文件名。
+ * - 拉曼：处理顺序固定为先截取范围、再在范围内做基线校正（arPLS 等 5 种方法）。
+ * - HPLC：0–50 分钟时间范围；选择文件后必须先做批次点数检测（inspectHplc），
+ *   点数一致（或满足后端众数规则）才允许开始预处理；hplc_interpolate 开关决定
+ *   输出固定目标时间轴插值结果还是原始所选轴（关闭时多文件所选轴必须完全一致）。
+ *   两种模式都不做面积归一化或消负。
+ */
 import { el, clear, saveBlob, svgEl } from '../lib/dom.js';
 import { lineChart } from '../lib/charts.js';
 import { preprocess, inspectHplc, download } from '../api.js';
 import { validateHplcRowRange } from '../../js/ui-utils.js';
 
+/** 拉曼可选的基线校正方法，arPLS 为默认（见 paramForm 中选项文案）。 */
 const RAMAN_BASELINE_METHODS = ['arPLS', 'airPLS', 'als', 'drPLS', 'poly'];
+/** 原始曲线颜色（灰蓝，虚线展示）。 */
 const COLOR_RAW = '#94a3b8';
+/** 处理后曲线颜色（深青绿，实线展示）。 */
 const COLOR_PROCESSED = '#0f766e';
 
+/**
+ * 为当前文件选择生成一个指纹串（文件名 + 大小 + 最后修改时间）。
+ * 用于检测异步的 HPLC 批次检查返回时，用户是否已经换了一批文件：
+ * 指纹不一致则丢弃过期结果。 与换行符分隔避免不同字段拼接出相同串。
+ */
 const fileSelectionKey = (files) => files
   .map((file) => `${file.name}\u0000${file.size}\u0000${file.lastModified}`)
   .join('\u0001');
 
+/**
+ * 取曲线的"处理后强度"序列：新契约字段为 processed_y，旧响应兼容 corrected_y。
+ * 两者都没有时返回 null（调用方回退展示原始 raw_y）。
+ */
 function processedSeries(curve) {
   return curve?.processed_y ?? curve?.corrected_y ?? null;
 }
 
+/**
+ * 渲染图例列表：每条序列一小段 SVG 线段（颜色/虚线与图一致）+ 名称。
+ * @param {Array<{name?: string, color?: string, dashed?: boolean}>} series
+ */
 function legendList(series) {
   return el('ul', { className: 'legend' },
     (series || []).map((item, index) => el('li', { className: 'legend-item' }, [
@@ -31,6 +70,16 @@ function legendList(series) {
     ])));
 }
 
+/**
+ * 为一条曲线构造预览图（SVG）与配套图例。
+ *
+ * HPLC 只画一条处理后的色谱强度线（无处理后数据时回退 raw_y）；
+ * 拉曼画"原始 raw_y（灰虚线）+ 基线校正后（绿实线）"双序列对照。
+ *
+ * @param {object} curve 后端 curves 数组中的一项：{ name, x, raw_y, processed_y?/corrected_y? }。
+ * @param {'raman'|'hplc'} kind 预处理类型，决定序列构成与坐标轴文案。
+ * @returns {{ svg: SVGElement, legend: HTMLElement }}
+ */
 function curveChart(curve, kind) {
   const processed = processedSeries(curve);
   const series = kind === 'hplc'
@@ -51,9 +100,21 @@ function curveChart(curve, kind) {
   };
 }
 
-/** 范围截取 + 各类型的方法/开关，收进高级参数并附带实时摘要。 */
+/**
+ * 构造"高级参数"表单：范围截取（全部/按行号/按 X 轴数值）+ 类型专属控件
+ * （拉曼：基线校正方法；HPLC：共同时间轴线性插值开关），全部收进 <details> 折叠，
+ * 顶部附实时"将执行……"摘要。
+ *
+ * @param {'raman'|'hplc'} kind 预处理类型。
+ * @returns {{ node: HTMLElement, collect: () => object, setPointCount: (n: any) => void }}
+ *   node 表单节点；collect 收集并校验为后端 preprocess 接口的 params；
+ *   setPointCount 由 HPLC 批次检测结果回填检测出的公共点数（驱动行号范围校验与占位提示）。
+ * 边界：HPLC 行号范围经 validateHplcRowRange 严格校验（1 基、首尾包含、不越界），
+ * 非法时 collect 抛异常由调用方展示；x_value 模式空边界传 null 表示不限。
+ */
 function paramForm(kind) {
   const isHplc = kind === 'hplc';
+  // 由 setPointCount 回填的批次公共点数；null 表示尚未检测/不可用。
   let detectedPointCount = null;
   const rangeMode = el('select', { className: 'select', attrs: { id: 'v2-pp-range-mode' } }, [
     el('option', { text: '全部数据（不截取）', attrs: { value: 'row' } }),
@@ -100,6 +161,10 @@ function paramForm(kind) {
 
   const summary = el('p', { className: 'hint', attrs: { role: 'status' } });
 
+  /**
+   * 生成"范围"摘要文本。HPLC 的行号模式会实时跑 validateHplcRowRange：
+   * 合法时展示"第 a–b 行，共 n 点"，非法时把校验异常信息直接展示出来（用户边输边看到错误）。
+   */
   const rangeText = () => {
     if (isHplc && rangeMode.value !== 'x_value') {
       try {
@@ -120,6 +185,7 @@ function paramForm(kind) {
       : `范围：X ${xMin.value || '—'} ～ ${xMax.value || '—'}`;
   };
 
+  /** 根据范围模式切换输入区显隐并刷新顶部摘要。 */
   const update = () => {
     rowBox.hidden = rangeMode.value !== 'row_range';
     xBox.hidden = rangeMode.value !== 'x_value';
@@ -134,6 +200,11 @@ function paramForm(kind) {
   }
   update();
 
+  /**
+   * 收集为后端 params：range_mode 只有 'row'（行号语义）与 'x_value' 两种，
+   * UI 上的"全部数据"与"按行号截取"都归到 'row'（全量即 1..末尾）。
+   * HPLC 一律经 validateHplcRowRange 归一化（终止行留空按检测点数补齐，越界抛异常）。
+   */
   const collect = () => {
     const params = { range_mode: rangeMode.value === 'x_value' ? 'x_value' : 'row' };
     if (rangeMode.value === 'row_range') {
@@ -176,6 +247,11 @@ function paramForm(kind) {
       extras,
     ]),
   ]);
+  /**
+   * 回填批次检测出的公共点数（HPLC inspect 结果）。
+   * 有效（>=2 的整数）时：限制行号输入 max、默认选中 1..pointCount、终止行占位提示；
+   * 无效时：清除限制与占位。之后刷新摘要。
+   */
   const setPointCount = (pointCount) => {
     const parsed = Number(pointCount);
     detectedPointCount = Number.isInteger(parsed) && parsed >= 2 ? parsed : null;
@@ -196,6 +272,11 @@ function paramForm(kind) {
   return { node, collect, setPointCount };
 }
 
+/**
+ * 渲染预处理结果的宽表预览（后端 preview 数组：每行一个对象）。
+ * Label / Sample_ID 列此时为空，提示用户下载后人工填写。
+ * @returns {HTMLElement|null} 无数据时返回 null（调用方直接跳过 append）。
+ */
 function previewTable(preview) {
   const rows = Array.isArray(preview) ? preview : [];
   if (!rows.length) return null;
@@ -209,6 +290,11 @@ function previewTable(preview) {
   ]);
 }
 
+/**
+ * 渲染 HPLC 批次点数检测表：每个文件的原文件名、有效点数、时间范围与状态。
+ * 时间范围用 toPrecision(8) 避免浮点长尾巴；status 非 'ready' 时展示后端 message。
+ * @returns {HTMLElement|null} 无文件信息时返回 null。
+ */
 function hplcInspectionTable(inspection) {
   const files = Array.isArray(inspection?.files) ? inspection.files : [];
   if (!files.length) return null;
@@ -228,6 +314,17 @@ function hplcInspectionTable(inspection) {
   ]);
 }
 
+/**
+ * 挂载"预处理工作台"视图。
+ *
+ * 局部状态：kind（raman/hplc）、files（当前选择的文件）、lastResult（最近一次
+ * 预处理响应）、busy（请求进行中）、hplcInspection 及其 message/sequence
+ * （HPLC 批次检测结果与防竞态序号）。
+ *
+ * @param {HTMLElement} container 视图挂载点。
+ * @param {object} deps announce(msg) 读屏播报；toast(msg, opts) 全局提示。
+ * @returns {{ unmount: () => void }} 卸载句柄（本视图无需要清理的计时器/全局节点，空实现）。
+ */
 export function mountWorkbench(container, { announce, toast }) {
   let kind = 'raman';
   let files = [];
@@ -243,6 +340,7 @@ export function mountWorkbench(container, { announce, toast }) {
   /* 进度指示：① 上传文件 → ② 一键处理 → ③ 下载/去建模 */
   const stepItems = ['① 上传文件', '② 一键处理', '③ 下载 / 去建模'].map((label) => el('li', { className: 'step', text: label }));
   const stepsBar = el('ol', { className: 'steps' }, stepItems);
+  /** 根据当前进度（无文件 / 已选文件 / 已有结果）同步三步指示器的高亮与完成态。 */
   function syncSteps() {
     const stage = lastResult ? 2 : files.length ? 1 : 0;
     stepItems.forEach((item, index) => {
@@ -265,6 +363,7 @@ export function mountWorkbench(container, { announce, toast }) {
     on: {
       change: () => {
         files = Array.from(fileInput.files || []);
+        // 换文件后旧的批次检测结果全部作废；递增序号使在途的 inspect 响应失效。
         hplcInspection = null;
         hplcInspectionMessage = '';
         hplcInspectionSequence += 1;
@@ -290,6 +389,7 @@ export function mountWorkbench(container, { announce, toast }) {
     fileList,
   ]);
 
+  /** 重绘文件清单；HPLC 模式下附带批次检测状态文案与点数检测表。 */
   function renderFileList() {
     clear(fileList);
     if (!files.length) {
@@ -333,10 +433,20 @@ export function mountWorkbench(container, { announce, toast }) {
   /* 卡片 ③：结果（处理成功后出现） */
   const resultsHost = el('div', { className: 'stack' });
 
+  /**
+   * 提交按钮门禁：请求进行中、未选文件时禁用；
+   * HPLC 还必须批次检测通过（processable）才允许开始——点数不一致的批次直接挡住。
+   */
   function updateSubmitAvailability() {
     submitButton.disabled = busy || !files.length || (kind === 'hplc' && !hplcInspection?.processable);
   }
 
+  /**
+   * 异步执行 HPLC 批次点数检测（inspectHplc）。
+   * 防竞态双保险：sequence 序号 + 文件指纹 fileSelectionKey——
+   * 请求返回时若用户已换文件或切到拉曼，则丢弃过期结果。
+   * 检测通过时把公共点数回填到参数表单（驱动行号范围校验）。
+   */
   async function inspectSelectedFiles() {
     const sequence = ++hplcInspectionSequence;
     const key = fileSelectionKey(files);
@@ -360,6 +470,11 @@ export function mountWorkbench(container, { announce, toast }) {
     renderFileList();
   }
 
+  /**
+   * 切换拉曼 / HPLC：重建参数表单（两种类型控件不同）、清空旧结果与错误、
+   * 作废在途批次检测；切到 HPLC 且已有文件时立即重新检测。
+   * busy 中禁止切换，避免请求中途状态错乱。
+   */
   function switchKind(next) {
     if (next === kind || busy) return;
     kind = next;
@@ -384,6 +499,11 @@ export function mountWorkbench(container, { announce, toast }) {
     announce(`已切换到 ${next === 'raman' ? '拉曼' : 'HPLC'} 预处理`);
   }
 
+  /**
+   * 执行预处理：前置门禁（文件、HPLC 批次检测）→ collect 参数（校验失败就地提示）→
+   * 调 preprocess 接口。期间 busy 禁用按钮并显示骨架屏；成功渲染结果卡片，
+   * 失败在错误框给出带"下一步"指引的文案。
+   */
   async function runPreprocess() {
     errorBox.textContent = '';
     if (!files.length) {
@@ -434,6 +554,7 @@ export function mountWorkbench(container, { announce, toast }) {
     }
   }
 
+  /** 按 download_url 拉取结果 Blob 并触发浏览器保存；文件名缺失时用兜底名。 */
   async function downloadResult() {
     if (!lastResult?.download_url) return;
     try {
@@ -444,6 +565,15 @@ export function mountWorkbench(container, { announce, toast }) {
     }
   }
 
+  /**
+   * 渲染第 3 步结果卡片：警告面板（如有）+ 指标卡 + 曲线对照预览 + 宽表预览 + 下载/去建模按钮。
+   *
+   * 展示的契约信息：
+   * - output_precision：wide-feature-v2 格式名、特征数、总列数。
+   * - HPLC 专属：插值开关、X 轴一致性、实际点数与完整网格点数、真实保留时间轴摘要
+   *   （真实坐标逐列写在 CSV 特征表头，这是建模读取坐标轴的依据）。
+   * - intensity_summary：每条曲线处理后的点数/最小/最大/均值；全零时提示检查范围或方法。
+   */
   function renderResults() {
     clear(resultsHost);
     if (!lastResult) return;
@@ -451,6 +581,7 @@ export function mountWorkbench(container, { announce, toast }) {
 
     const chartHost = el('div', { className: 'chart-card' });
     const infoLine = el('p', { className: 'hint' });
+    /** 渲染第 index 条曲线的对照图与强度摘要。 */
     const renderCurve = (index) => {
       const curve = curves[index];
       clear(chartHost);
@@ -493,6 +624,7 @@ export function mountWorkbench(container, { announce, toast }) {
     }
 
     const axis = kind === 'hplc' ? lastResult.hplc_axis : null;
+    /** 轴端点数值格式化：6 位小数后去尾零；非有限值显示 '—'。 */
     const axisNumber = (value) => {
       const number = Number(value);
       return Number.isFinite(number) ? number.toFixed(6).replace(/\.?0+$/, '') : '—';

@@ -1,8 +1,27 @@
-/* SpecAutoAI v2 白色实验台
-   浅色背景 + 柔和边框 + 清晰阴影；主色克制蓝绿，状态色高对比。
-   同时实现共享 class API（card、btn、steps、status 状态徽标、empty、skeleton 等），
-   并保留旧 class（panel、tabs、stepper、badge 色调等）的兼容样式。 */
+/* ============================================================================
+   SpecAutoAI v2 白色实验台 —— 全局样式表（static/v2/styles.css）
 
+   模块职责：
+   - v2 工作台（static/v2/index.html）唯一样式来源；v2 前端无构建步骤，
+     本文件直接以 <link> 引入，选择器即"共享 class API"；
+   - 与 lib/format.js 协作：format.js 的 stateBadgeClass()/resultStateBadgeClass()
+     输出 "badge status-<state>" 形式的 class，本文件提供 .badge、
+     .status-queued/.status-running/.status-succeeded/.status-failed/.status-cancelled
+     的对应配色；
+   - 与 lib/charts.js 协作：charts.js 内联了兜底色，本文件的 .chart-* 规则
+     覆盖为与设计系统一致的色值。
+
+   关键设计约束：
+   - 浅色背景 + 柔和边框 + 清晰阴影；主色克制蓝绿，状态色高对比；
+   - 同时实现共享 class API（card、btn、steps、status 状态徽标、empty、
+     skeleton 等），并保留旧 class（panel、tabs、stepper、badge 色调等）的
+     兼容样式——v2 早期组件用旧命名，重构时不能破坏既有 DOM 结构测试；
+   - 所有颜色集中在 :root 自定义属性中，组件一律 var(--xxx) 引用，
+     保证改主题只动一处；
+   - 尊重 prefers-reduced-motion：关闭一切动画/过渡（见文件末尾）。
+   ============================================================================ */
+
+/* ---- 设计令牌（design tokens）：全站唯一颜色/阴影/圆角来源 ---- */
 :root {
   --bg: #f6f8fb;
   --surface: #ffffff;
@@ -385,6 +404,9 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 }
 
 /* ============ 徽标与状态 ============ */
+/* 状态徽章：与 lib/format.js 的 stateBadgeClass()/resultStateBadgeClass() 约定配套，
+   命名分两套：共享 API 的 status-<state>（status-succeeded 等）与旧兼容的
+   badge-<tone>（badge-success 等），选择器合并书写保证两套命名同样式 */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -404,6 +426,8 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 .badge-active, .status-running, .badge-info { background: var(--info-soft); border-color: var(--info-border); color: var(--info); }
 .badge-muted, .status-cancelled { background: var(--surface-soft); border-color: var(--border); color: var(--text-muted); }
 
+/* 进行中状态（训练中/轮询等待）加一个呼吸圆点：
+   用 ::before 伪元素 + currentColor，颜色自动跟随徽章文字色，无需额外 DOM */
 .status-running::before, .badge-active::before {
   content: "";
   width: 7px; height: 7px;
@@ -417,6 +441,8 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 }
 
 /* ============ 表格 ============ */
+/* 宽表（wide-feature-v2 特征表、Run 列表等）列数远超视口宽度，
+   统一包一层横向滚动容器，而不是挤压列宽或撑破页面布局 */
 .table-wrap, .table-scroll {
   overflow-x: auto;
   background: var(--surface);
@@ -425,6 +451,8 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+/* HPLC 文件检查表：固定 7 行可视高度 + 表头吸顶，批次文件多时内部滚动，
+   避免长文件清单把整个预处理工作台顶得过长（对应 HPLC 批次逐文件解析展示） */
 .hplc-inspection-scroll {
   --hplc-inspection-row-height: 44px;
   max-height: calc(var(--hplc-inspection-row-height) * 7 + 2px);
@@ -809,6 +837,8 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 .manual-section ul { padding-left: 20px; }
 
 /* ============ 响应式 ============ */
+/* 960px 以下：侧边导航摊平为顶部横向滚动条，主内容单列；
+   表格/曲线区靠 .scroll-x / .chart-scroll 保持可用 */
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .side-nav {
@@ -842,6 +872,8 @@ input[type="file"] { min-height: 0; padding: 7px 10px; }
 }
 
 /* ============ 减少动态效果 ============ */
+/* 无障碍：系统开启"减少动态效果"时，所有动画/过渡压到 ~0 时长，
+   骨架屏闪光直接隐藏——保留状态可见性但不做任何运动 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

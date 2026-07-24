@@ -8,6 +8,32 @@
 迁移和 Manifest 原子发布由 ``runs.execution`` / ``runs.artifacts`` 负责。
 """
 
+# ──────────────────────────────────────────────────────────────────────────
+# 模块导览（教学注释）
+#
+# 职责：本模块是 SpecAutoAI 后端的“训练编排中枢”。一次训练请求在这里完成：
+#   读取 wide-feature 宽表 → 解析评估策略（stratified_holdout /
+#   leave_one_sample_id_cv / external_test_holdout）→ 以 Sample_ID 整组为单位
+#   划分 → 逐折训练传统模型或深度模型 → 汇总指标与可解释性 → 落盘
+#   config.json / metrics.json / split.json / model.pkl|model.pt 等 Run 产物。
+#
+# 协作模块：
+#   - parsers.load_modeling_csv：读取 wide-feature-v1/v2 宽表并还原真实 X 轴；
+#   - classification_policy：把请求体解析成 EvaluationPolicy（评估口径）；
+#   - models / models.profiles：按 model_type 构造目录内模型与容量档位；
+#   - dscarnet_mapping：DSCARNet 的 AggMap/PCA SAR/CAR 二维映射；
+#   - feature_selection：窗口遮挡 Log-loss、Grad-CAM 等可解释性计算与落盘；
+#   - runs.repository / runs.artifacts / runs.status_projection：Run 状态机、
+#     Manifest 原子发布与 status.json 投影（本模块不直接拥有状态机）。
+#
+# 关键设计约束：
+#   1. 数据泄漏防线：标准化、PCA、AggMap、超参搜索只拟合当前折的 train；
+#      test 永远只参与最终评估与解释性分析，不参与拟合、选参或早停。
+#   2. 划分单位是 Sample_ID 整组而非单行曲线，同一 Sample_ID 不会跨集合。
+#   3. CV 汇报的 test 主指标固定使用 pooled OOF（所有折 test 预测合并计算），
+#      fold mean/std 仅作审计参考，不得冒充主指标。
+#   4. 取消/替换检查（check_run_active / cancel_check）贯穿训练全程。
+# ──────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import json
@@ -48,6 +74,8 @@ from .runs.status_projection import project_status
 from .training_explainability import explainability_method
 
 
+# 训练被“新任务替换”时抛出的内部异常：旧直接调用入口用 status.json 的
+# paused + replaced_by 表达替换；worker 正式路径则由 RunRepository 状态机表达。
 class TrainingRunReplaced(RuntimeError):
     """Raised when a training run has been paused because a newer run replaced it."""
 
@@ -59,6 +87,7 @@ class TrainConfig:
     ``resolved_*`` 字段由每个训练折覆盖，用于记录真正参与构造模型的 N/L，
     不能直接相信客户端传入值。
     """
+    # ── 深度模型训练超参数：默认值统一来自 classification_policy.DEEP_TRAINING_DEFAULTS ──
     epochs: int = DEEP_TRAINING_DEFAULTS.epochs
     batch_size: int = DEEP_TRAINING_DEFAULTS.batch_size
     learning_rate: float = DEEP_TRAINING_DEFAULTS.learning_rate
@@ -67,12 +96,14 @@ class TrainConfig:
     scheduler_patience: int = DEEP_TRAINING_DEFAULTS.scheduler_patience
     min_learning_rate: float = DEEP_TRAINING_DEFAULTS.min_learning_rate
     seed: int = DEEP_TRAINING_DEFAULTS.seed
+    # ── 预处理与划分：normalization 只用当前折 train 拟合；split_* 为 10 份制比例 ──
     normalization: str = "zscore"
     split_mode: str = "stratified"
     split_train: int = 8
     split_valid: int = 1
     split_test: int = 1
     class_balance: str = "none"
+    # ── 模型与结构参数：model_type 会经 canonical_model_type 归一化（如 transformer1d 别名） ──
     model_type: str = "cnn1d"
     early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
     dropout: float | None = None
@@ -83,8 +114,10 @@ class TrainConfig:
     dscarnet_pca_components: int = 30
     dscarnet_cluster_channels: int = 9
     dscarnet_input_mode: str = "dual"
+    # ── 运行时解析字段：每折真实参与建模的 N/L，由训练循环回填，不信任客户端传值 ──
     resolved_train_sample_count: int = 100
     resolved_feature_count: int = 1000
+    # ── 传统模型超参数（knn 为历史兼容字段，当前 15 模型能力目录不含 knn） ──
     knn_n_neighbors: int = 5
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
@@ -109,6 +142,7 @@ class TrainConfig:
     random_forest_oob_score: bool = False
     xgboost_min_child_weight: float = 1.0
     xgboost_gamma: float = 0.0
+    # ── 可解释性（特征区间识别）配置：窗口数、top_k、重复次数与评估集合 ──
     feature_selection_enabled: bool = True
     feature_window_count: int = 100
     feature_top_k: int = 5
@@ -129,6 +163,10 @@ class TraditionalSelection:
 
 # status.json 兼容辅助：仅用于旧“新任务替换旧任务”入口，不是 Run 状态机来源。
 def _read_status_file(status_file: Path) -> dict[str, Any]:
+    """读取旧版 status.json 投影；文件缺失或 JSON 损坏时返回空 dict 而不是抛错。
+
+        仅服务于“直接调用/旧入口”的替换检测与进度展示，不是 Run 状态机的权威来源；
+        正式 worker 路径以 RunRepository 的 SQLite 记录为准。"""
     if not status_file.exists():
         return {}
     try:
@@ -138,6 +176,7 @@ def _read_status_file(status_file: Path) -> dict[str, Any]:
 
 
 def _write_status_file(status_file: Path, payload: dict[str, Any]) -> None:
+    """以 UTF-8 覆盖写 status.json（先确保父目录存在），供旧入口展示训练进度。"""
     status_file.parent.mkdir(parents=True, exist_ok=True)
     status_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -149,6 +188,10 @@ def run_is_replaced(run_id: str, *, runs_dir: Path | None = None) -> bool:
 
 
 def _raise_if_run_replaced(status_file: Path) -> None:
+    """若 status.json 显示本 Run 已被新任务替换（paused + replaced_by），立即中断。
+
+        旧入口没有 worker 的 claim/cancel 机制，只能在关键检查点读盘判断，
+        因此训练循环会在每个折/阶段边界调用它；replaced_by 缺失时用占位名。"""
     status = _read_status_file(status_file)
     if status.get("status") != "paused":
         return
@@ -158,6 +201,11 @@ def _raise_if_run_replaced(status_file: Path) -> None:
 
 # 数据划分与归一化：所有 group split 都以 Sample_ID 为不可拆分单位。
 def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
+    """按评估口径校验 10 份制划分比例（policy 由 classification_policy 解析）。
+
+        - external_test_holdout：内部 test 比例必须为 0，train+valid=10（test 来自独立数据集）；
+        - leave_one_sample_id_cv：同样 train+valid=10，每折 test 固定为 1 个 Sample_ID；
+        - stratified_holdout：train/valid/test 均 > 0 且相加等于 10。"""
     ratios = (int(policy.split_train), int(policy.split_valid), int(policy.split_test))
     if any(value < 0 for value in ratios):
         raise ValueError("划分比例必须是非负整数")
@@ -174,6 +222,11 @@ def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
 
 
 def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
+    """按“每条曲线自身”做行内归一化（axis=1），返回归一化结果与模式记录。
+
+        这是早期兼容路径：minmax/zscore 在单条曲线内部计算统计量。正式训练折使用
+        _fit_x_normalizer/_transform_x_with_normalizer 的按特征（axis=0）、仅用 train
+        拟合的版本，以避免 valid/test 信息泄漏。"""
     if mode == "none":
         return x.astype(np.float32), {"mode": mode}
     if mode == "minmax":
@@ -206,6 +259,7 @@ def _split_indices(
     if ratios[0] <= 0:
         raise ValueError("训练集比例必须大于 0")
 
+        # 以 Sample_ID 为不可拆分单位；natural_sort_key 让 XJ-2 排在 XJ-10 之前，结果可复现。
     group_values = np.asarray(sorted(np.unique(sample_id).tolist(), key=natural_sort_key))
     nonzero_splits = sum(1 for value in ratios if value > 0)
     if len(group_values) < nonzero_splits:
@@ -240,6 +294,8 @@ def _split_indices(
             f"Sample_ID；当前不足：{details}"
         )
 
+        # 计算各集合应含的“组数”：valid/test 的硬下限是类别数（保证类别完整），
+        # 再按比例目标向下取整；总数超界时优先从 test、其次 valid 回退，仍不够则拒绝。
     ratio_denominator = ratios[0] + ratios[1] if ratios[2] == 0 else 10
     valid_minimum = label_count if ratios[1] > 0 else 0
     test_minimum = label_count if ratios[2] > 0 else 0
@@ -258,6 +314,7 @@ def _split_indices(
             raise ValueError("Sample_ID 分组数量太少，无法让每个集合都包含全部类别")
     train_count = len(group_values) - valid_count - test_count
 
+        # 固定种子打乱各类别内部的组顺序，使同一数据 + 同一种子的划分完全可复现。
     rng = np.random.default_rng(config.seed)
     for groups in label_to_groups.values():
         rng.shuffle(groups)
@@ -288,6 +345,8 @@ def _split_indices(
                     selected.add(label_to_groups[label].pop())
         return selected
 
+        # 先取 test、再取 valid，剩余全部归 train；reserve_per_label 为后续集合
+        # 预留每类至少 1 组——这是“每类至少 3 个不同 Sample_ID”硬约束的执行点。
     test_groups = take_class_complete(
         test_count,
         reserve_per_label=1 + (1 if valid_count > 0 else 0),
@@ -307,6 +366,10 @@ def _validate_external_test_dataset(
     train_axis: list[float],
     test_dataset: Any,
 ) -> None:
+    """独立测试集（external_test_holdout）的硬校验。
+
+        Label 必须被训练集覆盖；真实 XXX 特征轴必须与主数据逐点一致（wide-feature
+        宽表契约要求同轴，不做插值迁就），不一致时报出首个差异坐标便于排查。"""
     unknown_labels = sorted(set(test_dataset.labels).difference(train_labels))
     if unknown_labels:
         raise ValueError(f"测试集包含训练集中不存在的 Label: {', '.join(unknown_labels)}")
@@ -332,6 +395,8 @@ def _validate_external_test_dataset(
 
 
 def _axis_to_float_list(axis: Any, n_features: int) -> list[float]:
+    """把任意来源的 X 轴转成 float 列表；缺失、不可转或长度不符时退化为
+        0..n-1 序号轴，保证下游绘图/解释性产物永远有轴可用。"""
     try:
         values = np.asarray(axis, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError):
@@ -342,6 +407,10 @@ def _axis_to_float_list(axis: Any, n_features: int) -> list[float]:
 
 
 def _x_axis_warning(sample_axes: list[Any], n_features: int) -> dict[str, Any]:
+    """检查批次内各样品 XXX 坐标是否与首条一致（容差 rtol=1e-6/atol=1e-8）。
+
+        只产出 warning 不拒绝训练：聚合特征图使用首条样品坐标，单样品图使用各自
+        坐标——与前端结果页的展示约定一致。"""
     if not sample_axes:
         return {"status": "unavailable", "message": "没有可检查的 x 轴坐标"}
     reference = np.asarray(_axis_to_float_list(sample_axes[0], n_features), dtype=np.float64)
@@ -374,6 +443,7 @@ def _x_axis_warning(sample_axes: list[Any], n_features: int) -> dict[str, Any]:
 
 
 def _validate_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str]) -> None:
+    """划分后的兜底校验：任一集合为空、或 train 缺少任何类别都直接拒绝训练。"""
     for split_name, indices in splits.items():
         if not indices:
             raise ValueError(f"{split_name} 集为空，请增加样品种类或调整划分比例")
@@ -384,6 +454,7 @@ def _validate_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: l
 
 
 def _loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
+    """构造 1D 深度模型的 DataLoader：输入张量补 channel 维成 (B, 1, L)。"""
     tx = torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1)
     ty = torch.tensor(y[indices], dtype=torch.long)
     return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
@@ -397,6 +468,7 @@ def _dual_loader(
     batch_size: int,
     shuffle: bool,
 ) -> DataLoader:
+    """构造 DSCARNet 双通路（SAR + CAR 两张 2D 图）的 DataLoader。"""
     tx1 = torch.tensor(x1[indices], dtype=torch.float32)
     tx2 = torch.tensor(x2[indices], dtype=torch.float32)
     ty = torch.tensor(y[indices], dtype=torch.long)
@@ -404,6 +476,7 @@ def _dual_loader(
 
 
 def _single_2d_loader(x: np.ndarray, y: np.ndarray, indices: list[int], batch_size: int, shuffle: bool) -> DataLoader:
+    """构造 DSCARNet 单通路（仅 SAR 或仅 CAR 2D 图）的 DataLoader，不再补 channel 维。"""
     tx = torch.tensor(x[indices], dtype=torch.float32)
     ty = torch.tensor(y[indices], dtype=torch.long)
     return DataLoader(TensorDataset(tx, ty), batch_size=batch_size, shuffle=shuffle)
@@ -417,6 +490,8 @@ def _evaluate_deep_loss(
     *,
     dual_input: bool,
 ) -> float:
+    """eval 模式下按 batch 计算平均 loss；二分类单 logit 时把标签 reshape 成
+        与 logits 同形，以适配 BCEWithLogitsLoss 的目标形状约定。"""
     model.eval()
     losses: list[float] = []
     with torch.no_grad():
@@ -433,6 +508,11 @@ def _evaluate_deep_loss(
 
 
 def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    """对 1D 深度模型做一次前向评估，输出全套分类指标与逐样品概率。
+
+        二分类网络只输出 1 个 logit，这里用 sigmoid 后拼成 [1-p, p] 两列概率；
+        多分类直接 softmax。confusion_matrix 显式给定 labels，保证某集合缺少
+        类别时矩阵维度仍与 label_names 对齐；zero_division=0 避免 NaN/告警。"""
     model.eval()
     with torch.no_grad():
         logits = model(torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1))
@@ -479,6 +559,7 @@ def _evaluate_dual(
     indices: list[int],
     labels: list[str],
 ) -> dict[str, Any]:
+    """双通路 DSCARNet 的评估版本，指标字段与 _evaluate 完全一致。"""
     model.eval()
     with torch.no_grad():
         tx1 = torch.tensor(x1[indices], dtype=torch.float32)
@@ -506,6 +587,8 @@ def _evaluate_dual(
 
 
 def _traditional_probabilities(model: Any, values: np.ndarray) -> np.ndarray:
+    """统一传统模型的概率出口：优先 predict_proba；无概率接口（如线性 SVM）
+        时对 decision_function 做数值稳定版 softmax 近似，保证解释性计算总有概率可用。"""
     if hasattr(model, "predict_proba"):
         return np.asarray(model.predict_proba(values), dtype=float)
     decision = model.decision_function(values)
@@ -517,6 +600,8 @@ def _traditional_probabilities(model: Any, values: np.ndarray) -> np.ndarray:
 
 
 def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    """传统模型评估：predict 出标签 + _traditional_probabilities 出概率，
+        指标字段与深度模型完全对齐，便于上层不区分模型族地汇总。"""
     pred = model.predict(x[indices])
     probs = _traditional_probabilities(model, x[indices])
     true = y[indices]
@@ -547,6 +632,10 @@ def _compute_sample_feature_importance(
     metadata: list[dict[str, Any]],
     score_fn: Any,
 ) -> dict[str, Any]:
+    """传统模型单样品可解释性入口（窗口遮挡后的真实类别 Log-loss 增量）。
+
+        关闭时落盘 status=disabled；计算异常时降级为 status=failed 并保留训练
+        均值基线曲线，绝不让解释性失败拖垮整个训练 Run。"""
     mean_indices = splits.get("train", [])
     if not config.feature_selection_enabled:
         mean_curve = np.mean(x[mean_indices], axis=0) if mean_indices else np.mean(x, axis=0)
@@ -591,6 +680,7 @@ def _compute_sample_feature_importance(
 
 
 def _unsupported_explainability_summary(reason: str, *, method: str = "unsupported") -> dict[str, Any]:
+    """生成统一的“不可解释/未启用”占位摘要，字段形状与正常结果一致，前端无需特判。"""
     return {
         "status": "unsupported",
         "reason": reason,
@@ -618,6 +708,12 @@ def _deep_sample_feature_result(
     dscarnet_mapped: DSCARNetMappedInputs | None = None,
     dscarnet_mapping_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """深度模型单样品可解释性分发器。
+
+        按 explainability_method 分三路：窗口遮挡 Log-loss（pca_mlp /
+        cnn_transformer1d 等无 1D 卷积结构）、DSCARNet 双/单通路 2D Grad-CAM
+        回投 1D 特征、其余 1D 卷积网络的 Grad-CAM-like 归因；任何一路失败都
+        降级为 status=failed 而不向外抛出。"""
     model_type = canonical_model_type(config.model_type)
     if not config.feature_selection_enabled:
         mean_indices = splits.get("train", [])
@@ -697,6 +793,7 @@ def _deep_sample_feature_result(
 
 
 def _tag_fold_sample_result(result: dict[str, Any], fold_index: int) -> dict[str, Any]:
+    """给每个样品的解释结果打上 fold_index 并刷新 sample_count，供 CV 多折合并。"""
     for sample in result.get("samples", []):
         sample["fold_index"] = int(fold_index)
     result["sample_count"] = len(result.get("samples", []))
@@ -704,6 +801,8 @@ def _tag_fold_sample_result(result: dict[str, Any], fold_index: int) -> dict[str
 
 
 def _merge_deep_sample_results(results: list[dict[str, Any]], x_axis_warning: dict[str, Any]) -> dict[str, Any]:
+    """合并多折单样品解释结果：只保留 status=ready 的折，样品级拼接；
+        Grad-CAM 类方法顺带聚合 sanity check（随机权重对照）结果。"""
     ready_results = [result for result in results if result.get("status") == "ready"]
     if not ready_results:
         result = dict(results[-1]) if results else {"status": "unavailable", "reason": "没有可解释的测试集样品", "samples": []}
@@ -728,6 +827,8 @@ def _write_sample_explainability_artifacts(
     sample_result: dict[str, Any],
     x_axis_warning: dict[str, Any],
 ) -> dict[str, Any]:
+    """补全 sample_count / x_axis_warning 后，落盘 sample_feature_importance
+        的 json/csv 产物并返回摘要。"""
     sample_result["sample_count"] = len(sample_result.get("samples", []))
     sample_result["x_axis_warning"] = x_axis_warning
     return write_sample_feature_importance_artifacts(run_dir, sample_result)
@@ -748,6 +849,7 @@ def _compute_deep_explainability(
     dscarnet_mapped: DSCARNetMappedInputs | None = None,
     dscarnet_mapping_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """单次（fold 1）深度解释性的组合入口：计算 → 打 fold 标签 → 落盘。"""
     sample_result = _tag_fold_sample_result(
         _deep_sample_feature_result(
             config=config,
@@ -773,6 +875,10 @@ def _compute_deep_explainability(
 
 # 训练折公共准备：样品元数据、scaler、Sample_ID 分组和 fold 构造。
 def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: int) -> list[dict[str, Any]]:
+    """从宽表逐行提取样品元数据（Index/Name/Sample_ID/各自 X 轴）。
+
+        Name 保留原始文件名（wide-feature-v2 契约）；Index 能转 int 则用 int，
+        否则保留字符串，兼容没有规范 Index 的 v1 数据。"""
     rows = []
     for position, (_, row) in enumerate(frame.iterrows()):
         raw_index = row.get("Index", "")
@@ -790,14 +896,21 @@ def _sample_metadata(frame: pd.DataFrame, sample_axes: list[Any], n_features: in
 
 
 def _now_iso() -> str:
+    """本地时间 ISO 字符串（秒级），用于 status_payload 的 started_at/completed_at。"""
     return datetime.now().isoformat(timespec="seconds")
 
 
 def _clone_config(config: TrainConfig, **overrides: Any) -> TrainConfig:
+    """复制 TrainConfig 并覆盖指定字段；dataclass 没有内建 copy 语义，这里用
+        __dict__ 展开重建，候选超参搜索大量复用。"""
     return TrainConfig(**{**config.__dict__, **overrides})
 
 
 def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
+    """只用当前折 train 拟合按特征（axis=0）的标准化参数。
+
+        zscore/minmax 记录逐特征统计量；area 是逐曲线自身面积归一化，无训练统计量，
+        因此只记模式。scale 下限 1e-8 防零方差除零。"""
     mode = str(mode or "zscore").lower()
     if mode == "none":
         return {"mode": "none"}
@@ -813,6 +926,7 @@ def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
 
 
 def _transform_x_with_normalizer(x: np.ndarray, normalizer: dict[str, Any]) -> np.ndarray:
+    """把已拟合的 normalizer 应用到任意矩阵（train/valid/test 共用同一组参数）。"""
     mode = normalizer.get("mode", "zscore")
     values = np.asarray(x, dtype=np.float32)
     if mode == "none":
@@ -826,10 +940,13 @@ def _transform_x_with_normalizer(x: np.ndarray, normalizer: dict[str, Any]) -> n
 
 
 def _json_normalizer(normalizer: dict[str, Any]) -> dict[str, Any]:
+    """把 normalizer 中的 ndarray 转成 JSON 可序列化的 float 列表（写入 split.json）。"""
     return {key: (np.asarray(value).astype(float).tolist() if isinstance(value, np.ndarray) else value) for key, value in normalizer.items()}
 
 
 def _dimension_band(n_features: int) -> str:
+    """按特征数划分维度档位（1000-3000 / 3000-6000 / 6000-10000），写入
+        config.json 供结果页与审计使用。"""
     if n_features <= 3000:
         return "1000-3000"
     if n_features <= 6000:
@@ -838,6 +955,7 @@ def _dimension_band(n_features: int) -> str:
 
 
 def _group_label_map(y: np.ndarray, sample_id: np.ndarray) -> dict[str, int]:
+    """构造 Sample_ID → 类别编码映射；同组出现多 Label 直接拒绝（整组划分的前提）。"""
     mapping: dict[str, int] = {}
     for group in sorted(np.unique(sample_id).tolist(), key=natural_sort_key):
         labels = np.unique(y[sample_id == group])
@@ -855,6 +973,8 @@ def _choose_valid_groups(
     valid_ratio: float,
     seed: int,
 ) -> list[str]:
+    """为单个 CV 折挑选 valid 组：按固定种子的随机顺序逐个尝试，只有“挑走它
+        之后剩余 train 仍类别完整”才接受，保证每折 train 覆盖全部类别。"""
     valid_count = max(1, int(round(len(train_valid_groups) * valid_ratio)))
     rng = np.random.default_rng(seed)
     candidates = list(train_valid_groups)
@@ -873,6 +993,11 @@ def _choose_valid_groups(
 
 
 def _leave_one_sample_id_folds(y: np.ndarray, sample_id: np.ndarray, config: TrainConfig) -> list[dict[str, Any]]:
+    """构造 leave_one_sample_id_cv 的全部折：每折留 1 个 Sample_ID 做 test，
+        其余按 split_train:split_valid 比例（默认 8:2）划 train/valid。
+
+        至少需要 3 个组；某组留作 test 后剩余组必须仍覆盖全部类别，否则该折
+        无法评估，直接拒绝整个训练。"""
     groups = [str(item) for item in sorted(np.unique(sample_id).tolist(), key=natural_sort_key)]
     if len(groups) < 3:
         raise ValueError("交叉验证至少需要 3 个 Sample_ID 分组")
@@ -911,6 +1036,9 @@ def _leave_one_sample_id_folds(y: np.ndarray, sample_id: np.ndarray, config: Tra
 
 # 指标汇总与模型候选生成。test 指标只在候选已经锁定后计算。
 def _classification_metrics_payload(y_true: np.ndarray, y_pred: np.ndarray, label_names: list[str]) -> dict[str, Any]:
+    """由 y_true/y_pred 生成统一指标包：标量指标 + 混淆矩阵 + 逐类
+        classification_report；labels 显式对齐 label_names，zero_division=0
+        避免类别缺失时告警或产生 NaN。"""
     labels = list(range(len(label_names)))
     report = classification_report(
         y_true,
@@ -936,6 +1064,7 @@ METRIC_SCALAR_KEYS = ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1"
 
 
 def _metrics_from_eval(eval_payload: dict[str, Any], label_names: list[str]) -> dict[str, Any]:
+    """把 _evaluate* 的 eval payload（含 true/pred 列表）换算成统一指标包。"""
     return _classification_metrics_payload(
         np.asarray(eval_payload["true"], dtype=np.int64),
         np.asarray(eval_payload["pred"], dtype=np.int64),
@@ -944,6 +1073,7 @@ def _metrics_from_eval(eval_payload: dict[str, Any], label_names: list[str]) -> 
 
 
 def _scalar_metric_summary(metric_rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    """跨折对标量指标取 mean；全部缺失时给 None 而不是 0，避免伪造指标。"""
     summary: dict[str, float | None] = {}
     for key in METRIC_SCALAR_KEYS:
         values = [float(row[key]) for row in metric_rows if row.get(key) is not None]
@@ -952,6 +1082,7 @@ def _scalar_metric_summary(metric_rows: list[dict[str, Any]]) -> dict[str, float
 
 
 def _scalar_metric_std(metric_rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    """跨折对标量指标取 std（np.std 总体标准差），与 mean 一样缺失时给 None。"""
     summary: dict[str, float | None] = {}
     for key in METRIC_SCALAR_KEYS:
         values = [float(row[key]) for row in metric_rows if row.get(key) is not None]
@@ -963,6 +1094,8 @@ def _aggregate_split_metrics(
     split_evals: list[dict[str, Any]],
     label_names: list[str],
 ) -> tuple[dict[str, Any], dict[str, float | None], dict[str, float | None]]:
+    """返回 (pooled, fold_mean, fold_std)：pooled 把所有折的 true/pred 拼接后
+        一次性计算——这是 CV 主指标口径；mean/std 只是逐折指标的平均与离散度。"""
     metric_rows = [_metrics_from_eval(item, label_names) for item in split_evals]
     all_true = [int(value) for item in split_evals for value in item["true"]]
     all_pred = [int(value) for item in split_evals for value in item["pred"]]
@@ -1002,6 +1135,8 @@ def _build_metrics_payload(
             primary[f"pooled_{key}"] = aggregates[split_name][key]
         split_metrics[split_name] = primary
 
+        # 契约关键点：test 主指标固定是 pooled OOF（CV）或 holdout 直算，
+        # 绝不用 fold mean 充数；train/valid 则同时给出 fold_mean 与 pooled_* 供对照。
     test_metrics = dict(aggregates["test"])
     test_metrics["aggregation"] = "pooled_out_of_fold" if is_cv else "direct_holdout"
     split_metrics["test"] = test_metrics
@@ -1019,6 +1154,11 @@ def _build_metrics_payload(
 
 
 def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
+    """为各传统模型生成超参候选列表（候选上限只依赖 train 数据统计量）。
+
+        pls_da/pca_lda 是成分数网格；logistic/SVM 是 C 网格；random_forest 用固定
+        种子的 ParameterSampler 随机搜索并强制开启 oob_score；xgboost 是小型
+        笛卡尔积网格。无法识别的模型退化为仅当前配置。"""
     if model_type == "pls_da":
         raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
         cap = max(1, min(len(y_train), n_features))
@@ -1116,6 +1256,7 @@ def _traditional_params(config: TrainConfig, model_type: str) -> dict[str, Any]:
 
 
 def _evaluate_single_2d(model: nn.Module, values: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
+    """DSCARNet 单通路（2D 输入）的评估版本，指标口径与 _evaluate 一致。"""
     model.eval()
     with torch.no_grad():
         logits = model(torch.tensor(values[indices], dtype=torch.float32))
@@ -1147,6 +1288,11 @@ def _select_traditional_config(
     y_valid: np.ndarray,
     label_names: list[str],
 ) -> TraditionalSelection:
+    """传统模型超参选择主循环：逐候选 fit(train) → 评估 valid，以
+        balanced_accuracy 为选择指标（类别不均衡时比 accuracy 更公平）。
+
+        更新最优用 1e-12 容差，标记选中行时用 (-index) 保证平手取先者，结果
+        完全确定；random_forest 走 OOB 专用路径（不消耗 valid）。"""
     if model_type == "random_forest":
         return _select_random_forest_config(
             config,
@@ -1216,6 +1362,8 @@ def _select_traditional_config(
 
 
 def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, float]:
+    """从随机森林 oob_decision_function_ 计算袋外 accuracy/balanced_accuracy；
+        未覆盖任何训练样本（树太少或抽样极端）时拒绝，保证 OOB 选择指标可信。"""
     probabilities = np.asarray(model.oob_decision_function_, dtype=float)
     if probabilities.ndim != 2 or probabilities.shape[0] != len(y_train):
         raise ValueError("随机森林未产生有效的袋外预测")
@@ -1236,6 +1384,9 @@ def _select_random_forest_config(
     y_valid: np.ndarray,
     label_names: list[str],
 ) -> TraditionalSelection:
+    """随机森林专用选择：用 OOB balanced_accuracy 选参（不消耗 valid，等价于
+        免费的交叉验证），胜出后再补一次 valid 评估写入审计行，与其他模型的
+        search_rows 结构保持同构。"""
     best_model: Any | None = None
     best_config: TrainConfig | None = None
     best_key: tuple[float, float, int] | None = None
@@ -1305,6 +1456,8 @@ def _fit_traditional_fold(
     splits: dict[str, list[int]],
     label_names: list[str],
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
+    """单个训练折的传统模型拟合：只在 train/valid 上完成候选搜索，
+        返回胜出模型、胜出配置、valid 评估与全部搜索审计行。"""
     selection = _select_traditional_config(
         config,
         model_type,
@@ -1327,6 +1480,11 @@ def _fit_final_traditional_model(
     normalization: str,
     label_names: list[str],
 ) -> tuple[Any, dict[str, Any], np.ndarray]:
+    """选参结束后用 train+valid 重训最终模型（标准化也在 train+valid 上重拟合）。
+
+        这是传统模型的既定口径：候选比较用 train-only 保证公平，交付模型用更大的
+        train+valid 训练池提升拟合质量；test 始终不参与。random_forest 重训时
+        关闭 oob_score 以节省计算。"""
     if isinstance(selected_config, TraditionalSelection):
         selected_config = selected_config.config
     selected_config = _clone_config(selected_config, model_type=model_type)
@@ -1353,7 +1511,15 @@ def _fit_deep_fold(
     run_dir: Path,
     sample_count: int,
     cancel_check: Any | None = None,
+    progress_callback: Any | None = None,
 ) -> tuple[nn.Module, list[dict[str, Any]], DSCARNetMappedInputs | None, dict[str, Any] | None]:
+    """单个训练折的深度模型训练（含 DSCARNet 二维映射与早停）。
+
+        流程：统计 train 类别频次（可选 class_weight）→ DSCARNet 先用 train 折
+        fit SAR/CAR 映射并落盘 joblib → 构造模型与损失（二分类单 logit BCE /
+        多分类 CE）→ AdamW + ReduceLROnPlateau 逐 epoch 训练 → 以最低 valid_loss
+        保存并回灌最佳权重；early_stopping_patience 控制早停，cancel_check 每个
+        epoch 检查取消/替换。test 在整个循环中完全不出现。"""
     counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
     class_weights = None
     if config.class_balance == "class_weight":
@@ -1372,9 +1538,15 @@ def _fit_deep_fold(
             cluster_channels=int(dscarnet_profile["cluster_channels"]),
             seed=config.seed,
             mode=mode,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
+        if cancel_check is not None:
+            cancel_check()
         dscarnet_mapped.metadata["resolved_profile"] = dscarnet_profile
         dscarnet_mapping_metadata = save_dscarnet_mapping_artifacts(run_dir, dscarnet_mapped)
+        if cancel_check is not None:
+            cancel_check()
         model = build_dscarnet_model(
             config,
             None if dscarnet_mapped.x_sar is None else dscarnet_mapped.model_input_shape_sar,
@@ -1396,6 +1568,8 @@ def _fit_deep_fold(
                 joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
             except Exception:
                 pass
+        # 二分类用单 logit + BCEWithLogitsLoss（数值上比 sigmoid+BCE 稳定），
+        # pos_weight 来自 train 类别频次比；多分类用 CrossEntropyLoss + 反频次权重。
     if len(label_names) == 2:
         pos_weight = None
         if config.class_balance == "class_weight":
@@ -1421,6 +1595,10 @@ def _fit_deep_fold(
     best_state = None
     bad_epochs = 0
     for epoch in range(1, config.epochs + 1):
+        if progress_callback is not None:
+            progress_callback("epoch_training", f"正在训练 Epoch {epoch}/{config.epochs}", epoch)
+        if cancel_check is not None:
+            cancel_check()
         model.train()
         losses = []
         if dscarnet_mapped is not None and dscarnet_mapped.metadata["mode"] == "dual":
@@ -1468,6 +1646,7 @@ def _fit_deep_fold(
                 dual_input=False,
             )
             valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
+                # 学习率调度、最佳权重与早停都只盯 valid_loss；valid 指标仅记录，不进决策。
         scheduler.step(valid_loss)
         current_learning_rate = float(optimizer.param_groups[0]["lr"])
         improved = valid_loss < best_valid_loss - 1e-8
@@ -1539,6 +1718,8 @@ def _traditional_fold_log_loss_importance(
 
 # 把三种评估口径转换成统一 fold 描述，供主训练循环顺序执行。
 def _canonical_evaluation_strategy(config: TrainConfig, has_external_test: bool) -> str:
+    """把历史/别名形式的 split_mode 归一到三种正式口径；有独立测试集时
+        external_test_holdout 优先级最高；无法识别时直接报错。"""
     if has_external_test:
         return "external_test_holdout"
     mode = str(config.split_mode or "stratified_holdout").strip().lower()
@@ -1556,6 +1737,7 @@ def _canonical_evaluation_strategy(config: TrainConfig, has_external_test: bool)
 
 
 def _validate_required_splits(splits: dict[str, list[int]], y: np.ndarray, label_names: list[str], required: tuple[str, ...]) -> None:
+    """检查指定集合非空且类别完整；CV 只要求 train/valid，holdout 还要求 test。"""
     expected_labels = set(range(len(label_names)))
     for split_name in required:
         if not splits.get(split_name):
@@ -1570,12 +1752,14 @@ def _validate_required_splits(splits: dict[str, list[int]], y: np.ndarray, label
 
 
 def _sample_ids_for_split(sample_id: np.ndarray, indices: list[int]) -> list[str]:
+    """把行索引集合转成去重、按自然序排序的 Sample_ID 列表（审计用）。"""
     if not indices:
         return []
     return [str(item) for item in sorted(np.unique(sample_id[indices]).tolist(), key=natural_sort_key)]
 
 
 def _holdout_fold(splits: dict[str, list[int]], sample_id: np.ndarray, *, strategy: str) -> dict[str, Any]:
+    """把一次 holdout 划分包装成与 CV 折同构的 fold 描述（fold_index=1）。"""
     return {
         "fold_index": 1,
         "test_sample_id": "holdout",
@@ -1594,6 +1778,8 @@ def _external_test_fold(
     external_test_indices: list[int],
     external_sample_id: np.ndarray,
 ) -> dict[str, Any]:
+    """构造独立测试集折：internal_splits 记录主数据内部划分；splits.test
+        指向拼接矩阵中外部样本的行号（排在主数据行号之后连续编号）。"""
     return {
         "fold_index": 1,
         "test_sample_id": "external_test",
@@ -1620,6 +1806,7 @@ def _run_legacy_training(
     名称保留 ``legacy`` 是为了兼容既有调用者；函数内部执行的是当前
     classification-v2 模型、三种评估策略和现行解释性契约。
     """
+        # ── 阶段 0：解析请求 → EvaluationPolicy；只有 TrainConfig 认识的键才进入配置 ──
     raw_config = dict(config_data or {})
     test_data_path = raw_config.get("test_data_path")
     policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
@@ -1660,6 +1847,8 @@ def _run_legacy_training(
             return
         _raise_if_run_replaced(status_file)
 
+        # ── 阶段 1：固定随机种子并读取宽表；Label 按字典序编成类别 id（即使为
+        # 数字也按类别名处理），Sample_ID 作为分组单位取出 ──
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     dataset = load_modeling_csv(data_path)
@@ -1671,6 +1860,8 @@ def _run_legacy_training(
     sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
     test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
     test_sample_count = 0
+        # 有独立测试集：先校验同轴，再把主数据与测试数据纵向拼接成一个矩阵，
+        # 外部样本行号排在主数据之后，fold 用行号区间引用它们。
     if test_dataset is not None:
         _validate_external_test_dataset(
             label_names,
@@ -1710,6 +1901,7 @@ def _run_legacy_training(
     combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
     x_axis_warning = _x_axis_warning(combined_axes, x_raw.shape[1])
 
+        # ── 阶段 2：初始化跨折累加器（预测明细、折指标、训练历史、OOF 汇总等） ──
     prediction_rows: list[dict[str, Any]] = []
     fold_metric_rows: list[dict[str, Any]] = []
     cv_fold_payloads: list[dict[str, Any]] = []
@@ -1727,15 +1919,22 @@ def _run_legacy_training(
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
 
-    def write_progress(fold_index: int, completed_folds: int, fold: dict[str, Any]) -> None:
+    def write_progress(
+        fold_index: int,
+        completed_folds: int,
+        fold: dict[str, Any],
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         check_run_active()
+        progress = {
+            "current_fold": fold_index,
+            "completed_folds": completed_folds,
+            "fold_progress_text": f"{fold_index}/{fold_count}",
+            "target_epochs": config.epochs,
+            **(extra or {}),
+        }
         if repository is not None and record is not None:
-            progress = {
-                "current_fold": fold_index,
-                "completed_folds": completed_folds,
-                "fold_progress_text": f"{fold_index}/{fold_count}",
-                "target_epochs": config.epochs,
-            }
             updated = repository.update_progress(
                 record.run_id,
                 claim_token=record.claim_token or "",
@@ -1773,9 +1972,12 @@ def _run_legacy_training(
                 "total_target_epochs": int(fold_count * config.epochs),
                 "evaluation_strategy": evaluation_strategy,
                 "started_at": started_at,
+                **(extra or {}),
             },
         )
 
+        # ── 阶段 3：逐折执行。每折开头先用当前折 train 拟合 normalizer 并
+        # 变换全矩阵——这是“标准化只看 train”的核心防线 ──
     for fold in folds:
         check_run_active()
         splits = fold["splits"]
@@ -1787,6 +1989,8 @@ def _run_legacy_training(
         fold_best_params: dict[str, Any] = {}
         fold_selection_metric: str | None = None
         fold_selection_score: float | None = None
+                # 传统模型分支：搜索选参（train/valid）→ train+valid 重训 → 评估三个集合
+                # → 可选窗口遮挡解释性；深度分支：训练整折 → 评估 → 收集解释性上下文。
         if model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
@@ -1834,6 +2038,20 @@ def _run_legacy_training(
                 )
             dscarnet_mapping_metadata = None
         else:
+            def report_deep_stage(stage: str, label: str, epoch: int | None = None) -> None:
+                stage_progress: dict[str, Any] = {
+                    "training_stage": stage,
+                    "training_stage_label": label,
+                }
+                if epoch is not None:
+                    stage_progress["current_epoch"] = int(epoch)
+                write_progress(
+                    fold_index,
+                    max(0, fold_index - 1),
+                    fold,
+                    extra=stage_progress,
+                )
+
             model, history, dscarnet_mapped, dscarnet_mapping_metadata = _fit_deep_fold(
                 config=config,
                 model_type=model_type,
@@ -1844,6 +2062,7 @@ def _run_legacy_training(
                 run_dir=run_dir,
                 sample_count=int(len(splits["train"])),
                 cancel_check=check_run_active,
+                progress_callback=report_deep_stage,
             )
             check_run_active()
             for row in history:
@@ -1940,6 +2159,7 @@ def _run_legacy_training(
                 "external_test_indices": fold.get("external_test_indices", []),
             }
         )
+                # 逐测试样品写预测明细：每类一列 prob_<label>，前端结果页直接消费。
         for local_idx, source_idx in enumerate(splits["test"]):
             source_metadata = metadata[source_idx]
             row = {
@@ -1956,6 +2176,7 @@ def _run_legacy_training(
         check_run_active()
         write_progress(fold_index, fold_index, fold)
 
+        # ── 阶段 4：汇总指标（test 主值 = pooled OOF）、合并解释性并落盘全部产物 ──
     metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
     cv_metrics = {
         "strategy": evaluation_strategy,
@@ -2082,6 +2303,8 @@ def _run_legacy_training(
     elif last_model is not None:
         torch.save(last_model.state_dict(), run_dir / "model.pt")
 
+        # status_payload 是结果页 run-result-v1 的主要数据来源；旧入口直接写
+        # status.json，worker 路径则由状态机投影生成等价内容。
     status_payload = {
         **previous_status,
         "run_id": run_id,
@@ -2146,6 +2369,8 @@ def run_legacy_training_compatibility(
 ) -> dict[str, Any]:
     """从旧参数形态执行当前训练器，并允许注入 RunRepository 取消检查。"""
     result = _run_legacy_training(data_path=Path(data_path), config_data=config_data or {}, run_id=run_id)
+        # 训练结束后确保 manifest.json 存在（SHA-256/大小校验的显式 catalog），
+        # 缺失时用 RunArtifactWriter 原子发布——结果页下载白名单依赖它。
     run_dir = Path(result["run_dir"])
     if not (run_dir / "manifest.json").is_file():
         RunArtifactWriter(run_dir).finalize(

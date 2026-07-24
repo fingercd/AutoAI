@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from datetime import datetime, timezone
 
 from backend.app.runs.repository import RunRepository
 
@@ -42,6 +43,31 @@ def test_delete_terminal_run_removes_record_directory_and_artifact_access(tmp_pa
     assert not repository.exists(record.run_id)
     assert not run_dir.exists()
     assert client.get(f"/api/training/runs/{record.run_id}/artifact/status.json").status_code == 404
+
+
+def test_stop_run_keeps_record_and_discards_all_artifacts(tmp_path, monkeypatch):
+    from backend.app.main import app
+
+    repository = _repository(tmp_path)
+    created = repository.create_queued(dataset_id=None, config={"model_type": "dscarnet"})
+    claimed = repository.claim_next(worker_id="worker", now=datetime.now(timezone.utc))
+    assert claimed is not None
+    run_dir = tmp_path / "runs" / created.run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "status.json").write_text('{"status":"running"}', encoding="utf-8")
+    (run_dir / "partial.joblib").write_bytes(b"partial")
+    _patch_run_storage(monkeypatch, tmp_path, repository)
+    client = TestClient(app)
+
+    response = client.post(f"/api/training/runs/{created.run_id}/stop")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "cancelled"
+    assert response.json()["stop_status"] == "stopped"
+    assert response.json()["stop_reason"] == "user_requested"
+    assert repository.exists(created.run_id)
+    assert repository.get(created.run_id).state == "cancelled"
+    assert not run_dir.exists()
 
 
 def test_delete_active_or_unknown_run_is_rejected_without_removing_files(tmp_path, monkeypatch):

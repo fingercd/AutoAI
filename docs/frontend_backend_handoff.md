@@ -345,14 +345,17 @@ GET /api/training/runs/{run_id}/result
 
 响应使用 `schema_version="run-result-v1"`。完整结构见 `run_result_contract.md`。
 
-### 5.5 取消与删除
+### 5.5 停止与删除
 
 ```text
-POST   /api/training/runs/{run_id}/cancel
+POST   /api/training/runs/{run_id}/stop
+POST   /api/training/runs/{run_id}/cancel   # 旧客户端兼容别名
 DELETE /api/training/runs/{run_id}
 ```
 
-- 取消只适用于 queued/running。
+- 停止只适用于 queued/running；内部规范状态仍使用 `cancelled`，界面统一显示 `STOP`。
+- STOP 只保留 SQLite 训练记录，删除该 Run 的模型、指标、映射和其他中间产物。
+- worker 租约过期或缺失表示训练进程意外中断，同样收敛为 `cancelled/STOP`，不静默重跑。
 - 删除只适用于 succeeded/failed/cancelled，并永久移除记录与产物。
 - server 模式下，其他 Principal 的 Run 与不存在的 Run 都返回 404，避免泄露标识是否存在。
 

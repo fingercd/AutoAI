@@ -1,8 +1,24 @@
 """分类模型 ID、别名、能力集合和构造器的权威注册表。
 
-`TARGET_MODEL_TYPES` 是 15 项能力目录，`TRADITIONAL_MODEL_TYPES` 与
-`DEEP_MODEL_TYPES` 是当前可训练集合。可选 Mamba 依赖不可用时必须抛出明确错误，
-不能静默换成近似模型；旧模型类仅用于兼容读取，不进入 v2 新 Run。
+【模块定位】
+本文件是 backend.app.models 包的“总目录 + 装配车间”：
+- 上层训练服务在收到用户选择的 model_type 后，先调用 canonical_model_type
+  把各种历史别名（如 "rf"、"1d-cnn"、"transformer"）归一化为 v2 规范模型 ID；
+- 再按模型家族分别调用 build_traditional_model（sklearn 系）或
+  build_deep_model / build_dscarnet_model（PyTorch 系）真正实例化模型。
+
+【关键常量】
+`TARGET_MODEL_TYPES` 是 15 项能力目录（对外宣传“支持哪些模型”），
+`TRADITIONAL_MODEL_TYPES` 与 `DEEP_MODEL_TYPES` 是当前实际可训练集合（14 项：
+`cnn_mamba1d` 因 mamba-ssm 依赖不可用，只出现在能力目录中并标记 available=false）。
+可选 Mamba 依赖不可用时必须抛出明确错误，不能静默换成近似模型；
+旧模型类（KNN/MLP/UNet 等）仅用于兼容读取历史 Run，不进入 v2 新 Run。
+
+【协作模块】
+- .profiles：按当前训练折的样本数 N / 特征长度 L 分档，给出网络宽度、卷积核、
+  dropout 等超参数，本模块的构造器据此装配模型；
+- 各模型实现文件（cnn1d.py、resnet1d.py、dscarnet.py、pls_da.py 等）：
+  真正的 nn.Module / sklearn 封装，本模块只做“选型和参数转发”，不写训练逻辑。
 """
 
 from __future__ import annotations
@@ -30,6 +46,9 @@ from .tcn1d import TCN1DDocumentV2
 from .xgboost import build_xgboost
 
 
+# 别名表：key 是用户/历史数据可能出现的各种写法（统一小写后查表），
+# value 是 v2 规范模型 ID。保留大量历史别名是为了兼容旧客户端与旧 Run 配置，
+# 例如 "transformer1d" 是 "cnn_transformer1d" 的兼容别名。
 MODEL_ALIASES = {
     "pls": "pls_da",
     "pls-da": "pls_da",
@@ -66,6 +85,8 @@ MODEL_ALIASES = {
     "xgb": "xgboost",
 }
 
+# 已退役或属于回归任务的模型 ID：当前版本只支持分类，这些 ID 一旦被请求，
+# canonical_model_type 会抛出带固定文案的 ValueError（见下），而不是静默训练。
 RETIRED_OR_REGRESSION_MODEL_TYPES = {
     "knn",
     "k-nearest-neighbors",
@@ -77,6 +98,7 @@ RETIRED_OR_REGRESSION_MODEL_TYPES = {
     "svr",
 }
 
+# 能力目录（15 项）：对外宣称“平台支持哪些模型”的全集，含暂不可训练的 cnn_mamba1d。
 TARGET_DEEP_MODEL_TYPES = {
     "pca_mlp",
     "cnn1d",
@@ -97,6 +119,9 @@ TARGET_TRADITIONAL_MODEL_TYPES = {
     "xgboost",
 }
 TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
+# 下面的 DEEP/TRADITIONAL/SUPPORTED 是当前实际可训练集合（14 项）：
+# 与能力目录的差别就在 cnn_mamba1d——目录里有它但这里刻意排除，
+# 由 canonical_model_type 对其抛 ModelNotImplementedForVersion。
 DEEP_MODEL_TYPES = {
     "pca_mlp",
     "cnn1d",
@@ -118,16 +143,30 @@ TRADITIONAL_MODEL_TYPES = {
 SUPPORTED_MODEL_TYPES = DEEP_MODEL_TYPES | TRADITIONAL_MODEL_TYPES
 
 
+# 架构版本号：写入 Run 元数据，标记模型结构/输出契约属于 docx-classification-v2，
+# 供结果读取端区分新旧格式的 Run。
 ARCHITECTURE_VERSION = "docx-classification-v2"
 
 
+# 专门的异常类型：模型在能力目录（TARGET_MODEL_TYPES）里、但当前环境/版本无法构造
+# （目前只有 cnn_mamba1d）。与“完全不支持的模型”用的普通 ValueError 区分开，
+# 上层可据此返回 available=false 而不是 400 错误。
 class ModelNotImplementedForVersion(ValueError):
     """目标目录中存在、但当前依赖或版本尚不能构造的模型。"""
     pass
 
 
 def canonical_model_type(model_type: str) -> str:
-    """解析别名、拒绝回归/退役模型，并返回 v2 规范模型 ID。"""
+    """解析别名、拒绝回归/退役模型，并返回 v2 规范模型 ID。
+
+    处理顺序（先拦退役模型，再解析别名，再区分“未实现”与“不支持”）：
+    1. 空值默认按 "cnn1d" 处理，统一 strip+lower；
+    2. 命中 RETIRED_OR_REGRESSION_MODEL_TYPES 直接抛 ValueError（固定文案，
+       契约测试依赖原文，不能改）；
+    3. 经查表得到规范 ID 后：在能力目录但不在可训练集合 → ModelNotImplementedForVersion；
+       连能力目录都不在 → 普通 ValueError。
+    """
+    # 空 model_type 回落到 "cnn1d"：历史默认模型，保证旧调用不传参也能工作。
     key = str(model_type or "cnn1d").strip().lower()
     if key in RETIRED_OR_REGRESSION_MODEL_TYPES:
         # “10 类模型”是旧客户端依赖的错误文本，契约测试暂时保持原样；实际
@@ -142,7 +181,11 @@ def canonical_model_type(model_type: str) -> str:
 
 
 def model_family(model_type: str) -> str:
-    """返回状态与前端使用的 traditional_ml/deep_learning 家族名。"""
+    """返回状态与前端使用的 traditional_ml/deep_learning 家族名。
+
+    先经 canonical_model_type 归一化（因此别名和非法 ID 的行为与训练入口一致），
+    再按 TRADITIONAL_MODEL_TYPES 划分；不在传统集合里的一律视为 deep_learning。
+    """
     return "traditional_ml" if canonical_model_type(model_type) in TRADITIONAL_MODEL_TYPES else "deep_learning"
 
 
@@ -154,10 +197,25 @@ def build_deep_model(
     *,
     x_train: np.ndarray | None = None,
 ) -> nn.Module:
-    """按规范 ID、当前折 N/L profile 和二分类输出契约构造深度模型。"""
+    """按规范 ID、当前折 N/L profile 和二分类输出契约构造深度模型。
+
+    参数：
+        config: 已锁定的 TrainConfig（只需能读到 model_type、seed 等属性）。
+        input_length: 特征长度 L（宽表特征列数）。
+        class_count: 类别数。
+        sample_count: 当前训练折样本数 N。
+        x_train: 仅 pca_mlp 需要——PCA 必须在当前折训练集上就地拟合，
+            避免验证/测试信息泄漏进标准化与降维参数。
+
+    返回：nn.Module。二分类时 output_dim=1（配合 BCEWithLogits），多分类为 class_count。
+    注意 dscarnet 不走这里：它需要 2D AggMap 输入，必须用 build_dscarnet_model。
+    """
     model_type = canonical_model_type(config.model_type)
     output_dim = 1 if int(class_count) == 2 else int(class_count)
+    # 二分类输出契约：2 类时 output_dim=1（单个 logit + BCE），否则为 class_count（CE）。
     if model_type == "pca_mlp":
+        # PCA-MLP 特例：必须先拿到本折训练特征拟合 PCA，再把 mean_/components_
+        # 固化进网络第一层（冻结的线性降维），元数据记 fit_scope="train" 以便审计。
         if x_train is None:
             raise ValueError("PCA-MLP 必须提供当前折训练集用于拟合 PCA")
         train_values = np.asarray(x_train, dtype=np.float32)
@@ -250,7 +308,12 @@ def build_dscarnet_model(
     input_shape2: tuple[int, ...] | None,
     class_count: int,
 ) -> nn.Module:
-    """按 sar/car/dual 模式和映射张量形状构造二维 DSCARNet。"""
+    """按 sar/car/dual 模式和映射张量形状构造二维 DSCARNet。
+
+    与 build_deep_model 分开的原因：DSCARNet 的输入不是 1D 谱，而是 AggMap/PCA
+    SAR、CAR 双通路 2D 映射张量，形状只有在映射完成后才知道，因此需要独立的构造入口。
+    mode 取自 config.dscarnet_input_mode，默认 "dual"；缺对应输入形状时抛 ValueError。
+    """
     output_dim = 1 if int(class_count) == 2 else int(class_count)
     mode = str(getattr(config, "dscarnet_input_mode", "dual") or "dual").lower()
     profile = build_dscarnet_profile(
@@ -283,14 +346,23 @@ def build_dscarnet_model(
 
 
 def parse_optional_int(value: Any) -> int | None:
-    """把表单/JSON 中的空值或 none 文本归一化为 None。"""
+    """把表单/JSON 中的空值或 none 文本归一化为 None。
+
+    前端表单的可选整数（如 random_forest_max_depth）可能提交空字符串或 "none"，
+    这些在 sklearn 里都等价于“不限制”，因此先归一化为 None 再 int() 转换。
+    """
     if value in {None, "", "none", "None"}:
         return None
     return int(value)
 
 
 def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any:
-    """根据已锁定 TrainConfig 构造一个传统分类模型实例。"""
+    """根据已锁定 TrainConfig 构造一个传统分类模型实例。
+
+    class_balance == "class_weight" 时向支持的模型传 class_weight="balanced"
+    （类别不均衡补偿）；xgboost 例外，它接收完整 y 与 class_count 自行计算
+    样本权重。getattr 带默认值的字段是为了兼容缺少新字段的旧配置。
+    """
     model_type = canonical_model_type(config.model_type)
     class_weight = "balanced" if config.class_balance == "class_weight" else None
     if model_type == "pls_da":

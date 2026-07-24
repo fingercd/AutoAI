@@ -1,4 +1,26 @@
 /** 建模结果 / 解释性视图：只消费 run-result-v1，single-flight 轮询，终态停止。 */
+/*
+ * 模块说明
+ * ========
+ * 本文件是 v2 工作台“建模结果”视图，对应专属结果 URL `#/results?run_id=...`；
+ * 不带 run_id 时退化为“最近任务”列表，充当结果入口页。
+ *
+ * 在系统中的位置：
+ * - 属于 static/v2 原生 JS 前端的 views 层，由路由层调用 `mountResult(container, deps)` 挂载。
+ * - 数据唯一来源是 `GET /api/training/runs/{run_id}/result` 返回的 `run-result-v1` 契约
+ *   （见 docs/run_result_contract.md）；本文件不直接读 status.json 等内部文件。
+ * - 协作模块：`lib/format.js`（指标/状态/口径文案与 CV 口径校验）、`lib/poller.js`
+ *   （single-flight 轮询）、`lib/charts.js`（SVG 图表）、`components/*`（混淆矩阵、
+ *   产物下载、单样品解释）、`api.js`（HTTP 封装）。
+ *
+ * 关键设计约束：
+ * - 轮询间隔 3 秒，串行（single-flight），Run 进入终态（非 active）即自动停止。
+ * - 响应的 schema_version 不是 `run-result-v1` 时拒绝渲染，提示 Web 与 Worker 版本不一致。
+ * - CV 结果严格区分合并预测主指标与 fold mean/std 审计口径，两者不混用；
+ *   `validateCvAggregation` 校验失败时先在页顶给出提醒卡。
+ * - 没有真实产物的分析（ROC / PR）只说明原因，不绘制空图、不伪造数值。
+ * - 对响应做服务器路径泄漏检查（findServerPaths），只告警不阻断；下载 URL 由后端生成、整体使用。
+ */
 import { el, clear, saveBlob } from '../lib/dom.js';
 import {
   stateMeta, resultStateMeta, isActiveState, formatMetric, formatDateTime, formatTrainingTime, formatDuration,
@@ -17,9 +39,15 @@ import { stateBadge } from '../components/run-list.js';
 const POLL_INTERVAL_MS = 3000;
 const RESULT_SCHEMA = 'run-result-v1';
 
+/** 分区 key → 展示名；契约里分区固定为 train/valid/test 三类。 */
 const SPLIT_LABELS = { train: 'Train', valid: 'Valid', test: 'Test' };
 
 /** 小标签 + 值的元信息块，使用共享 grid 布局。 */
+/**
+ * @param {Array<[string, *]>} items [标签, 值] 二元组；值为 null/undefined 时显示 '—'。
+ * @param {string} [gridClass='grid grid-3'] 布局类，默认三列网格。
+ * @returns {HTMLElement} 元信息网格容器。
+ */
 function metaBlocks(items, gridClass = 'grid grid-3') {
   return el('div', { className: gridClass }, items.map(([key, value]) =>
     el('div', {}, [
@@ -29,11 +57,23 @@ function metaBlocks(items, gridClass = 'grid grid-3') {
 }
 
 /** 结果完整性徽章：partial / manifest 问题用需要注意的色调，文案承担语义。 */
+/**
+ * @param {string} resultState Run 的 result_state（如 complete / partial 等）。
+ * @returns {HTMLElement} `<span>` 徽章；色调与文案都由 resultStateMeta 决定。
+ */
 function resultBadge(resultState) {
   const meta = resultStateMeta(resultState);
   return el('span', { className: resultStateBadgeClass(resultState), text: `结果：${meta.label}` });
 }
 
+/**
+ * 渲染主指标卡片网格。
+ *
+ * @param {object} primary 契约 metrics.primary 标量表（可能缺失，缺失时按空对象处理）。
+ * @param {string} [aggregation] 主口径（如 pooled / fold_mean），有值时在卡片上方标注，
+ *   避免 CV 场景下用户把合并预测口径与 fold mean 混淆。
+ * @returns {HTMLElement} 指标网格；没有任何标量时返回提示段落。
+ */
 function metricCards(primary, aggregation) {
   const values = primary && typeof primary === 'object' ? primary : {};
   const cards = SCALAR_METRIC_KEYS
@@ -49,6 +89,15 @@ function metricCards(primary, aggregation) {
   ]);
 }
 
+/**
+ * 渲染 CV 逐折审计表（fold mean ± fold std）。
+ *
+ * 仅交叉验证结果存在 metrics.fold_mean 时才有内容；表头 caption 明确声明
+ * “Test 主指标以合并交叉验证预测为准，不与此表混用”，防止口径混淆。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @returns {HTMLElement|null} 审计表容器；无 fold_mean 或无有效分区时返回 null（不渲染）。
+ */
 function foldAuditTable(result) {
   const foldMean = result?.metrics?.fold_mean;
   const foldStd = result?.metrics?.fold_std;
@@ -74,6 +123,18 @@ function foldAuditTable(result) {
   return wrap;
 }
 
+/**
+ * 渲染训练过程曲线（深度模型的真实 epoch 曲线）。
+ *
+ * 逻辑：
+ * - 只取数值列（除 epoch 列外），且要求整列均可转为有限数值，最多画 4 条曲线，
+ *   防止列过多导致图表不可读；
+ * - X 轴优先用名为 epoch 的列，否则退化为行号（1 基）；
+ * - history.truncated 为 true 时提示响应已被后端截断（仅前 1000 行），避免用户误以为训练提前结束。
+ *
+ * @param {object} history 契约 analysis.history（{available, columns, rows, truncated}）。
+ * @returns {HTMLElement|null} 图卡片容器；数据不可用或没有数值列时返回 null。
+ */
 function historyChart(history) {
   if (!history?.available || !Array.isArray(history.rows) || !history.rows.length) return null;
   const columns = Array.isArray(history.columns) ? history.columns : Object.keys(history.rows[0] || {});
@@ -106,6 +167,19 @@ function historyChart(history) {
   ]);
 }
 
+/**
+ * 渲染单个分区（train/valid/test）的分析面板。
+ *
+ * 内容依次为：口径说明行 → 标量指标卡（含 CV 的 fold std 审计行）→ 混淆矩阵 → 预测分布对比图。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @param {'train'|'valid'|'test'} split 目标分区。
+ * @returns {HTMLElement} 面板容器；各部分数据缺失时各自降级为提示或空组件，
+ *   不会因为某一块缺失而让整块失败。
+ *
+ * 边界情况：标签优先取 prediction_distribution.labels；没有时从
+ * classification_report 的键推导（剔除 accuracy / macro avg / weighted avg 三个汇总行）。
+ */
 function splitPanel(result, split) {
   const analysis = result?.analysis?.splits?.[split];
   const scalars = resolveSplitScalars(result, split);
@@ -157,6 +231,16 @@ function splitPanel(result, split) {
   return host;
 }
 
+/**
+ * 渲染“分区分析”选项卡区（Train / Valid / Test）。
+ *
+ * 交互：点击切换 + 完整键盘导航（←/→/Home/End，遵循 WAI-ARIA tab 模式：
+ * 激活的 tab 才可 Tab 聚焦，其余 tabIndex=-1）。默认展示 Test 分区，
+ * 因为复核顺序是“先看 Test，再对照 Train/Valid 判断过拟合”。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @returns {HTMLElement} 含 tablist 与 tabpanel 的卡片。
+ */
 function analysisSection(result) {
   const host = el('div', { className: 'card' });
   host.append(el('h2', { className: 'card-title', text: '分区分析' }));
@@ -207,6 +291,15 @@ function analysisSection(result) {
   return host;
 }
 
+/**
+ * 渲染“暂不可用的分析”说明卡（当前为 ROC / ROC-AUC 与 Precision-Recall）。
+ *
+ * 平台原则：没有真实计算产物就只说明原因，不绘制空图、不伪造指标。
+ * 仅当契约中对应条目标记 available === false 时才列出。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @returns {HTMLElement|null} 说明卡；没有不可用项时返回 null。
+ */
 function unavailableAnalysisNotes(result) {
   const notes = [];
   for (const [key, label] of [['roc', 'ROC / ROC-AUC'], ['precision_recall', 'Precision-Recall']]) {
@@ -224,6 +317,16 @@ function unavailableAnalysisNotes(result) {
 }
 
 /** 结论卡：主指标 + 结果完整性放在首屏；评估细节与逐折审计默认折叠。 */
+/**
+ * 首屏结论卡。
+ *
+ * 设计意图：用户第一眼只看主指标（pooled 口径）与结果完整性徽章；
+ * 评估口径明细、逐折审计表收进“评估与审计明细”折叠区，避免首屏信息过载。
+ * CV 结果额外追加一句口径声明，防止 pooled 与 fold mean 混读。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @returns {HTMLElement} 结论卡片。
+ */
 function conclusionCard(result) {
   const run = result.run || {};
   const evaluation = result.evaluation || {};
@@ -277,6 +380,10 @@ function conclusionCard(result) {
   return card;
 }
 
+/**
+ * 渲染数据集快照卡（名称、数据量、样本数、类别数、特征数、独立测试数据量）。
+ * 数据全部来自契约的 dataset 段，缺失字段显示 '—'。
+ */
 function datasetCard(result) {
   const dataset = result.dataset || {};
   return el('div', { className: 'card' }, [
@@ -293,6 +400,13 @@ function datasetCard(result) {
 }
 
 /** 单样品解释：默认展开并加载，仍可由用户收起以减少页面长度。 */
+/**
+ * 单样品可解释性面板卡。
+ *
+ * 默认展开并立即渲染（renderExplainabilityPanel 内部按需加载 JSON，
+ * 加载后切换样品不重复请求）；实际解释方法（Grad-CAM / 窗口遮挡 Log-loss 增量等）
+ * 由后端产物决定，本视图只做展示。
+ */
 function explainabilityCard(result) {
   const body = el('div', { attrs: { id: 'v2-explain-panel' } });
   const toggle = el('button', {
@@ -321,6 +435,16 @@ function explainabilityCard(result) {
   ]);
 }
 
+/**
+ * 渲染产物下载卡。
+ *
+ * 可下载项由后端 catalog 白名单决定（模型对象/权重、joblib、status.json、
+ * manifest.json 等不开放）；禁用项由 renderArtifacts 显示原因。
+ * 下载失败时 toast 报错，不中断页面。
+ *
+ * @param {object} result run-result-v1 载荷。
+ * @param {{ toast: Function }} deps 提示条函数。
+ */
 function artifactsCard(result, { toast }) {
   const host = el('div');
   renderArtifacts(host, {

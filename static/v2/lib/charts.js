@@ -1,4 +1,19 @@
-/** SVG 图表：折线、分组柱状与刻度计算。渲染仅用于展示，可抽稀；下载数据不受影响。 */
+/**
+ * charts.js —— v2 前端的纯 SVG 图表库（折线图、分组柱状图、图例、刻度计算）。
+ *
+ * 模块职责：
+ * - 不依赖任何第三方图表库，直接用 dom.js 的 svgEl/el 手工拼装 SVG，
+ *   保持 v2 前端"原生 JS、无构建步骤"的约束；
+ * - 结果页用于绘制光谱/色谱曲线、预测分布（真实 vs 预测）等图形。
+ *
+ * 关键设计约束：
+ * - 渲染仅用于展示：允许对长序列做桶平均抽稀（默认 1200 点上限），
+ *   避免上万点曲线把 DOM 拖垮；抽稀只发生在显示层，下载数据不受影响；
+ * - 所有装饰色以 presentation attribute 内联写入 SVG，即使外部 CSS
+ *   未加载，图表在白色主题下仍可读；
+ * - 每个 svg 都带 viewBox + 内联 width/height 样式，并写入 <title>/<desc>
+ *   与 role="img"，保证缩放正确与基本的可访问性。
+ */
 import { svgEl, el } from './dom.js';
 
 /** 浅色主题图表色板：白底上高对比、不过度荧光的蓝绿/蓝系与状态色。 */
@@ -11,17 +26,37 @@ const TICK_FILL = '#64748b';
 const AXIS_LABEL_FILL = '#475569';
 const SVG_BASE_STYLE = 'width:100%;height:auto;display:block;';
 
-/** 展示抽稀：桶平均，保留首尾；不修改入参。 */
+/**
+ * 展示抽稀（decimation）：把超长序列压缩到不超过 maxPoints 个点。
+ *
+ * 算法：保留首、尾两个原始点，中间部分均匀分成 maxPoints-2 个桶，
+ * 每个桶输出 x、y 的算术平均值（桶平均法）。
+ * 为什么保留首尾：光谱/色谱曲线的端点位置（波数/保留时间范围）是
+ * 业务上有意义的信息，抽稀后仍要精确展示。
+ * 为什么用桶平均而不是简单隔点取样：平均能抑制尖峰被随机丢弃
+ * 造成的视觉误导，展示曲线更平滑、更接近真实包络。
+ *
+ * 不修改入参（先 Array.from 拷贝），纯函数。
+ *
+ * @param {Array<number>} xs X 坐标序列（如拉曼位移 / HPLC 时间）。
+ * @param {Array<number>} ys 强度序列，与 xs 等长。
+ * @param {number} [maxPoints=1200] 抽稀后的最大点数；小于 3 视为不抽稀。
+ * @returns {{xs: number[], ys: number[]}} 抽稀后的新数组。
+ * @throws {Error} xs 与 ys 长度不一致时抛出（数据契约错误，应尽早暴露）。
+ */
 export function decimateSeries(xs, ys, maxPoints = 1200) {
   const x = Array.from(xs || []);
   const y = Array.from(ys || []);
   if (x.length !== y.length) throw new Error('xs 与 ys 长度不一致');
+  // 未超限（或调用方显式关闭抽稀）时原样返回拷贝
   if (x.length <= maxPoints || maxPoints < 3) return { xs: x, ys: y };
+  // 中间可分配的点数 = 总上限减去首尾两个保留点
   const bucketCount = maxPoints - 2;
   const bucketSize = (x.length - 2) / bucketCount;
   const outX = [x[0]];
   const outY = [y[0]];
   for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    // 桶区间 [start, end)：用 floor 切分，最后一个桶 end 顶到倒数第 2 个点
     const start = 1 + Math.floor(bucket * bucketSize);
     const end = Math.min(x.length - 1, 1 + Math.floor((bucket + 1) * bucketSize));
     let sumX = 0;
@@ -33,6 +68,7 @@ export function decimateSeries(xs, ys, maxPoints = 1200) {
       count += 1;
     }
     if (count > 0) {
+      // 桶平均点；空桶（区间退化）直接跳过，避免产生 NaN
       outX.push(sumX / count);
       outY.push(sumY / count);
     }
@@ -42,7 +78,18 @@ export function decimateSeries(xs, ys, maxPoints = 1200) {
   return { xs: outX, ys: outY };
 }
 
-/** 计算“好看”的刻度值，始终包含端点附近的整步骤值。 */
+/**
+ * 计算"好看"的坐标轴刻度值（nice numbers 算法）。
+ * 从 {1, 2, 2.5, 5, 10} × 10^n 中选第一个不小于粗略步长的值作为步长，
+ * 再从小到大枚举落在 [min, max] 内的整步长刻度，保证刻度值是可读的
+ * 整数/有限小数，而不是 0.3333… 这类任意值。
+ * toPrecision(12) 用于消除浮点累加产生的 0.30000000000000004 之类尾差。
+ *
+ * @param {number} min 数据最小值（允许 min > max，内部会交换）。
+ * @param {number} max 数据最大值。
+ * @param {number} [count=5] 期望刻度数量（近似值，实际可能 ±1）。
+ * @returns {number[]} 刻度值数组；非法输入返回 []，min===max 返回单点。
+ */
 export function niceTicks(min, max, count = 5) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
   if (min === max) return [min];
@@ -59,6 +106,11 @@ export function niceTicks(min, max, count = 5) {
   return ticks.length ? ticks : [min, max];
 }
 
+/**
+ * 刻度文本格式化：大数/小数用科学计数法避免超长字符串，
+ * 其余保留最多 3 位小数（经 Number() 去除尾零）。
+ * 非法值返回空串——刻度位置画一个空文本比画 "NaN" 更体面。
+ */
 export function formatTick(value) {
   if (!Number.isFinite(value)) return '';
   const abs = Math.abs(value);
@@ -66,10 +118,17 @@ export function formatTick(value) {
   return String(Number(value.toFixed(3)));
 }
 
+// 画布固定逻辑尺寸：通过 viewBox 等比缩放，CSS 只控制显示宽度
 const CHART_WIDTH = 760;
 const CHART_HEIGHT = 320;
+// 左边距最大（64）：为 Y 轴刻度文本（可能含科学计数法）预留空间
 const MARGIN = { top: 18, right: 16, bottom: 42, left: 64 };
 
+/**
+ * 线性映射函数工厂：把 [domainMin, domainMax] 映射到像素区间
+ * [rangeMin, rangeMax]。定义域退化为单点时返回中点常函数，
+ * 避免除零产生 NaN 坐标。
+ */
 function scaleLinear(domainMin, domainMax, rangeMin, rangeMax) {
   if (domainMin === domainMax) return () => (rangeMin + rangeMax) / 2;
   const factor = (rangeMax - rangeMin) / (domainMax - domainMin);
@@ -112,9 +171,28 @@ function emptyText(attrs, value) {
 }
 
 /**
- * 多序列折线图。
- * series: [{ name, xs, ys, color?, dashed? }]
- * options: { title, description, xLabel, yLabel, maxPoints }
+ * 多序列折线图（光谱/色谱曲线、训练曲线等）。
+ *
+ * 数据清洗流程（clean）：
+ * 1. 每条序列先按 maxPoints 抽稀（仅影响显示）；
+ * 2. 成对过滤掉 x 或 y 非有限值的点（后端数据可能含 NaN 占位）；
+ * 3. 不足 2 个有效点的序列整条丢弃（单点无法成线）。
+ * 全部序列为空时返回带"没有可绘制的数据"提示的空图，而不是空 svg。
+ *
+ * Y 轴处理细节：
+ * - 所有序列共用同一坐标系（合并 min/max），便于多曲线直接对比；
+ * - yMin===yMax（平线）时人为扩 ±1，避免退化；
+ * - 上下各留 5% padding，曲线不贴边。
+ *
+ * @param {Object} options
+ * @param {Array<{name: string, xs: number[], ys: number[], color?: string, dashed?: boolean}>} options.series
+ *        序列数组；color 缺省按序取 CHART_COLORS 循环，dashed 画虚线（常用于"参考/原始"对照）。
+ * @param {string} [options.title] 图题（写入 <title>，供无障碍与提示）。
+ * @param {string} [options.description] 图的描述（写入 <desc>）。
+ * @param {string} [options.xLabel] X 轴标题（如 "Raman shift / cm⁻¹"）。
+ * @param {string} [options.yLabel] Y 轴标题（如 "Intensity"）。
+ * @param {number} [options.maxPoints=1200] 单序列展示抽稀上限。
+ * @returns {SVGElement} 可直接 append 的 <svg> 节点。
  */
 export function lineChart({ series, title = '', description = '', xLabel = '', yLabel = '', maxPoints = 1200 }) {
   const clean = (series || [])
@@ -185,6 +263,13 @@ export function lineChart({ series, title = '', description = '', xLabel = '', y
   return svg;
 }
 
+/**
+ * 图例：为 lineChart 的序列生成配套图例（色块线 + 名称的 <ul>）。
+ * 颜色/虚线规则与 lineChart 完全一致（同一下标同色），保证图图对应；
+ * 小色块本身是独立 22×10 的 SVG，aria-hidden 避免读屏器重复朗读。
+ * @param {Array<{name?: string, color?: string, dashed?: boolean}>} series
+ * @returns {HTMLElement}
+ */
 export function chartLegend(series) {
   return el('ul', { className: 'legend' },
     (series || []).map((item, index) => el('li', { className: 'legend-item' }, [
@@ -202,8 +287,22 @@ export function chartLegend(series) {
 }
 
 /**
- * 分组柱状图：预测分布（真实 vs 预测）。
- * data: { labels, series: [{ name, values, color? }] }
+ * 分组柱状图：预测分布（真实 vs 预测）等"每类多根柱子"的场景。
+ *
+ * 布局算法：把绘图区按 labels 数量均分为若干组，组内再按 series 数量
+ * 并排放柱；柱宽取 38px 上限与组宽 70% 均分值的较小者，标签很多时
+ * 自动变窄而不溢出。Y 轴从 0 开始（计数类数据截断会夸大差异），
+ * 顶部留 10% 余量给柱顶数值标签。
+ * 空数据（无标签/无序列/全零）时返回提示空图。
+ *
+ * @param {Object} options
+ * @param {Array<string|number>} [options.labels] X 轴分组标签（如类别名）。
+ * @param {Array<{name: string, values: number[], color?: string}>} [options.series]
+ *        每个序列一根柱/组，values 与 labels 等长。
+ * @param {string} [options.title]
+ * @param {string} [options.description]
+ * @param {string} [options.yLabel='数量']
+ * @returns {SVGElement}
  */
 export function groupedBarChart({ labels = [], series = [], title = '', description = '', yLabel = '数量' }) {
   const svg = chartSvg({ title, description, fallbackLabel: '分组柱状图' });

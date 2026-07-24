@@ -64,6 +64,46 @@ def test_worker_renews_lease_while_execution_is_running(tmp_path):
     assert repo.get(created.run_id).state == 'succeeded'
 
 
+def test_worker_notifies_lease_loss_after_user_stop(tmp_path):
+    from threading import Event, Thread
+
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    created = repo.create_queued(dataset_id='ds_1', config={'model_type': 'dscarnet'})
+    started, release, lost = Event(), Event(), Event()
+    lost_run_ids = []
+
+    def execute(_):
+        started.set()
+        assert release.wait(timeout=5)
+        return {'manifest_name': 'manifest.json'}
+
+    def on_lease_lost(run_id):
+        lost_run_ids.append(run_id)
+        lost.set()
+
+    worker = RunWorker(
+        repository=repo,
+        worker_id='test-worker',
+        execute=execute,
+        now=lambda: datetime.now(timezone.utc),
+        heartbeat_seconds=0.01,
+        on_lease_lost=on_lease_lost,
+    )
+    thread = Thread(target=worker.run_once)
+    thread.start()
+    assert started.wait(timeout=5)
+
+    repo.cancel(created.run_id, now=datetime.now(timezone.utc))
+
+    assert lost.wait(timeout=5)
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert lost_run_ids == [created.run_id]
+    assert repo.get(created.run_id).state == 'cancelled'
+
+
 def test_worker_projects_failed_record_after_execution_error(tmp_path):
     repo = RunRepository(tmp_path / 'runs.sqlite3')
     repo.initialize()
