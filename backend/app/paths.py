@@ -27,6 +27,8 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 RUNS_DATABASE = STORAGE_DIR / "runs.sqlite3"
 # 数据集元数据库：上传/预处理产出的数据集登记信息由 DatasetRepository 维护。
 DATASETS_DATABASE = STORAGE_DIR / "datasets.sqlite3"
+# Agent Session/Experiment 元数据库：与 runs.sqlite3 平级，agent 包独立维护。
+AGENT_DATABASE = STORAGE_DIR / "agent.sqlite3"
 # 用户上传的原始光谱/色谱文件存放目录。
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 # 训练 Run 的工作目录根：每个 Run 的产物（模型、指标、可解释性文件、Manifest）
