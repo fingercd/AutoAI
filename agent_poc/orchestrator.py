@@ -14,6 +14,7 @@ from .prompts import build_messages
 from .schemas import (
     FinalizeDecision,
     PolicyViolation,
+    ReplanDecision,
     RequestHumanDecision,
     RunExperimentDecision,
     decision_json_schema,
@@ -89,6 +90,42 @@ def _unused_proposal_recipes(
         if proposal['proposal_id'] not in used_ids
         and _training_key(proposal) not in used_keys
     )
+
+
+def _failed_replan_context(
+    observation: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    experiments = observation.get('experiments')
+    if not isinstance(experiments, list):
+        return (), ()
+    replanned_parents = {
+        item.get('parent_run_id')
+        for item in experiments
+        if isinstance(item, dict) and isinstance(item.get('parent_run_id'), str)
+    }
+    for experiment in reversed(experiments):
+        if not isinstance(experiment, dict) or experiment.get('state') != 'failed':
+            continue
+        run_id = experiment.get('run_id')
+        if run_id in replanned_parents:
+            continue
+        diagnosis = experiment.get('diagnosis')
+        actions = (
+            diagnosis.get('allowed_action_ids')
+            if isinstance(diagnosis, dict)
+            else None
+        )
+        if isinstance(run_id, str) and isinstance(actions, list):
+            if isinstance(experiment.get('parent_run_id'), str):
+                actions = [
+                    item for item in actions
+                    if item != 'choose_unused_proposal'
+                ]
+            return (
+                (run_id,),
+                tuple(item for item in actions if isinstance(item, str)),
+            )
+    return (), ()
 
 
 def _seed_state_from_observation(state: LoopState, observation: dict[str, Any]) -> None:
@@ -187,14 +224,45 @@ def run_agent(
             isinstance(modules, dict)
             and modules.get('restricted_strategy_pool') is True
         )
+        limited_replanning = (
+            isinstance(modules, dict)
+            and modules.get('limited_replanning') is True
+        )
         if restricted and not locked_proposal_recipes:
             return _needs_human(session_id, 'locked proposal catalog is unavailable')
         proposal_recipes = _unused_proposal_recipes(
             observation,
             locked_proposal_recipes,
         ) if restricted else ()
+        failed_run_ids, allowed_replan_actions = (
+            _failed_replan_context(observation)
+            if limited_replanning
+            else ((), ())
+        )
         started = _now_ms()
-        if state.remaining_runs > 0 and (not restricted or proposal_recipes):
+        if failed_run_ids:
+            can_replan = (
+                state.remaining_runs > 0
+                and proposal_recipes
+                and 'choose_unused_proposal' in allowed_replan_actions
+            )
+            can_finalize = (
+                bool(state.successful_run_ids)
+                and 'stop' in allowed_replan_actions
+            )
+            if can_replan and can_finalize:
+                allowed_decisions = ('REPLAN', 'FINALIZE')
+                selected_run_ids = tuple(sorted(state.successful_run_ids))
+            elif can_replan:
+                allowed_decisions = ('REPLAN',)
+                selected_run_ids = ()
+            elif state.successful_run_ids:
+                allowed_decisions = ('FINALIZE',)
+                selected_run_ids = tuple(sorted(state.successful_run_ids))
+            else:
+                allowed_decisions = ('REQUEST_HUMAN',)
+                selected_run_ids = ()
+        elif state.remaining_runs > 0 and (not restricted or proposal_recipes):
             allowed_decisions = ('RUN_EXPERIMENT',)
             selected_run_ids: tuple[str, ...] = ()
         elif state.successful_run_ids:
@@ -209,12 +277,16 @@ def run_agent(
             allowed_decisions=allowed_decisions,
             selected_run_ids=selected_run_ids,
             proposal_recipes=proposal_recipes,
+            failed_run_ids=failed_run_ids,
+            allowed_replan_actions=allowed_replan_actions,
         )
         decision_schema = decision_json_schema(
             allowed_decisions=allowed_decisions,
             allowed_models=cfg.allowed_models,
             selected_run_ids=selected_run_ids,
             proposal_recipes=proposal_recipes,
+            failed_run_ids=failed_run_ids,
+            allowed_replan_actions=allowed_replan_actions,
         )
         try:
             decision = llm.decide(messages, decision_schema=decision_schema)
@@ -264,7 +336,7 @@ def run_agent(
                 trace.record_finalize(result, latency_ms=_now_ms() - started)
             return result
 
-        assert isinstance(decision, RunExperimentDecision)
+        assert isinstance(decision, (RunExperimentDecision, ReplanDecision))
         if state.remaining_runs <= 0:
             reason = 'Python budget guard rejected RUN_EXPERIMENT after max_runs'
             if trace:
@@ -281,6 +353,16 @@ def run_agent(
             if trace:
                 trace.record_error(reason)
             return _needs_human(session_id, reason)
+
+        if isinstance(decision, ReplanDecision):
+            if (
+                decision.parent_run_id not in failed_run_ids
+                or decision.action_id not in allowed_replan_actions
+            ):
+                reason = 'Python replanning guard rejected parent/action'
+                if trace:
+                    trace.record_error(reason)
+                return _needs_human(session_id, reason)
 
         if not restricted and decision.proposal_id is not None:
             reason = 'Python proposal guard rejected proposal_id in unrestricted mode'
@@ -310,6 +392,8 @@ def run_agent(
             'proposal_id': decision.proposal_id,
             'rationale': decision.rationale,
         }
+        if isinstance(decision, ReplanDecision):
+            action['action_id'] = decision.action_id
         if decision.proposal_id is None:
             action.pop('proposal_id')
         config_hash = action_config_hash(action)

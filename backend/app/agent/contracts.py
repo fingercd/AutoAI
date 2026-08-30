@@ -121,6 +121,13 @@ class CreateAgentSessionRequest(BaseModel):
             raise ValueError('constrained_code_evolution 需要 fail_fast_guard')
         if self.modules.feedback_diagnosis and not self.modules.fail_fast_guard:
             raise ValueError('feedback_diagnosis 需要 fail_fast_guard')
+        if self.modules.limited_replanning and not (
+            self.modules.feedback_diagnosis
+            and self.modules.restricted_strategy_pool
+        ):
+            raise ValueError(
+                'limited_replanning 需要 feedback_diagnosis 和 restricted_strategy_pool'
+            )
 
 
 class CreateAgentExperimentRequest(BaseModel):
@@ -137,6 +144,7 @@ class CreateAgentExperimentRequest(BaseModel):
         None,
         pattern=r'^p_[0-9a-f]{16}$',
     )
+    action_id: Literal['choose_unused_proposal'] | None = None
 
     def validate(self) -> None:
         if self.model_type not in _AGENT_ALLOWED_MODELS:
@@ -151,6 +159,8 @@ class CreateAgentExperimentRequest(BaseModel):
             raise ValueError(
                 f'class_balance 仅支持 {sorted(_AGENT_CLASS_BALANCES)}'
             )
+        if self.action_id is not None and self.parent_run_id is None:
+            raise ValueError('action_id 需要 parent_run_id')
 
 
 class FinalizeAgentSessionRequest(BaseModel):

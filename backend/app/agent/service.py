@@ -55,6 +55,7 @@ _VALIDATION_METRIC_KEYS = (
     'macro_f1',
     'weighted_f1',
 )
+_DEFAULT_MAX_RETRIES_PER_FAILURE = 1
 
 # AgentFeedback / AgentSessionDetail / AgentExperimentSummary 通用敏感键黑名单：
 # 任何包含以下子串（不分大小写）的键都被视为泄露，禁止出现在 Agent 响应里。
@@ -368,6 +369,22 @@ class AgentService:
                 for status in context['module_status'].values()
             ):
                 context['status'] = 'ready'
+        if module_flags['limited_replanning']:
+            context['replanning_policy'] = {
+                'schema_version': 'limited-replanning-v1',
+                'max_retries_per_failure': _DEFAULT_MAX_RETRIES_PER_FAILURE,
+                'max_replan_depth': 1,
+                'allowed_action_ids': [
+                    'choose_unused_proposal', 'stop', 'request_human',
+                ],
+                'requires_parent_failure': True,
+            }
+            context['module_status']['limited_replanning'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -474,16 +491,92 @@ class AgentService:
                 f'session {session_id} 仍有非终态 Run，请等待完成后再提交'
             )
 
+        if session.module_flags.get('limited_replanning'):
+            replanned_parents = {
+                item.parent_run_id
+                for item in existing
+                if item.parent_run_id is not None
+            }
+            unresolved_failures = [
+                item.run_id
+                for item in existing
+                if run_states.get(item.run_id) == 'failed'
+                and item.run_id not in replanned_parents
+            ]
+            if unresolved_failures and payload.action_id is None:
+                raise TrainingConfigValidationError(
+                    '存在未处理失败实验时必须使用受控 REPLAN action'
+                )
+
         # parent_run_id 若存在，必须属于同一 Session
+        parent_record: RunRecord | None = None
+        parent_experiment: AgentExperimentRecord | None = None
         if payload.parent_run_id is not None:
             try:
-                self.sessions.get_experiment_scoped(
+                parent_experiment = self.sessions.get_experiment_scoped(
                     session_id, payload.parent_run_id, principal=principal
+                )
+                parent_record = self._safe_get_run(
+                    payload.parent_run_id, principal=principal
                 )
             except Exception as exc:
                 raise TrainingConfigValidationError(
                     f'parent_run_id {payload.parent_run_id} 不属于当前 session'
                 ) from exc
+
+        if payload.action_id is not None:
+            if not session.module_flags.get('limited_replanning'):
+                raise TrainingConfigValidationError(
+                    '当前 session 未启用 limited_replanning'
+                )
+            if parent_record is None or parent_record.state != 'failed':
+                raise TrainingConfigValidationError(
+                    '有限重规划的 parent_run_id 必须是失败实验'
+                )
+            if parent_experiment is not None and parent_experiment.parent_run_id is not None:
+                raise TrainingConfigValidationError(
+                    '有限重规划不允许超过 max_replan_depth=1'
+                )
+            train_metrics, valid_metrics, _ = _extract_train_validation_metrics(
+                parent_record.run_id
+            )
+            diagnosis = build_diagnosis(
+                run_state=parent_record.state,
+                selection_metric=session.selection_metric,
+                training_metrics=train_metrics,
+                validation_metrics=valid_metrics,
+                error_details=parent_record.error_details,
+                evidence_card=session.context.get('evidence_card'),
+                restricted_actions_available=True,
+            )
+            if payload.action_id not in diagnosis.get('allowed_action_ids', []):
+                raise TrainingConfigValidationError(
+                    'action_id 不在父实验 diagnosis 允许集合中'
+                )
+            retry_count = sum(
+                1
+                for item in existing
+                if item.parent_run_id == parent_record.run_id
+                and item.action_json.get('action_id') == payload.action_id
+            )
+            replanning_policy = session.context.get('replanning_policy')
+            retry_limit = (
+                int(replanning_policy.get(
+                    'max_retries_per_failure',
+                    _DEFAULT_MAX_RETRIES_PER_FAILURE,
+                ))
+                if isinstance(replanning_policy, dict)
+                else _DEFAULT_MAX_RETRIES_PER_FAILURE
+            )
+            if retry_count >= retry_limit:
+                raise AgentConfigCollision('同一失败与 action_id 已达有限重试上限')
+        elif (
+            payload.parent_run_id is not None
+            and session.module_flags.get('limited_replanning')
+        ):
+            raise TrainingConfigValidationError(
+                'parent_run_id 只能用于有限重规划 action'
+            )
 
         # 合成训练配置并通过 TrainingSpec.validated 校验（与现有 /api/training/runs 同口径）
         training_config = _build_training_config(session=session, action=action)
@@ -511,6 +604,14 @@ class AgentService:
             config_hash=config_hash,
             action_json=action,
             principal=principal,
+            parent_run_id=payload.parent_run_id,
+            action_id=payload.action_id,
+            max_retries_per_failure=(
+                retry_limit if payload.action_id is not None else None
+            ),
+            require_replan_for_failed=bool(
+                session.module_flags.get('limited_replanning')
+            ),
         )
         record: RunRecord | None = None
         try:

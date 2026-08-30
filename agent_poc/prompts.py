@@ -62,6 +62,8 @@ def build_messages(
     ),
     selected_run_ids: tuple[str, ...] = (),
     proposal_recipes: tuple[dict[str, str], ...] = (),
+    failed_run_ids: tuple[str, ...] = (),
+    allowed_replan_actions: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     schema = json.dumps(
         decision_json_schema(
@@ -69,6 +71,8 @@ def build_messages(
             allowed_models=cfg.allowed_models,
             selected_run_ids=selected_run_ids,
             proposal_recipes=proposal_recipes,
+            failed_run_ids=failed_run_ids,
+            allowed_replan_actions=allowed_replan_actions,
         ),
         ensure_ascii=False,
         sort_keys=True,
@@ -137,8 +141,8 @@ def build_repair_messages(messages: list[dict[str, str]]) -> list[dict[str, str]
             'content': (
                 'Your previous response was not valid for the required schema. '
                 'Repair it once: output only a single strict JSON object with no code fence, '
-                'no explanation, no extra keys, and one of RUN_EXPERIMENT, FINALIZE, '
-                'REQUEST_HUMAN.'
+                'no explanation and no extra keys. Use only the decision branch '
+                'allowed by the schema in the system message above.'
             ),
         }
     )

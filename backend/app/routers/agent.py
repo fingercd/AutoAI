@@ -48,7 +48,10 @@ def _agent_service() -> AgentService:
 
     与现有 ``get_run_repository`` 风格一致；Repository 本身不带跨请求状态。
     """
-    sessions = AgentSessionRepository(AGENT_DATABASE)
+    sessions = AgentSessionRepository(
+        AGENT_DATABASE,
+        runs_database_path=RUNS_DATABASE,
+    )
     sessions.initialize()
     runs = RunRepository(RUNS_DATABASE)
     runs.initialize()
