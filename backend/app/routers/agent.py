@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from ..contracts import TrainingConfigValidationError
 from ..datasets.repository import DatasetRepository
@@ -18,6 +20,8 @@ from ..http.principal import Principal, get_principal
 from ..paths import AGENT_DATABASE, DATASETS_DATABASE, RUNS_DATABASE, STORAGE_DIR
 from ..runs.repository import RunRepository
 from ..agent.contracts import (
+    AGENT_API_CAPABILITIES,
+    AGENT_API_CONTRACT_VERSION,
     CreateAgentExperimentRequest,
     CreateAgentSessionRequest,
     FinalizeAgentSessionRequest,
@@ -30,6 +34,10 @@ from ..agent.repository import (
     AgentSessionRepository,
 )
 from ..agent.service import AgentService
+from ..agent.runtime_health import (
+    AgentRegistryUnavailable,
+    probe_runtime_health,
+)
 
 
 router = APIRouter()
@@ -70,6 +78,47 @@ def _to_http_exception(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(status_code=422, detail=str(exc))
     return HTTPException(status_code=500, detail='agent session 内部错误')
+
+
+@router.get('/api/agent/health')
+def get_agent_health(
+    probe: Literal['models', 'inference'] = Query('models'),
+    model_key: str | None = Query(None, min_length=1),
+    _principal: Principal = Depends(get_principal),
+) -> dict[str, object]:
+    """Probe Agent persistence plus configured model runtimes without leaks."""
+    try:
+        _agent_service()
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail={'code': 'agent_backend_unavailable'},
+        ) from None
+    try:
+        runtime = probe_runtime_health(probe=probe, model_key=model_key)
+    except AgentRegistryUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail={'code': 'agent_registry_unavailable'},
+        ) from None
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail={'code': 'unknown_model_key'},
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={'code': 'model_key_required_for_inference'},
+        ) from None
+    runtime.update({
+        'agent_contract': AGENT_API_CONTRACT_VERSION,
+        'capabilities': list(AGENT_API_CAPABILITIES),
+        'database_ready': True,
+        'training_worker_required': True,
+        'frontend_required': False,
+    })
+    return runtime
 
 
 @router.post('/api/agent/sessions', status_code=201)
