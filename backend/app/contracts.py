@@ -44,6 +44,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'random_forest_oob_score', 'xgboost_min_child_weight', 'xgboost_gamma',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
+        'hpo_profile', 'hpo_selection_metric',
     }
 )
 
@@ -117,6 +118,21 @@ class TrainingSpec:
         if class_balance not in {'none', 'class_weight'}:
             raise TrainingConfigValidationError('class_balance 必须是 none 或 class_weight')
         values['class_balance'] = class_balance
+
+        if 'hpo_profile' in values:
+            hpo_profile = str(values['hpo_profile']).strip().lower()
+            if hpo_profile not in {'off', 'tiny', 'standard'}:
+                raise TrainingConfigValidationError(
+                    'hpo_profile 必须是 off、tiny 或 standard'
+                )
+            values['hpo_profile'] = hpo_profile
+        if 'hpo_selection_metric' in values:
+            hpo_metric = str(values['hpo_selection_metric']).strip().lower()
+            if hpo_metric not in {'balanced_accuracy', 'macro_f1'}:
+                raise TrainingConfigValidationError(
+                    'hpo_selection_metric 必须是 balanced_accuracy 或 macro_f1'
+                )
+            values['hpo_selection_metric'] = hpo_metric
 
         if model_type == 'dscarnet':
             mode = str(values.get('dscarnet_input_mode') or 'dual').strip().lower()

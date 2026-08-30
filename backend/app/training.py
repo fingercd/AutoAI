@@ -104,6 +104,8 @@ class TrainConfig:
     split_valid: int = 1
     split_test: int = 1
     class_balance: str = "none"
+    hpo_profile: str = "standard"
+    hpo_selection_metric: str = "balanced_accuracy"
     # ── 模型与结构参数：model_type 会经 canonical_model_type 归一化（如 transformer1d 别名） ──
     model_type: str = "cnn1d"
     early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
@@ -1058,35 +1060,48 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
         pls_da/pca_lda 是成分数网格；logistic/SVM 是 C 网格；random_forest 用固定
         种子的 ParameterSampler 随机搜索并强制开启 oob_score；xgboost 是小型
         笛卡尔积网格。无法识别的模型退化为仅当前配置。"""
+    if config.hpo_profile not in {"off", "tiny", "standard"}:
+        raise ValueError("未知 hpo_profile")
+    if config.hpo_selection_metric not in {"balanced_accuracy", "macro_f1"}:
+        raise ValueError("未知 hpo_selection_metric")
+    if config.hpo_profile == "off":
+        if model_type == "random_forest":
+            return [_clone_config(config, random_forest_oob_score=False)]
+        return [config]
+
+    def bounded(candidates: list[TrainConfig]) -> list[TrainConfig]:
+        return candidates[:3] if config.hpo_profile == "tiny" else candidates
+
     if model_type == "pls_da":
         raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
         cap = max(1, min(len(y_train), n_features))
-        return [_clone_config(config, pls_components=value) for value in raw if value <= cap]
+        return bounded([_clone_config(config, pls_components=value) for value in raw if value <= cap])
     if model_type == "pca_lda":
         raw = [2, 3, 5, 8, 10, 15, 20, 30, 40, 50]
         cap = max(1, min(len(y_train), n_features))
-        return [_clone_config(config, pca_components=value) for value in raw if value <= cap]
+        return bounded([_clone_config(config, pca_components=value) for value in raw if value <= cap])
     if model_type == "logistic_regression":
-        return [_clone_config(config, logistic_c=value) for value in (0.1, 1.0, 10.0)]
+        return bounded([_clone_config(config, logistic_c=value) for value in (0.1, 1.0, 10.0)])
     if model_type == "svm":
-        return [_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)]
-    if model_type == "random_forest":
+        return bounded([_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)])
+    if model_type == "random_forest" and config.hpo_profile != "off":
         n_estimators = int(config.random_forest_n_estimators)
         search_iterations = int(config.random_forest_search_iterations)
         if not 50 <= n_estimators <= 1000:
             raise ValueError("随机森林每组树数必须在 50 到 1000 之间")
         if not 1 <= search_iterations <= 18:
             raise ValueError("随机森林搜索候选数必须在 1 到 18 之间")
+        candidate_limit = min(search_iterations, 3) if config.hpo_profile == "tiny" else search_iterations
         candidates = ParameterSampler(
             {
                 "random_forest_max_depth": [3, 5, 10],
                 "random_forest_min_samples_leaf": [2, 5],
                 "random_forest_max_features": ["sqrt", "log2", 0.1],
             },
-            n_iter=search_iterations,
+            n_iter=candidate_limit,
             random_state=config.seed,
         )
-        return [
+        return bounded([
             _clone_config(
                 config,
                 random_forest_n_estimators=n_estimators,
@@ -1094,7 +1109,7 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
                 **params,
             )
             for params in candidates
-        ]
+        ])
     if model_type == "xgboost":
         candidates = [
             (n_estimators, depth, min_child)
@@ -1102,7 +1117,7 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
             for depth in (2, 3, 5)
             for min_child in (3, 5)
         ]
-        return [
+        return bounded([
             _clone_config(
                 config,
                 xgboost_n_estimators=n_estimators,
@@ -1114,7 +1129,7 @@ def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_featu
                 xgboost_min_child_weight=min_child,
             )
             for n_estimators, depth, min_child in candidates
-        ]
+        ])
     return [config]
 
 
@@ -1192,7 +1207,7 @@ def _select_traditional_config(
 
         更新最优用 1e-12 容差，标记选中行时用 (-index) 保证平手取先者，结果
         完全确定；random_forest 走 OOB 专用路径（不消耗 valid）。"""
-    if model_type == "random_forest":
+    if model_type == "random_forest" and config.hpo_profile != "off":
         return _select_random_forest_config(
             config,
             x_train,
@@ -1204,10 +1219,12 @@ def _select_traditional_config(
     best_model: Any | None = None
     best_config = config
     best_eval: dict[str, Any] | None = None
-    best_balanced_accuracy: float | None = None
+    best_selection_score: float | None = None
+    best_index: int | None = None
     search_rows: list[dict[str, Any]] = []
     candidates = _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train)
-    for candidate in candidates:
+    candidate_count = len(candidates)
+    for candidate_index, candidate in enumerate(candidates):
         model = build_traditional_model(candidate, y_train, len(label_names))
         model.fit(x_train, y_train)
         valid_eval = _evaluate_traditional_model(
@@ -1220,6 +1237,7 @@ def _select_traditional_config(
         params = _traditional_params(candidate, model_type)
         balanced_accuracy = float(valid_eval["balanced_accuracy"])
         macro_f1 = float(valid_eval["macro_f1"])
+        selection_score = float(valid_eval[config.hpo_selection_metric])
         search_rows.append(
             {
                 "model_type": model_type,
@@ -1227,32 +1245,34 @@ def _select_traditional_config(
                 "valid_balanced_accuracy": balanced_accuracy,
                 "valid_macro_f1": macro_f1,
                 "valid_accuracy": float(valid_eval["accuracy"]),
-                "selection_metric": "balanced_accuracy",
-                "selection_score": balanced_accuracy,
+                "selection_metric": config.hpo_selection_metric,
+                "selection_source": "validation",
+                "selection_score": selection_score,
+                "hpo_profile": config.hpo_profile,
+                "candidate_index": candidate_index,
+                "candidate_count": candidate_count,
+                "selection_fit_count": candidate_count,
+                "final_fit_count": 1,
+                "total_model_fit_count": candidate_count + 1,
                 "oob_accuracy": None,
                 "oob_balanced_accuracy": None,
+                "oob_macro_f1": None,
                 "params": params,
                 "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
             }
         )
-        if best_balanced_accuracy is None or balanced_accuracy > best_balanced_accuracy + 1e-12:
+        if best_selection_score is None or selection_score > best_selection_score + 1e-12:
             best_model = model
             best_config = candidate
             best_eval = valid_eval
-            best_balanced_accuracy = balanced_accuracy
-    if best_model is None or best_eval is None or best_balanced_accuracy is None:
+            best_selection_score = selection_score
+            best_index = candidate_index
+    if best_model is None or best_eval is None or best_selection_score is None or best_index is None:
         raise ValueError("传统模型验证集搜索未产生可用模型")
-    selected_index = max(
-        range(len(search_rows)),
-        key=lambda index: (
-            float(search_rows[index]["valid_balanced_accuracy"]),
-            -index,
-        ),
-    )
-    search_rows[selected_index]["is_selected"] = True
+    search_rows[best_index]["is_selected"] = True
     return TraditionalSelection(
         config=best_config,
-        valid_balanced_accuracy=best_balanced_accuracy,
+        valid_balanced_accuracy=float(best_eval["balanced_accuracy"]),
         valid_macro_f1=float(best_eval["macro_f1"]),
         search_rows=search_rows,
         model=best_model,
@@ -1260,7 +1280,7 @@ def _select_traditional_config(
     )
 
 
-def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, float]:
+def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, float, float]:
     """从随机森林 oob_decision_function_ 计算袋外 accuracy/balanced_accuracy；
         未覆盖任何训练样本（树太少或抽样极端）时拒绝，保证 OOB 选择指标可信。"""
     probabilities = np.asarray(model.oob_decision_function_, dtype=float)
@@ -1272,7 +1292,11 @@ def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, 
     classes = np.asarray(model.classes_)
     predicted = classes[np.argmax(probabilities[covered], axis=1)]
     true = np.asarray(y_train)[covered]
-    return float(accuracy_score(true, predicted)), float(balanced_accuracy_score(true, predicted))
+    return (
+        float(accuracy_score(true, predicted)),
+        float(balanced_accuracy_score(true, predicted)),
+        float(f1_score(true, predicted, average="macro", zero_division=0)),
+    )
 
 
 def _select_random_forest_config(
@@ -1292,10 +1316,16 @@ def _select_random_forest_config(
     best_index: int | None = None
     search_rows: list[dict[str, Any]] = []
     candidates = _traditional_candidate_configs(config, "random_forest", x_train.shape[1], y_train)
+    candidate_count = len(candidates)
     for index, candidate in enumerate(candidates):
         model = build_traditional_model(candidate, y_train, len(label_names))
         model.fit(x_train, y_train)
-        oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
+        oob_accuracy, oob_balanced_accuracy, oob_macro_f1 = _random_forest_oob_metrics(model, y_train)
+        selection_score = (
+            oob_macro_f1
+            if config.hpo_selection_metric == "macro_f1"
+            else oob_balanced_accuracy
+        )
         params = _traditional_params(candidate, "random_forest")
         search_rows.append(
             {
@@ -1304,15 +1334,23 @@ def _select_random_forest_config(
                 "valid_balanced_accuracy": None,
                 "valid_macro_f1": None,
                 "valid_accuracy": None,
-                "selection_metric": "oob_balanced_accuracy",
-                "selection_score": oob_balanced_accuracy,
+                "selection_metric": config.hpo_selection_metric,
+                "selection_source": "oob",
+                "selection_score": selection_score,
+                "hpo_profile": config.hpo_profile,
+                "candidate_index": index,
+                "candidate_count": candidate_count,
+                "selection_fit_count": candidate_count,
+                "final_fit_count": 1,
+                "total_model_fit_count": candidate_count + 1,
                 "oob_accuracy": oob_accuracy,
                 "oob_balanced_accuracy": oob_balanced_accuracy,
+                "oob_macro_f1": oob_macro_f1,
                 "params": params,
                 "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
             }
         )
-        candidate_key = (oob_balanced_accuracy, oob_accuracy, -index)
+        candidate_key = (selection_score, oob_accuracy, -index)
         if best_key is None or candidate_key > best_key:
             best_model = model
             best_config = candidate
@@ -1888,6 +1926,8 @@ def _run_legacy_training(
         fold_best_params: dict[str, Any] = {}
         fold_selection_metric: str | None = None
         fold_selection_score: float | None = None
+        fold_selection_source: str | None = None
+        fold_hpo_profile: str | None = None
                 # 传统模型分支：搜索选参（train/valid）→ train+valid 重训 → 评估三个集合
                 # → 可选窗口遮挡解释性；深度分支：训练整折 → 评估 → 收集解释性上下文。
         if model_family(model_type) == "traditional_ml":
@@ -1899,6 +1939,12 @@ def _run_legacy_training(
             fold_selection_metric = str(selected_search_row.get("selection_metric") or "balanced_accuracy")
             fold_selection_score = float(
                 selected_search_row.get("selection_score", valid_eval["balanced_accuracy"])
+            )
+            fold_selection_source = str(
+                selected_search_row.get("selection_source") or "validation"
+            )
+            fold_hpo_profile = str(
+                selected_search_row.get("hpo_profile") or config.hpo_profile
             )
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
@@ -2050,6 +2096,8 @@ def _run_legacy_training(
                 "best_params": fold_best_params,
                 "selection_metric": fold_selection_metric,
                 "selection_score": fold_selection_score,
+                "selection_source": fold_selection_source,
+                "hpo_profile": fold_hpo_profile,
                 "metrics": fold_metrics,
                 "split_metrics": split_metrics,
                 "preprocess": _json_normalizer(normalizer),
@@ -2077,12 +2125,18 @@ def _run_legacy_training(
 
         # ── 阶段 4：汇总指标（test 主值 = pooled OOF）、合并解释性并落盘全部产物 ──
     metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
+    model_fit_count = (
+        len(best_search_rows) + len(folds)
+        if model_family(model_type) == "traditional_ml"
+        else len(folds)
+    )
     cv_metrics = {
         "strategy": evaluation_strategy,
         "fold_count": len(folds),
         "metrics": metrics,
         "cv_summary": cv_summary,
         "folds": cv_fold_payloads,
+        "model_fit_count": model_fit_count,
     }
 
     if model_family(model_type) == "traditional_ml":
@@ -2137,6 +2191,9 @@ def _run_legacy_training(
             sample_feature_summary.get("method")
             or explainability
         ),
+        "model_fit_count": model_fit_count,
+        "hpo_profile": config.hpo_profile,
+        "hpo_selection_metric": config.hpo_selection_metric,
     }
     if last_model_family == "deep_learning":
         model_metadata.update(
@@ -2162,6 +2219,7 @@ def _run_legacy_training(
         "model_range_warnings": range_warnings,
         "explainability_method": explainability,
         "artifact_explainability_method": model_metadata["artifact_explainability_method"],
+        "model_fit_count": model_fit_count,
     }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2179,9 +2237,17 @@ def _run_legacy_training(
         "model_type",
         "is_selected",
         "selection_metric",
+        "selection_source",
         "selection_score",
+        "hpo_profile",
+        "candidate_index",
+        "candidate_count",
+        "selection_fit_count",
+        "final_fit_count",
+        "total_model_fit_count",
         "oob_accuracy",
         "oob_balanced_accuracy",
+        "oob_macro_f1",
         "valid_accuracy",
         "valid_balanced_accuracy",
         "valid_macro_f1",

@@ -12,6 +12,33 @@ from backend.app.routers.deps import TrainingDataReference
 from backend.app.runs.repository import RunRepository
 
 
+def test_hpo_fields_validate_and_round_trip_without_changing_legacy_default():
+    legacy = TrainingSpec.from_legacy({'model_type': 'logistic_regression'}).validated(
+        has_external_test=False
+    )
+    assert 'hpo_profile' not in legacy.to_legacy_dict()
+    configured = TrainingSpec.from_legacy({
+        'model_type': 'logistic_regression',
+        'hpo_profile': 'tiny',
+        'hpo_selection_metric': 'macro_f1',
+    }).validated(has_external_test=False)
+    assert configured.to_legacy_dict()['hpo_profile'] == 'tiny'
+    assert configured.to_legacy_dict()['hpo_selection_metric'] == 'macro_f1'
+
+
+def test_hpo_fields_reject_unknown_values():
+    with pytest.raises(TrainingConfigValidationError):
+        TrainingSpec.from_legacy({
+            'model_type': 'logistic_regression',
+            'hpo_profile': 'unbounded',
+        }).validated(has_external_test=False)
+    with pytest.raises(TrainingConfigValidationError):
+        TrainingSpec.from_legacy({
+            'model_type': 'logistic_regression',
+            'hpo_selection_metric': 'accuracy',
+        }).validated(has_external_test=False)
+
+
 def test_unknown_training_fields_are_ignored_with_an_explicit_warning() -> None:
     spec = TrainingSpec.from_legacy(
         {

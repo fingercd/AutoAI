@@ -180,7 +180,12 @@ def _build_training_config(
         'class_balance': action.get('class_balance', 'none'),
         'seed': session.seed,
         'feature_selection_enabled': False,
+        'hpo_selection_metric': session.selection_metric,
     }
+    hpo_policy = session.context.get('hpo_policy')
+    if isinstance(hpo_policy, dict):
+        config['hpo_profile'] = hpo_policy['profile']
+        config['hpo_selection_metric'] = hpo_policy['selection_metric']
     # 把 evaluation_config 的字段（如 split_mode/split_train/...）合并进来
     for key, value in session.evaluation_config.items():
         config.setdefault(key, value)
@@ -265,6 +270,19 @@ class AgentService:
             context['module_status']['restricted_strategy_pool'] = 'ready'
             if module_flags['dynamic_preprocessing']:
                 context['module_status']['dynamic_preprocessing'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
+        if module_flags['bounded_hpo']:
+            context['hpo_policy'] = {
+                'schema_version': 'bounded-hpo-v1',
+                'profile': 'tiny',
+                'selection_metric': payload.selection_metric,
+                'max_candidates': 3,
+            }
+            context['module_status']['bounded_hpo'] = 'ready'
             if all(
                 status == 'ready'
                 for status in context['module_status'].values()
