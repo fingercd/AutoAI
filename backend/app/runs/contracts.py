@@ -34,7 +34,7 @@ LEGACY_STATUS: dict[RunState, str] = {
 # 匹配 Windows 盘符路径（C:\ 或 C:/ 开头）与 POSIX 绝对路径（/a/b/ 形式），
 # 用于拦截异常消息里夹带的服务器文件系统信息。
 _ABSOLUTE_PATH_PATTERN = re.compile(
-    r'(?:[A-Za-z]:[\\/])|(?:^|\s)/(?:[^/\s]+/)+',
+    r'(?:[A-Za-z]:[\\/])|/(?:users|home|var|tmp|opt|srv|etc|root|mnt|data)/(?:[^/\s]+/)*',
     flags=re.IGNORECASE,
 )
 

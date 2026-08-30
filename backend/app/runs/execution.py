@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 from typing import Any
 
 from .artifacts import RunArtifactWriter
@@ -71,6 +72,20 @@ class TrainingExecution:
                 progress=progress,
             )
         return replace(record, progress=progress)
+
+    def _discard_unpublished_artifacts(self) -> None:
+        """Remove only artifacts inside this Run directory after guard rejection."""
+        if not self.run_dir.exists():
+            return
+        for child in self.run_dir.iterdir():
+            if child.is_symlink() or child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                shutil.rmtree(child)
+        try:
+            self.run_dir.rmdir()
+        except OSError:
+            pass
 
     def _run_legacy_training(
         self,
@@ -128,7 +143,11 @@ class TrainingExecution:
             test_data_path=test_data_path,
         )
         if guard_enabled:
-            postflight = run_postflight_guard(result, dict(record.config))
+            try:
+                postflight = run_postflight_guard(result, dict(record.config))
+            except Exception:
+                self._discard_unpublished_artifacts()
+                raise
             guard_payload = {**(guard_payload or {}), 'postflight': postflight}
             record = self._persist_guard(record, guard_payload)
         # 训练完成后、写结果前再查一次：训练期间被取消则结果直接丢弃
