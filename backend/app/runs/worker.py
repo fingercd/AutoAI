@@ -211,6 +211,7 @@ class RunWorker:
         run = self.repository.claim_next(worker_id=self.worker_id, now=self.now())
         if run is None:
             return False
+        success_committed = False
         try:
             # 训练期间由守护线程持续续租；claim_token 缺失时退化为空串（历史兼容）
             with LeaseGuard(
@@ -237,6 +238,7 @@ class RunWorker:
                 now=self.now(),
                 manifest_name=str(result['manifest_name']),
             )
+            success_committed = True
             if self.project_status is not None:
                 self.project_status(finished)
             self.repository.record_worker_heartbeat(
@@ -246,10 +248,16 @@ class RunWorker:
             )
         # lease 丢失/状态被并发改写：本 worker 的结果作废，返回 True 继续下一轮
         except InvalidRunTransition:
-            if self.discard_artifacts is not None:
+            if not success_committed and self.discard_artifacts is not None:
                 self.discard_artifacts(run.run_id)
             return True
         except Exception as exc:
+            if success_committed:
+                logger.exception(
+                    'Run %s succeeded but post-commit bookkeeping failed',
+                    run.run_id,
+                )
+                return True
             if self.discard_artifacts is not None:
                 try:
                     self.discard_artifacts(run.run_id)
