@@ -66,6 +66,23 @@ def test_preflight_passes_valid_data_and_rejects_bad_contract(tmp_path):
     assert str(invalid).lower() not in flat
 
 
+def test_preflight_validates_server_model_fit_reservation(tmp_path):
+    source = tmp_path / 'valid.csv'
+    write_grouped_classification_csv(
+        source, groups_per_class=6, repeats=2, feature_count=8
+    )
+    config = _config()
+    config['agent_execution']['reserved_model_fits'] = 4
+    assert run_preflight_guard(source, config)['status'] == 'passed'
+    config['agent_execution']['reserved_model_fits'] = 3
+    with pytest.raises(AgentGuardRejected) as caught:
+        run_preflight_guard(source, config)
+    assert any(
+        check['code'] == 'hpo_budget'
+        for check in caught.value.result['checks']
+    )
+
+
 def test_postflight_requires_model_metrics_and_cost_contract():
     result = {
         'status': 'success',
@@ -101,6 +118,14 @@ def test_postflight_requires_model_metrics_and_cost_contract():
     assert any(
         item['code'] == 'model_fit_budget'
         for item in budget_result.value.result['checks']
+    )
+    reserved_config = _config()
+    reserved_config['agent_execution']['reserved_model_fits'] = 3
+    with pytest.raises(AgentGuardRejected) as reservation_result:
+        run_postflight_guard(result, reserved_config)
+    assert any(
+        item['code'] == 'model_fit_budget'
+        for item in reservation_result.value.result['checks']
     )
 
 

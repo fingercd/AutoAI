@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .budget import BudgetController, BudgetExceeded
 from .clients.autoai_client import AutoAIClient
 from .clients.llm_client import LLMClient
 from .priors import load_prior_catalog, project_priors
@@ -163,12 +164,17 @@ def poll_until_terminal(
     timeout_seconds: float,
     trace: TraceRecorder | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
+    budget_controller: BudgetController | None = None,
 ) -> dict[str, Any]:
     """Poll feedback only; this function never calls the LLM."""
     deadline = monotonic() + timeout_seconds
     while True:
+        if budget_controller is not None:
+            budget_controller.check_wall_clock()
         started = _now_ms()
         feedback = autoai.feedback(session_id, run_id)
+        if budget_controller is not None:
+            budget_controller.check_wall_clock()
         latency_ms = _now_ms() - started
         if trace:
             trace.record_feedback(feedback, latency_ms=latency_ms)
@@ -180,7 +186,12 @@ def poll_until_terminal(
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise AgentTimeout(f'run {run_id} exceeded {timeout_seconds} seconds')
-        sleep_fn(min(max(0.0, interval_seconds), remaining))
+        sleep_seconds = min(max(0.0, interval_seconds), remaining)
+        if budget_controller is not None:
+            sleep_seconds = budget_controller.bounded_sleep_seconds(sleep_seconds)
+        sleep_fn(sleep_seconds)
+        if budget_controller is not None:
+            budget_controller.check_wall_clock()
 
 
 def _reconcile_after_unknown_post(
@@ -188,9 +199,14 @@ def _reconcile_after_unknown_post(
     *,
     session_id: str,
     action: dict[str, Any],
+    budget_controller: BudgetController | None = None,
 ) -> dict[str, Any] | None:
     """After a transport failure, inspect the Session before considering retry."""
+    if budget_controller is not None:
+        budget_controller.check_wall_clock()
     observation = autoai.get_session(session_id)
+    if budget_controller is not None:
+        budget_controller.observe_session(observation)
     for experiment in observation.get('experiments', []):
         if not isinstance(experiment, dict):
             continue
@@ -202,13 +218,40 @@ def _reconcile_after_unknown_post(
     return None
 
 
-def run_agent(
+def _is_model_fit_budget_error(exc: httpx.HTTPStatusError) -> bool:
+    """Recognize only the backend's explicit model-fit budget rejection."""
+    if exc.response.status_code != 409:
+        return False
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if (
+        payload.get('code') == 'agent_budget_exhausted'
+        and payload.get('dimension') == 'max_model_fits'
+    ):
+        return True
+    detail = payload.get('detail')
+    if isinstance(detail, dict):
+        return (
+            detail.get('code') == 'agent_budget_exhausted'
+            and detail.get('dimension') == 'max_model_fits'
+        )
+    return isinstance(detail, str) and detail.startswith(
+        'model-fit budget exceeded:'
+    )
+
+
+def _run_agent_impl(
     cfg: AgentConfig,
     llm: LLMClient,
     autoai: AutoAIClient,
     *,
     trace: TraceRecorder | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
+    budget_controller: BudgetController,
 ) -> dict[str, Any]:
     """Run one complete controlled Agent session."""
     # The fixed catalog is loaded exactly once per controller invocation.  It
@@ -220,6 +263,7 @@ def run_agent(
             schema_version=prior_catalog.schema_version,
             digest=prior_catalog.digest,
         )
+    budget_controller.check_wall_clock()
     health = autoai.health()
     worker = health.get('worker')
     if isinstance(worker, dict) and (
@@ -227,14 +271,18 @@ def run_agent(
     ):
         raise PolicyViolation('AutoAI worker is unavailable or contract-incompatible')
 
+    budget_controller.check_wall_clock()
     session = autoai.create_session(cfg.session_payload())
     session_id = session.get('session_id')
     if not isinstance(session_id, str) or not session_id:
         raise PolicyViolation('AutoAI did not return a session_id')
+    budget_controller.bind_session(session_id)
     state = LoopState(max_runs=cfg.max_runs)
 
     while True:
+        budget_controller.check_wall_clock()
         observation = autoai.get_session(session_id)
+        budget_controller.observe_session(observation)
         _seed_state_from_observation(state, observation)
         locked_proposal_recipes = _proposal_recipes(observation)
         locked = observation.get('locked_config')
@@ -344,6 +392,7 @@ def run_agent(
             allowed_replan_actions=allowed_replan_actions,
         )
         try:
+            budget_controller.check_wall_clock()
             decision = llm.decide(messages, decision_schema=decision_schema)
         except TypeError as exc:
             # Keep small injected test doubles/source-compatible adapters
@@ -386,6 +435,7 @@ def run_agent(
                         trace.record_error(reason)
                     return _needs_human(session_id, reason)
             started = _now_ms()
+            budget_controller.check_wall_clock()
             result = autoai.finalize(session_id, selected_run_id)
             if trace:
                 trace.record_finalize(result, latency_ms=_now_ms() - started)
@@ -458,12 +508,26 @@ def run_agent(
                 trace.record_error(reason)
             return _needs_human(session_id, reason)
 
+        budget_controller.require_model_fit_capacity(observation)
+        budget_controller.check_wall_clock()
         started = _now_ms()
         try:
             experiment = autoai.create_experiment(session_id, action)
+        except httpx.HTTPStatusError as exc:
+            if _is_model_fit_budget_error(exc) and budget_controller.limits is not None:
+                usage = budget_controller.safe_usage()['model_fit_count']
+                raise BudgetExceeded(
+                    'max_model_fits',
+                    limit=budget_controller.limits.max_model_fits,
+                    used=usage if isinstance(usage, int) else 0,
+                ) from None
+            raise
         except httpx.TransportError:
             experiment = _reconcile_after_unknown_post(
-                autoai, session_id=session_id, action=action
+                autoai,
+                session_id=session_id,
+                action=action,
+                budget_controller=budget_controller,
             )
             if experiment is None:
                 raise
@@ -483,6 +547,7 @@ def run_agent(
             timeout_seconds=cfg.run_timeout_seconds,
             trace=trace,
             sleep_fn=sleep_fn,
+            budget_controller=budget_controller,
         )
         validation = feedback.get('validation')
         if (
@@ -493,3 +558,85 @@ def run_agent(
             state.successful_run_ids.add(run_id)
         # Failed/cancelled feedback is the only observation carried to the next
         # LLM call; polling itself never increases llm.call_count.
+
+
+def _agent_metrics(
+    controller: BudgetController,
+    *,
+    llm: LLMClient,
+    autoai: AutoAIClient,
+) -> dict[str, int | float | None]:
+    metrics = controller.safe_usage()
+    llm_calls = getattr(llm, 'call_count', None)
+    if isinstance(llm_calls, int) and not isinstance(llm_calls, bool):
+        metrics['llm_call_count'] = max(metrics['llm_call_count'], llm_calls)
+    api_calls = getattr(autoai, 'attempt_count', None)
+    if isinstance(api_calls, int) and not isinstance(api_calls, bool):
+        metrics['api_call_count'] = max(metrics['api_call_count'], api_calls)
+    api_retries = getattr(autoai, 'retry_attempt_count', None)
+    if isinstance(api_retries, int) and not isinstance(api_retries, bool):
+        metrics['retry_attempt_count'] = max(
+            metrics['retry_attempt_count'], api_retries
+        )
+    return metrics
+
+
+def run_agent(
+    cfg: AgentConfig,
+    llm: LLMClient,
+    autoai: AutoAIClient,
+    *,
+    trace: TraceRecorder | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    budget_controller: BudgetController | None = None,
+) -> dict[str, Any]:
+    """Run one Session and always return safe process-side usage metrics."""
+    limits = cfg.budget if cfg.modules.budget_control else None
+    if cfg.modules.budget_control and limits is None:
+        raise ValueError('budget_control requires an explicit budget')
+    if not cfg.modules.budget_control and cfg.budget is not None:
+        raise ValueError('budget requires budget_control=true')
+    controller = budget_controller or BudgetController(limits)
+    if cfg.modules.budget_control and controller.limits != limits:
+        raise ValueError('budget controller limits do not match locked config')
+    if not cfg.modules.budget_control and controller.limits is not None:
+        raise ValueError('budget controller limits require budget_control=true')
+
+    set_autoai_controller = getattr(autoai, 'set_budget_controller', None)
+    if callable(set_autoai_controller):
+        set_autoai_controller(controller)
+    set_llm_controller = getattr(llm, 'set_budget_controller', None)
+    if callable(set_llm_controller):
+        set_llm_controller(controller)
+
+    try:
+        result = _run_agent_impl(
+            cfg,
+            llm,
+            autoai,
+            trace=trace,
+            sleep_fn=sleep_fn,
+            budget_controller=controller,
+        )
+        controller.check_wall_clock()
+    except BudgetExceeded as exc:
+        result = {
+            'status': 'budget_exhausted',
+            'dimension': exc.dimension,
+        }
+        if controller.session_id is not None:
+            result['session_id'] = controller.session_id
+
+    metrics = _agent_metrics(controller, llm=llm, autoai=autoai)
+    result = {**result, 'agent_metrics': metrics}
+    if trace is not None:
+        trace.record_budget_usage(
+            status=str(result.get('status', 'unknown')),
+            dimension=(
+                str(result['dimension'])
+                if isinstance(result.get('dimension'), str)
+                else None
+            ),
+            usage=metrics,
+        )
+    return result

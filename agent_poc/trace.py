@@ -140,6 +140,21 @@ class TraceRecorder:
     def record_error(self, error: str) -> None:
         self.record('error', error=error)
 
+    def record_budget_usage(
+        self,
+        *,
+        status: str,
+        dimension: str | None,
+        usage: dict[str, int | float | None],
+    ) -> None:
+        """Record aggregate counters only; never prompts or provider usage."""
+        self.record(
+            'agent_budget_usage',
+            status=status,
+            dimension=dimension,
+            usage=usage,
+        )
+
 
 def assert_trace_safe(path: Path) -> None:
     """递归审计已有 JSONL；供测试和最终证据门禁调用。"""

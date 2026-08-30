@@ -78,6 +78,18 @@ class AgentEvaluationBlock(BaseModel):
     split_test: int = Field(1, ge=1, le=9, strict=True)
 
 
+class AgentBudget(BaseModel):
+    """Session-scoped hard limits; all dimensions are explicit and immutable."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    max_model_fits: int = Field(..., ge=1, le=1000, strict=True)
+    max_llm_calls: int = Field(..., ge=1, le=100, strict=True)
+    max_api_calls: int = Field(..., ge=1, le=10000, strict=True)
+    max_wall_clock_seconds: int = Field(..., ge=1, le=86400, strict=True)
+    max_retry_attempts: int = Field(..., ge=0, le=100, strict=True)
+
+
 class CreateAgentSessionRequest(BaseModel):
     """``POST /api/agent/sessions`` 的请求体。"""
 
@@ -91,6 +103,7 @@ class CreateAgentSessionRequest(BaseModel):
     evaluation: AgentEvaluationBlock = Field(default_factory=AgentEvaluationBlock)
     modules: AgentModuleFlags = Field(default_factory=AgentModuleFlags)
     context_policy: AgentContextPolicy = Field(default_factory=AgentContextPolicy)
+    budget: AgentBudget | None = None
 
     def validate(self) -> None:
         if self.selection_metric not in _AGENT_SELECTION_METRICS:
@@ -136,6 +149,15 @@ class CreateAgentSessionRequest(BaseModel):
             raise ValueError('case_memory 需要 evidence_card 和 feedback_diagnosis')
         if self.context_policy.case_write and not self.modules.case_memory:
             raise ValueError('case_write 需要启用 case_memory')
+        if self.modules.budget_control:
+            if self.budget is None:
+                raise ValueError('budget_control 需要提供 budget')
+            if not (self.modules.bounded_hpo and self.modules.fail_fast_guard):
+                raise ValueError(
+                    'budget_control 需要 bounded_hpo 和 fail_fast_guard'
+                )
+        elif self.budget is not None:
+            raise ValueError('未启用 budget_control 时禁止提供 budget')
 
 
 class CreateAgentExperimentRequest(BaseModel):

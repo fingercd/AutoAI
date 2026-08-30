@@ -94,19 +94,18 @@ def test_session_persists_enabled_modules_and_context_policy(client, uploaded_da
             'fail_fast_guard': True,
             'feedback_diagnosis': True,
             'case_memory': True,
-            'budget_control': True,
         },
         context_policy={'source_role': 'domain', 'case_write': True},
     )
     assert response.status_code == 201, response.text
     created = response.json()
-    assert created['context']['status'] == 'pending'
+    assert created['context']['status'] == 'ready'
     session = client.get(f"/api/agent/sessions/{created['session_id']}").json()
     assert session['locked_config']['modules']['evidence_card'] is True
     assert session['locked_config']['modules']['feedback_diagnosis'] is True
     assert session['locked_config']['modules']['case_memory'] is True
     assert session['locked_config']['modules']['fail_fast_guard'] is True
-    assert session['locked_config']['modules']['budget_control'] is True
+    assert session['locked_config']['modules']['budget_control'] is False
     assert session['locked_config']['context_policy'] == {
         'source_role': 'domain',
         'case_write': True,
@@ -126,6 +125,86 @@ def test_session_rejects_unknown_module_and_benchmark_case_write(client, uploade
         context_policy={'source_role': 'benchmark', 'case_write': True},
     )
     assert benchmark_write.status_code == 422
+
+
+def _budget_limits(max_model_fits=4):
+    return {
+        'max_model_fits': max_model_fits,
+        'max_llm_calls': 10,
+        'max_api_calls': 100,
+        'max_wall_clock_seconds': 600,
+        'max_retry_attempts': 0,
+    }
+
+
+def test_budget_policy_is_locked_and_fit_overflow_returns_409(
+    client, uploaded_dataset
+):
+    response = _create_session(
+        client,
+        uploaded_dataset,
+        modules={
+            'bounded_hpo': True,
+            'fail_fast_guard': True,
+            'budget_control': True,
+        },
+        budget=_budget_limits(max_model_fits=3),
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created['locked_config']['budget'] == _budget_limits(3)
+    assert created['context']['budget_policy']['limits'] == _budget_limits(3)
+    detail = client.get(
+        f"/api/agent/sessions/{created['session_id']}"
+    ).json()
+    assert detail['budget_usage']['model_fits'] == {
+        'limit': 3,
+        'actual': 0,
+        'reserved': 0,
+        'charged': 0,
+        'remaining': 3,
+    }
+    rejected = client.post(
+        f"/api/agent/sessions/{created['session_id']}/experiments",
+        json={
+            'model_type': 'logistic_regression',
+            'normalization': 'zscore',
+            'class_balance': 'none',
+        },
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()['detail'] == {
+        'code': 'agent_budget_exhausted',
+        'dimension': 'max_model_fits',
+    }
+    after = client.get(
+        f"/api/agent/sessions/{created['session_id']}"
+    ).json()
+    assert after['experiments'] == []
+    assert after['budget_usage']['model_fits']['charged'] == 0
+
+
+@pytest.mark.parametrize(
+    'modules,budget',
+    [
+        ({'budget_control': True}, _budget_limits()),
+        (
+            {'bounded_hpo': True, 'fail_fast_guard': True, 'budget_control': True},
+            None,
+        ),
+        ({}, _budget_limits()),
+    ],
+)
+def test_budget_contract_dependency_errors_return_422(
+    client, uploaded_dataset, modules, budget
+):
+    response = _create_session(
+        client,
+        uploaded_dataset,
+        modules=modules,
+        **({'budget': budget} if budget is not None else {}),
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

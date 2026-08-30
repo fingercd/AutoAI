@@ -85,6 +85,14 @@ class AgentConfigCollision(RuntimeError):
     """同 Session 下重复 effective config 或违反 max_runs。"""
 
 
+class AgentBudgetExceeded(AgentConfigCollision):
+    """A hard Session budget would be exceeded by a new reservation."""
+
+
+class AgentBudgetAccountingError(RuntimeError):
+    """Persisted budget accounting is invalid or internally inconsistent."""
+
+
 class AgentMemoryWriteDenied(RuntimeError):
     """Session policy does not authorize persistent Agent memory writes."""
 
@@ -124,6 +132,9 @@ class AgentExperimentRecord:
     action_json: dict[str, Any]
     rationale: str | None
     config_hash: str
+    reserved_model_fits: int
+    actual_model_fits: int | None
+    settled: bool
     created_at: str | None
     owner_id: str | None
     tenant_id: str | None
@@ -142,6 +153,7 @@ class AgentExperimentReservation:
     attempt: int
     config_hash: str
     action_json: dict[str, Any]
+    reserved_model_fits: int
     created_at: str | None
     owner_id: str | None
     tenant_id: str | None
@@ -274,6 +286,10 @@ class AgentSessionRepository:
                     action_json TEXT NOT NULL,
                     rationale TEXT,
                     config_hash TEXT NOT NULL,
+                    reserved_model_fits INTEGER NOT NULL DEFAULT 0,
+                    actual_model_fits INTEGER,
+                    settled INTEGER NOT NULL DEFAULT 0
+                        CHECK (settled IN (0, 1)),
                     created_at TEXT NOT NULL,
                     owner_id TEXT,
                     tenant_id TEXT,
@@ -292,6 +308,17 @@ class AgentSessionRepository:
                 'rationale': 'ALTER TABLE agent_experiments ADD COLUMN rationale TEXT',
                 'parent_run_id': 'ALTER TABLE agent_experiments ADD COLUMN parent_run_id TEXT',
                 'attempt': "ALTER TABLE agent_experiments ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0",
+                'reserved_model_fits': (
+                    'ALTER TABLE agent_experiments ADD COLUMN '
+                    'reserved_model_fits INTEGER NOT NULL DEFAULT 0'
+                ),
+                'actual_model_fits': (
+                    'ALTER TABLE agent_experiments ADD COLUMN actual_model_fits INTEGER'
+                ),
+                'settled': (
+                    'ALTER TABLE agent_experiments ADD COLUMN '
+                    'settled INTEGER NOT NULL DEFAULT 0'
+                ),
             }
             for name, statement in experiment_migrations.items():
                 if name not in experiment_columns:
@@ -308,6 +335,7 @@ class AgentSessionRepository:
                     attempt INTEGER NOT NULL,
                     config_hash TEXT NOT NULL,
                     action_json TEXT NOT NULL,
+                    reserved_model_fits INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     owner_id TEXT,
                     tenant_id TEXT,
@@ -316,6 +344,17 @@ class AgentSessionRepository:
                 )
                 '''
             )
+            reservation_columns = {
+                str(row['name'])
+                for row in connection.execute(
+                    'PRAGMA table_info(agent_experiment_reservations)'
+                ).fetchall()
+            }
+            if 'reserved_model_fits' not in reservation_columns:
+                connection.execute(
+                    'ALTER TABLE agent_experiment_reservations ADD COLUMN '
+                    'reserved_model_fits INTEGER NOT NULL DEFAULT 0'
+                )
             connection.execute(
                 'CREATE INDEX IF NOT EXISTS idx_agent_reservations_session '
                 'ON agent_experiment_reservations(session_id, attempt)'
@@ -423,6 +462,13 @@ class AgentSessionRepository:
             action_json=dict(_decode_json(row['action_json'], {})),
             rationale=row['rationale'],
             config_hash=row['config_hash'],
+            reserved_model_fits=int(row['reserved_model_fits']),
+            actual_model_fits=(
+                int(row['actual_model_fits'])
+                if row['actual_model_fits'] is not None
+                else None
+            ),
+            settled=bool(row['settled']),
             created_at=row['created_at'],
             owner_id=row['owner_id'] if 'owner_id' in row.keys() else None,
             tenant_id=row['tenant_id'] if 'tenant_id' in row.keys() else None,
@@ -436,6 +482,7 @@ class AgentSessionRepository:
             attempt=int(row['attempt']),
             config_hash=str(row['config_hash']),
             action_json=dict(_decode_json(row['action_json'], {})),
+            reserved_model_fits=int(row['reserved_model_fits']),
             created_at=row['created_at'],
             owner_id=row['owner_id'] if 'owner_id' in row.keys() else None,
             tenant_id=row['tenant_id'] if 'tenant_id' in row.keys() else None,
@@ -470,6 +517,66 @@ class AgentSessionRepository:
             owner_id=row['owner_id'],
             tenant_id=row['tenant_id'],
         )
+
+    @staticmethod
+    def _model_fit_budget_limit(session_row: sqlite3.Row) -> int | None:
+        """Read the immutable model-fit limit from a locked Session context."""
+        flags = dict(_decode_json(session_row['module_flags_json'], {}))
+        if flags.get('budget_control') is not True:
+            return None
+        context = dict(_decode_json(session_row['context_json'], {}))
+        policy = context.get('budget_policy')
+        limits = policy.get('limits') if isinstance(policy, dict) else None
+        maximum = limits.get('max_model_fits') if isinstance(limits, dict) else None
+        if (
+            isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or not 1 <= maximum <= 1000
+        ):
+            raise AgentBudgetAccountingError(
+                'budget_control Session is missing a valid max_model_fits limit'
+            )
+        return maximum
+
+    @staticmethod
+    def _model_fit_usage_locked(
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+    ) -> tuple[int, int]:
+        """Return ``(settled actual, still reserved)`` under the caller's lock."""
+        experiment_row = connection.execute(
+            '''
+            SELECT
+                COALESCE(SUM(
+                    CASE WHEN settled = 1 THEN COALESCE(actual_model_fits, 0)
+                         ELSE 0 END
+                ), 0) AS actual,
+                COALESCE(SUM(
+                    CASE WHEN settled = 0 THEN reserved_model_fits ELSE 0 END
+                ), 0) AS reserved
+            FROM agent_experiments
+            WHERE session_id = ?
+            ''',
+            (session_id,),
+        ).fetchone()
+        reservation_row = connection.execute(
+            '''
+            SELECT COALESCE(SUM(reserved_model_fits), 0) AS reserved
+            FROM agent_experiment_reservations
+            WHERE session_id = ?
+            ''',
+            (session_id,),
+        ).fetchone()
+        actual = int(experiment_row['actual']) if experiment_row is not None else 0
+        reserved = (
+            int(experiment_row['reserved']) if experiment_row is not None else 0
+        ) + (
+            int(reservation_row['reserved']) if reservation_row is not None else 0
+        )
+        if actual < 0 or reserved < 0:
+            raise AgentBudgetAccountingError('negative model-fit accounting')
+        return actual, reserved
 
     def create_session(
         self,
@@ -653,6 +760,7 @@ class AgentSessionRepository:
         action_id: str | None = None,
         max_retries_per_failure: int | None = None,
         require_replan_for_failed: bool = False,
+        reserved_model_fits: int = 0,
     ) -> AgentExperimentReservation:
         """原子预留一次 Experiment，防止并发请求越过 max_runs。
 
@@ -663,6 +771,12 @@ class AgentSessionRepository:
         reservation_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
         owner_id, tenant_id = self._scope_values(principal)
+        if (
+            isinstance(reserved_model_fits, bool)
+            or not isinstance(reserved_model_fits, int)
+            or reserved_model_fits < 0
+        ):
+            raise AgentBudgetAccountingError('reserved_model_fits must be a non-negative integer')
         with self._connection() as connection:
             if self.runs_database_path is not None:
                 connection.execute(
@@ -798,6 +912,31 @@ class AgentSessionRepository:
                         f'session {session_id} 已达 max_runs={session_row["max_runs"]} 上限'
                     )
 
+                model_fit_limit = self._model_fit_budget_limit(session_row)
+                if model_fit_limit is None:
+                    if reserved_model_fits != 0:
+                        raise AgentBudgetAccountingError(
+                            'disabled budget Session cannot reserve model fits'
+                        )
+                else:
+                    if reserved_model_fits < 1:
+                        raise AgentBudgetAccountingError(
+                            'budgeted experiment requires a positive model-fit reservation'
+                        )
+                    actual_fits, existing_reserved_fits = self._model_fit_usage_locked(
+                        connection,
+                        session_id=session_id,
+                    )
+                    projected = (
+                        actual_fits + existing_reserved_fits + reserved_model_fits
+                    )
+                    if projected > model_fit_limit:
+                        raise AgentBudgetExceeded(
+                            'model-fit budget exceeded: '
+                            f'charged={actual_fits + existing_reserved_fits}, '
+                            f'requested={reserved_model_fits}, limit={model_fit_limit}'
+                        )
+
                 attempt = int(
                     connection.execute(
                         '''
@@ -815,8 +954,9 @@ class AgentSessionRepository:
                     '''
                     INSERT INTO agent_experiment_reservations (
                         reservation_id, session_id, attempt, config_hash,
-                        action_json, created_at, owner_id, tenant_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        action_json, reserved_model_fits, created_at,
+                        owner_id, tenant_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         reservation_id,
@@ -824,6 +964,7 @@ class AgentSessionRepository:
                         attempt,
                         config_hash,
                         json.dumps(action_json, ensure_ascii=False, sort_keys=True),
+                        reserved_model_fits,
                         now,
                         owner_id,
                         tenant_id,
@@ -887,9 +1028,9 @@ class AgentSessionRepository:
                     '''
                     INSERT INTO agent_experiments (
                         experiment_id, session_id, run_id, attempt, parent_run_id,
-                        action_json, rationale, config_hash, created_at,
-                        owner_id, tenant_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        action_json, rationale, config_hash, reserved_model_fits,
+                        actual_model_fits, settled, created_at, owner_id, tenant_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?)
                     ''',
                     (
                         experiment_id,
@@ -900,6 +1041,7 @@ class AgentSessionRepository:
                         reservation_row['action_json'],
                         rationale,
                         reservation_row['config_hash'],
+                        int(reservation_row['reserved_model_fits']),
                         now,
                         owner_id,
                         tenant_id,
@@ -945,6 +1087,125 @@ class AgentSessionRepository:
                 connection.rollback()
                 raise
         return changed == 1
+
+    def get_budget_usage_scoped(
+        self,
+        *,
+        session_id: str,
+        principal: Principal,
+    ) -> dict[str, Any] | None:
+        """Project safe aggregate accounting; never returns individual Run data."""
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN')
+            try:
+                session_row = connection.execute(
+                    '''
+                    SELECT * FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, owner_id, tenant_id),
+                ).fetchone()
+                if session_row is None:
+                    raise AgentSessionNotFound(session_id)
+                maximum = self._model_fit_budget_limit(session_row)
+                if maximum is None:
+                    connection.commit()
+                    return None
+                actual, reserved = self._model_fit_usage_locked(
+                    connection,
+                    session_id=session_id,
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        charged = actual + reserved
+        return {
+            'schema_version': 'agent-budget-usage-v1',
+            'model_fits': {
+                'limit': maximum,
+                'actual': actual,
+                'reserved': reserved,
+                'charged': charged,
+                'remaining': max(0, maximum - charged),
+            },
+        }
+
+    def settle_experiment_model_fits_scoped(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        actual_model_fits: int,
+        principal: Principal,
+    ) -> AgentExperimentRecord:
+        """Idempotently replace a Run's reservation with an observed fit count."""
+        if (
+            isinstance(actual_model_fits, bool)
+            or not isinstance(actual_model_fits, int)
+            or actual_model_fits < 0
+        ):
+            raise AgentBudgetAccountingError(
+                'actual_model_fits must be a non-negative integer'
+            )
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                session_row = connection.execute(
+                    '''
+                    SELECT * FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, owner_id, tenant_id),
+                ).fetchone()
+                if session_row is None:
+                    raise AgentSessionNotFound(session_id)
+                if self._model_fit_budget_limit(session_row) is None:
+                    raise AgentBudgetAccountingError(
+                        'cannot settle model fits for a disabled budget Session'
+                    )
+                row = connection.execute(
+                    '''
+                    SELECT * FROM agent_experiments
+                    WHERE session_id = ? AND run_id = ?
+                      AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, run_id, owner_id, tenant_id),
+                ).fetchone()
+                if row is None:
+                    raise AgentExperimentNotFound(run_id)
+                reserved = int(row['reserved_model_fits'])
+                if actual_model_fits > reserved:
+                    raise AgentBudgetAccountingError(
+                        'actual_model_fits exceeds the server reservation'
+                    )
+                if bool(row['settled']):
+                    if int(row['actual_model_fits']) != actual_model_fits:
+                        raise AgentBudgetAccountingError(
+                            'model-fit settlement conflicts with the recorded actual'
+                        )
+                    connection.commit()
+                    return self._experiment(row)
+                connection.execute(
+                    '''
+                    UPDATE agent_experiments
+                    SET actual_model_fits = ?, settled = 1
+                    WHERE experiment_id = ? AND settled = 0
+                    ''',
+                    (actual_model_fits, row['experiment_id']),
+                )
+                updated = connection.execute(
+                    'SELECT * FROM agent_experiments WHERE experiment_id = ?',
+                    (row['experiment_id'],),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert updated is not None
+        return self._experiment(updated)
 
     def has_non_terminal_experiment_scoped(
         self, *, session_id: str, run_states: dict[str, str], principal: Principal

@@ -10,6 +10,7 @@ import numpy as np
 
 from ..classification_split import stratified_group_holdout_indices
 from ..parsers import load_modeling_csv
+from .budget import AgentBudgetEstimateError, estimate_model_fit_upper_bound
 
 
 GUARD_SCHEMA_VERSION = 'agent-guard-v1'
@@ -118,6 +119,18 @@ def run_preflight_guard(
     maximum = {'off': 1, 'tiny': 3, 'standard': 18}.get(profile)
     if maximum is None or maximum > int(envelope.get('max_hpo_candidates', 18)):
         _reject('preflight', checks, 'hpo_budget')
+    reserved_model_fits = envelope.get('reserved_model_fits')
+    if reserved_model_fits is not None:
+        try:
+            expected_model_fits = estimate_model_fit_upper_bound(config)
+        except AgentBudgetEstimateError:
+            _reject('preflight', checks, 'hpo_budget')
+        if (
+            isinstance(reserved_model_fits, bool)
+            or not isinstance(reserved_model_fits, int)
+            or reserved_model_fits != expected_model_fits
+        ):
+            _reject('preflight', checks, 'hpo_budget')
     checks.append({'code': 'hpo_budget', 'status': 'passed'})
     return _result(
         stage='preflight',
@@ -219,6 +232,18 @@ def run_postflight_guard(
         if model_family == 'traditional_ml'
         else fold_count
     )
+    reserved_model_fits = envelope.get('reserved_model_fits')
+    if reserved_model_fits is not None:
+        if (
+            isinstance(reserved_model_fits, bool)
+            or not isinstance(reserved_model_fits, int)
+            or reserved_model_fits < 1
+        ):
+            _reject(
+                'postflight', checks, 'cost_contract',
+                model_fit_count=observed_fit_count,
+            )
+        maximum_fits = min(maximum_fits, reserved_model_fits)
     if observed_fit_count > maximum_fits:
         _reject(
             'postflight', checks, 'model_fit_budget',

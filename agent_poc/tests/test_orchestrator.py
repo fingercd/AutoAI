@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 import agent_poc.orchestrator as orchestrator_module
@@ -12,6 +13,7 @@ from agent_poc.orchestrator import (
     _proposal_recipes,
     run_agent,
 )
+from agent_poc.budget import BudgetController, BudgetExceeded
 from agent_poc.priors import load_prior_catalog
 from agent_poc.schemas import (
     FinalizeDecision,
@@ -19,7 +21,7 @@ from agent_poc.schemas import (
     RequestHumanDecision,
     RunExperimentDecision,
 )
-from agent_poc.state import AgentConfig, AgentModuleConfig
+from agent_poc.state import AgentBudgetConfig, AgentConfig, AgentModuleConfig
 
 
 class FakeAutoAI:
@@ -90,6 +92,19 @@ class FakeAutoAI:
             response['recommended_run_id'] = decision_support.get(
                 'recommended_run_id'
             )
+        budget = self.session_payload.get('budget')
+        if isinstance(budget, dict):
+            limit = budget['max_model_fits']
+            response['budget_usage'] = {
+                'schema_version': 'agent-budget-usage-v1',
+                'model_fits': {
+                    'limit': limit,
+                    'actual': 0,
+                    'reserved': 0,
+                    'charged': 0,
+                    'remaining': limit,
+                }
+            }
         return response
 
     def create_experiment(self, _session_id, payload):
@@ -173,6 +188,195 @@ def _run_decision():
         model_type='logistic_regression',
         rationale='baseline',
     )
+
+
+def _budget_cfg(**budget_overrides):
+    budget_values = {
+        'max_model_fits': 20,
+        'max_llm_calls': 2,
+        'max_api_calls': 100,
+        'max_wall_clock_seconds': 300,
+        'max_retry_attempts': 2,
+    }
+    budget_values.update(budget_overrides)
+    return _cfg(
+        modules=AgentModuleConfig(
+            bounded_hpo=True,
+            fail_fast_guard=True,
+            budget_control=True,
+        ),
+        budget=AgentBudgetConfig(**budget_values),
+    )
+
+
+class BudgetAwareFakeLLM(FakeLLM):
+    def set_budget_controller(self, controller):
+        self.budget_controller = controller
+
+    def decide(self, messages, *, decision_schema=None):
+        self.budget_controller.before_llm_completion()
+        return super().decide(messages)
+
+
+def test_llm_budget_exhaustion_is_stable_and_prevents_finalize():
+    autoai = FakeAutoAI(['succeeded'])
+    llm = BudgetAwareFakeLLM([
+        _run_decision(),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='must-not-be-called',
+        ),
+    ])
+    result = run_agent(
+        _budget_cfg(max_llm_calls=1),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'budget_exhausted'
+    assert result['dimension'] == 'max_llm_calls'
+    assert result['session_id'] == 'session-1'
+    assert result['agent_metrics']['llm_call_count'] == 1
+    assert autoai.finalized is None
+    assert len(autoai.experiments) == 1
+
+
+def test_global_deadline_caps_sleep_and_stops_before_next_poll():
+    class FakeClock:
+        def __init__(self):
+            self.value = 0.0
+
+        def __call__(self):
+            return self.value
+
+        def sleep(self, seconds):
+            sleeps.append(seconds)
+            self.value += seconds
+
+    class PollClient:
+        def __init__(self):
+            self.calls = 0
+
+        def feedback(self, _session_id, _run_id):
+            self.calls += 1
+            return {'state': 'queued'}
+
+    clock = FakeClock()
+    sleeps = []
+    controller = BudgetController(
+        AgentBudgetConfig(
+            max_model_fits=20,
+            max_llm_calls=2,
+            max_api_calls=100,
+            max_wall_clock_seconds=2,
+            max_retry_attempts=2,
+        ),
+        clock=clock,
+    )
+    autoai = PollClient()
+    with pytest.raises(BudgetExceeded) as result:
+        orchestrator_module.poll_until_terminal(
+            autoai,
+            session_id='session-1',
+            run_id='run-1',
+            interval_seconds=10,
+            timeout_seconds=30,
+            sleep_fn=clock.sleep,
+            budget_controller=controller,
+        )
+    assert result.value.dimension == 'max_wall_clock_seconds'
+    assert sleeps == [2]
+    assert autoai.calls == 1
+
+
+def test_agent_metrics_projects_backend_model_fit_actual():
+    class FitUsageAutoAI(FakeAutoAI):
+        def get_session(self, session_id):
+            response = super().get_session(session_id)
+            response['budget_usage'] = {
+                'schema_version': 'agent-budget-usage-v1',
+                'model_fits': {
+                    'limit': 20,
+                    'actual': 4,
+                    'reserved': 0,
+                    'charged': 4,
+                    'remaining': 16,
+                }
+            }
+            return response
+
+    autoai = FitUsageAutoAI(['succeeded'])
+    llm = BudgetAwareFakeLLM([
+        _run_decision(),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='done',
+        ),
+    ])
+    result = run_agent(
+        _budget_cfg(),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'finalized'
+    assert result['agent_metrics']['model_fit_count'] == 4
+
+
+def test_backend_model_fit_409_becomes_stable_budget_exhausted_without_get():
+    class ModelBudgetAutoAI(FakeAutoAI):
+        def __init__(self):
+            super().__init__([])
+            self.session_reads = 0
+
+        def get_session(self, session_id):
+            self.session_reads += 1
+            response = super().get_session(session_id)
+            response['budget_usage'] = {
+                'schema_version': 'agent-budget-usage-v1',
+                'model_fits': {
+                    'limit': 3,
+                    'actual': 0,
+                    'reserved': 0,
+                    'charged': 0,
+                    'remaining': 3,
+                }
+            }
+            return response
+
+        def create_experiment(self, _session_id, _payload):
+            request = httpx.Request('POST', 'http://autoai/experiments')
+            response = httpx.Response(
+                409,
+                request=request,
+                json={
+                    'detail': {
+                        'code': 'agent_budget_exhausted',
+                        'dimension': 'max_model_fits',
+                    }
+                },
+            )
+            raise httpx.HTTPStatusError(
+                'budget rejected',
+                request=request,
+                response=response,
+            )
+
+    autoai = ModelBudgetAutoAI()
+    llm = BudgetAwareFakeLLM([_run_decision()])
+    result = run_agent(
+        _budget_cfg(max_model_fits=3),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'budget_exhausted'
+    assert result['dimension'] == 'max_model_fits'
+    assert result['agent_metrics']['model_fit_count'] == 0
+    assert autoai.session_reads == 1
+    assert autoai.experiments == []
 
 
 def test_training_poll_does_not_call_llm_and_finalize_is_real():
