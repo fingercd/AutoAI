@@ -34,6 +34,63 @@ def _needs_human(session_id: str, reason: str) -> dict[str, Any]:
     return {'status': 'needs_human', 'session_id': session_id, 'reason': reason}
 
 
+def _proposal_recipes(observation: dict[str, Any]) -> tuple[dict[str, str], ...]:
+    context = observation.get('context')
+    catalog = context.get('proposal_catalog') if isinstance(context, dict) else None
+    if not isinstance(catalog, dict) or catalog.get('version') != 'restricted-policy-v1':
+        return ()
+    proposals = catalog.get('proposals') if isinstance(catalog, dict) else None
+    if not isinstance(proposals, list):
+        return ()
+    if catalog.get('proposal_count') != len(proposals):
+        return ()
+    result = []
+    for item in proposals:
+        if not isinstance(item, dict):
+            continue
+        keys = ('proposal_id', 'model_type', 'normalization', 'class_balance')
+        if all(isinstance(item.get(key), str) for key in keys):
+            result.append({key: item[key] for key in keys})
+    proposal_ids = [item['proposal_id'] for item in result]
+    if len(result) != len(proposals) or len(proposal_ids) != len(set(proposal_ids)):
+        return ()
+    return tuple(result)
+
+
+def _training_key(value: dict[str, Any]) -> tuple[object, object, object]:
+    return (
+        value.get('model_type'),
+        value.get('normalization', 'zscore'),
+        value.get('class_balance', 'none'),
+    )
+
+
+def _unused_proposal_recipes(
+    observation: dict[str, Any],
+    proposals: tuple[dict[str, str], ...],
+) -> tuple[dict[str, str], ...]:
+    used_ids: set[str] = set()
+    used_keys: set[tuple[object, object, object]] = set()
+    experiments = observation.get('experiments')
+    if isinstance(experiments, list):
+        for experiment in experiments:
+            if not isinstance(experiment, dict):
+                continue
+            action = experiment.get('effective_action')
+            if not isinstance(action, dict):
+                continue
+            proposal_id = action.get('proposal_id')
+            if isinstance(proposal_id, str):
+                used_ids.add(proposal_id)
+            used_keys.add(_training_key(action))
+    return tuple(
+        proposal
+        for proposal in proposals
+        if proposal['proposal_id'] not in used_ids
+        and _training_key(proposal) not in used_keys
+    )
+
+
 def _seed_state_from_observation(state: LoopState, observation: dict[str, Any]) -> None:
     experiments = observation.get('experiments')
     if not isinstance(experiments, list):
@@ -123,8 +180,21 @@ def run_agent(
     while True:
         observation = autoai.get_session(session_id)
         _seed_state_from_observation(state, observation)
+        locked_proposal_recipes = _proposal_recipes(observation)
+        locked = observation.get('locked_config')
+        modules = locked.get('modules') if isinstance(locked, dict) else None
+        restricted = (
+            isinstance(modules, dict)
+            and modules.get('restricted_strategy_pool') is True
+        )
+        if restricted and not locked_proposal_recipes:
+            return _needs_human(session_id, 'locked proposal catalog is unavailable')
+        proposal_recipes = _unused_proposal_recipes(
+            observation,
+            locked_proposal_recipes,
+        ) if restricted else ()
         started = _now_ms()
-        if state.remaining_runs > 0:
+        if state.remaining_runs > 0 and (not restricted or proposal_recipes):
             allowed_decisions = ('RUN_EXPERIMENT',)
             selected_run_ids: tuple[str, ...] = ()
         elif state.successful_run_ids:
@@ -138,11 +208,13 @@ def run_agent(
             observation,
             allowed_decisions=allowed_decisions,
             selected_run_ids=selected_run_ids,
+            proposal_recipes=proposal_recipes,
         )
         decision_schema = decision_json_schema(
             allowed_decisions=allowed_decisions,
             allowed_models=cfg.allowed_models,
             selected_run_ids=selected_run_ids,
+            proposal_recipes=proposal_recipes,
         )
         try:
             decision = llm.decide(messages, decision_schema=decision_schema)
@@ -210,13 +282,36 @@ def run_agent(
                 trace.record_error(reason)
             return _needs_human(session_id, reason)
 
+        if not restricted and decision.proposal_id is not None:
+            reason = 'Python proposal guard rejected proposal_id in unrestricted mode'
+            if trace:
+                trace.record_error(reason)
+            return _needs_human(session_id, reason)
+
+        if restricted:
+            recipes_by_id = {
+                item['proposal_id']: item for item in proposal_recipes
+            }
+            recipe = recipes_by_id.get(decision.proposal_id or '')
+            if recipe is None or any(
+                getattr(decision, field) != recipe[field]
+                for field in ('model_type', 'normalization', 'class_balance')
+            ):
+                reason = 'Python proposal guard rejected non-canonical recipe'
+                if trace:
+                    trace.record_error(reason)
+                return _needs_human(session_id, reason)
+
         action = {
             'model_type': decision.model_type,
             'normalization': decision.normalization,
             'class_balance': decision.class_balance,
             'parent_run_id': decision.parent_run_id,
+            'proposal_id': decision.proposal_id,
             'rationale': decision.rationale,
         }
+        if decision.proposal_id is None:
+            action.pop('proposal_id')
         config_hash = action_config_hash(action)
         if config_hash in state.submitted_config_hashes:
             reason = 'Python duplicate-config guard rejected RUN_EXPERIMENT'

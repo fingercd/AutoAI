@@ -111,6 +111,12 @@ class CreateAgentSessionRequest(BaseModel):
             raise ValueError('evaluation 比例三项必须为正且相加等于 10')
         if self.context_policy.source_role == 'benchmark' and self.context_policy.case_write:
             raise ValueError('benchmark session 禁止写入案例库')
+        if self.modules.dynamic_preprocessing and not (
+            self.modules.evidence_card and self.modules.restricted_strategy_pool
+        ):
+            raise ValueError(
+                'dynamic_preprocessing 需要 evidence_card 和 restricted_strategy_pool'
+            )
 
 
 class CreateAgentExperimentRequest(BaseModel):
@@ -123,6 +129,10 @@ class CreateAgentExperimentRequest(BaseModel):
     class_balance: str = Field('none')
     parent_run_id: str | None = None
     rationale: str | None = Field(None, max_length=2000)
+    proposal_id: str | None = Field(
+        None,
+        pattern=r'^p_[0-9a-f]{16}$',
+    )
 
     def validate(self) -> None:
         if self.model_type not in _AGENT_ALLOWED_MODELS:

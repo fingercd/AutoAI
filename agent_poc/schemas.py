@@ -15,6 +15,7 @@ class RunExperimentDecision(BaseModel):
     normalization: Literal['zscore', 'minmax', 'area', 'none'] = 'zscore'
     class_balance: Literal['none', 'class_weight'] = 'none'
     parent_run_id: str | None = None
+    proposal_id: str | None = Field(None, pattern=r'^p_[0-9a-f]{16}$')
     rationale: str = Field(min_length=1, max_length=2000)
 
 
@@ -67,6 +68,7 @@ def decision_json_schema(
         'random_forest',
     ),
     selected_run_ids: tuple[str, ...] = (),
+    proposal_recipes: tuple[dict[str, str], ...] = (),
 ) -> dict[str, object]:
     """Return a finite wire schema while Pydantic remains the final validator.
 
@@ -77,24 +79,49 @@ def decision_json_schema(
     reasons = {'enum': list(SHORT_DECISION_REASONS), 'type': 'string'}
     branches: list[dict[str, object]] = []
     if 'RUN_EXPERIMENT' in allowed_decisions:
-        branches.append({
-            'type': 'object',
-            'additionalProperties': False,
-            'properties': {
-                'decision': {'const': 'RUN_EXPERIMENT', 'type': 'string'},
-                'model_type': {'enum': list(allowed_models), 'type': 'string'},
-                'normalization': {
-                    'enum': ['zscore', 'minmax', 'area', 'none'],
-                    'type': 'string',
+        if proposal_recipes:
+            recipe_branches: list[dict[str, object]] = []
+            for recipe in proposal_recipes:
+                if recipe.get('model_type') not in allowed_models:
+                    continue
+                recipe_branches.append({
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'properties': {
+                        'decision': {'const': 'RUN_EXPERIMENT', 'type': 'string'},
+                        'proposal_id': {'const': recipe['proposal_id'], 'type': 'string'},
+                        'model_type': {'const': recipe['model_type'], 'type': 'string'},
+                        'normalization': {'const': recipe['normalization'], 'type': 'string'},
+                        'class_balance': {'const': recipe['class_balance'], 'type': 'string'},
+                        'rationale': reasons,
+                    },
+                    'required': [
+                        'decision', 'proposal_id', 'model_type',
+                        'normalization', 'class_balance', 'rationale',
+                    ],
+                })
+            if not recipe_branches:
+                raise ValueError('proposal_recipes contain no allowed model')
+            branches.append({'type': 'object', 'oneOf': recipe_branches})
+        else:
+            branches.append({
+                'type': 'object',
+                'additionalProperties': False,
+                'properties': {
+                    'decision': {'const': 'RUN_EXPERIMENT', 'type': 'string'},
+                    'model_type': {'enum': list(allowed_models), 'type': 'string'},
+                    'normalization': {
+                        'enum': ['zscore', 'minmax', 'area', 'none'],
+                        'type': 'string',
+                    },
+                    'class_balance': {
+                        'enum': ['none', 'class_weight'],
+                        'type': 'string',
+                    },
+                    'rationale': reasons,
                 },
-                'class_balance': {
-                    'enum': ['none', 'class_weight'],
-                    'type': 'string',
-                },
-                'rationale': reasons,
-            },
-            'required': ['decision', 'model_type', 'rationale'],
-        })
+                'required': ['decision', 'model_type', 'rationale'],
+            })
     if 'FINALIZE' in allowed_decisions:
         selected: dict[str, object]
         if selected_run_ids:
