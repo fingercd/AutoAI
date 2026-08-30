@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
 from .evidence import build_dataset_evidence_card
+from .feedback import build_diagnosis
 from .policy import compile_proposal_catalog, resolve_proposal
 from .repository import (
     AgentConfigCollision,
@@ -351,6 +353,21 @@ class AgentService:
                 'registration': 'requires_reviewed_git_commit',
             }
             context['module_status']['constrained_code_evolution'] = 'experimental'
+        if module_flags['feedback_diagnosis']:
+            context['diagnosis_policy'] = {
+                'schema_version': 'agent-diagnosis-v1',
+                'scope': 'train_validation_only',
+                'categories': [
+                    'data', 'split', 'feature', 'model', 'hpo', 'training',
+                    'environment', 'task_semantics',
+                ],
+            }
+            context['module_status']['feedback_diagnosis'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -597,6 +614,22 @@ class AgentService:
         else:
             feedback['validation'] = {'status': 'pending', 'metrics': {}}
 
+        if session.module_flags.get('feedback_diagnosis'):
+            train_metrics, validation_metrics, _ = _extract_train_validation_metrics(
+                run_id
+            )
+            feedback['diagnosis'] = build_diagnosis(
+                run_state=record.state,
+                selection_metric=session.selection_metric,
+                training_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                error_details=record.error_details,
+                evidence_card=session.context.get('evidence_card'),
+                restricted_actions_available=isinstance(
+                    session.context.get('proposal_catalog'), dict
+                ),
+            )
+
         return _scrub(feedback)
 
     def get_session(
@@ -630,6 +663,23 @@ class AgentService:
                 'config_hash': experiment.config_hash,
                 'created_at': experiment.created_at,
             }
+            if session.module_flags.get('feedback_diagnosis') and record.state in {
+                'succeeded', 'failed'
+            }:
+                train_metrics, valid_metrics, _ = _extract_train_validation_metrics(
+                    experiment.run_id
+                )
+                summary_entry['diagnosis'] = build_diagnosis(
+                    run_state=record.state,
+                    selection_metric=session.selection_metric,
+                    training_metrics=train_metrics,
+                    validation_metrics=valid_metrics,
+                    error_details=record.error_details,
+                    evidence_card=session.context.get('evidence_card'),
+                    restricted_actions_available=isinstance(
+                        session.context.get('proposal_catalog'), dict
+                    ),
+                )
             experiment_summaries.append(_scrub(summary_entry))
 
         # 选 best_run_id：按 selection_metric 排序；同分时 attempt 最小优先
@@ -722,32 +772,42 @@ class AgentService:
 # ---- 独立函数：metrics.json 解析与 validation 抽取 ----
 
 
-def _extract_validation_metrics(run_id: str) -> tuple[dict[str, float], dict[str, Any]]:
-    """只从 ``storage/runs/<run_id>/metrics.json`` 的 ``valid`` 子树读取标量。
+def _extract_train_validation_metrics(
+    run_id: str,
+) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
+    """只从 metrics.json 的 train/valid 子树读取有限白名单标量。
 
-    返回 ``(metrics_dict, source_meta)``：
-    - ``metrics_dict`` 是白名单标量键的 {key: float} 映射
+    返回 ``(train_metrics, valid_metrics, source_meta)``：
     - ``source_meta`` 是 ``{aggregation, fold_count}``，用于 AgentFeedback 字段
-    - 读不到 / 解析失败 / valid 子树缺失时返回空 dict
+    - 读不到 / 解析失败时返回三个空 dict
     """
     run_dir = Path(STORAGE_DIR) / 'runs' / run_id
     metrics_path = run_dir / 'metrics.json'
     if not metrics_path.is_file():
-        return {}, {}
+        return {}, {}, {}
     try:
         payload = json.loads(metrics_path.read_text(encoding='utf-8-sig'))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}, {}
+        return {}, {}, {}
     if not isinstance(payload, dict):
-        return {}, {}
-    valid = payload.get('valid')
-    if not isinstance(valid, dict):
-        return {}, {}
-    metrics: dict[str, float] = {}
-    for key in _VALIDATION_METRIC_KEYS:
-        value = valid.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            metrics[key] = float(value)
+        return {}, {}, {}
+
+    def selected(split_name: str) -> dict[str, float]:
+        split = payload.get(split_name)
+        if not isinstance(split, dict):
+            return {}
+        return {
+            key: float(value)
+            for key in _VALIDATION_METRIC_KEYS
+            if isinstance((value := split.get(key)), (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and 0.0 <= float(value) <= 1.0
+        }
+
+    train_metrics = selected('train')
+    valid_metrics = selected('valid')
+    valid = payload.get('valid') if isinstance(payload.get('valid'), dict) else {}
     source_meta: dict[str, Any] = {}
     aggregation = valid.get('aggregation')
     if isinstance(aggregation, str):
@@ -755,7 +815,12 @@ def _extract_validation_metrics(run_id: str) -> tuple[dict[str, float], dict[str
     fold_count = valid.get('fold_count')
     if isinstance(fold_count, int):
         source_meta['fold_count'] = fold_count
-    return metrics, source_meta
+    return train_metrics, valid_metrics, source_meta
+
+
+def _extract_validation_metrics(run_id: str) -> tuple[dict[str, float], dict[str, Any]]:
+    _, valid_metrics, source_meta = _extract_train_validation_metrics(run_id)
+    return valid_metrics, source_meta
 
 
 def _selection_score(metric: str, validation_metrics: dict[str, float]) -> float | None:
