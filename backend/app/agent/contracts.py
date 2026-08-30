@@ -119,6 +119,8 @@ class CreateAgentSessionRequest(BaseModel):
             )
         if self.modules.constrained_code_evolution and not self.modules.fail_fast_guard:
             raise ValueError('constrained_code_evolution 需要 fail_fast_guard')
+        if self.modules.feedback_diagnosis and not self.modules.fail_fast_guard:
+            raise ValueError('feedback_diagnosis 需要 fail_fast_guard')
 
 
 class CreateAgentExperimentRequest(BaseModel):
