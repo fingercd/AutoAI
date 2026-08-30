@@ -124,6 +124,29 @@ def test_session_rejects_unknown_module_and_benchmark_case_write(client, uploade
     assert benchmark_write.status_code == 422
 
 
+@pytest.mark.parametrize(
+    'overrides',
+    [
+        {'modules': {'evidence_card': 'true'}},
+        {'context_policy': {'source_role': 'domain', 'case_write': 1}},
+        {'max_runs': True},
+        {
+            'evaluation': {
+                'split_mode': 'stratified_holdout',
+                'split_train': True,
+                'split_valid': 1,
+                'split_test': 8,
+            }
+        },
+    ],
+)
+def test_session_rejects_non_strict_boolean_and_integer_types(
+    client, uploaded_dataset, overrides
+):
+    response = _create_session(client, uploaded_dataset, **overrides)
+    assert response.status_code == 422
+
+
 # ---------- 2. 非白名单模型返回 422 ----------
 
 

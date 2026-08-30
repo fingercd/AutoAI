@@ -130,6 +130,7 @@ class AgentSessionRepository:
     def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA busy_timeout=30000')
         connection.execute('PRAGMA journal_mode=WAL')
         connection.execute('PRAGMA foreign_keys=ON')
         try:
@@ -140,6 +141,7 @@ class AgentSessionRepository:
     def initialize(self) -> None:
         """幂等建表 + 轻量列迁移。"""
         with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
             connection.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -245,6 +247,7 @@ class AgentSessionRepository:
                 'CREATE INDEX IF NOT EXISTS idx_agent_reservations_session '
                 'ON agent_experiment_reservations(session_id, attempt)'
             )
+            connection.commit()
 
     @staticmethod
     def _scope_values(principal: Principal) -> tuple[str | None, str | None]:

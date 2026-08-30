@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,23 @@ def _require_string(data: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
+def _strict_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f'config field {key!r} must be an integer')
+    return value
+
+
+def _strict_number(data: dict[str, Any], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f'config field {key!r} must be numeric')
+    selected = float(value)
+    if not math.isfinite(selected):
+        raise ValueError(f'config field {key!r} must be finite')
+    return selected
+
+
 def load_model_registry(path: Path) -> dict[str, ModelConfig]:
     with path.open('rb') as handle:
         raw = tomllib.load(handle)
@@ -148,12 +166,72 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
     values = raw.get('agent', raw)
     if not isinstance(values, dict):
         raise ValueError('agent.toml must contain an [agent] table')
+    allowed_agent_keys = {
+        'autoai_base_url',
+        'selection_metric',
+        'allowed_models',
+        'max_runs',
+        'seed',
+        'split_mode',
+        'split_train',
+        'split_valid',
+        'split_test',
+        'poll_interval_seconds',
+        'run_timeout_seconds',
+        'llm_timeout_seconds',
+        'temperature',
+        'trace_path',
+        'code_revision',
+        'modules',
+        'context',
+    }
+    unknown_agent_keys = set(values) - allowed_agent_keys
+    if unknown_agent_keys:
+        raise ValueError(f'unknown agent config fields: {sorted(unknown_agent_keys)}')
     allowed = values.get('allowed_models', list(AgentConfig.allowed_models))
     if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
         raise ValueError('allowed_models must be a list of strings')
-    selected_max_runs = int(values.get('max_runs', 1) if max_runs is None else max_runs)
+    selected_max_runs = (
+        _strict_int(values, 'max_runs', 1)
+        if max_runs is None
+        else max_runs
+    )
+    if isinstance(selected_max_runs, bool) or not isinstance(selected_max_runs, int):
+        raise ValueError('max_runs override must be an integer')
     if selected_max_runs < 1 or selected_max_runs > 10:
         raise ValueError('max_runs must be between 1 and 10')
+    selection_metric = str(values.get('selection_metric', 'macro_f1'))
+    if selection_metric not in {'macro_f1', 'balanced_accuracy'}:
+        raise ValueError('selection_metric is not supported')
+    split_mode = str(values.get('split_mode', 'stratified_holdout'))
+    if split_mode != 'stratified_holdout':
+        raise ValueError('split_mode is not supported')
+    allowed_model_values = {'logistic_regression', 'svm', 'random_forest'}
+    unknown_models = set(allowed) - allowed_model_values
+    if unknown_models:
+        raise ValueError(f'unknown allowed_models: {sorted(unknown_models)}')
+    split_train = _strict_int(values, 'split_train', 8)
+    split_valid = _strict_int(values, 'split_valid', 1)
+    split_test = _strict_int(values, 'split_test', 1)
+    if min(split_train, split_valid, split_test) <= 0 or (
+        split_train + split_valid + split_test != 10
+    ):
+        raise ValueError('split ratios must be positive integers summing to 10')
+    seed = _strict_int(values, 'seed', 42)
+    if seed < 0 or seed > 2**32 - 1:
+        raise ValueError('seed must be between 0 and 2^32-1')
+    poll_interval_seconds = _strict_number(values, 'poll_interval_seconds', 15.0)
+    run_timeout_seconds = _strict_number(values, 'run_timeout_seconds', 3600.0)
+    llm_timeout_seconds = _strict_number(values, 'llm_timeout_seconds', 600.0)
+    temperature = _strict_number(values, 'temperature', 0.0)
+    if not 0.01 <= poll_interval_seconds <= 300.0:
+        raise ValueError('poll_interval_seconds must be between 0.01 and 300')
+    if not 1.0 <= run_timeout_seconds <= 86400.0:
+        raise ValueError('run_timeout_seconds must be between 1 and 86400')
+    if not 1.0 <= llm_timeout_seconds <= 3600.0:
+        raise ValueError('llm_timeout_seconds must be between 1 and 3600')
+    if not 0.0 <= temperature <= 2.0:
+        raise ValueError('temperature must be between 0 and 2')
     raw_modules = values.get('modules', {})
     if not isinstance(raw_modules, dict):
         raise ValueError('agent.modules must be a table')
@@ -182,17 +260,17 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
         autoai_base_url=_require_string(values, 'autoai_base_url'),
         dataset_id=dataset_id,
         allowed_models=tuple(allowed),
-        selection_metric=str(values.get('selection_metric', 'macro_f1')),
+        selection_metric=selection_metric,
         max_runs=selected_max_runs,
-        seed=int(values.get('seed', 42)),
-        split_mode=str(values.get('split_mode', 'stratified_holdout')),
-        split_train=int(values.get('split_train', 8)),
-        split_valid=int(values.get('split_valid', 1)),
-        split_test=int(values.get('split_test', 1)),
-        poll_interval_seconds=float(values.get('poll_interval_seconds', 15.0)),
-        run_timeout_seconds=float(values.get('run_timeout_seconds', 3600.0)),
-        llm_timeout_seconds=float(values.get('llm_timeout_seconds', 600.0)),
-        temperature=float(values.get('temperature', 0.0)),
+        seed=seed,
+        split_mode=split_mode,
+        split_train=split_train,
+        split_valid=split_valid,
+        split_test=split_test,
+        poll_interval_seconds=poll_interval_seconds,
+        run_timeout_seconds=run_timeout_seconds,
+        llm_timeout_seconds=llm_timeout_seconds,
+        temperature=temperature,
         trace_path=trace_path or Path(str(values.get('trace_path', 'outputs/agent_poc_acceptance/trace.jsonl'))),
         code_revision=str(values.get('code_revision', 'unknown')),
         modules=modules,
