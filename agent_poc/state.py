@@ -110,7 +110,9 @@ class LoopState:
 def action_config_hash(payload: dict[str, Any]) -> str:
     """与 AutoAI Adapter 一致：rationale 不改变 effective config。"""
     canonical = {
-        key: value for key, value in payload.items() if key not in {'rationale', 'decision'}
+        'model_type': payload.get('model_type'),
+        'normalization': payload.get('normalization', 'zscore'),
+        'class_balance': payload.get('class_balance', 'none'),
     }
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]

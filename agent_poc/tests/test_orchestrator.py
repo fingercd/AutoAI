@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.orchestrator import AgentTimeout, run_agent
+from agent_poc.orchestrator import AgentTimeout, _proposal_recipes, run_agent
 from agent_poc.schemas import FinalizeDecision, RequestHumanDecision, RunExperimentDecision
 from agent_poc.state import AgentConfig
 
 
 class FakeAutoAI:
-    def __init__(self, feedback_states):
+    def __init__(self, feedback_states, proposal_catalog=None):
         self.feedback_states = list(feedback_states)
         self.feedback_calls = 0
         self.llm_poll_boundary = None
         self.experiments = []
         self.finalized = None
+        self.proposal_catalog = proposal_catalog
 
     def health(self):
         return {'status': 'ok', 'worker': {'available': True, 'compatible': True}}
@@ -23,11 +24,23 @@ class FakeAutoAI:
         return {'session_id': 'session-1', 'remaining_runs': payload['max_runs']}
 
     def get_session(self, _session_id):
-        return {
+        response = {
             'session_id': 'session-1',
             'remaining_runs': max(0, self.session_payload['max_runs'] - len(self.experiments)),
             'experiments': list(self.experiments),
         }
+        if self.proposal_catalog is not None:
+            response['locked_config'] = {
+                'modules': {'restricted_strategy_pool': True},
+            }
+            response['context'] = {
+                'proposal_catalog': {
+                    'version': 'restricted-policy-v1',
+                    'proposal_count': len(self.proposal_catalog),
+                    'proposals': self.proposal_catalog,
+                },
+            }
+        return response
 
     def create_experiment(self, _session_id, payload):
         run_id = f'run-{len(self.experiments) + 1}'
@@ -68,6 +81,17 @@ class FakeLLM:
 
     def decide(self, _messages):
         self.call_count += 1
+        return next(self.decisions)
+
+
+class SchemaAwareFakeLLM(FakeLLM):
+    def __init__(self, decisions):
+        super().__init__(decisions)
+        self.schemas = []
+
+    def decide(self, _messages, *, decision_schema):
+        self.call_count += 1
+        self.schemas.append(decision_schema)
         return next(self.decisions)
 
 
@@ -120,3 +144,108 @@ def test_timeout_stops_without_another_llm_call():
         run_agent(_cfg(run_timeout_seconds=0), llm, autoai, sleep_fn=lambda _seconds: None)
     assert llm.call_count == 1
     assert autoai.feedback_calls == 1
+
+
+def test_restricted_catalog_recipe_is_forwarded_exactly():
+    recipe = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'minmax',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(['succeeded'], proposal_catalog=[recipe])
+    llm = FakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT',
+            **recipe,
+            rationale='compare',
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='select_best',
+        ),
+    ])
+    result = run_agent(_cfg(), llm, autoai, sleep_fn=lambda _seconds: None)
+    assert result['status'] == 'finalized'
+    assert (
+        autoai.experiments[0]['effective_action']['proposal_id']
+        == recipe['proposal_id']
+    )
+
+
+def test_proposal_catalog_metadata_and_ids_are_validated():
+    recipe = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    wrong_version = {
+        'context': {
+            'proposal_catalog': {
+                'version': 'unknown',
+                'proposal_count': 1,
+                'proposals': [recipe],
+            }
+        }
+    }
+    duplicate = {
+        'context': {
+            'proposal_catalog': {
+                'version': 'restricted-policy-v1',
+                'proposal_count': 2,
+                'proposals': [recipe, recipe],
+            }
+        }
+    }
+    assert _proposal_recipes(wrong_version) == ()
+    assert _proposal_recipes(duplicate) == ()
+
+
+def test_exhausted_catalog_switches_schema_to_finalize_before_max_runs():
+    recipe = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(['succeeded'], proposal_catalog=[recipe])
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT',
+            **recipe,
+            rationale='baseline',
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=2),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'finalized'
+    assert llm.schemas[1]['properties']['decision']['const'] == 'FINALIZE'
+
+
+def test_unrestricted_mode_rejects_unexpected_proposal_id():
+    decision = RunExperimentDecision(
+        decision='RUN_EXPERIMENT',
+        proposal_id='p_0123456789abcdef',
+        model_type='logistic_regression',
+        rationale='baseline',
+    )
+    autoai = FakeAutoAI([])
+    result = run_agent(
+        _cfg(),
+        FakeLLM([decision]),
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'needs_human'
+    assert autoai.experiments == []

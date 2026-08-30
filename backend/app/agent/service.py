@@ -30,6 +30,7 @@ from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
 from .evidence import build_dataset_evidence_card
+from .policy import compile_proposal_catalog, resolve_proposal
 from .repository import (
     AgentConfigCollision,
     AgentExperimentRecord,
@@ -96,7 +97,11 @@ def _compute_config_hash(*, session: AgentSessionRecord, action: dict[str, Any])
         'selection_metric': session.selection_metric,
         'seed': session.seed,
         'evaluation_config': session.evaluation_config,
-        'action': {key: value for key, value in action.items() if key != 'rationale'},
+        'action': {
+            'model_type': action.get('model_type'),
+            'normalization': action.get('normalization', 'zscore'),
+            'class_balance': action.get('class_balance', 'none'),
+        },
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
@@ -223,6 +228,25 @@ class AgentService:
                 for status in context['module_status'].values()
             ):
                 context['status'] = 'ready'
+        if module_flags['restricted_strategy_pool']:
+            try:
+                context['proposal_catalog'] = compile_proposal_catalog(
+                    allowed_models=list(payload.allowed_models),
+                    evidence_card=context.get('evidence_card'),
+                    dynamic_preprocessing=module_flags['dynamic_preprocessing'],
+                )
+            except Exception:
+                raise TrainingConfigValidationError(
+                    'proposal catalog 无法基于当前会话构建'
+                ) from None
+            context['module_status']['restricted_strategy_pool'] = 'ready'
+            if module_flags['dynamic_preprocessing']:
+                context['module_status']['dynamic_preprocessing'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -279,6 +303,25 @@ class AgentService:
             )
 
         action = payload.model_dump()
+        if session.module_flags['restricted_strategy_pool']:
+            try:
+                recipe = resolve_proposal(session.context, payload.proposal_id)
+            except ValueError:
+                raise TrainingConfigValidationError(
+                    'proposal_id 不在会话锁定策略目录中'
+                ) from None
+            for field in ('model_type', 'normalization', 'class_balance'):
+                if action.get(field) != recipe[field]:
+                    raise TrainingConfigValidationError(
+                        '实验字段与 proposal_id 的 canonical recipe 不一致'
+                    )
+            action.update(recipe)
+        elif payload.proposal_id is not None:
+            raise TrainingConfigValidationError(
+                '未启用 restricted_strategy_pool 时禁止 proposal_id'
+            )
+        else:
+            action.pop('proposal_id', None)
         config_hash = _compute_config_hash(session=session, action=action)
 
         # 这些是快速失败的只读检查；最终 max_runs / config / reservation

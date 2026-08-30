@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.state import load_agent_config
+from agent_poc.state import action_config_hash, load_agent_config
 
 
 def test_agent_config_serializes_session_module_flags(tmp_path):
@@ -97,3 +97,23 @@ def test_agent_config_rejects_ambiguous_or_unsupported_values(tmp_path, line):
     )
     with pytest.raises(ValueError):
         load_agent_config(config, dataset_id='dataset-1')
+
+
+def test_effective_action_hash_ignores_provenance_only_fields():
+    first = action_config_hash({
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+        'proposal_id': 'p_0123456789abcdef',
+        'parent_run_id': 'run-a',
+        'rationale': 'baseline',
+    })
+    second = action_config_hash({
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+        'proposal_id': 'p_fedcba9876543210',
+        'parent_run_id': 'run-b',
+        'rationale': 'retry',
+    })
+    assert first == second

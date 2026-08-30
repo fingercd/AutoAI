@@ -54,12 +54,14 @@ def build_messages(
         'REQUEST_HUMAN',
     ),
     selected_run_ids: tuple[str, ...] = (),
+    proposal_recipes: tuple[dict[str, str], ...] = (),
 ) -> list[dict[str, str]]:
     schema = json.dumps(
         decision_json_schema(
             allowed_decisions=allowed_decisions,
             allowed_models=cfg.allowed_models,
             selected_run_ids=selected_run_ids,
+            proposal_recipes=proposal_recipes,
         ),
         ensure_ascii=False,
         sort_keys=True,
@@ -103,8 +105,8 @@ def build_messages(
                         'choosing FINALIZE, copy selected_run_id character-for-character '
                         'from one observed experiment or best_run_id; never shorten, merge, '
                         'or synthesize a run id. If experiments already exist, never repeat '
-                        'an effective configuration; when choosing RUN_EXPERIMENT, select a '
-                        'model_type not already used from allowed_models. Prefer svm or '
+                        'an effective configuration. When proposal recipes are supplied, '
+                        'copy proposal_id and all canonical fields exactly. Prefer svm or '
                         'random_forest only when that model is present in allowed_models. '
                         'When allowed_models contains only logistic_regression, choose '
                         'logistic_regression. Otherwise '
