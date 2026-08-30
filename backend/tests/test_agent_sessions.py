@@ -176,6 +176,31 @@ def test_create_experiment_extra_field_returns_422(client, uploaded_dataset):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    'field,value',
+    [
+        ('model_type', 'cnn1d'),
+        ('normalization', 'unknown-normalizer'),
+        ('class_balance', 'oversample'),
+    ],
+)
+def test_create_experiment_business_validation_returns_422(
+    client, uploaded_dataset, field, value
+):
+    session = _create_session(client, uploaded_dataset).json()
+    payload = {
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    payload[field] = value
+    response = client.post(
+        f"/api/agent/sessions/{session['session_id']}/experiments",
+        json=payload,
+    )
+    assert response.status_code == 422
+
+
 # ---------- 4. 单次实验不能覆盖 Session 固定字段 ----------
 
 

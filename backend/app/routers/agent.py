@@ -158,6 +158,7 @@ def create_experiment(
         AgentSessionClosed,
         AgentConfigCollision,
         TrainingConfigValidationError,
+        ValueError,
     ) as exc:
         raise _to_http_exception(exc) from exc
 
