@@ -1,0 +1,47 @@
+{
+  "manifest_version": "small-sample-benchmark-v1",
+  "suite": {
+    "name": "TabMini-25/PMLB",
+    "tabmini_revision": "385961ec4ed9657ec4bb9efb9d085da13f358612",
+    "pmlb_revision": "7c1f4bdc00136dc2e55c87fa6b8ba6e8af6d1a68",
+    "paper_url": "https://arxiv.org/abs/2409.01635"
+  },
+  "datasets": [
+    {
+      "name": "molecular_biology_promoters",
+      "role": "formal_primary",
+      "n_samples": 106,
+      "n_features": 57,
+      "class_counts": {"0": 53, "1": 53},
+      "sha256": "8910ae4346f8aa2e30d4272228967bff6822b10517e84c3a5e084c8dc27de5d0",
+      "upstream_doi": "10.24432/C5S01D",
+      "license": "CC BY 4.0"
+    },
+    {
+      "name": "haberman",
+      "role": "formal_auxiliary",
+      "n_samples": 306,
+      "n_features": 3,
+      "class_counts": {"1": 225, "2": 81},
+      "sha256": "2f44ac12e09d2fd09d9ac70231cecbfbc333356339dec0509ad1ed96e36e94c0",
+      "upstream_doi": "10.24432/C5XK51",
+      "license": "CC BY 4.0"
+    },
+    {
+      "name": "parity5",
+      "role": "pipeline_smoke_only",
+      "n_samples": 32,
+      "n_features": 5,
+      "class_counts": {"0": 16, "1": 16},
+      "sha256": "54388a6fba767cc75f6fd07a0e20339fe9fa3eb4ce9fca3e621f26b00b426d74",
+      "license": "PMLB repository MIT; dataset-level provenance incomplete"
+    }
+  ],
+  "evaluation": {
+    "native_primary_metric": "macro_f1",
+    "native_secondary_metrics": ["balanced_accuracy", "failure_rate", "wall_clock_seconds", "llm_calls", "model_fits"],
+    "native_split": "stratified_holdout",
+    "tabmini_comparability_runner": {"cv": 3, "metric": "roc_auc", "reported_separately": true},
+    "comparators": ["AutoGluon Tabular", "FLAML"]
+  }
+}
