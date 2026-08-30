@@ -20,6 +20,17 @@ def _proposal_id(recipe: dict[str, str]) -> str:
     return 'p_' + hashlib.sha256(encoded).hexdigest()[:16]
 
 
+def _catalog_digest(proposals: list[dict[str, str]]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            proposals,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+    ).hexdigest()
+
+
 def compile_proposal_catalog(
     *,
     allowed_models: list[str] | tuple[str, ...],
@@ -53,14 +64,10 @@ def compile_proposal_catalog(
                 })
     if len(proposals) > 12:
         raise ValueError('proposal catalog exceeds bounded size')
-    digest = hashlib.sha256(
-        json.dumps(
-            proposals,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'),
-        ).encode('utf-8')
-    ).hexdigest()
+    proposal_ids = [item['proposal_id'] for item in proposals]
+    if len(proposal_ids) != len(set(proposal_ids)):
+        raise ValueError('proposal_id collision detected')
+    digest = _catalog_digest(proposals)
     return {
         'version': POLICY_CATALOG_VERSION,
         'dynamic_preprocessing': bool(dynamic_preprocessing),
@@ -82,6 +89,19 @@ def resolve_proposal(
     proposals = catalog.get('proposals')
     if not isinstance(proposals, list):
         raise ValueError('proposal catalog is unavailable')
+    if catalog.get('version') != POLICY_CATALOG_VERSION:
+        raise ValueError('proposal catalog version is invalid')
+    if catalog.get('proposal_count') != len(proposals):
+        raise ValueError('proposal catalog count is invalid')
+    if not all(isinstance(item, dict) for item in proposals):
+        raise ValueError('proposal catalog is invalid')
+    proposal_ids = [item.get('proposal_id') for item in proposals]
+    if (
+        not all(isinstance(item, str) for item in proposal_ids)
+        or len(proposal_ids) != len(set(proposal_ids))
+        or catalog.get('catalog_digest') != _catalog_digest(proposals)
+    ):
+        raise ValueError('proposal catalog integrity check failed')
     for item in proposals:
         if isinstance(item, dict) and item.get('proposal_id') == proposal_id:
             return {

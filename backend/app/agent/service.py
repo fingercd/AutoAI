@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,24 @@ _FORBIDDEN_KEY_SUBSTRINGS = (
     'curve_length',
     'feature_count',  # 不让 Agent 推断数据规模
 )
+_ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
+    flags=re.IGNORECASE,
+)
+
+
+def _safe_string(value: str) -> str:
+    value = re.sub(
+        r'Bearer\s+\S+',
+        '[redacted-auth]',
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = _SECRET_ASSIGNMENT.sub('[redacted-secret]', value)
+    value = _URL.sub('[redacted-url]', value)
+    return _ABSOLUTE_PATH.sub('[redacted-path]', value)
 
 
 def _scrub(value: Any) -> Any:
@@ -85,6 +104,10 @@ def _scrub(value: Any) -> Any:
         return cleaned
     if isinstance(value, list):
         return [_scrub(item) for item in value]
+    if isinstance(value, tuple):
+        return [_scrub(item) for item in value]
+    if isinstance(value, str):
+        return _safe_string(value)
     return value
 
 
@@ -303,6 +326,8 @@ class AgentService:
             )
 
         action = payload.model_dump()
+        if isinstance(action.get('rationale'), str):
+            action['rationale'] = _safe_string(action['rationale'])
         if session.module_flags['restricted_strategy_pool']:
             try:
                 recipe = resolve_proposal(session.context, payload.proposal_id)
@@ -403,7 +428,7 @@ class AgentService:
                 reservation_id=reservation.reservation_id,
                 run_id=record.run_id,
                 parent_run_id=payload.parent_run_id,
-                rationale=payload.rationale,
+                rationale=action.get('rationale'),
                 principal=principal,
             )
         except Exception:
@@ -431,7 +456,7 @@ class AgentService:
             'attempt': experiment.attempt,
             'config_hash': experiment.config_hash,
             'state': record.state,
-            'effective_action': action,
+            'effective_action': _scrub(action),
         }
 
     def get_feedback(

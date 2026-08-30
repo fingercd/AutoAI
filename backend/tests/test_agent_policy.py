@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.agent.policy import compile_proposal_catalog
+from backend.app.agent import policy
+from backend.app.agent.policy import compile_proposal_catalog, resolve_proposal
 from backend.app.agent.service import _compute_config_hash
 from backend.app.main import app
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
@@ -74,11 +76,25 @@ def test_restricted_session_requires_exact_canonical_recipe(tmp_path):
     catalog = session['context']['proposal_catalog']
     assert session['context']['status'] == 'ready'
     recipe = catalog['proposals'][0]
+    malicious = (
+        'Bearer abc password=hunter2 https://internal.example '
+        '/users/private/model C:\\private\\token.txt'
+    )
     accepted = client.post(
         f"/api/agent/sessions/{session['session_id']}/experiments",
-        json={**recipe, 'rationale': 'baseline'},
+        json={**recipe, 'rationale': malicious},
     )
     assert accepted.status_code == 202, accepted.text
+    for forbidden in (
+        'bearer abc', 'hunter2', 'internal.example',
+        '/users/private', 'c:\\private',
+    ):
+        assert forbidden not in accepted.text.lower()
+    observed = client.get(
+        f"/api/agent/sessions/{session['session_id']}"
+    )
+    for forbidden in ('hunter2', '/users/private', 'internal.example'):
+        assert forbidden not in observed.text.lower()
     mismatch = client.post(
         f"/api/agent/sessions/{session['session_id']}/experiments",
         json={
@@ -128,3 +144,25 @@ def test_backend_effective_hash_ignores_parent_and_proposal_identity():
         },
     )
     assert first == second
+
+
+def test_catalog_rejects_id_collision_and_digest_tampering(monkeypatch):
+    monkeypatch.setattr(policy, '_proposal_id', lambda _: 'p_0000000000000000')
+    with pytest.raises(ValueError, match='collision'):
+        compile_proposal_catalog(
+            allowed_models=['logistic_regression', 'svm'],
+            evidence_card=None,
+            dynamic_preprocessing=True,
+        )
+    monkeypatch.undo()
+    catalog = compile_proposal_catalog(
+        allowed_models=['logistic_regression'],
+        evidence_card=None,
+        dynamic_preprocessing=False,
+    )
+    catalog['catalog_digest'] = '0' * 64
+    with pytest.raises(ValueError, match='integrity'):
+        resolve_proposal(
+            {'proposal_catalog': catalog},
+            catalog['proposals'][0]['proposal_id'],
+        )
