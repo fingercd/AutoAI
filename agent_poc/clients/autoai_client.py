@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -63,6 +64,21 @@ class AutoAIClient:
 
     def health(self) -> dict[str, Any]:
         return self._request('GET', '/health', retry_get=True)
+
+    def agent_health(
+        self,
+        *,
+        probe: str = 'models',
+        model_key: str | None = None,
+    ) -> dict[str, Any]:
+        query = {'probe': probe}
+        if model_key:
+            query['model_key'] = model_key
+        return self._request(
+            'GET',
+            f"/api/agent/health?{urlencode(query)}",
+            retry_get=True,
+        )
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request('POST', '/api/agent/sessions', json=payload)

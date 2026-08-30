@@ -16,6 +16,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+AGENT_API_CONTRACT_VERSION = 'agent-session-v1'
+AGENT_API_CAPABILITIES = (
+    'create_session',
+    'create_experiment',
+    'read_session',
+    'read_feedback',
+    'finalize_session',
+)
+
+
 # 第一版锁定的传统模型白名单；与 ``backend/app/models/registry.py`` 的
 # TRADITIONAL_MODEL_TYPES 取交集得到 6 个，这里只开放 3 个简单稳定基线。
 _AGENT_ALLOWED_MODELS = frozenset({'logistic_regression', 'svm', 'random_forest'})
