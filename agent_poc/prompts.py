@@ -22,10 +22,17 @@ _FORBIDDEN_KEY_PARTS = (
     'filesystem',
 )
 _ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
+    flags=re.IGNORECASE,
+)
 
 
 def _redact_string(value: str) -> str:
     value = re.sub(r'Bearer\s+\S+', '[redacted-auth]', value, flags=re.IGNORECASE)
+    value = _SECRET_ASSIGNMENT.sub('[redacted-secret]', value)
+    value = _URL.sub('[redacted-url]', value)
     return _ABSOLUTE_PATH.sub('[redacted-path]', value)
 
 

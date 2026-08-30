@@ -27,10 +27,17 @@ _FORBIDDEN_KEY_PARTS = (
     'explainability',
 )
 _ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
+    flags=re.IGNORECASE,
+)
 
 
 def _safe_string(value: str) -> str:
     value = re.sub(r'Bearer\s+\S+', '[redacted-auth]', value, flags=re.IGNORECASE)
+    value = _SECRET_ASSIGNMENT.sub('[redacted-secret]', value)
+    value = _URL.sub('[redacted-url]', value)
     value = _ABSOLUTE_PATH.sub('[redacted-path]', value)
     # Keep trace evidence focused on validation rather than any accidental
     # textual mention of a hidden test set.
@@ -129,5 +136,7 @@ def _assert_safe_value(value: Any, *, path: str) -> None:
             _assert_safe_value(item, path=f'{path}[{index}]')
     elif isinstance(value, str):
         assert 'bearer ' not in value.lower(), f'auth value at {path}'
+        assert not _SECRET_ASSIGNMENT.search(value), f'secret assignment at {path}'
+        assert not _URL.search(value), f'url value at {path}'
         assert not _ABSOLUTE_PATH.search(value), f'absolute path at {path}'
         assert not re.search(r'\btest\b', value, flags=re.IGNORECASE), f'hidden set at {path}'
