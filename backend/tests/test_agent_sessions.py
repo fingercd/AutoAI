@@ -201,6 +201,9 @@ def test_concurrent_active_run_blocks_new_experiment(client, uploaded_dataset):
         json={"model_type": "svm", "normalization": "zscore", "class_balance": "none"},
     )
     assert first.status_code == 202
+    created_run = repo_get(first.json()['run_id'])
+    assert created_run.dataset_snapshot['dataset_id'] == uploaded_dataset
+    assert created_run.dataset_snapshot['sha256']
     second = client.post(
         f"/api/agent/sessions/{session['session_id']}/experiments",
         json={"model_type": "logistic_regression", "normalization": "zscore", "class_balance": "none"},

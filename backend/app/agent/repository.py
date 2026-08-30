@@ -88,6 +88,24 @@ class AgentExperimentRecord:
     tenant_id: str | None
 
 
+@dataclass(frozen=True)
+class AgentExperimentReservation:
+    """跨 HTTP 请求的实验入队 reservation。
+
+    Reservation 先于 Run 入队写入 Agent DB，用来把 max_runs、重复配置和
+    “同一 Session 只能有一个活动提交”放进同一把 SQLite 写锁里。
+    """
+
+    reservation_id: str
+    session_id: str
+    attempt: int
+    config_hash: str
+    action_json: dict[str, Any]
+    created_at: str | None
+    owner_id: str | None
+    tenant_id: str | None
+
+
 class AgentSessionRepository:
     """Agent Session / Experiment 仓库。
 
@@ -184,6 +202,26 @@ class AgentSessionRepository:
                 'CREATE INDEX IF NOT EXISTS idx_agent_experiments_session '
                 'ON agent_experiments(session_id, attempt)'
             )
+            connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS agent_experiment_reservations (
+                    reservation_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    attempt INTEGER NOT NULL,
+                    config_hash TEXT NOT NULL,
+                    action_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    owner_id TEXT,
+                    tenant_id TEXT,
+                    UNIQUE(session_id, config_hash),
+                    UNIQUE(session_id, attempt)
+                )
+                '''
+            )
+            connection.execute(
+                'CREATE INDEX IF NOT EXISTS idx_agent_reservations_session '
+                'ON agent_experiment_reservations(session_id, attempt)'
+            )
 
     @staticmethod
     def _scope_values(principal: Principal) -> tuple[str | None, str | None]:
@@ -218,6 +256,19 @@ class AgentSessionRepository:
             action_json=dict(_decode_json(row['action_json'], {})),
             rationale=row['rationale'],
             config_hash=row['config_hash'],
+            created_at=row['created_at'],
+            owner_id=row['owner_id'] if 'owner_id' in row.keys() else None,
+            tenant_id=row['tenant_id'] if 'tenant_id' in row.keys() else None,
+        )
+
+    @staticmethod
+    def _reservation(row: sqlite3.Row) -> AgentExperimentReservation:
+        return AgentExperimentReservation(
+            reservation_id=str(row['reservation_id']),
+            session_id=str(row['session_id']),
+            attempt=int(row['attempt']),
+            config_hash=str(row['config_hash']),
+            action_json=dict(_decode_json(row['action_json'], {})),
             created_at=row['created_at'],
             owner_id=row['owner_id'] if 'owner_id' in row.keys() else None,
             tenant_id=row['tenant_id'] if 'tenant_id' in row.keys() else None,
@@ -342,6 +393,248 @@ class AgentSessionRepository:
                 (session_id, owner_id, tenant_id),
             ).fetchone()
         return int(row['cnt']) if row is not None else 0
+
+    def count_reservations_scoped(
+        self, *, session_id: str, principal: Principal
+    ) -> int:
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            row = connection.execute(
+                '''
+                SELECT COUNT(*) AS cnt FROM agent_experiment_reservations
+                WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                ''',
+                (session_id, owner_id, tenant_id),
+            ).fetchone()
+        return int(row['cnt']) if row is not None else 0
+
+    def reserve_experiment(
+        self,
+        *,
+        session_id: str,
+        config_hash: str,
+        action_json: dict[str, Any],
+        principal: Principal,
+    ) -> AgentExperimentReservation:
+        """原子预留一次 Experiment，防止并发请求越过 max_runs。
+
+        Session、历史 Experiment 和未绑定 Reservation 的读取均在同一个
+        ``BEGIN IMMEDIATE`` 内完成；Run 尚未创建时，其他请求已经能观察到
+        这次 Reservation，从而不会重复入队。
+        """
+        reservation_id = uuid.uuid4().hex
+        now = _timestamp(datetime.now(timezone.utc))
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                session_row = connection.execute(
+                    '''
+                    SELECT * FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, owner_id, tenant_id),
+                ).fetchone()
+                if session_row is None:
+                    raise AgentSessionNotFound(session_id)
+                if session_row['state'] != 'open':
+                    raise AgentSessionClosed(
+                        f'session {session_id} 已经 finalized，不能继续提交'
+                    )
+
+                active_reservation = connection.execute(
+                    '''
+                    SELECT 1 FROM agent_experiment_reservations
+                    WHERE session_id = ?
+                    LIMIT 1
+                    ''',
+                    (session_id,),
+                ).fetchone()
+                if active_reservation is not None:
+                    raise AgentConfigCollision(
+                        f'session {session_id} 仍有提交中的 experiment，请稍后重试'
+                    )
+
+                duplicate = connection.execute(
+                    '''
+                    SELECT 1 FROM agent_experiments
+                    WHERE session_id = ? AND config_hash = ?
+                    UNION ALL
+                    SELECT 1 FROM agent_experiment_reservations
+                    WHERE session_id = ? AND config_hash = ?
+                    LIMIT 1
+                    ''',
+                    (session_id, config_hash, session_id, config_hash),
+                ).fetchone()
+                if duplicate is not None:
+                    raise AgentConfigCollision(
+                        f'config_hash {config_hash} 在该 session 内已存在'
+                    )
+
+                experiment_count = int(
+                    connection.execute(
+                        'SELECT COUNT(*) FROM agent_experiments WHERE session_id = ?',
+                        (session_id,),
+                    ).fetchone()[0]
+                )
+                reservation_count = int(
+                    connection.execute(
+                        'SELECT COUNT(*) FROM agent_experiment_reservations WHERE session_id = ?',
+                        (session_id,),
+                    ).fetchone()[0]
+                )
+                if experiment_count + reservation_count >= int(session_row['max_runs']):
+                    raise AgentConfigCollision(
+                        f'session {session_id} 已达 max_runs={session_row["max_runs"]} 上限'
+                    )
+
+                attempt = int(
+                    connection.execute(
+                        '''
+                        SELECT MAX(attempt) FROM (
+                            SELECT attempt FROM agent_experiments WHERE session_id = ?
+                            UNION ALL
+                            SELECT attempt FROM agent_experiment_reservations WHERE session_id = ?
+                        )
+                        ''',
+                        (session_id, session_id),
+                    ).fetchone()[0]
+                    or 0
+                ) + 1
+                connection.execute(
+                    '''
+                    INSERT INTO agent_experiment_reservations (
+                        reservation_id, session_id, attempt, config_hash,
+                        action_json, created_at, owner_id, tenant_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        reservation_id,
+                        session_id,
+                        attempt,
+                        config_hash,
+                        json.dumps(action_json, ensure_ascii=False, sort_keys=True),
+                        now,
+                        owner_id,
+                        tenant_id,
+                    ),
+                )
+                row = connection.execute(
+                    'SELECT * FROM agent_experiment_reservations WHERE reservation_id = ?',
+                    (reservation_id,),
+                ).fetchone()
+                connection.commit()
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                raise AgentConfigCollision(
+                    f'config_hash {config_hash} 在该 session 内已存在或提交正在进行'
+                ) from exc
+            except BaseException:
+                connection.rollback()
+                raise
+        assert row is not None
+        return self._reservation(row)
+
+    def bind_reservation(
+        self,
+        *,
+        reservation_id: str,
+        run_id: str,
+        parent_run_id: str | None,
+        rationale: str | None,
+        principal: Principal,
+    ) -> AgentExperimentRecord:
+        """把已创建的 queued Run 与 reservation 绑定成 Experiment。"""
+        experiment_id = uuid.uuid4().hex
+        now = _timestamp(datetime.now(timezone.utc))
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                reservation_row = connection.execute(
+                    '''
+                    SELECT * FROM agent_experiment_reservations
+                    WHERE reservation_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (reservation_id, owner_id, tenant_id),
+                ).fetchone()
+                if reservation_row is None:
+                    raise AgentExperimentNotFound(reservation_id)
+                session_row = connection.execute(
+                    '''
+                    SELECT state FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (reservation_row['session_id'], owner_id, tenant_id),
+                ).fetchone()
+                if session_row is None:
+                    raise AgentSessionNotFound(str(reservation_row['session_id']))
+                if session_row['state'] != 'open':
+                    raise AgentSessionClosed(
+                        f'session {reservation_row["session_id"]} 已经 finalized，不能绑定实验'
+                    )
+                connection.execute(
+                    '''
+                    INSERT INTO agent_experiments (
+                        experiment_id, session_id, run_id, attempt, parent_run_id,
+                        action_json, rationale, config_hash, created_at,
+                        owner_id, tenant_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        experiment_id,
+                        reservation_row['session_id'],
+                        run_id,
+                        int(reservation_row['attempt']),
+                        parent_run_id,
+                        reservation_row['action_json'],
+                        rationale,
+                        reservation_row['config_hash'],
+                        now,
+                        owner_id,
+                        tenant_id,
+                    ),
+                )
+                connection.execute(
+                    'DELETE FROM agent_experiment_reservations WHERE reservation_id = ?',
+                    (reservation_id,),
+                )
+                row = connection.execute(
+                    'SELECT * FROM agent_experiments WHERE experiment_id = ?',
+                    (experiment_id,),
+                ).fetchone()
+                connection.commit()
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                raise AgentConfigCollision(
+                    f'cannot bind reservation {reservation_id}'
+                ) from exc
+            except BaseException:
+                connection.rollback()
+                raise
+        assert row is not None
+        return self._experiment(row)
+
+    def release_reservation(
+        self, *, reservation_id: str, principal: Principal
+    ) -> bool:
+        """释放 reservation；对已释放或越权 reservation 幂等返回 False。"""
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                changed = connection.execute(
+                    '''
+                    DELETE FROM agent_experiment_reservations
+                    WHERE reservation_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (reservation_id, owner_id, tenant_id),
+                ).rowcount
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return changed == 1
 
     def has_non_terminal_experiment_scoped(
         self, *, session_id: str, run_states: dict[str, str], principal: Principal
