@@ -27,6 +27,7 @@ from ..agent.contracts import (
     FinalizeAgentSessionRequest,
 )
 from ..agent.repository import (
+    AgentBudgetExceeded,
     AgentConfigCollision,
     AgentExperimentNotFound,
     AgentSessionClosed,
@@ -70,6 +71,14 @@ def _to_http_exception(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail='agent session 不存在')
     if isinstance(exc, AgentExperimentNotFound):
         return HTTPException(status_code=404, detail='experiment 不存在')
+    if isinstance(exc, AgentBudgetExceeded):
+        return HTTPException(
+            status_code=409,
+            detail={
+                'code': 'agent_budget_exhausted',
+                'dimension': 'max_model_fits',
+            },
+        )
     if isinstance(exc, AgentSessionClosed):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, AgentConfigCollision):
@@ -137,8 +146,6 @@ def create_session(
     except (TrainingConfigValidationError, ValueError) as exc:
         # Pydantic 已经在更外层捕获了 extra='forbid'，这里只覆盖业务校验。
         raise _to_http_exception(exc) from exc
-
-
 @router.post('/api/agent/sessions/{session_id}/experiments', status_code=202)
 def create_experiment(
     payload: CreateAgentExperimentRequest,
@@ -164,7 +171,6 @@ def create_experiment(
         ValueError,
     ) as exc:
         raise _to_http_exception(exc) from exc
-
 
 @router.get('/api/agent/sessions/{session_id}/experiments/{run_id}/feedback')
 def get_feedback(

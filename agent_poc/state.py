@@ -40,6 +40,15 @@ class AgentModuleConfig:
 
 
 @dataclass(frozen=True)
+class AgentBudgetConfig:
+    max_model_fits: int
+    max_llm_calls: int
+    max_api_calls: int
+    max_wall_clock_seconds: int
+    max_retry_attempts: int
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     autoai_base_url: str
     dataset_id: str
@@ -64,8 +73,15 @@ class AgentConfig:
     modules: AgentModuleConfig = field(default_factory=AgentModuleConfig)
     source_role: str = 'development'
     case_write: bool = False
+    budget: AgentBudgetConfig | None = None
 
     def session_payload(self) -> dict[str, Any]:
+        if self.modules.budget_control and not (
+            self.modules.bounded_hpo and self.modules.fail_fast_guard
+        ):
+            raise ValueError(
+                'budget_control requires bounded_hpo and fail_fast_guard'
+            )
         payload = {
             'dataset_id': self.dataset_id,
             'selection_metric': self.selection_metric,
@@ -90,6 +106,12 @@ class AgentConfig:
                 'source_role': self.source_role,
                 'case_write': self.case_write,
             }
+        if self.modules.budget_control:
+            if self.budget is None:
+                raise ValueError('budget_control requires an explicit budget')
+            payload['budget'] = asdict(self.budget)
+        elif self.budget is not None:
+            raise ValueError('budget requires budget_control=true')
         return payload
 
 
@@ -186,6 +208,7 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
         'code_revision',
         'modules',
         'context',
+        'budget',
     }
     unknown_agent_keys = set(values) - allowed_agent_keys
     if unknown_agent_keys:
@@ -244,6 +267,48 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
     if not all(isinstance(value, bool) for value in raw_modules.values()):
         raise ValueError('agent module flags must be booleans')
     modules = AgentModuleConfig(**raw_modules)
+    if modules.budget_control and not (
+        modules.bounded_hpo and modules.fail_fast_guard
+    ):
+        raise ValueError(
+            'budget_control requires bounded_hpo and fail_fast_guard'
+        )
+    raw_budget = values.get('budget')
+    if modules.budget_control:
+        if not isinstance(raw_budget, dict):
+            raise ValueError('agent.budget must be a table when budget_control=true')
+        expected_budget_keys = set(AgentBudgetConfig.__dataclass_fields__)
+        unknown_budget_keys = set(raw_budget) - expected_budget_keys
+        missing_budget_keys = expected_budget_keys - set(raw_budget)
+        if unknown_budget_keys or missing_budget_keys:
+            raise ValueError(
+                'agent.budget must contain exactly '
+                f'{sorted(expected_budget_keys)}; '
+                f'unknown={sorted(unknown_budget_keys)}, '
+                f'missing={sorted(missing_budget_keys)}'
+            )
+        budget_values: dict[str, int] = {}
+        budget_bounds = {
+            'max_model_fits': (1, 1000),
+            'max_llm_calls': (1, 100),
+            'max_api_calls': (1, 10000),
+            'max_wall_clock_seconds': (1, 86400),
+            'max_retry_attempts': (0, 100),
+        }
+        for key, (minimum, maximum) in budget_bounds.items():
+            value = raw_budget.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f'agent.budget {key!r} must be an integer')
+            if value < minimum or value > maximum:
+                raise ValueError(
+                    f'agent.budget {key!r} must be between {minimum} and {maximum}'
+                )
+            budget_values[key] = value
+        budget = AgentBudgetConfig(**budget_values)
+    else:
+        if raw_budget is not None:
+            raise ValueError('agent.budget requires agent.modules.budget_control=true')
+        budget = None
     raw_context = values.get('context', {})
     if not isinstance(raw_context, dict):
         raise ValueError('agent.context must be a table')
@@ -278,4 +343,5 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
         modules=modules,
         source_role=source_role,
         case_write=case_write,
+        budget=budget,
     )

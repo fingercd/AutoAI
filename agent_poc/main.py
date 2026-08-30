@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 from pathlib import Path
 
+from .budget import BudgetController
 from .clients.autoai_client import AutoAIClient
 from .clients.llm_client import LLMClient
 from .health import probe_agent_stack
@@ -78,19 +78,27 @@ def main() -> int:
     model_cfg = registry[args.model_key]
     trace = TraceRecorder(cfg.trace_path, model_cfg=model_cfg, code_revision=cfg.code_revision)
     token = os.getenv('AUTOAI_API_TOKEN')
-    autoai = AutoAIClient(cfg.autoai_base_url, token=token)
+    budget_controller = BudgetController(
+        cfg.budget if cfg.modules.budget_control else None
+    )
+    autoai = AutoAIClient(
+        cfg.autoai_base_url,
+        token=token,
+        budget_controller=budget_controller,
+    )
     llm = LLMClient(
         model_cfg,
         temperature=cfg.temperature,
         timeout_seconds=cfg.llm_timeout_seconds,
+        budget_controller=budget_controller,
     )
-    started = time.perf_counter()
     try:
         result = run_agent(
             cfg,
             llm,
             autoai,
             trace=trace,
+            budget_controller=budget_controller,
         )
     except Exception as exc:
         trace.record_error(type(exc).__name__ + ': ' + str(exc))
@@ -98,15 +106,6 @@ def main() -> int:
     finally:
         autoai.close()
     assert_trace_safe(cfg.trace_path)
-    result = {
-        **result,
-        'agent_metrics': {
-            'llm_call_count': llm.call_count,
-            'llm_repair_count': llm.repair_count,
-            'llm_usage_records': llm.usage_records,
-            'runtime_seconds': round(time.perf_counter() - started, 3),
-        },
-    }
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 

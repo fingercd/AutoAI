@@ -31,6 +31,7 @@ from ..paths import DATASETS_DATABASE, STORAGE_DIR
 from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
+from .budget import AgentBudgetEstimateError, estimate_model_fit_upper_bound
 from .evidence import build_dataset_evidence_card
 from .feedback import build_diagnosis
 from .memory import (
@@ -205,6 +206,25 @@ def _guard_feedback(record: RunRecord) -> dict[str, Any] | None:
     return result
 
 
+def _observed_model_fit_count(record: RunRecord) -> int | None:
+    """Read a Guard-observed terminal fit count without inspecting artifacts."""
+    guard = _guard_feedback(record)
+    if not isinstance(guard, dict):
+        return None
+    sources: list[object] = []
+    if record.state == 'succeeded':
+        sources.append(guard.get('postflight'))
+    elif record.state in {'failed', 'cancelled'}:
+        sources.extend((guard.get('failure'), guard.get('postflight')))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        value = source.get('model_fit_count')
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
+
+
 def _build_training_config(
     *,
     session: AgentSessionRecord,
@@ -358,6 +378,23 @@ class AgentService:
                 for status in context['module_status'].values()
             ):
                 context['status'] = 'ready'
+        if module_flags['budget_control']:
+            assert payload.budget is not None  # validated above; keeps policy complete
+            context['budget_policy'] = {
+                'schema_version': 'agent-budget-policy-v1',
+                'limits': payload.budget.model_dump(),
+                'model_fit_accounting': 'reservation_then_observation',
+                'external_accounting': [
+                    'llm_calls', 'api_calls', 'wall_clock_seconds',
+                    'retry_attempts',
+                ],
+            }
+            context['module_status']['budget_control'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         if module_flags['constrained_code_evolution']:
             context['code_evolution_policy'] = {
                 'schema_version': 'code-evolution-v1',
@@ -475,6 +512,11 @@ class AgentService:
                 'evaluation_config': evaluation_config,
                 'modules': session.module_flags,
                 'context_policy': session.context_policy,
+                'budget': (
+                    session.context['budget_policy']['limits']
+                    if module_flags['budget_control']
+                    else None
+                ),
             },
             'context': session.context,
             'created_at': session.created_at,
@@ -651,6 +693,26 @@ class AgentService:
             raise TrainingConfigValidationError(
                 f'合成后的训练配置不被现有 TrainingSpec 接受: {exc}'
             ) from exc
+        validated_training_config = spec.to_legacy_dict()
+        reserved_model_fits = 0
+        if session.module_flags.get('budget_control'):
+            try:
+                reserved_model_fits = estimate_model_fit_upper_bound(
+                    validated_training_config
+                )
+            except AgentBudgetEstimateError as exc:
+                raise TrainingConfigValidationError(
+                    f'无法为已验证训练配置计算 model-fit 上界: {exc}'
+                ) from exc
+            guard_envelope = validated_training_config.get('agent_execution')
+            if not isinstance(guard_envelope, dict):
+                raise TrainingConfigValidationError(
+                    'budget_control 需要服务端 Guard envelope'
+                )
+            validated_training_config['agent_execution'] = {
+                **guard_envelope,
+                'reserved_model_fits': reserved_model_fits,
+            }
 
         try:
             dataset = self.datasets.resolve(session.dataset_id, principal=principal)
@@ -677,6 +739,7 @@ class AgentService:
             require_replan_for_failed=bool(
                 session.module_flags.get('limited_replanning')
             ),
+            reserved_model_fits=reserved_model_fits,
         )
         record: RunRecord | None = None
         try:
@@ -684,7 +747,7 @@ class AgentService:
             record = self.runs.create_queued(
                 dataset_id=session.dataset_id,
                 legacy_data_path=None,
-                config=spec.to_legacy_dict(),
+                config=validated_training_config,
                 dataset_snapshot=dataset_snapshot,
                 principal=principal,
             )
@@ -696,13 +759,15 @@ class AgentService:
                 principal=principal,
             )
         except Exception:
-            self.sessions.release_reservation(
-                reservation_id=reservation.reservation_id,
-                principal=principal,
-            )
-            if record is not None:
+            if record is None:
+                # Run creation itself failed: no work can consume the reservation.
+                self.sessions.release_reservation(
+                    reservation_id=reservation.reservation_id,
+                    principal=principal,
+                )
+            else:
                 try:
-                    self.runs.cancel_scoped(
+                    cancelled = self.runs.cancel_scoped(
                         record.run_id,
                         now=datetime.now(timezone.utc),
                         principal=principal,
@@ -710,9 +775,22 @@ class AgentService:
                         message='Agent experiment 绑定失败，已补偿取消',
                     )
                 except Exception:
-                    # 原始异常更能定位入队/绑定失败；Run 取消失败会由状态巡检
-                    # 暴露，不把未知的补偿异常伪装成成功提交。
+                    # The queued Run may still execute.  Keep the reservation
+                    # charged so a failed compensation cannot oversubscribe the
+                    # Session budget.  The original bind error is re-raised below.
                     pass
+                else:
+                    if (
+                        cancelled.state == 'cancelled'
+                        and cancelled.started_at is None
+                    ):
+                        # Only a never-started queued Run is known to have consumed
+                        # zero fits.  A cancelled-but-started Run keeps the full
+                        # reservation charged because partial work is unobservable.
+                        self.sessions.release_reservation(
+                            reservation_id=reservation.reservation_id,
+                            principal=principal,
+                        )
             raise
         return {
             'session_id': session_id,
@@ -742,6 +820,12 @@ class AgentService:
             session_id, run_id, principal=principal
         )
         record = self._safe_get_run(run_id, principal=principal)
+        self._settle_terminal_model_fits(
+            session=session,
+            experiment=experiment,
+            record=record,
+            principal=principal,
+        )
 
         feedback: dict[str, Any] = {
             'session_id': session_id,
@@ -822,6 +906,12 @@ class AgentService:
         validation_scores: list[tuple[float, str]] = []  # (score, run_id)
         for experiment in experiments:
             record = self._safe_get_run(experiment.run_id, principal=principal)
+            self._settle_terminal_model_fits(
+                session=session,
+                experiment=experiment,
+                record=record,
+                principal=principal,
+            )
             summary = _safe_record_summary(record)
             validation_score: float | None = None
             validation_source: dict[str, Any] = {}
@@ -911,6 +1001,12 @@ class AgentService:
                 'evaluation_config': session.evaluation_config,
                 'modules': session.module_flags,
                 'context_policy': session.context_policy,
+                'budget': (
+                    session.context.get('budget_policy', {}).get('limits')
+                    if session.module_flags.get('budget_control')
+                    and isinstance(session.context.get('budget_policy'), dict)
+                    else None
+                ),
             },
             'context': session.context,
             'remaining_runs': remaining_runs,
@@ -920,6 +1016,12 @@ class AgentService:
             'finalized_at': session.finalized_at,
             'experiments': experiment_summaries,
         }
+        budget_usage = self.sessions.get_budget_usage_scoped(
+            session_id=session_id,
+            principal=principal,
+        )
+        if budget_usage is not None:
+            response['budget_usage'] = budget_usage
         if session.module_flags.get('uncertainty_selection'):
             policy = session.context.get('selection_policy')
             policy = policy if isinstance(policy, dict) else {}
@@ -963,6 +1065,12 @@ class AgentService:
             raise TrainingConfigValidationError(
                 f'只能 finalize 训练成功的 Run，当前 run {selected_run_id} state={record.state}'
             )
+        self._settle_terminal_model_fits(
+            session=session,
+            experiment=experiment,
+            record=record,
+            principal=principal,
+        )
 
         self._persist_terminal_outcome(
             session=session,
@@ -991,6 +1099,30 @@ class AgentService:
         })
 
     # ---- 内部 helpers ----
+
+    def _settle_terminal_model_fits(
+        self,
+        *,
+        session: AgentSessionRecord,
+        experiment: AgentExperimentRecord,
+        record: RunRecord,
+        principal: Principal,
+    ) -> None:
+        if not session.module_flags.get('budget_control'):
+            return
+        if record.state not in {'succeeded', 'failed', 'cancelled'}:
+            return
+        observed = _observed_model_fit_count(record)
+        if observed is None:
+            # Runtime failures without a Guard observation keep their full
+            # reservation charged; guessing zero could oversubscribe the budget.
+            return
+        self.sessions.settle_experiment_model_fits_scoped(
+            session_id=session.session_id,
+            run_id=experiment.run_id,
+            actual_model_fits=observed,
+            principal=principal,
+        )
 
     @staticmethod
     def _memory_write_enabled(session: AgentSessionRecord) -> bool:
