@@ -39,9 +39,14 @@
   ],
   "evaluation": {
     "native_primary_metric": "macro_f1",
-    "native_secondary_metrics": ["balanced_accuracy", "failure_rate", "wall_clock_seconds", "llm_calls", "model_fits"],
+    "native_secondary_metrics": ["balanced_accuracy", "failure_rate", "wall_clock_seconds", "llm_calls", "api_calls", "retry_attempts", "model_fits"],
     "native_split": "stratified_holdout",
     "tabmini_comparability_runner": {"cv": 3, "metric": "roc_auc", "reported_separately": true},
     "comparators": ["AutoGluon Tabular", "FLAML"]
+  },
+  "integrity": {
+    "benchmark_manifest_sha256": "9e20447908aca25d1cb458aab2aa44e052a5e1a271fdc6a5762865a9d3b97a1c",
+    "sha256sums_sha256": "746795181e77fc77f9e7d8920e9fe3b1d49a86dbb1ab7c280253f3a2c105c545",
+    "sha256sums_entries": 17
   }
 }
