@@ -15,14 +15,23 @@
   保证“导入本模块”本身除定义常量外没有其他副作用。
 """
 
+import os
 from pathlib import Path
 
 
 # 项目根目录：本文件位于 backend/app/paths.py，向上三级（parents[2]）即仓库根。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-# 本地存储根目录：所有运行时数据（数据库、上传文件、训练产物）都收敛在
-# storage/ 下，便于统一备份、清理，并被 .gitignore 排除在版本库之外。
-STORAGE_DIR = PROJECT_ROOT / "storage"
+# 本地存储根目录：默认仍为仓库内 storage/；server 部署通过绝对路径环境变量
+# 把 Web、Worker 和 Agent DB 收敛到同一个共享目录。相对覆盖路径直接拒绝，
+# 避免不同进程从不同 cwd 解析出不同的数据库位置。
+_storage_override = os.getenv('AUTOAI_STORAGE_DIR', '').strip()
+if _storage_override:
+    _storage_candidate = Path(_storage_override).expanduser()
+    if not _storage_candidate.is_absolute():
+        raise RuntimeError('AUTOAI_STORAGE_DIR 必须是绝对路径')
+    STORAGE_DIR = _storage_candidate.resolve()
+else:
+    STORAGE_DIR = PROJECT_ROOT / 'storage'
 # 训练 Run 元数据库：Run 状态机（queued/running/succeeded 等）由 RunRepository 维护。
 RUNS_DATABASE = STORAGE_DIR / "runs.sqlite3"
 # 数据集元数据库：上传/预处理产出的数据集登记信息由 DatasetRepository 维护。

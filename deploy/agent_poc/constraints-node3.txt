@@ -1,0 +1,15 @@
+# Node3 uses an older system glibc/compiler than the Windows verification
+# environment. These pins prefer published cp312 manylinux wheels and avoid
+# pandas 3.x falling back to a NumPy source build.
+fastapi==0.115.9
+uvicorn==0.40.0
+python-multipart==0.0.22
+pydantic==2.11.9
+numpy==2.2.6
+pandas==2.2.3
+scipy==1.13.1
+joblib==1.4.2
+scikit-learn==1.6.1
+xgboost==2.1.1
+torch==2.5.1
+rampy==0.6.4

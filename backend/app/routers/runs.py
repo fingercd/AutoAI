@@ -384,12 +384,7 @@ def _dataset_snapshot_for_reference(
     repository = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
     repository.initialize()
     record = repository.resolve_system(dataset_id, legacy_path=legacy_path)
-    actual_sha256 = repository.verify_integrity(record)
-    return {
-        'dataset_id': dataset_id,
-        'name': dataset_name or record.original_name,
-        'sha256': actual_sha256,
-    }
+    return repository.snapshot(record, dataset_id=dataset_id, name=dataset_name)
 
 
 def _summary_projection(record: RunRecord) -> dict[str, Any]:

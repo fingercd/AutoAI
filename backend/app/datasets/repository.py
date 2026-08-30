@@ -265,6 +265,25 @@ class DatasetRepository:
             )
         return actual
 
+    def snapshot(
+        self,
+        record: DatasetRecord,
+        *,
+        dataset_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, str | None]:
+        """生成 Run 创建时使用的统一数据集指纹快照。
+
+        解析和哈希仍由本仓库负责，Agent Adapter 与训练路由共享同一套
+        ``verify_integrity`` 逻辑，避免两个入口记录不同的文件指纹。
+        """
+        actual_sha256 = self.verify_integrity(record)
+        return {
+            'dataset_id': dataset_id or record.dataset_id,
+            'name': name or record.original_name,
+            'sha256': actual_sha256,
+        }
+
     def _is_controlled_path(self, path: Path) -> bool:
         """判断路径是否位于任一"允许根"之内。
 

@@ -1,0 +1,77 @@
+"""CLI entrypoint: only ``--model-key`` changes the selected backbone."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from pathlib import Path
+
+from .clients.autoai_client import AutoAIClient
+from .clients.llm_client import LLMClient
+from .orchestrator import run_agent
+from .state import load_agent_config, load_model_registry
+from .trace import TraceRecorder, assert_trace_safe
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model-key', required=True)
+    parser.add_argument('--dataset-id', required=True)
+    parser.add_argument('--max-runs', type=int)
+    parser.add_argument('--models-config', type=Path, default=Path(__file__).parent / 'config' / 'models.toml')
+    parser.add_argument('--agent-config', type=Path, default=Path(__file__).parent / 'config' / 'agent.toml')
+    parser.add_argument('--trace-path', type=Path)
+    parser.add_argument('--autoai-base-url')
+    args = parser.parse_args()
+
+    registry = load_model_registry(args.models_config)
+    if args.model_key not in registry:
+        parser.error(f'unknown model key: {args.model_key}')
+    cfg = load_agent_config(
+        args.agent_config,
+        dataset_id=args.dataset_id,
+        max_runs=args.max_runs,
+        trace_path=args.trace_path,
+    )
+    if args.autoai_base_url:
+        cfg = cfg.__class__(**{**cfg.__dict__, 'autoai_base_url': args.autoai_base_url})
+    model_cfg = registry[args.model_key]
+    trace = TraceRecorder(cfg.trace_path, model_cfg=model_cfg, code_revision=cfg.code_revision)
+    token = os.getenv('AUTOAI_API_TOKEN')
+    autoai = AutoAIClient(cfg.autoai_base_url, token=token)
+    llm = LLMClient(
+        model_cfg,
+        temperature=cfg.temperature,
+        timeout_seconds=cfg.llm_timeout_seconds,
+    )
+    started = time.perf_counter()
+    try:
+        result = run_agent(
+            cfg,
+            llm,
+            autoai,
+            trace=trace,
+        )
+    except Exception as exc:
+        trace.record_error(type(exc).__name__ + ': ' + str(exc))
+        raise
+    finally:
+        autoai.close()
+    assert_trace_safe(cfg.trace_path)
+    result = {
+        **result,
+        'agent_metrics': {
+            'llm_call_count': llm.call_count,
+            'llm_repair_count': llm.repair_count,
+            'llm_usage_records': llm.usage_records,
+            'runtime_seconds': round(time.perf_counter() - started, 3),
+        },
+    }
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -172,6 +172,37 @@ curl -H "Authorization: Bearer $AUTOAI_API_TOKEN" \
 
 如果创建训练返回 503 `worker_contract_mismatch`，说明至少一个活跃 Worker 没有当前契约版本。停止所有旧 Worker，并与 Web 从同一版本重新启动；不要绕过门禁直接写 queued Run。
 
+## 4.1 Agent V1 POC 共享存储与运行边界
+
+Agent V1 Adapter 复用现有 queued Run/Worker 状态机，不启动第二套训练状态机。Web、Worker
+和 `agent_poc` 必须从同一 release 启动，并显式指向同一个共享 storage root：
+
+```bash
+export AUTOAI_STORAGE_DIR=/users/fotile/AutoAI/shared/storage
+export AUTOAI_DEPLOYMENT_MODE=server
+export AUTOAI_PRINCIPAL_ID=server-admin
+export AUTOAI_TENANT_ID=default
+```
+
+`AUTOAI_STORAGE_DIR` 必须是绝对路径；它统一承载 `runs.sqlite3`、`datasets.sqlite3`、
+`agent.sqlite3`、uploads、preprocessed 和 runs。不要把 token 写入命令历史、仓库或日志；
+由受保护的进程管理器注入 `AUTOAI_API_TOKEN` 和明确的 `AUTOAI_ALLOWED_ORIGINS`。
+
+Agent Adapter 的公开边界固定为：
+
+```text
+POST /api/agent/sessions
+POST /api/agent/sessions/{session_id}/experiments
+GET  /api/agent/sessions/{session_id}
+GET  /api/agent/sessions/{session_id}/experiments/{run_id}/feedback
+POST /api/agent/sessions/{session_id}/finalize
+```
+
+Session 创建和 Experiment 入队均按服务端 Principal 校验 Dataset；Experiment 只允许
+`model_type`、`normalization`、`class_balance`、`parent_run_id`、`rationale`。Feedback
+只投影 Validation 白名单，不能把 Test、artifact、路径或 SQLite 内部对象交给 LLM。
+reservation/compensation 负责并发预算和 queued Run 绑定失败回滚。
+
 不要依赖固定的样本数、类别名、GPU 编号或模型文件扩展名作为部署成功标准。
 
 ## 8. 持久化与备份

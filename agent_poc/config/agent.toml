@@ -1,0 +1,16 @@
+[agent]
+autoai_base_url = "http://127.0.0.1:8000"
+selection_metric = "macro_f1"
+allowed_models = ["logistic_regression", "svm", "random_forest"]
+max_runs = 1
+seed = 42
+split_mode = "stratified_holdout"
+split_train = 8
+split_valid = 1
+split_test = 1
+poll_interval_seconds = 15
+run_timeout_seconds = 3600
+llm_timeout_seconds = 600
+temperature = 0.0
+trace_path = "outputs/agent_poc_acceptance/trace.jsonl"
+code_revision = "experiment/agent-v1-poc@48f5af2be5eeedb866f0780c6a36ae2aac5c94ce"

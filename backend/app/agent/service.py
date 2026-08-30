@@ -178,15 +178,17 @@ class AgentService:
     ) -> dict[str, Any]:
         """校验 dataset_id 存在 + 写 Session + 返回锁定配置。
 
-        通过 ``DatasetRepository.resolve_system`` 校验 dataset_id 真实存在且
-        文件还在——这一步与现有 ``/api/training/runs`` 共用校验逻辑，不重复实现。
+        通过 Principal-scoped ``DatasetRepository.resolve`` 校验 dataset_id
+        真实存在且属于当前调用者——Agent Session 不能绕过 Dataset scope。
         """
         payload.validate()
-        # resolve_system 只验证 dataset_id 存在；principal scope 由后续 Run 路径校验。
         try:
-            self.datasets.resolve_system(payload.dataset_id, legacy_path=None)
+            self.datasets.resolve(payload.dataset_id, principal=principal)
         except FileNotFoundError as exc:
-            raise TrainingConfigValidationError(f'dataset_id 无效: {exc}') from exc
+            raise TrainingConfigValidationError('dataset_id 不存在') from exc
+        except PermissionError as exc:
+            # 对外使用同一不可见语义，不泄露其他 Principal 的 dataset 是否存在。
+            raise TrainingConfigValidationError('dataset_id 不存在或不可访问') from exc
         evaluation_config = payload.evaluation.model_dump()
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
@@ -240,7 +242,8 @@ class AgentService:
         action = payload.model_dump()
         config_hash = _compute_config_hash(session=session, action=action)
 
-        # 计数 + 重复 config 校验
+        # 这些是快速失败的只读检查；最终 max_runs / config / reservation
+        # 判定仍由下面的 BEGIN IMMEDIATE 原子 reservation 再校验一次。
         if self.sessions.find_duplicate_config(
             session_id=session_id, config_hash=config_hash, principal=principal
         ):
@@ -286,29 +289,60 @@ class AgentService:
                 f'合成后的训练配置不被现有 TrainingSpec 接受: {exc}'
             ) from exc
 
-        attempt = self.sessions.next_attempt_scoped(
-            session_id=session_id, principal=principal
-        )
+        try:
+            dataset = self.datasets.resolve(session.dataset_id, principal=principal)
+            dataset_snapshot = self.datasets.snapshot(
+                dataset, dataset_id=session.dataset_id
+            )
+        except FileNotFoundError as exc:
+            raise TrainingConfigValidationError('dataset_id 不存在') from exc
+        except PermissionError as exc:
+            raise TrainingConfigValidationError('dataset_id 不存在或不可访问') from exc
 
-        # 复用 RunRepository.create_queued，让 Worker 与现有 Run 共享状态机。
-        # dataset_id 必填，因为 Agent 锁定的就是 dataset_id；config 里不带路径。
-        record = self.runs.create_queued(
-            dataset_id=session.dataset_id,
-            legacy_data_path=None,
-            config=spec.to_legacy_dict(),
-            dataset_snapshot=None,
-            principal=principal,
-        )
-        experiment = self.sessions.create_experiment(
+        # 先 reservation 再创建 queued Run。若后续 Run/Experiment 任一步失败，
+        # except 分支会释放 reservation 并补偿取消刚创建的 queued Run。
+        reservation = self.sessions.reserve_experiment(
             session_id=session_id,
-            run_id=record.run_id,
-            attempt=attempt,
-            parent_run_id=payload.parent_run_id,
-            action_json=action,
-            rationale=payload.rationale,
             config_hash=config_hash,
+            action_json=action,
             principal=principal,
         )
+        record: RunRecord | None = None
+        try:
+            # 复用 RunRepository.create_queued，让 Worker 与现有 Run 共享状态机。
+            record = self.runs.create_queued(
+                dataset_id=session.dataset_id,
+                legacy_data_path=None,
+                config=spec.to_legacy_dict(),
+                dataset_snapshot=dataset_snapshot,
+                principal=principal,
+            )
+            experiment = self.sessions.bind_reservation(
+                reservation_id=reservation.reservation_id,
+                run_id=record.run_id,
+                parent_run_id=payload.parent_run_id,
+                rationale=payload.rationale,
+                principal=principal,
+            )
+        except Exception:
+            self.sessions.release_reservation(
+                reservation_id=reservation.reservation_id,
+                principal=principal,
+            )
+            if record is not None:
+                try:
+                    self.runs.cancel_scoped(
+                        record.run_id,
+                        now=datetime.now(timezone.utc),
+                        principal=principal,
+                        reason='agent_bind_failed',
+                        message='Agent experiment 绑定失败，已补偿取消',
+                    )
+                except Exception:
+                    # 原始异常更能定位入队/绑定失败；Run 取消失败会由状态巡检
+                    # 暴露，不把未知的补偿异常伪装成成功提交。
+                    pass
+            raise
         return {
             'session_id': session_id,
             'run_id': record.run_id,
