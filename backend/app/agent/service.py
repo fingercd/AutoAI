@@ -186,6 +186,15 @@ def _build_training_config(
     if isinstance(hpo_policy, dict):
         config['hpo_profile'] = hpo_policy['profile']
         config['hpo_selection_metric'] = hpo_policy['selection_metric']
+    guard_policy = session.context.get('guard_policy')
+    if isinstance(guard_policy, dict):
+        config['agent_execution'] = {
+            'guard_version': guard_policy['schema_version'],
+            'fail_fast_guard': True,
+            'expected_model_type': action['model_type'],
+            'hpo_profile': config.get('hpo_profile', 'standard'),
+            'max_hpo_candidates': guard_policy['max_hpo_candidates'],
+        }
     # 把 evaluation_config 的字段（如 split_mode/split_train/...）合并进来
     for key, value in session.evaluation_config.items():
         config.setdefault(key, value)
@@ -283,6 +292,23 @@ class AgentService:
                 'max_candidates': 3,
             }
             context['module_status']['bounded_hpo'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
+        if module_flags['fail_fast_guard']:
+            hpo_policy = context.get('hpo_policy')
+            context['guard_policy'] = {
+                'schema_version': 'agent-guard-v1',
+                'max_hpo_candidates': (
+                    int(hpo_policy['max_candidates'])
+                    if isinstance(hpo_policy, dict)
+                    else 18
+                ),
+                'postflight': True,
+            }
+            context['module_status']['fail_fast_guard'] = 'ready'
             if all(
                 status == 'ready'
                 for status in context['module_status'].values()
@@ -509,6 +535,14 @@ class AgentService:
             'progress': _safe_progress(record),
             'remaining_runs': max(0, session.max_runs - self._experiment_count(session_id, principal)),
         }
+        if session.module_flags.get('fail_fast_guard'):
+            guard_result = None
+            if isinstance(record.progress.get('agent_guard'), dict):
+                guard_result = record.progress['agent_guard']
+            elif isinstance(record.error_details.get('guard_result'), dict):
+                guard_result = record.error_details['guard_result']
+            if guard_result is not None:
+                feedback['guard_result'] = _scrub(guard_result)
 
         if record.state == 'succeeded':
             validation_metrics, source = _extract_validation_metrics(run_id)

@@ -49,8 +49,15 @@ def _error_details(exc: Exception) -> dict[str, Any]:
     """
     error_type = type(exc).__name__
     message = public_error_message(exc)
+    from ..agent.guard import AgentGuardRejected
+
+    if isinstance(exc, AgentGuardRejected):
+        code = 'agent_guard_rejected'
+        stage = str(exc.result.get('stage') or 'preflight')
+        retryable = bool(exc.result.get('retryable', False))
+        message = 'Agent Fail-Fast 检查未通过'
     # 数据集在 queued 之后被改动（SHA-256 校验失败）：独立 code，便于前端给出针对性提示
-    if error_type == 'DatasetIntegrityError':
+    elif error_type == 'DatasetIntegrityError':
         code = 'dataset_changed'
         stage = 'dataset_validation'
         retryable = False
@@ -71,13 +78,16 @@ def _error_details(exc: Exception) -> dict[str, Any]:
         stage = 'training'
         retryable = False
     # 当前所有失败 retryable=False：自动重试无法修复数据/配置/文件类错误，避免无谓重跑
-    return {
+    details = {
         'code': code,
         'stage': stage,
         'message': message,
         'type': error_type,
         'retryable': retryable,
     }
+    if isinstance(exc, AgentGuardRejected):
+        details['guard_result'] = exc.result
+    return details
 
 
 class LeaseGuard:

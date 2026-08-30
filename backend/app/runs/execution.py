@@ -23,6 +23,7 @@ from typing import Any
 from .artifacts import RunArtifactWriter
 from .contracts import RunRecord
 from .status_projection import project_status
+from ..agent.guard import run_postflight_guard, run_preflight_guard
 
 
 class TrainingExecution:
@@ -48,6 +49,28 @@ class TrainingExecution:
             claim_token=record.claim_token or '',
             now=datetime.now(timezone.utc),
         )
+
+    def _persist_guard(
+        self,
+        record: RunRecord,
+        guard_payload: dict[str, Any],
+    ) -> RunRecord:
+        progress = dict(record.progress)
+        if hasattr(self.repository, 'get'):
+            try:
+                current = self.repository.get(record.run_id)
+                progress.update(current.progress)
+            except Exception:
+                pass
+        progress['agent_guard'] = guard_payload
+        if hasattr(self.repository, 'update_progress'):
+            return self.repository.update_progress(
+                record.run_id,
+                claim_token=record.claim_token or '',
+                now=datetime.now(timezone.utc),
+                progress=progress,
+            )
+        return replace(record, progress=progress)
 
     def _run_legacy_training(
         self,
@@ -92,12 +115,22 @@ class TrainingExecution:
         """
         # 训练前第一次检查：排队期间被取消的 Run 直接中止，不浪费训练资源
         self.cancel_check(record)
+        guard_enabled = isinstance(record.config.get('agent_execution'), dict)
+        guard_payload: dict[str, Any] | None = None
+        if guard_enabled:
+            preflight = run_preflight_guard(data_path, dict(record.config))
+            guard_payload = {'preflight': preflight}
+            record = self._persist_guard(record, guard_payload)
         writer = RunArtifactWriter(self.run_dir)
         result = self._run_legacy_training(
             record,
             data_path=data_path,
             test_data_path=test_data_path,
         )
+        if guard_enabled:
+            postflight = run_postflight_guard(result, dict(record.config))
+            guard_payload = {**(guard_payload or {}), 'postflight': postflight}
+            record = self._persist_guard(record, guard_payload)
         # 训练完成后、写结果前再查一次：训练期间被取消则结果直接丢弃
         self.cancel_check(record)
         # 把训练实际统计出的数据规模回填到 dataset_snapshot
