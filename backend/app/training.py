@@ -1865,14 +1865,13 @@ def _run_legacy_training(
     ) -> None:
         check_run_active()
         progress = {
+            **(record.progress if record is not None else {}),
             "current_fold": fold_index,
             "completed_folds": completed_folds,
             "fold_progress_text": f"{fold_index}/{fold_count}",
             "target_epochs": config.epochs,
             **(extra or {}),
         }
-        if record is not None and isinstance(record.progress.get('agent_guard'), dict):
-            progress['agent_guard'] = record.progress['agent_guard']
         if repository is not None and record is not None:
             updated = repository.update_progress(
                 record.run_id,

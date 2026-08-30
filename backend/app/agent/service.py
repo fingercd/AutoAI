@@ -69,7 +69,10 @@ _FORBIDDEN_KEY_SUBSTRINGS = (
     'curve_length',
     'feature_count',  # 不让 Agent 推断数据规模
 )
-_ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_ABSOLUTE_PATH = re.compile(
+    r'(?:[A-Za-z]:[\\/]|/(?:users|home|var|tmp|opt|srv|etc|root|mnt|data)/)[^\s,;]*',
+    flags=re.IGNORECASE,
+)
 _URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
     r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
@@ -159,6 +162,25 @@ def _safe_record_summary(record: RunRecord) -> dict[str, Any]:
         'duration_seconds': duration_seconds,
         'error': None if not record.error else _scrub({'message': record.error}),
     }
+
+
+def _guard_feedback(record: RunRecord) -> dict[str, Any] | None:
+    progress_guard = (
+        record.progress.get('agent_guard')
+        if isinstance(record.progress.get('agent_guard'), dict)
+        else None
+    )
+    failure_guard = (
+        record.error_details.get('guard_result')
+        if isinstance(record.error_details.get('guard_result'), dict)
+        else None
+    )
+    if progress_guard is None and failure_guard is None:
+        return None
+    result = dict(progress_guard or {})
+    if failure_guard is not None:
+        result['failure'] = failure_guard
+    return result
 
 
 def _build_training_config(
@@ -536,11 +558,7 @@ class AgentService:
             'remaining_runs': max(0, session.max_runs - self._experiment_count(session_id, principal)),
         }
         if session.module_flags.get('fail_fast_guard'):
-            guard_result = None
-            if isinstance(record.progress.get('agent_guard'), dict):
-                guard_result = record.progress['agent_guard']
-            elif isinstance(record.error_details.get('guard_result'), dict):
-                guard_result = record.error_details['guard_result']
+            guard_result = _guard_feedback(record)
             if guard_result is not None:
                 feedback['guard_result'] = _scrub(guard_result)
 

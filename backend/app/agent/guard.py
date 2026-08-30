@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import math
 
 import numpy as np
 
@@ -161,6 +162,23 @@ def run_postflight_guard(
             'postflight', checks, 'metrics_contract',
             model_fit_count=observed_fit_count,
         )
+    validation = result['metrics'].get('valid')
+    selection_metric = str(config.get('hpo_selection_metric') or 'balanced_accuracy')
+    selection_value = (
+        validation.get(selection_metric)
+        if isinstance(validation, dict)
+        else None
+    )
+    if (
+        isinstance(selection_value, bool)
+        or not isinstance(selection_value, (int, float))
+        or not math.isfinite(float(selection_value))
+        or not 0.0 <= float(selection_value) <= 1.0
+    ):
+        _reject(
+            'postflight', checks, 'validation_metric_contract',
+            model_fit_count=observed_fit_count,
+        )
     model_fit_count = (
         metadata.get('model_fit_count')
         if isinstance(metadata, dict)
@@ -175,11 +193,44 @@ def run_postflight_guard(
             'postflight', checks, 'cost_contract',
             model_fit_count=observed_fit_count,
         )
+    fold_count = result.get('fold_count')
+    if (
+        isinstance(fold_count, bool)
+        or not isinstance(fold_count, int)
+        or fold_count < 1
+    ):
+        _reject(
+            'postflight', checks, 'cost_contract',
+            model_fit_count=observed_fit_count,
+        )
+    maximum_candidates = envelope.get('max_hpo_candidates')
+    if (
+        isinstance(maximum_candidates, bool)
+        or not isinstance(maximum_candidates, int)
+        or maximum_candidates < 1
+    ):
+        _reject(
+            'postflight', checks, 'cost_contract',
+            model_fit_count=observed_fit_count,
+        )
+    model_family = result.get('model_family')
+    maximum_fits = (
+        (maximum_candidates + 1) * fold_count
+        if model_family == 'traditional_ml'
+        else fold_count
+    )
+    if observed_fit_count > maximum_fits:
+        _reject(
+            'postflight', checks, 'model_fit_budget',
+            model_fit_count=observed_fit_count,
+        )
     checks.extend([
         {'code': 'result_contract', 'status': 'passed'},
         {'code': 'task_semantics', 'status': 'passed'},
         {'code': 'metrics_contract', 'status': 'passed'},
+        {'code': 'validation_metric_contract', 'status': 'passed'},
         {'code': 'cost_contract', 'status': 'passed'},
+        {'code': 'model_fit_budget', 'status': 'passed'},
     ])
     return _result(
         stage='postflight',

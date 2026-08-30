@@ -109,6 +109,7 @@ def test_worker_projects_failed_record_after_execution_error(tmp_path):
     repo.initialize()
     created = repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
     projected = []
+    discarded = []
 
     def execute(_):
         raise RuntimeError('training exploded')
@@ -119,6 +120,7 @@ def test_worker_projects_failed_record_after_execution_error(tmp_path):
         execute=execute,
         now=lambda: datetime.now(timezone.utc),
         project_status=projected.append,
+        discard_artifacts=discarded.append,
     )
 
     assert worker.run_once() is True
@@ -128,3 +130,4 @@ def test_worker_projects_failed_record_after_execution_error(tmp_path):
     assert len(projected) == 1
     assert projected[0].state == 'failed'
     assert projected[0].error == 'training exploded'
+    assert discarded == [created.run_id]

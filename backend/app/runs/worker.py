@@ -250,6 +250,14 @@ class RunWorker:
                 self.discard_artifacts(run.run_id)
             return True
         except Exception as exc:
+            if self.discard_artifacts is not None:
+                try:
+                    self.discard_artifacts(run.run_id)
+                except OSError:
+                    logger.warning(
+                        'Run %s failed and artifact cleanup must be retried',
+                        run.run_id,
+                    )
             try:
                 # 失败提交同样携带 claim_token；错误详情收敛后写入仓库供结果页展示
                 logger.exception('Run %s failed during worker execution', run.run_id)

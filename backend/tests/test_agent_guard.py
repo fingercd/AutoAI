@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from backend.app.agent.guard import (
     run_postflight_guard,
     run_preflight_guard,
 )
+from backend.app.agent.service import _guard_feedback
 from backend.app.contracts import TrainingConfigValidationError, TrainingSpec
 from backend.app.main import app
 from backend.app.paths import RUNS_DATABASE
@@ -30,6 +32,7 @@ def _config(model_type='logistic_regression'):
         'split_valid': 1,
         'split_test': 1,
         'hpo_profile': 'tiny',
+        'hpo_selection_metric': 'macro_f1',
         'agent_execution': {
             'guard_version': 'agent-guard-v1',
             'fail_fast_guard': True,
@@ -67,6 +70,8 @@ def test_postflight_requires_model_metrics_and_cost_contract():
     result = {
         'status': 'success',
         'model_type': 'logistic_regression',
+        'model_family': 'traditional_ml',
+        'fold_count': 1,
         'metrics': {'valid': {'macro_f1': 0.8}},
         'model_metadata': {'model_fit_count': 4},
     }
@@ -76,6 +81,27 @@ def test_postflight_requires_model_metrics_and_cost_contract():
     with pytest.raises(AgentGuardRejected) as caught:
         run_postflight_guard({**result, 'metrics': None}, _config())
     assert caught.value.result['model_fit_count'] == 4
+    for invalid in (
+        {'test': {'macro_f1': 0.8}},
+        {'valid': {'macro_f1': float('nan')}},
+        {'valid': {'macro_f1': 1.1}},
+    ):
+        with pytest.raises(AgentGuardRejected) as invalid_result:
+            run_postflight_guard({**result, 'metrics': invalid}, _config())
+        assert any(
+            item['code'] == 'validation_metric_contract'
+            for item in invalid_result.value.result['checks']
+        )
+    over_budget = {
+        **result,
+        'model_metadata': {'model_fit_count': 5},
+    }
+    with pytest.raises(AgentGuardRejected) as budget_result:
+        run_postflight_guard(over_budget, _config())
+    assert any(
+        item['code'] == 'model_fit_budget'
+        for item in budget_result.value.result['checks']
+    )
 
 
 def test_execution_rejects_preflight_before_training_or_artifacts(monkeypatch, tmp_path):
@@ -133,6 +159,22 @@ def test_worker_error_details_preserve_safe_guard_result():
     assert details['message'] == 'Agent Fail-Fast 检查未通过'
 
 
+def test_failed_guard_feedback_merges_failure_over_passed_preflight():
+    record = SimpleNamespace(
+        progress={'agent_guard': {'preflight': {'status': 'passed'}}},
+        error_details={
+            'guard_result': {
+                'stage': 'postflight',
+                'status': 'rejected',
+            }
+        },
+    )
+    projected = _guard_feedback(record)
+    assert projected['preflight']['status'] == 'passed'
+    assert projected['failure']['stage'] == 'postflight'
+    assert projected['failure']['status'] == 'rejected'
+
+
 def test_execution_persists_preflight_and_postflight_progress(monkeypatch, tmp_path):
     class Repository:
         def __init__(self, record):
@@ -155,6 +197,7 @@ def test_execution_persists_preflight_and_postflight_progress(monkeypatch, tmp_p
                 'status': 'success',
                 'model_type': 'logistic_regression',
                 'model_family': 'traditional_ml',
+                'fold_count': 1,
                 'metrics': {'valid': {'macro_f1': 0.8}},
                 'model_metadata': {'model_fit_count': 4},
             }
@@ -184,6 +227,50 @@ def test_execution_persists_preflight_and_postflight_progress(monkeypatch, tmp_p
         'preflight': preflight,
         'postflight': postflight,
     }
+
+
+def test_postflight_rejection_discards_unpublished_artifacts(monkeypatch, tmp_path):
+    class Repository:
+        def assert_active(self, *args, **kwargs):
+            return None
+
+        def update_progress(self, run_id, *, progress, **kwargs):
+            return replace(record, progress=progress)
+
+    class Execution(TrainingExecution):
+        def _run_legacy_training(self, record, **kwargs):
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            (self.run_dir / 'model.pkl').write_bytes(b'private-model')
+            (self.run_dir / 'metrics.json').write_text('{}', encoding='utf-8')
+            return {
+                'status': 'success',
+                'model_type': 'logistic_regression',
+                'model_family': 'traditional_ml',
+                'fold_count': 1,
+                'metrics': {},
+                'model_metadata': {'model_fit_count': 4},
+            }
+
+    monkeypatch.setattr(
+        execution_module,
+        'run_preflight_guard',
+        lambda *args: {
+            'schema_version': 'agent-guard-v1', 'stage': 'preflight',
+            'status': 'passed', 'retryable': False, 'checks': [],
+            'model_fit_count': 0,
+        },
+    )
+    record = RunRecord(
+        run_id='guard-postflight-fail', state='running', version=1,
+        dataset_id='dataset', legacy_data_path=None, config=_config(), progress={},
+        claim_token='claim', worker_id='worker', lease_expires_at=None,
+    )
+    run_dir = tmp_path / 'guard-postflight-fail'
+    with pytest.raises(AgentGuardRejected):
+        Execution(repository=Repository(), run_dir=run_dir).execute(
+            record, data_path=tmp_path / 'ignored.csv'
+        )
+    assert not run_dir.exists() or list(run_dir.iterdir()) == []
 
 
 def test_agent_session_locks_guard_policy_and_queues_envelope(tmp_path):
@@ -237,3 +324,11 @@ def test_training_spec_rejects_tampered_guard_envelope():
     config['hpo_profile'] = 'standard'
     with pytest.raises(TrainingConfigValidationError, match='hpo_profile'):
         TrainingSpec.from_legacy(config).validated(has_external_test=False)
+
+
+def test_worker_error_redacts_assignment_style_absolute_path():
+    details = _error_details(
+        RuntimeError('failed path=/users/fotile/private/model.pkl')
+    )
+    assert '/users/' not in details['message']
+    assert '详细路径信息' in details['message']
