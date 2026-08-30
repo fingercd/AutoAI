@@ -336,6 +336,21 @@ class AgentService:
                 for status in context['module_status'].values()
             ):
                 context['status'] = 'ready'
+        if module_flags['constrained_code_evolution']:
+            context['code_evolution_policy'] = {
+                'schema_version': 'code-evolution-v1',
+                'status': 'experimental',
+                'mode': 'candidate_generation_and_smoke_only',
+                'allowed_base_models': [
+                    'cnn1d', 'cnn1d_se', 'resnet1d',
+                ],
+                'output_scope': 'work/code-evolution',
+                'max_source_lines': 220,
+                'max_parameters': 5_000_000,
+                'requires_guard': True,
+                'registration': 'requires_reviewed_git_commit',
+            }
+            context['module_status']['constrained_code_evolution'] = 'experimental'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
