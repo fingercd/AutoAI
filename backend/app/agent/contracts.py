@@ -26,6 +26,33 @@ AGENT_API_CAPABILITIES = (
 )
 
 
+class AgentModuleFlags(BaseModel):
+    """Session-scoped feature switches used for reproducible A/B runs."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    evidence_card: bool = False
+    dynamic_preprocessing: bool = False
+    restricted_strategy_pool: bool = False
+    bounded_hpo: bool = False
+    fail_fast_guard: bool = False
+    constrained_code_evolution: bool = False
+    feedback_diagnosis: bool = False
+    limited_replanning: bool = False
+    uncertainty_selection: bool = False
+    case_memory: bool = False
+    budget_control: bool = False
+
+
+class AgentContextPolicy(BaseModel):
+    """Controls where a Session may read/write learned planning context."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    source_role: Literal['development', 'benchmark', 'domain'] = 'development'
+    case_write: bool = False
+
+
 # 第一版锁定的传统模型白名单；与 ``backend/app/models/registry.py`` 的
 # TRADITIONAL_MODEL_TYPES 取交集得到 6 个，这里只开放 3 个简单稳定基线。
 _AGENT_ALLOWED_MODELS = frozenset({'logistic_regression', 'svm', 'random_forest'})
@@ -62,6 +89,8 @@ class CreateAgentSessionRequest(BaseModel):
     max_runs: int = Field(..., ge=1, le=10)
     seed: int = Field(42, ge=0)
     evaluation: AgentEvaluationBlock = Field(default_factory=AgentEvaluationBlock)
+    modules: AgentModuleFlags = Field(default_factory=AgentModuleFlags)
+    context_policy: AgentContextPolicy = Field(default_factory=AgentContextPolicy)
 
     def validate(self) -> None:
         if self.selection_metric not in _AGENT_SELECTION_METRICS:
@@ -80,6 +109,8 @@ class CreateAgentSessionRequest(BaseModel):
                   self.evaluation.split_test)
         if sum(ratios) != 10 or min(ratios) <= 0:
             raise ValueError('evaluation 比例三项必须为正且相加等于 10')
+        if self.context_policy.source_role == 'benchmark' and self.context_policy.case_write:
+            raise ValueError('benchmark session 禁止写入案例库')
 
 
 class CreateAgentExperimentRequest(BaseModel):

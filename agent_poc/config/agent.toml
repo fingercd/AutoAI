@@ -14,3 +14,20 @@ llm_timeout_seconds = 600
 temperature = 0.0
 trace_path = "outputs/agent_poc_acceptance/trace.jsonl"
 code_revision = "experiment/agent-v1-poc@48f5af2be5eeedb866f0780c6a36ae2aac5c94ce"
+
+[agent.modules]
+evidence_card = false
+dynamic_preprocessing = false
+restricted_strategy_pool = false
+bounded_hpo = false
+fail_fast_guard = false
+constrained_code_evolution = false
+feedback_diagnosis = false
+limited_replanning = false
+uncertainty_selection = false
+case_memory = false
+budget_control = false
+
+[agent.context]
+source_role = "development"
+case_write = false
