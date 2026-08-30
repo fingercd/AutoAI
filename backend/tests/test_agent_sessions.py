@@ -461,10 +461,44 @@ def test_real_logistic_regression_run_feedback_exposes_only_validation(client, u
     # DatasetRepository.resolve_system 可找回数据路径；最直接：用 RecordDataset 路径。
     from backend.app.datasets.repository import DatasetRepository
     from backend.app.paths import DATASETS_DATABASE, STORAGE_DIR
+    from backend.app.parsers import load_modeling_csv
     ds_repo = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
     ds_repo.initialize()
     dataset = ds_repo.resolve_system(uploaded_dataset, legacy_path=None)
     train_model(dataset.path, config, run_id=experiment["run_id"])
+
+    run_dir = RUNS_DIR / experiment["run_id"]
+    metrics_payload = json.loads(
+        (run_dir / "metrics.json").read_text(encoding="utf-8")
+    )
+    split_payload = json.loads(
+        (run_dir / "split.json").read_text(encoding="utf-8")
+    )
+    expected_valid_groups = {
+        str(sample_id)
+        for fold in split_payload
+        for sample_id in fold["valid_sample_ids"]
+    }
+    assert metrics_payload["valid"]["independent_group_count"] == len(
+        expected_valid_groups
+    )
+    labels_by_group: dict[str, set[str]] = {}
+    parsed_dataset = load_modeling_csv(dataset.path)
+    for group_id, label in zip(
+        parsed_dataset.sample_id, parsed_dataset.labels
+    ):
+        labels_by_group.setdefault(str(group_id), set()).add(str(label))
+    expected_counts_by_class: dict[str, int] = {}
+    for group_id in expected_valid_groups:
+        group_labels = labels_by_group[group_id]
+        assert len(group_labels) == 1
+        label = next(iter(group_labels))
+        expected_counts_by_class[label] = (
+            expected_counts_by_class.get(label, 0) + 1
+        )
+    assert metrics_payload["valid"]["minimum_group_count_per_class"] == min(
+        expected_counts_by_class.values()
+    )
 
     repo = RunRepository(RUNS_DATABASE)
     repo.initialize()

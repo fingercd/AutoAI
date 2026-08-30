@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from agent_poc.orchestrator import AgentTimeout, _proposal_recipes, run_agent
+from agent_poc.orchestrator import (
+    AgentTimeout,
+    _failed_replan_context,
+    _proposal_recipes,
+    run_agent,
+)
 from agent_poc.schemas import (
     FinalizeDecision,
     ReplanDecision,
@@ -20,6 +25,7 @@ class FakeAutoAI:
         *,
         limited_replanning=False,
         failure_actions=None,
+        decision_support=None,
     ):
         self.feedback_states = list(feedback_states)
         self.feedback_calls = 0
@@ -29,6 +35,7 @@ class FakeAutoAI:
         self.proposal_catalog = proposal_catalog
         self.limited_replanning = limited_replanning
         self.failure_actions = failure_actions or ['choose_unused_proposal']
+        self.decision_support = decision_support
 
     def health(self):
         return {'status': 'ok', 'worker': {'available': True, 'compatible': True}}
@@ -57,6 +64,16 @@ class FakeAutoAI:
                     'proposals': self.proposal_catalog,
                 },
             }
+        decision_support = (
+            self.decision_support(self)
+            if callable(self.decision_support)
+            else self.decision_support
+        )
+        if decision_support is not None:
+            response['decision_support'] = decision_support
+            response['recommended_run_id'] = decision_support.get(
+                'recommended_run_id'
+            )
         return response
 
     def create_experiment(self, _session_id, payload):
@@ -422,3 +439,184 @@ def test_replan_child_failure_cannot_exceed_chain_depth_one():
     assert result['status'] == 'needs_human'
     assert len(autoai.experiments) == 2
     assert llm.schemas[2]['properties']['decision']['const'] == 'REQUEST_HUMAN'
+
+
+def test_decision_support_can_finalize_early_with_remaining_budget():
+    support = {
+        'recommended_run_id': 'run-1',
+        'stop_recommendation': {
+            'action': 'finalize',
+            'reason': 'target_reached',
+        },
+    }
+    autoai = FakeAutoAI(['succeeded'], decision_support=support)
+    llm = SchemaAwareFakeLLM([
+        _run_decision(),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=3), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'finalized'
+    assert len(autoai.experiments) == 1
+    assert llm.schemas[1]['properties']['decision']['const'] == 'FINALIZE'
+
+
+def test_stop_support_cannot_bypass_replan_only_failure_diagnosis():
+    first = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    second = {
+        'proposal_id': 'p_fedcba9876543210',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    third = {
+        'proposal_id': 'p_aaaaaaaaaaaaaaaa',
+        'model_type': 'random_forest',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+
+    def support_after_failure(autoai):
+        if not any(item['state'] == 'failed' for item in autoai.experiments):
+            return None
+        return {
+            'recommended_run_id': 'run-1',
+            'stop_recommendation': {
+                'action': 'finalize',
+                'reason': 'target_reached',
+            },
+        }
+
+    autoai = FakeAutoAI(
+        ['succeeded', 'failed', 'succeeded'],
+        proposal_catalog=[first, second, third],
+        limited_replanning=True,
+        failure_actions=['choose_unused_proposal'],
+        decision_support=support_after_failure,
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **first, rationale='baseline'
+        ),
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **second, rationale='compare'
+        ),
+        ReplanDecision(
+            decision='REPLAN',
+            action_id='choose_unused_proposal',
+            parent_run_id='run-2',
+            **third,
+            rationale='repair before stopping',
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize after repair',
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=3), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'finalized'
+    assert len(autoai.experiments) == 3
+    assert autoai.experiments[2]['effective_action']['parent_run_id'] == 'run-2'
+    assert autoai.experiments[2]['effective_action']['action_id'] == (
+        'choose_unused_proposal'
+    )
+
+
+def test_stop_support_honors_failure_diagnosis_when_replanning_disabled():
+    first = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    second = {
+        'proposal_id': 'p_fedcba9876543210',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+
+    def support_after_failure(autoai):
+        if not any(item['state'] == 'failed' for item in autoai.experiments):
+            return None
+        return {
+            'recommended_run_id': 'run-1',
+            'stop_recommendation': {
+                'action': 'finalize',
+                'reason': 'proposal_catalog_exhausted',
+            },
+        }
+
+    autoai = FakeAutoAI(
+        ['succeeded', 'failed'],
+        proposal_catalog=[first, second],
+        limited_replanning=False,
+        failure_actions=['request_human'],
+        decision_support=support_after_failure,
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **first, rationale='baseline'
+        ),
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **second, rationale='compare'
+        ),
+        RequestHumanDecision(
+            decision='REQUEST_HUMAN', reason='failure requires operator'
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=3), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'needs_human'
+    assert len(autoai.experiments) == 2
+    assert llm.schemas[2]['properties']['decision']['const'] == 'REQUEST_HUMAN'
+
+
+def test_missing_failure_diagnosis_fails_closed():
+    observation = {
+        'experiments': [{
+            'run_id': 'run-failed',
+            'state': 'failed',
+            'effective_action': {'model_type': 'svm'},
+        }],
+    }
+    assert _failed_replan_context(observation) == (('run-failed',), ())
+
+
+def test_ordinary_parent_link_does_not_mark_failure_as_replanned():
+    observation = {
+        'experiments': [
+            {
+                'run_id': 'run-failed',
+                'state': 'failed',
+                'diagnosis': {'allowed_action_ids': ['request_human']},
+                'effective_action': {'model_type': 'svm'},
+            },
+            {
+                'run_id': 'run-ordinary-child',
+                'state': 'succeeded',
+                'parent_run_id': 'run-failed',
+                'effective_action': {
+                    'model_type': 'logistic_regression',
+                },
+            },
+        ],
+    }
+    assert _failed_replan_context(observation) == (
+        ('run-failed',),
+        ('request_human',),
+    )
