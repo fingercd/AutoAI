@@ -464,6 +464,10 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
         item = _mapping(raw)
         params = _mapping(item.get("best_params"))
         selection_metric = str(item.get("selection_metric") or "balanced_accuracy")
+        selection_source = str(
+            item.get("selection_source")
+            or ("oob" if selection_metric.startswith("oob_") else "validation")
+        )
         selection_score = _finite_float(item.get("selection_score"))
         split_metrics = _mapping(item.get("split_metrics"))
         valid_metrics = _mapping(split_metrics.get("valid"))
@@ -481,6 +485,7 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
                     "fold_index": item.get("fold_index", position),
                     "params": params,
                     "selection_metric": selection_metric,
+                    "selection_source": selection_source,
                     "selection_score": selection_score,
                     "valid_balanced_accuracy": valid_balanced_accuracy,
                 }
@@ -495,6 +500,10 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
         except json.JSONDecodeError:
             params = {}
         selection_metric = str(row.get("selection_metric") or "balanced_accuracy")
+        selection_source = str(
+            row.get("selection_source")
+            or ("oob" if selection_metric.startswith("oob_") else "validation")
+        )
         selection_score = _finite_float(row.get("selection_score"))
         valid_balanced_accuracy = _finite_float(row.get("valid_balanced_accuracy"))
         if selection_score is None and selection_metric == "balanced_accuracy":
@@ -505,6 +514,7 @@ def _selection_entries(run_dir: Path, status: Mapping[str, Any]) -> list[dict[st
                     "fold_index": row.get("fold_index", position),
                     "params": params,
                     "selection_metric": selection_metric,
+                    "selection_source": selection_source,
                     "selection_score": selection_score,
                     "valid_balanced_accuracy": valid_balanced_accuracy,
                 }
@@ -626,6 +636,7 @@ def build_training_status_projection(
             if selected:
                 traditional["best_params"] = selected["params"]
                 traditional["selection_metric"] = selected["selection_metric"]
+                traditional["selection_source"] = selected["selection_source"]
                 traditional["selection_score"] = selected["selection_score"]
                 traditional["valid_balanced_accuracy"] = selected["valid_balanced_accuracy"]
             projection["traditional"] = traditional

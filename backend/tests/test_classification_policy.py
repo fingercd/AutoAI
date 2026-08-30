@@ -152,7 +152,8 @@ def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_w
     assert validation_calls == [3]
     selected = [row for row in selection.search_rows if row["is_selected"]]
     assert len(selected) == 1
-    assert selected[0]["selection_metric"] == "oob_balanced_accuracy"
+    assert selected[0]["selection_metric"] == "balanced_accuracy"
+    assert selected[0]["selection_source"] == "oob"
     assert selected[0]["selection_score"] == pytest.approx(1.0)
     assert selected[0]["valid_balanced_accuracy"] == pytest.approx(0.2)
     assert all(row["valid_balanced_accuracy"] is None for row in selection.search_rows if not row["is_selected"])
