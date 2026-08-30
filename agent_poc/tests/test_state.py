@@ -65,3 +65,35 @@ def test_agent_config_rejects_unknown_context_field(tmp_path):
     )
     with pytest.raises(ValueError, match='unknown agent context fields'):
         load_agent_config(config, dataset_id='dataset-1')
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
+        'max_runs = 1.9',
+        'max_runs = true',
+        'split_train = 8.9',
+        'seed = true',
+        'selection_metric = "accuracy"',
+        'split_mode = "leave_one_sample_id_cv"',
+        'allowed_models = ["cnn1d"]',
+        'selection_metic = "macro_f1"',
+        'poll_interval_seconds = nan',
+        'poll_interval_seconds = -1.0',
+        'run_timeout_seconds = inf',
+        'llm_timeout_seconds = -inf',
+        'temperature = nan',
+        'temperature = 2.1',
+        'seed = -1',
+    ],
+)
+def test_agent_config_rejects_ambiguous_or_unsupported_values(tmp_path, line):
+    config = tmp_path / 'agent.toml'
+    config.write_text(
+        '[agent]\n'
+        'autoai_base_url = "http://127.0.0.1:8000"\n'
+        f'{line}\n',
+        encoding='utf-8',
+    )
+    with pytest.raises(ValueError):
+        load_agent_config(config, dataset_id='dataset-1')

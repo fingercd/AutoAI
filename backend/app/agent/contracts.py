@@ -31,17 +31,17 @@ class AgentModuleFlags(BaseModel):
 
     model_config = ConfigDict(extra='forbid')
 
-    evidence_card: bool = False
-    dynamic_preprocessing: bool = False
-    restricted_strategy_pool: bool = False
-    bounded_hpo: bool = False
-    fail_fast_guard: bool = False
-    constrained_code_evolution: bool = False
-    feedback_diagnosis: bool = False
-    limited_replanning: bool = False
-    uncertainty_selection: bool = False
-    case_memory: bool = False
-    budget_control: bool = False
+    evidence_card: bool = Field(False, strict=True)
+    dynamic_preprocessing: bool = Field(False, strict=True)
+    restricted_strategy_pool: bool = Field(False, strict=True)
+    bounded_hpo: bool = Field(False, strict=True)
+    fail_fast_guard: bool = Field(False, strict=True)
+    constrained_code_evolution: bool = Field(False, strict=True)
+    feedback_diagnosis: bool = Field(False, strict=True)
+    limited_replanning: bool = Field(False, strict=True)
+    uncertainty_selection: bool = Field(False, strict=True)
+    case_memory: bool = Field(False, strict=True)
+    budget_control: bool = Field(False, strict=True)
 
 
 class AgentContextPolicy(BaseModel):
@@ -50,7 +50,7 @@ class AgentContextPolicy(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     source_role: Literal['development', 'benchmark', 'domain'] = 'development'
-    case_write: bool = False
+    case_write: bool = Field(False, strict=True)
 
 
 # 第一版锁定的传统模型白名单；与 ``backend/app/models/registry.py`` 的
@@ -73,9 +73,9 @@ class AgentEvaluationBlock(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     split_mode: Literal['stratified_holdout'] = 'stratified_holdout'
-    split_train: int = Field(8, ge=1, le=9)
-    split_valid: int = Field(1, ge=1, le=9)
-    split_test: int = Field(1, ge=1, le=9)
+    split_train: int = Field(8, ge=1, le=9, strict=True)
+    split_valid: int = Field(1, ge=1, le=9, strict=True)
+    split_test: int = Field(1, ge=1, le=9, strict=True)
 
 
 class CreateAgentSessionRequest(BaseModel):
@@ -86,8 +86,8 @@ class CreateAgentSessionRequest(BaseModel):
     dataset_id: str = Field(..., min_length=1)
     selection_metric: str = Field(...)
     allowed_models: list[str] = Field(..., min_length=1)
-    max_runs: int = Field(..., ge=1, le=10)
-    seed: int = Field(42, ge=0)
+    max_runs: int = Field(..., ge=1, le=10, strict=True)
+    seed: int = Field(42, ge=0, strict=True)
     evaluation: AgentEvaluationBlock = Field(default_factory=AgentEvaluationBlock)
     modules: AgentModuleFlags = Field(default_factory=AgentModuleFlags)
     context_policy: AgentContextPolicy = Field(default_factory=AgentContextPolicy)
