@@ -45,6 +45,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
         'hpo_profile', 'hpo_selection_metric',
+        'agent_execution',
     }
 )
 
@@ -133,6 +134,37 @@ class TrainingSpec:
                     'hpo_selection_metric 必须是 balanced_accuracy 或 macro_f1'
                 )
             values['hpo_selection_metric'] = hpo_metric
+        if 'agent_execution' in values:
+            envelope = values['agent_execution']
+            if not isinstance(envelope, dict):
+                raise TrainingConfigValidationError('agent_execution 必须是对象')
+            allowed_envelope = {
+                'guard_version', 'fail_fast_guard', 'expected_model_type',
+                'hpo_profile', 'max_hpo_candidates',
+            }
+            if set(envelope) - allowed_envelope:
+                raise TrainingConfigValidationError('agent_execution 包含未知字段')
+            if envelope.get('guard_version') != 'agent-guard-v1':
+                raise TrainingConfigValidationError('agent_execution guard_version 无效')
+            if envelope.get('fail_fast_guard') is not True:
+                raise TrainingConfigValidationError('agent_execution fail_fast_guard 必须为 true')
+            if envelope.get('expected_model_type') != model_type:
+                raise TrainingConfigValidationError('agent_execution model_type 不一致')
+            profile = str(envelope.get('hpo_profile') or 'standard')
+            maximum = envelope.get('max_hpo_candidates')
+            if (
+                profile not in {'off', 'tiny', 'standard'}
+                or isinstance(maximum, bool)
+                or not isinstance(maximum, int)
+                or not 1 <= maximum <= 18
+            ):
+                raise TrainingConfigValidationError('agent_execution HPO 约束无效')
+            configured_profile = str(values.get('hpo_profile') or 'standard')
+            if profile != configured_profile:
+                raise TrainingConfigValidationError('agent_execution hpo_profile 不一致')
+            if {'off': 1, 'tiny': 3, 'standard': 18}[profile] > maximum:
+                raise TrainingConfigValidationError('agent_execution HPO 候选预算不足')
+            values['agent_execution'] = dict(envelope)
 
         if model_type == 'dscarnet':
             mode = str(values.get('dscarnet_input_mode') or 'dual').strip().lower()

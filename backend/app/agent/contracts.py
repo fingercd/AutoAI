@@ -117,6 +117,8 @@ class CreateAgentSessionRequest(BaseModel):
             raise ValueError(
                 'dynamic_preprocessing 需要 evidence_card 和 restricted_strategy_pool'
             )
+        if self.modules.constrained_code_evolution and not self.modules.fail_fast_guard:
+            raise ValueError('constrained_code_evolution 需要 fail_fast_guard')
 
 
 class CreateAgentExperimentRequest(BaseModel):

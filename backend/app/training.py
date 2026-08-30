@@ -1871,6 +1871,8 @@ def _run_legacy_training(
             "target_epochs": config.epochs,
             **(extra or {}),
         }
+        if record is not None and isinstance(record.progress.get('agent_guard'), dict):
+            progress['agent_guard'] = record.progress['agent_guard']
         if repository is not None and record is not None:
             updated = repository.update_progress(
                 record.run_id,
