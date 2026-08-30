@@ -128,6 +128,8 @@ class CreateAgentSessionRequest(BaseModel):
             raise ValueError(
                 'limited_replanning 需要 feedback_diagnosis 和 restricted_strategy_pool'
             )
+        if self.modules.uncertainty_selection and not self.modules.feedback_diagnosis:
+            raise ValueError('uncertainty_selection 需要 feedback_diagnosis')
 
 
 class CreateAgentExperimentRequest(BaseModel):

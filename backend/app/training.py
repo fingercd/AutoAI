@@ -2126,6 +2126,38 @@ def _run_legacy_training(
 
         # ── 阶段 4：汇总指标（test 主值 = pooled OOF）、合并解释性并落盘全部产物 ──
     metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
+    independent_valid_groups = {
+        str(sample_id)
+        for fold_payload in cv_fold_payloads
+        for sample_id in fold_payload.get("valid_sample_ids", [])
+    }
+    if independent_valid_groups:
+        # Only the count is projected into metrics.json.  Agent-side uncertainty
+        # must be based on independent Sample_ID groups rather than replicated
+        # spectra, while the identifiers themselves stay in split.json.
+        metrics["valid"]["independent_group_count"] = len(
+            independent_valid_groups
+        )
+        valid_group_counts_by_class: dict[int, int] = {}
+        valid_group_labels_are_consistent = True
+        for group_id in independent_valid_groups:
+            group_labels = np.unique(y[sample_id == group_id])
+            if len(group_labels) != 1:
+                valid_group_labels_are_consistent = False
+                break
+            label_id = int(group_labels[0])
+            valid_group_counts_by_class[label_id] = (
+                valid_group_counts_by_class.get(label_id, 0) + 1
+            )
+        if (
+            valid_group_labels_are_consistent
+            and len(valid_group_counts_by_class) == len(label_names)
+        ):
+            # Only the minimum count is needed for the uncertainty gate.  Class
+            # labels and per-class counts remain private training metadata.
+            metrics["valid"]["minimum_group_count_per_class"] = min(
+                valid_group_counts_by_class.values()
+            )
     model_fit_count = (
         len(best_search_rows) + len(folds)
         if model_family(model_type) == "traditional_ml"

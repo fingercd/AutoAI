@@ -33,6 +33,11 @@ from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
 from .evidence import build_dataset_evidence_card
 from .feedback import build_diagnosis
+from .decision_support import (
+    VALIDATION_UNCERTAINTY_METHOD,
+    build_decision_support,
+    estimate_validation_metric_std,
+)
 from .policy import compile_proposal_catalog, resolve_proposal
 from .repository import (
     AgentConfigCollision,
@@ -67,6 +72,7 @@ _FORBIDDEN_KEY_SUBSTRINGS = (
     'classification_report',
     'explainability',
     'samples',
+    'sample_id',
     'roc',
     'precision_recall',
     'curve_length',
@@ -81,9 +87,15 @@ _SECRET_ASSIGNMENT = re.compile(
     r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
     flags=re.IGNORECASE,
 )
+_SAMPLE_ID_ASSIGNMENT = re.compile(
+    r'\bsample[_\s-]*id\s*[:=]\s*'
+    r'(?:(?:"[^"\r\n]*")|(?:\'[^\'\r\n]*\')|[^\r\n,;，；。)\]}]+)',
+    flags=re.IGNORECASE,
+)
 
 
 def _safe_string(value: str) -> str:
+    value = _SAMPLE_ID_ASSIGNMENT.sub('[redacted-sample-id]', value)
     value = re.sub(
         r'Bearer\s+\S+',
         '[redacted-auth]',
@@ -380,6 +392,25 @@ class AgentService:
                 'requires_parent_failure': True,
             }
             context['module_status']['limited_replanning'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
+        if module_flags['uncertainty_selection']:
+            context['selection_policy'] = {
+                'schema_version': 'agent-decision-support-v1',
+                'target_score': 0.90,
+                'max_generalization_gap': 0.05,
+                'minimum_improvement': 0.01,
+                'uncertainty_multiplier': 1.96,
+                'minimum_independent_validation_groups': 10,
+                'minimum_independent_groups_per_class': 3,
+                'gap_penalty_weight': 0.25,
+                'model_fit_cost_weight': 0.01,
+                'auto_finalize_requires_candidate_uncertainty': True,
+            }
+            context['module_status']['uncertainty_selection'] = 'ready'
             if all(
                 status == 'ready'
                 for status in context['module_status'].values()
@@ -748,8 +779,11 @@ class AgentService:
             record = self._safe_get_run(experiment.run_id, principal=principal)
             summary = _safe_record_summary(record)
             validation_score: float | None = None
+            validation_source: dict[str, Any] = {}
             if record.state == 'succeeded':
-                metrics, _ = _extract_validation_metrics(experiment.run_id)
+                metrics, validation_source = _extract_validation_metrics(
+                    experiment.run_id
+                )
                 validation_score = _selection_score(session.selection_metric, metrics)
                 if validation_score is not None:
                     validation_scores.append((validation_score, experiment.run_id))
@@ -764,6 +798,32 @@ class AgentService:
                 'config_hash': experiment.config_hash,
                 'created_at': experiment.created_at,
             }
+            metric_stds = validation_source.get('metric_std')
+            validation_std = (
+                metric_stds.get(session.selection_metric)
+                if isinstance(metric_stds, dict)
+                else None
+            )
+            if isinstance(validation_std, (int, float)) and not isinstance(
+                validation_std, bool
+            ):
+                summary_entry['validation_std'] = float(validation_std)
+                summary_entry['validation_uncertainty'] = {
+                    'method': validation_source.get('uncertainty_method'),
+                    'independent_group_count': validation_source.get(
+                        'independent_group_count'
+                    ),
+                    'minimum_group_count_per_class': validation_source.get(
+                        'minimum_group_count_per_class'
+                    ),
+                }
+            guard = _guard_feedback(record)
+            if isinstance(guard, dict):
+                postflight = guard.get('postflight')
+                if isinstance(postflight, dict):
+                    fit_count = postflight.get('model_fit_count')
+                    if isinstance(fit_count, int) and not isinstance(fit_count, bool):
+                        summary_entry['model_fit_count'] = fit_count
             if session.module_flags.get('feedback_diagnosis') and record.state in {
                 'succeeded', 'failed'
             }:
@@ -793,7 +853,8 @@ class AgentService:
             )
             best_run_id = validation_scores[-1][1]
 
-        return _scrub({
+        remaining_runs = max(0, session.max_runs - len(experiments))
+        response = {
             'session_id': session.session_id,
             'state': session.state,
             'locked_config': {
@@ -807,13 +868,34 @@ class AgentService:
                 'context_policy': session.context_policy,
             },
             'context': session.context,
-            'remaining_runs': max(0, session.max_runs - len(experiments)),
+            'remaining_runs': remaining_runs,
             'best_run_id': best_run_id,
             'selected_run_id': session.selected_run_id,
             'created_at': session.created_at,
             'finalized_at': session.finalized_at,
             'experiments': experiment_summaries,
-        })
+        }
+        if session.module_flags.get('uncertainty_selection'):
+            policy = session.context.get('selection_policy')
+            policy = policy if isinstance(policy, dict) else {}
+            support = build_decision_support(
+                experiment_summaries,
+                remaining_runs=remaining_runs,
+                proposal_catalog=session.context.get('proposal_catalog'),
+                target_score=float(policy.get('target_score', 0.90)),
+                max_generalization_gap=float(
+                    policy.get('max_generalization_gap', 0.05)
+                ),
+                minimum_improvement=float(
+                    policy.get('minimum_improvement', 0.01)
+                ),
+                uncertainty_multiplier=float(
+                    policy.get('uncertainty_multiplier', 1.96)
+                ),
+            )
+            response['decision_support'] = support
+            response['recommended_run_id'] = support['recommended_run_id']
+        return _scrub(response)
 
     def finalize_session(
         self,
@@ -916,6 +998,32 @@ def _extract_train_validation_metrics(
     fold_count = valid.get('fold_count')
     if isinstance(fold_count, int):
         source_meta['fold_count'] = fold_count
+    metric_stds: dict[str, float] = {}
+    projected_group_count: int | None = None
+    confusion_counts = valid.get('confusion_matrix')
+    independent_group_count = valid.get('independent_group_count')
+    minimum_group_count_per_class = valid.get(
+        'minimum_group_count_per_class'
+    )
+    for metric in _VALIDATION_METRIC_KEYS:
+        estimate = estimate_validation_metric_std(
+            confusion_counts,
+            metric,
+            independent_group_count=independent_group_count,
+            minimum_group_count_per_class=minimum_group_count_per_class,
+        )
+        if estimate is None:
+            continue
+        metric_std, group_count = estimate
+        metric_stds[metric] = float(metric_std)
+        projected_group_count = group_count
+    if metric_stds and projected_group_count is not None:
+        source_meta.update({
+            'uncertainty_method': VALIDATION_UNCERTAINTY_METHOD,
+            'independent_group_count': projected_group_count,
+            'minimum_group_count_per_class': minimum_group_count_per_class,
+            'metric_std': metric_stds,
+        })
     return train_metrics, valid_metrics, source_meta
 
 

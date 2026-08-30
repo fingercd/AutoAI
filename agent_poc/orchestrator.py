@@ -98,11 +98,18 @@ def _failed_replan_context(
     experiments = observation.get('experiments')
     if not isinstance(experiments, list):
         return (), ()
-    replanned_parents = {
-        item.get('parent_run_id')
-        for item in experiments
-        if isinstance(item, dict) and isinstance(item.get('parent_run_id'), str)
-    }
+    replanned_parents = set()
+    for item in experiments:
+        if not isinstance(item, dict):
+            continue
+        effective_action = item.get('effective_action')
+        parent_run_id = item.get('parent_run_id')
+        if (
+            isinstance(parent_run_id, str)
+            and isinstance(effective_action, dict)
+            and effective_action.get('action_id') == 'choose_unused_proposal'
+        ):
+            replanned_parents.add(parent_run_id)
     for experiment in reversed(experiments):
         if not isinstance(experiment, dict) or experiment.get('state') != 'failed':
             continue
@@ -115,7 +122,9 @@ def _failed_replan_context(
             if isinstance(diagnosis, dict)
             else None
         )
-        if isinstance(run_id, str) and isinstance(actions, list):
+        if isinstance(run_id, str):
+            if not isinstance(actions, list):
+                actions = []
             if isinstance(experiment.get('parent_run_id'), str):
                 actions = [
                     item for item in actions
@@ -234,13 +243,38 @@ def run_agent(
             observation,
             locked_proposal_recipes,
         ) if restricted else ()
-        failed_run_ids, allowed_replan_actions = (
-            _failed_replan_context(observation)
-            if limited_replanning
-            else ((), ())
+        failed_run_ids, failure_allowed_actions = _failed_replan_context(
+            observation
+        )
+        allowed_replan_actions = (
+            failure_allowed_actions if limited_replanning else ()
+        )
+        decision_support = observation.get('decision_support')
+        stop_recommendation = (
+            decision_support.get('stop_recommendation')
+            if isinstance(decision_support, dict)
+            else None
+        )
+        recommended_run_id = (
+            decision_support.get('recommended_run_id')
+            if isinstance(decision_support, dict)
+            else None
+        )
+        force_finalize = (
+            isinstance(stop_recommendation, dict)
+            and stop_recommendation.get('action') == 'finalize'
+            and isinstance(recommended_run_id, str)
+            and recommended_run_id in state.successful_run_ids
+            and (
+                not failed_run_ids
+                or 'stop' in failure_allowed_actions
+            )
         )
         started = _now_ms()
-        if failed_run_ids:
+        if force_finalize:
+            allowed_decisions = ('FINALIZE',)
+            selected_run_ids = (recommended_run_id,)
+        elif failed_run_ids:
             can_replan = (
                 state.remaining_runs > 0
                 and proposal_recipes
@@ -248,7 +282,7 @@ def run_agent(
             )
             can_finalize = (
                 bool(state.successful_run_ids)
-                and 'stop' in allowed_replan_actions
+                and 'stop' in failure_allowed_actions
             )
             if can_replan and can_finalize:
                 allowed_decisions = ('REPLAN', 'FINALIZE')
@@ -256,7 +290,7 @@ def run_agent(
             elif can_replan:
                 allowed_decisions = ('REPLAN',)
                 selected_run_ids = ()
-            elif state.successful_run_ids:
+            elif can_finalize:
                 allowed_decisions = ('FINALIZE',)
                 selected_run_ids = tuple(sorted(state.successful_run_ids))
             else:

@@ -25,6 +25,7 @@ _FORBIDDEN_KEY_PARTS = (
     'prediction',
     'confusion',
     'explainability',
+    'sample_id',
 )
 _ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
 _URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
@@ -32,9 +33,15 @@ _SECRET_ASSIGNMENT = re.compile(
     r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
     flags=re.IGNORECASE,
 )
+_SAMPLE_ID_ASSIGNMENT = re.compile(
+    r'\bsample[_\s-]*id\s*[:=]\s*'
+    r'(?:(?:"[^"\r\n]*")|(?:\'[^\'\r\n]*\')|[^\r\n,;，；。)\]}]+)',
+    flags=re.IGNORECASE,
+)
 
 
 def _safe_string(value: str) -> str:
+    value = _SAMPLE_ID_ASSIGNMENT.sub('[redacted-sample-id]', value)
     value = re.sub(r'Bearer\s+\S+', '[redacted-auth]', value, flags=re.IGNORECASE)
     value = _SECRET_ASSIGNMENT.sub('[redacted-secret]', value)
     value = _URL.sub('[redacted-url]', value)
@@ -137,6 +144,7 @@ def _assert_safe_value(value: Any, *, path: str) -> None:
     elif isinstance(value, str):
         assert 'bearer ' not in value.lower(), f'auth value at {path}'
         assert not _SECRET_ASSIGNMENT.search(value), f'secret assignment at {path}'
+        assert not _SAMPLE_ID_ASSIGNMENT.search(value), f'sample id at {path}'
         assert not _URL.search(value), f'url value at {path}'
         assert not _ABSOLUTE_PATH.search(value), f'absolute path at {path}'
         assert not re.search(r'\btest\b', value, flags=re.IGNORECASE), f'hidden set at {path}'
