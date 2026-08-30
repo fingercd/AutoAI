@@ -29,6 +29,7 @@ from ..paths import DATASETS_DATABASE, STORAGE_DIR
 from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
+from .evidence import build_dataset_evidence_card
 from .repository import (
     AgentConfigCollision,
     AgentExperimentRecord,
@@ -183,7 +184,7 @@ class AgentService:
         """
         payload.validate()
         try:
-            self.datasets.resolve(payload.dataset_id, principal=principal)
+            dataset = self.datasets.resolve(payload.dataset_id, principal=principal)
         except FileNotFoundError as exc:
             raise TrainingConfigValidationError('dataset_id 不存在') from exc
         except PermissionError as exc:
@@ -197,6 +198,31 @@ class AgentService:
             'status': 'pending' if any(module_flags.values()) else 'disabled',
             'source_role': context_policy['source_role'],
         }
+        if any(module_flags.values()):
+            context['module_status'] = {
+                name: 'pending'
+                for name, enabled in module_flags.items()
+                if enabled
+            }
+        if module_flags['evidence_card']:
+            try:
+                dataset_digest = self.datasets.verify_integrity(dataset)
+                context['evidence_card'] = build_dataset_evidence_card(
+                    dataset.path,
+                    dataset_digest=dataset_digest,
+                    seed=payload.seed,
+                    evaluation_config=evaluation_config,
+                )
+            except Exception:
+                raise TrainingConfigValidationError(
+                    'evidence_card 无法基于当前数据构建'
+                ) from None
+            context['module_status']['evidence_card'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
