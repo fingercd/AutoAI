@@ -19,6 +19,19 @@ class RunExperimentDecision(BaseModel):
     rationale: str = Field(min_length=1, max_length=2000)
 
 
+class ReplanDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    decision: Literal['REPLAN']
+    action_id: Literal['choose_unused_proposal']
+    parent_run_id: str = Field(min_length=1)
+    proposal_id: str = Field(pattern=r'^p_[0-9a-f]{16}$')
+    model_type: Literal['logistic_regression', 'svm', 'random_forest']
+    normalization: Literal['zscore', 'minmax', 'area', 'none']
+    class_balance: Literal['none', 'class_weight']
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
 class FinalizeDecision(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -35,7 +48,7 @@ class RequestHumanDecision(BaseModel):
 
 
 AgentDecision = Annotated[
-    RunExperimentDecision | FinalizeDecision | RequestHumanDecision,
+    RunExperimentDecision | ReplanDecision | FinalizeDecision | RequestHumanDecision,
     Field(discriminator='decision'),
 ]
 DECISION_ADAPTER = TypeAdapter(AgentDecision)
@@ -69,6 +82,8 @@ def decision_json_schema(
     ),
     selected_run_ids: tuple[str, ...] = (),
     proposal_recipes: tuple[dict[str, str], ...] = (),
+    failed_run_ids: tuple[str, ...] = (),
+    allowed_replan_actions: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Return a finite wire schema while Pydantic remains the final validator.
 
@@ -122,6 +137,48 @@ def decision_json_schema(
                 },
                 'required': ['decision', 'model_type', 'rationale'],
             })
+    if 'REPLAN' in allowed_decisions:
+        if not proposal_recipes or not failed_run_ids:
+            raise ValueError('REPLAN requires proposals and failed parent runs')
+        if 'choose_unused_proposal' not in allowed_replan_actions:
+            raise ValueError('REPLAN action is not allowed by diagnosis')
+        replan_branches: list[dict[str, object]] = []
+        for recipe in proposal_recipes:
+            if recipe.get('model_type') not in allowed_models:
+                continue
+            replan_branches.append({
+                'type': 'object',
+                'additionalProperties': False,
+                'properties': {
+                    'decision': {'const': 'REPLAN', 'type': 'string'},
+                    'action_id': {
+                        'const': 'choose_unused_proposal', 'type': 'string',
+                    },
+                    'parent_run_id': {
+                        'enum': list(failed_run_ids), 'type': 'string',
+                    },
+                    'proposal_id': {
+                        'const': recipe['proposal_id'], 'type': 'string',
+                    },
+                    'model_type': {
+                        'const': recipe['model_type'], 'type': 'string',
+                    },
+                    'normalization': {
+                        'const': recipe['normalization'], 'type': 'string',
+                    },
+                    'class_balance': {
+                        'const': recipe['class_balance'], 'type': 'string',
+                    },
+                    'rationale': reasons,
+                },
+                'required': [
+                    'decision', 'action_id', 'parent_run_id', 'proposal_id',
+                    'model_type', 'normalization', 'class_balance', 'rationale',
+                ],
+            })
+        if not replan_branches:
+            raise ValueError('REPLAN contains no allowed proposal')
+        branches.append({'type': 'object', 'oneOf': replan_branches})
     if 'FINALIZE' in allowed_decisions:
         selected: dict[str, object]
         if selected_run_ids:

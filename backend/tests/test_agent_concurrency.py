@@ -34,10 +34,13 @@ def _build_service(tmp_path: Path, principal: Principal) -> tuple[
     dataset = datasets.register(
         dataset_path, original_name=dataset_path.name, principal=principal
     )
-    sessions = AgentSessionRepository(storage / 'agent.sqlite3')
-    sessions.initialize()
     runs = RunRepository(storage / 'runs.sqlite3')
     runs.initialize()
+    sessions = AgentSessionRepository(
+        storage / 'agent.sqlite3',
+        runs_database_path=storage / 'runs.sqlite3',
+    )
+    sessions.initialize()
     service = AgentService(
         session_repository=sessions,
         run_repository=runs,
@@ -111,6 +114,25 @@ def test_concurrent_reservation_allows_at_most_one_experiment(tmp_path, same_act
     assert scoped_runs[0].state == 'queued'
     assert scoped_runs[0].dataset_snapshot['dataset_id'] == dataset_id
     assert scoped_runs[0].dataset_snapshot['sha256']
+
+
+def test_reservation_atomically_rechecks_bound_active_run(tmp_path):
+    principal = Principal(owner_id='owner-a', tenant_id='tenant-a')
+    service, dataset_id, sessions, _runs = _build_service(tmp_path, principal)
+    session = _session(service, dataset_id, principal, max_runs=2)
+    first = service.create_experiment(
+        session_id=session['session_id'],
+        payload=CreateAgentExperimentRequest(model_type='logistic_regression'),
+        principal=principal,
+    )
+    assert first['state'] == 'queued'
+    with pytest.raises(AgentConfigCollision, match='非终态 Run'):
+        sessions.reserve_experiment(
+            session_id=session['session_id'],
+            config_hash='another-config',
+            action_json={'model_type': 'svm'},
+            principal=principal,
+        )
 
 
 def test_dataset_scope_is_checked_when_creating_session(tmp_path):

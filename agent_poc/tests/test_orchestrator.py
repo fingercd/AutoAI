@@ -3,18 +3,32 @@ from __future__ import annotations
 import pytest
 
 from agent_poc.orchestrator import AgentTimeout, _proposal_recipes, run_agent
-from agent_poc.schemas import FinalizeDecision, RequestHumanDecision, RunExperimentDecision
+from agent_poc.schemas import (
+    FinalizeDecision,
+    ReplanDecision,
+    RequestHumanDecision,
+    RunExperimentDecision,
+)
 from agent_poc.state import AgentConfig
 
 
 class FakeAutoAI:
-    def __init__(self, feedback_states, proposal_catalog=None):
+    def __init__(
+        self,
+        feedback_states,
+        proposal_catalog=None,
+        *,
+        limited_replanning=False,
+        failure_actions=None,
+    ):
         self.feedback_states = list(feedback_states)
         self.feedback_calls = 0
         self.llm_poll_boundary = None
         self.experiments = []
         self.finalized = None
         self.proposal_catalog = proposal_catalog
+        self.limited_replanning = limited_replanning
+        self.failure_actions = failure_actions or ['choose_unused_proposal']
 
     def health(self):
         return {'status': 'ok', 'worker': {'available': True, 'compatible': True}}
@@ -31,7 +45,10 @@ class FakeAutoAI:
         }
         if self.proposal_catalog is not None:
             response['locked_config'] = {
-                'modules': {'restricted_strategy_pool': True},
+                'modules': {
+                    'restricted_strategy_pool': True,
+                    'limited_replanning': self.limited_replanning,
+                },
             }
             response['context'] = {
                 'proposal_catalog': {
@@ -47,6 +64,7 @@ class FakeAutoAI:
         self.experiments.append({
             'run_id': run_id,
             'state': 'queued',
+            'parent_run_id': payload.get('parent_run_id'),
             'effective_action': payload,
             'validation_score': None,
         })
@@ -55,13 +73,20 @@ class FakeAutoAI:
     def feedback(self, _session_id, run_id):
         self.feedback_calls += 1
         state = self.feedback_states.pop(0)
+        experiment = next(item for item in self.experiments if item['run_id'] == run_id)
         if state == 'succeeded':
-            self.experiments[0]['state'] = 'succeeded'
-            self.experiments[0]['validation_score'] = 0.8
+            experiment['state'] = 'succeeded'
+            experiment['validation_score'] = 0.8
             return {
                 'run_id': run_id,
                 'state': 'succeeded',
                 'validation': {'status': 'ready', 'metrics': {'macro_f1': 0.8}},
+            }
+        if state == 'failed':
+            experiment['state'] = 'failed'
+            experiment['diagnosis'] = {
+                'status': 'ready',
+                'allowed_action_ids': list(self.failure_actions),
             }
         return {
             'run_id': run_id,
@@ -249,3 +274,151 @@ def test_unrestricted_mode_rejects_unexpected_proposal_id():
     )
     assert result['status'] == 'needs_human'
     assert autoai.experiments == []
+
+
+def test_failed_run_can_only_replan_to_unused_canonical_recipe():
+    first = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    second = {
+        'proposal_id': 'p_fedcba9876543210',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(
+        ['failed', 'succeeded'],
+        proposal_catalog=[first, second],
+        limited_replanning=True,
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **first, rationale='baseline'
+        ),
+        ReplanDecision(
+            decision='REPLAN',
+            action_id='choose_unused_proposal',
+            parent_run_id='run-1',
+            **second,
+            rationale='retry',
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-2',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=2), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'finalized'
+    assert autoai.experiments[1]['effective_action']['parent_run_id'] == 'run-1'
+    assert autoai.experiments[1]['effective_action']['action_id'] == (
+        'choose_unused_proposal'
+    )
+    assert llm.schemas[1]['oneOf'][0]['properties']['decision']['const'] == 'REPLAN'
+
+
+def test_stop_diagnosis_finalizes_previous_success_after_later_failure():
+    first = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    second = {
+        'proposal_id': 'p_fedcba9876543210',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    third = {
+        'proposal_id': 'p_aaaaaaaaaaaaaaaa',
+        'model_type': 'random_forest',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(
+        ['succeeded', 'failed'],
+        proposal_catalog=[first, second, third],
+        limited_replanning=True,
+        failure_actions=['choose_unused_proposal', 'stop'],
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **first, rationale='baseline'
+        ),
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **second, rationale='compare'
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='stop',
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=3), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'finalized'
+    assert result['selected_run_id'] == 'run-1'
+    final_schema = llm.schemas[2]
+    decision_kinds = set()
+    for branch in final_schema['oneOf']:
+        if 'properties' in branch:
+            decision_kinds.add(branch['properties']['decision']['const'])
+        else:
+            decision_kinds.add(
+                branch['oneOf'][0]['properties']['decision']['const']
+            )
+    assert decision_kinds == {'REPLAN', 'FINALIZE'}
+
+
+def test_replan_child_failure_cannot_exceed_chain_depth_one():
+    first = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    second = {
+        'proposal_id': 'p_fedcba9876543210',
+        'model_type': 'svm',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    third = {
+        'proposal_id': 'p_aaaaaaaaaaaaaaaa',
+        'model_type': 'random_forest',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(
+        ['failed', 'failed'],
+        proposal_catalog=[first, second, third],
+        limited_replanning=True,
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT', **first, rationale='baseline'
+        ),
+        ReplanDecision(
+            decision='REPLAN',
+            action_id='choose_unused_proposal',
+            parent_run_id='run-1',
+            **second,
+            rationale='retry',
+        ),
+        RequestHumanDecision(
+            decision='REQUEST_HUMAN', reason='needs_human'
+        ),
+    ])
+    result = run_agent(
+        _cfg(max_runs=3), llm, autoai, sleep_fn=lambda _seconds: None
+    )
+    assert result['status'] == 'needs_human'
+    assert len(autoai.experiments) == 2
+    assert llm.schemas[2]['properties']['decision']['const'] == 'REQUEST_HUMAN'

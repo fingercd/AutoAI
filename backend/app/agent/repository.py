@@ -122,8 +122,16 @@ class AgentSessionRepository:
     没有强外键——这样删除 Run 不会反向牵连 Session 数据。
     """
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        runs_database_path: Path | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
+        self.runs_database_path = (
+            Path(runs_database_path) if runs_database_path is not None else None
+        )
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
@@ -500,6 +508,10 @@ class AgentSessionRepository:
         config_hash: str,
         action_json: dict[str, Any],
         principal: Principal,
+        parent_run_id: str | None = None,
+        action_id: str | None = None,
+        max_retries_per_failure: int | None = None,
+        require_replan_for_failed: bool = False,
     ) -> AgentExperimentReservation:
         """原子预留一次 Experiment，防止并发请求越过 max_runs。
 
@@ -511,6 +523,11 @@ class AgentSessionRepository:
         now = _timestamp(datetime.now(timezone.utc))
         owner_id, tenant_id = self._scope_values(principal)
         with self._connection() as connection:
+            if self.runs_database_path is not None:
+                connection.execute(
+                    'ATTACH DATABASE ? AS run_state_db',
+                    (str(self.runs_database_path),),
+                )
             connection.execute('BEGIN IMMEDIATE')
             try:
                 session_row = connection.execute(
@@ -540,6 +557,48 @@ class AgentSessionRepository:
                         f'session {session_id} 仍有提交中的 experiment，请稍后重试'
                     )
 
+                if self.runs_database_path is not None:
+                    active_run = connection.execute(
+                        '''
+                        SELECT 1
+                        FROM agent_experiments AS experiment
+                        JOIN run_state_db.runs AS run
+                          ON run.run_id = experiment.run_id
+                        WHERE experiment.session_id = ?
+                          AND run.state IN ('queued', 'running')
+                        LIMIT 1
+                        ''',
+                        (session_id,),
+                    ).fetchone()
+                    if active_run is not None:
+                        raise AgentConfigCollision(
+                            f'session {session_id} 仍有非终态 Run，请等待完成后再提交'
+                        )
+                    if require_replan_for_failed and action_id is None:
+                        unresolved_failure = connection.execute(
+                            '''
+                            SELECT 1
+                            FROM agent_experiments AS failed_experiment
+                            JOIN run_state_db.runs AS failed_run
+                              ON failed_run.run_id = failed_experiment.run_id
+                            WHERE failed_experiment.session_id = ?
+                              AND failed_run.state = 'failed'
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM agent_experiments AS child
+                                  WHERE child.session_id = failed_experiment.session_id
+                                    AND child.parent_run_id = failed_experiment.run_id
+                              )
+                            LIMIT 1
+                            ''',
+                            (session_id,),
+                        ).fetchone()
+                        if unresolved_failure is not None:
+                            raise AgentConfigCollision(
+                                '存在未处理失败实验时必须使用受控 REPLAN action'
+                            )
+                elif require_replan_for_failed:
+                    raise AgentConfigCollision('有限重规划需要原子 Run 状态存储')
+
                 duplicate = connection.execute(
                     '''
                     SELECT 1 FROM agent_experiments
@@ -555,6 +614,31 @@ class AgentSessionRepository:
                     raise AgentConfigCollision(
                         f'config_hash {config_hash} 在该 session 内已存在'
                     )
+
+                if action_id is not None:
+                    if (
+                        parent_run_id is None
+                        or max_retries_per_failure is None
+                        or max_retries_per_failure < 1
+                    ):
+                        raise AgentConfigCollision('有限重规划 reservation 参数无效')
+                    prior_actions = connection.execute(
+                        '''
+                        SELECT action_json FROM agent_experiments
+                        WHERE session_id = ? AND parent_run_id = ?
+                        ''',
+                        (session_id, parent_run_id),
+                    ).fetchall()
+                    retry_count = sum(
+                        1
+                        for row in prior_actions
+                        if dict(_decode_json(row['action_json'], {})).get('action_id')
+                        == action_id
+                    )
+                    if retry_count >= max_retries_per_failure:
+                        raise AgentConfigCollision(
+                            '同一失败与 action_id 已达有限重试上限'
+                        )
 
                 experiment_count = int(
                     connection.execute(
