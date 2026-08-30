@@ -26,6 +26,13 @@ from typing import Any, Iterator
 from ..runs.contracts import Principal
 from ..runs.repository import RunRepository, RunNotFound
 from .contracts import AgentContextPolicy, AgentModuleFlags
+from .memory import (
+    AgentMemoryPayloadError,
+    MAX_MEMORY_CONTEXT_ITEMS,
+    build_memory_record,
+    normalize_memory_record,
+    normalize_terminal_outcome,
+)
 
 
 def _timestamp(value: datetime) -> str:
@@ -38,6 +45,24 @@ def _decode_json(value: str | None, default: object) -> object:
     if not value:
         return default
     return json.loads(value)
+
+
+def _validate_memory_signature(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if len(normalized) != 64 or any(
+        character not in '0123456789abcdef' for character in normalized
+    ):
+        raise ValueError('memory signature must be a sha256 hex digest')
+    return normalized
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+    )
 
 
 _DEFAULT_MODULE_FLAGS = AgentModuleFlags().model_dump()
@@ -58,6 +83,14 @@ class AgentSessionClosed(RuntimeError):
 
 class AgentConfigCollision(RuntimeError):
     """同 Session 下重复 effective config 或违反 max_runs。"""
+
+
+class AgentMemoryWriteDenied(RuntimeError):
+    """Session policy does not authorize persistent Agent memory writes."""
+
+
+class AgentMemoryCollision(RuntimeError):
+    """A terminal source was already persisted with incompatible state."""
 
 
 # Agent Session 完整规范快照。frozen=True 防止读取后被偷偷改。
@@ -109,6 +142,38 @@ class AgentExperimentReservation:
     attempt: int
     config_hash: str
     action_json: dict[str, Any]
+    created_at: str | None
+    owner_id: str | None
+    tenant_id: str | None
+
+
+@dataclass(frozen=True)
+class AgentTerminalOutcomeRecord:
+    """Internal idempotency record; identifiers are never Agent-visible."""
+
+    outcome_id: str
+    session_id: str
+    run_id: str
+    state: str
+    task_signature: str
+    evidence_signature: str
+    payload: dict[str, Any]
+    selected: bool
+    recorded_at: str | None
+    owner_id: str | None
+    tenant_id: str | None
+
+
+@dataclass(frozen=True)
+class AgentMemoryRecord:
+    """Internal case/failure row; only ``payload`` may enter frozen context."""
+
+    memory_id: str
+    source_outcome_id: str
+    record_type: str
+    task_signature: str
+    evidence_signature: str
+    payload: dict[str, Any]
     created_at: str | None
     owner_id: str | None
     tenant_id: str | None
@@ -255,6 +320,52 @@ class AgentSessionRepository:
                 'CREATE INDEX IF NOT EXISTS idx_agent_reservations_session '
                 'ON agent_experiment_reservations(session_id, attempt)'
             )
+            connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS agent_terminal_outcomes (
+                    outcome_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    state TEXT NOT NULL
+                        CHECK (state IN ('succeeded', 'failed', 'cancelled')),
+                    task_signature TEXT NOT NULL,
+                    evidence_signature TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    selected INTEGER NOT NULL DEFAULT 0
+                        CHECK (selected IN (0, 1)),
+                    recorded_at TEXT NOT NULL,
+                    owner_id TEXT,
+                    tenant_id TEXT,
+                    UNIQUE(session_id, run_id)
+                )
+                '''
+            )
+            connection.execute(
+                'CREATE INDEX IF NOT EXISTS idx_agent_outcomes_scope '
+                'ON agent_terminal_outcomes(owner_id, tenant_id, session_id)'
+            )
+            connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS agent_memory_records (
+                    memory_id TEXT PRIMARY KEY,
+                    source_outcome_id TEXT NOT NULL,
+                    record_type TEXT NOT NULL
+                        CHECK (record_type IN ('case', 'failure')),
+                    task_signature TEXT NOT NULL,
+                    evidence_signature TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    owner_id TEXT,
+                    tenant_id TEXT,
+                    UNIQUE(source_outcome_id, record_type)
+                )
+                '''
+            )
+            connection.execute(
+                'CREATE INDEX IF NOT EXISTS idx_agent_memory_retrieval '
+                'ON agent_memory_records('
+                'owner_id, tenant_id, task_signature, created_at DESC, memory_id)'
+            )
             connection.commit()
 
     @staticmethod
@@ -328,6 +439,36 @@ class AgentSessionRepository:
             created_at=row['created_at'],
             owner_id=row['owner_id'] if 'owner_id' in row.keys() else None,
             tenant_id=row['tenant_id'] if 'tenant_id' in row.keys() else None,
+        )
+
+    @staticmethod
+    def _terminal_outcome(row: sqlite3.Row) -> AgentTerminalOutcomeRecord:
+        return AgentTerminalOutcomeRecord(
+            outcome_id=str(row['outcome_id']),
+            session_id=str(row['session_id']),
+            run_id=str(row['run_id']),
+            state=str(row['state']),
+            task_signature=str(row['task_signature']),
+            evidence_signature=str(row['evidence_signature']),
+            payload=dict(_decode_json(row['payload_json'], {})),
+            selected=bool(row['selected']),
+            recorded_at=row['recorded_at'],
+            owner_id=row['owner_id'],
+            tenant_id=row['tenant_id'],
+        )
+
+    @staticmethod
+    def _memory_record(row: sqlite3.Row) -> AgentMemoryRecord:
+        return AgentMemoryRecord(
+            memory_id=str(row['memory_id']),
+            source_outcome_id=str(row['source_outcome_id']),
+            record_type=str(row['record_type']),
+            task_signature=str(row['task_signature']),
+            evidence_signature=str(row['evidence_signature']),
+            payload=dict(_decode_json(row['payload_json'], {})),
+            created_at=row['created_at'],
+            owner_id=row['owner_id'],
+            tenant_id=row['tenant_id'],
         )
 
     def create_session(
@@ -893,6 +1034,406 @@ class AgentSessionRepository:
         assert row is not None
         return self._experiment(row)
 
+    def _memory_write_session_row(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        principal: Principal,
+    ) -> sqlite3.Row:
+        """Load and re-check memory write policy inside the write transaction."""
+        owner_id, tenant_id = self._scope_values(principal)
+        row = connection.execute(
+            '''
+            SELECT * FROM agent_sessions
+            WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+            ''',
+            (session_id, owner_id, tenant_id),
+        ).fetchone()
+        if row is None:
+            raise AgentSessionNotFound(session_id)
+        self._assert_memory_write_policy(row)
+        return row
+
+    @staticmethod
+    def _memory_policy(row: sqlite3.Row) -> tuple[dict[str, Any], dict[str, Any]]:
+        raw_flags = _decode_json(
+            row['module_flags_json'] if 'module_flags_json' in row.keys() else None,
+            {},
+        )
+        raw_policy = _decode_json(
+            row['context_policy_json']
+            if 'context_policy_json' in row.keys()
+            else None,
+            {},
+        )
+        flags = raw_flags if isinstance(raw_flags, dict) else {}
+        policy = raw_policy if isinstance(raw_policy, dict) else {}
+        return flags, policy
+
+    @classmethod
+    def _assert_memory_write_policy(cls, row: sqlite3.Row) -> None:
+        flags, policy = cls._memory_policy(row)
+        required_modules = (
+            'case_memory',
+            'evidence_card',
+            'fail_fast_guard',
+            'feedback_diagnosis',
+        )
+        if not all(flags.get(name) is True for name in required_modules):
+            raise AgentMemoryWriteDenied('case memory modules are not enabled')
+        if policy.get('case_write') is not True:
+            raise AgentMemoryWriteDenied('case_write policy is disabled')
+        if policy.get('source_role', 'development') == 'benchmark':
+            raise AgentMemoryWriteDenied('benchmark sessions are read-only')
+
+    @classmethod
+    def _session_requests_memory_write(cls, row: sqlite3.Row) -> bool:
+        _flags, policy = cls._memory_policy(row)
+        return policy.get('case_write') is True
+
+    @staticmethod
+    def _canonical_outcome_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            raw = json.loads(str(row['payload_json']))
+            canonical = normalize_terminal_outcome(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise AgentMemoryCollision('stored terminal outcome is invalid') from exc
+        if _canonical_json(raw) != _canonical_json(canonical):
+            raise AgentMemoryCollision('stored terminal outcome is not canonical')
+        if canonical['state'] != row['state']:
+            raise AgentMemoryCollision('stored terminal outcome state mismatch')
+        return canonical
+
+    @staticmethod
+    def _canonical_memory_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            raw = json.loads(str(row['payload_json']))
+            canonical = normalize_memory_record(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise AgentMemoryCollision('stored memory record is invalid') from exc
+        if _canonical_json(raw) != _canonical_json(canonical):
+            raise AgentMemoryCollision('stored memory record is not canonical')
+        if canonical['record_type'] != row['record_type']:
+            raise AgentMemoryCollision('stored memory record type mismatch')
+        return canonical
+
+    def record_terminal_outcome_scoped(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        state: str,
+        task_signature: str,
+        evidence_signature: str,
+        payload: dict[str, Any],
+        principal: Principal,
+        failure_memory_payload: dict[str, Any] | None = None,
+    ) -> AgentTerminalOutcomeRecord:
+        """Idempotently store one terminal outcome and optional failure lesson.
+
+        ``BEGIN IMMEDIATE`` plus the two UNIQUE constraints make concurrent
+        feedback requests converge on one outcome and one failure record.
+        The Session policy and Experiment ownership are checked again in this
+        repository even when the service already performed the same checks.
+        """
+        task_key = _validate_memory_signature(task_signature)
+        evidence_key = _validate_memory_signature(evidence_signature)
+        normalized_outcome = normalize_terminal_outcome(payload)
+        normalized_state = str(state).strip().lower()
+        if normalized_outcome['state'] != normalized_state:
+            raise ValueError('terminal outcome state mismatch')
+        if (
+            normalized_state == 'succeeded'
+            and 'validation_score' not in normalized_outcome['result']
+        ):
+            raise AgentMemoryWriteDenied(
+                'successful memory outcome requires validation_score'
+            )
+        canonical_outcome_json = _canonical_json(normalized_outcome)
+        normalized_failure: dict[str, Any] | None = None
+        canonical_failure_json: str | None = None
+        if failure_memory_payload is not None:
+            normalized_failure = normalize_memory_record(failure_memory_payload)
+            if normalized_state != 'failed' or normalized_failure['record_type'] != 'failure':
+                raise ValueError('failure memory requires a failed outcome')
+            canonical_failure_json = _canonical_json(normalized_failure)
+
+        now = _timestamp(datetime.now(timezone.utc))
+        owner_id, tenant_id = self._scope_values(principal)
+        candidate_outcome_id = uuid.uuid4().hex
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                self._memory_write_session_row(
+                    connection, session_id=session_id, principal=principal
+                )
+                experiment = connection.execute(
+                    '''
+                    SELECT 1 FROM agent_experiments
+                    WHERE session_id = ? AND run_id = ?
+                      AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, run_id, owner_id, tenant_id),
+                ).fetchone()
+                if experiment is None:
+                    raise AgentExperimentNotFound(run_id)
+                connection.execute(
+                    '''
+                    INSERT OR IGNORE INTO agent_terminal_outcomes (
+                        outcome_id, session_id, run_id, state,
+                        task_signature, evidence_signature, payload_json,
+                        selected, recorded_at, owner_id, tenant_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    ''',
+                    (
+                        candidate_outcome_id,
+                        session_id,
+                        run_id,
+                        normalized_state,
+                        task_key,
+                        evidence_key,
+                        canonical_outcome_json,
+                        now,
+                        owner_id,
+                        tenant_id,
+                    ),
+                )
+                row = connection.execute(
+                    '''
+                    SELECT * FROM agent_terminal_outcomes
+                    WHERE session_id = ? AND run_id = ?
+                      AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, run_id, owner_id, tenant_id),
+                ).fetchone()
+                if row is None:
+                    raise AgentMemoryCollision('terminal outcome could not be persisted')
+                if (
+                    row['state'] != normalized_state
+                    or row['task_signature'] != task_key
+                    or row['evidence_signature'] != evidence_key
+                ):
+                    raise AgentMemoryCollision(
+                        'terminal outcome already exists with incompatible state'
+                    )
+                stored_outcome = self._canonical_outcome_from_row(row)
+                if _canonical_json(stored_outcome) != canonical_outcome_json:
+                    raise AgentMemoryCollision(
+                        'terminal outcome already exists with incompatible payload'
+                    )
+                if normalized_failure is not None:
+                    connection.execute(
+                        '''
+                        INSERT OR IGNORE INTO agent_memory_records (
+                            memory_id, source_outcome_id, record_type,
+                            task_signature, evidence_signature, payload_json,
+                            created_at, owner_id, tenant_id
+                        ) VALUES (?, ?, 'failure', ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            uuid.uuid4().hex,
+                            row['outcome_id'],
+                            task_key,
+                            evidence_key,
+                            canonical_failure_json,
+                            now,
+                            owner_id,
+                            tenant_id,
+                        ),
+                    )
+                    memory_row = connection.execute(
+                        '''
+                        SELECT * FROM agent_memory_records
+                        WHERE source_outcome_id = ? AND record_type = 'failure'
+                        ''',
+                        (row['outcome_id'],),
+                    ).fetchone()
+                    if memory_row is None:
+                        raise AgentMemoryCollision(
+                            'failure memory could not be persisted'
+                        )
+                    stored_failure = self._canonical_memory_from_row(memory_row)
+                    if (
+                        _canonical_json(stored_failure) != canonical_failure_json
+                        or memory_row['task_signature'] != task_key
+                        or memory_row['evidence_signature'] != evidence_key
+                    ):
+                        raise AgentMemoryCollision(
+                            'failure memory already exists with incompatible payload'
+                        )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert row is not None
+        return self._terminal_outcome(row)
+
+    def _ensure_selected_case_locked(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        run_id: str,
+        principal: Principal,
+        now: str,
+    ) -> AgentMemoryRecord:
+        """Build/verify the selected case from canonical stored outcome only."""
+        owner_id, tenant_id = self._scope_values(principal)
+        experiment = connection.execute(
+            '''
+            SELECT 1 FROM agent_experiments
+            WHERE session_id = ? AND run_id = ?
+              AND owner_id IS ? AND tenant_id IS ?
+            ''',
+            (session_id, run_id, owner_id, tenant_id),
+        ).fetchone()
+        if experiment is None:
+            raise AgentExperimentNotFound(run_id)
+        outcome = connection.execute(
+            '''
+            SELECT * FROM agent_terminal_outcomes
+            WHERE session_id = ? AND run_id = ?
+              AND owner_id IS ? AND tenant_id IS ?
+            ''',
+            (session_id, run_id, owner_id, tenant_id),
+        ).fetchone()
+        if outcome is None or outcome['state'] != 'succeeded':
+            raise AgentMemoryWriteDenied(
+                'selected case requires a persisted successful outcome'
+            )
+        canonical_outcome = self._canonical_outcome_from_row(outcome)
+        if 'validation_score' not in canonical_outcome['result']:
+            raise AgentMemoryWriteDenied(
+                'selected case requires a validation score'
+            )
+        canonical_case = build_memory_record('case', canonical_outcome)
+        canonical_case_json = _canonical_json(canonical_case)
+        connection.execute(
+            '''
+            INSERT OR IGNORE INTO agent_memory_records (
+                memory_id, source_outcome_id, record_type,
+                task_signature, evidence_signature, payload_json,
+                created_at, owner_id, tenant_id
+            ) VALUES (?, ?, 'case', ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                uuid.uuid4().hex,
+                outcome['outcome_id'],
+                outcome['task_signature'],
+                outcome['evidence_signature'],
+                canonical_case_json,
+                now,
+                owner_id,
+                tenant_id,
+            ),
+        )
+        memory_row = connection.execute(
+            '''
+            SELECT * FROM agent_memory_records
+            WHERE source_outcome_id = ? AND record_type = 'case'
+            ''',
+            (outcome['outcome_id'],),
+        ).fetchone()
+        if memory_row is None:
+            raise AgentMemoryCollision('selected case could not be persisted')
+        stored_case = self._canonical_memory_from_row(memory_row)
+        if (
+            _canonical_json(stored_case) != canonical_case_json
+            or memory_row['task_signature'] != outcome['task_signature']
+            or memory_row['evidence_signature'] != outcome['evidence_signature']
+        ):
+            raise AgentMemoryCollision(
+                'selected case already exists with incompatible payload'
+            )
+        connection.execute(
+            'UPDATE agent_terminal_outcomes SET selected = 1 WHERE outcome_id = ?',
+            (outcome['outcome_id'],),
+        )
+        return self._memory_record(memory_row)
+
+    def record_selected_case_scoped(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        principal: Principal,
+    ) -> AgentMemoryRecord:
+        """Repair/ensure a finalized selected case without caller payload."""
+        owner_id, tenant_id = self._scope_values(principal)
+        now = _timestamp(datetime.now(timezone.utc))
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            try:
+                session_row = self._memory_write_session_row(
+                    connection, session_id=session_id, principal=principal
+                )
+                if (
+                    session_row['state'] != 'finalized'
+                    or session_row['selected_run_id'] != run_id
+                ):
+                    raise AgentMemoryWriteDenied(
+                        'only the finalized selected run may become a case'
+                    )
+                memory = self._ensure_selected_case_locked(
+                    connection,
+                    session_id=session_id,
+                    run_id=run_id,
+                    principal=principal,
+                    now=now,
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return memory
+
+    def list_memory_payloads_scoped(
+        self,
+        *,
+        task_signature: str,
+        evidence_signature: str,
+        principal: Principal,
+        limit: int = MAX_MEMORY_CONTEXT_ITEMS,
+    ) -> list[dict[str, Any]]:
+        """Read deterministic Principal-scoped top-k payloads for a new Session."""
+        task_key = _validate_memory_signature(task_signature)
+        evidence_key = _validate_memory_signature(evidence_signature)
+        bounded_limit = max(0, min(int(limit), MAX_MEMORY_CONTEXT_ITEMS))
+        if bounded_limit == 0:
+            return []
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            rows = connection.execute(
+                '''
+                SELECT * FROM agent_memory_records
+                WHERE owner_id IS ? AND tenant_id IS ? AND task_signature = ?
+                ORDER BY
+                    CASE WHEN evidence_signature = ? THEN 0 ELSE 1 END ASC,
+                    created_at DESC,
+                    memory_id ASC
+                LIMIT ?
+                ''',
+                (
+                    owner_id,
+                    tenant_id,
+                    task_key,
+                    evidence_key,
+                    bounded_limit * 4,
+                ),
+            ).fetchall()
+        payloads: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payloads.append(
+                    normalize_memory_record(_decode_json(row['payload_json'], {}))
+                )
+            except (AgentMemoryPayloadError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if len(payloads) >= bounded_limit:
+                break
+        return payloads
+
     def finalize_session(
         self,
         *,
@@ -900,43 +1441,73 @@ class AgentSessionRepository:
         selected_run_id: str,
         principal: Principal,
     ) -> AgentSessionRecord:
-        """原子地把 Session 切到 finalized。幂等：已 finalized 且 selected_run_id
-        一致时返回旧记录；已 finalized 但 selected_run_id 不一致则报错（不允许
-        "换锁"）。"""
+        """Atomically finalize and, when enabled, publish the selected case.
+
+        Memory-enabled writes validate a canonical persisted successful outcome,
+        build the case from that outcome, insert/verify it, mark it selected, and
+        change Session state under one ``BEGIN IMMEDIATE`` transaction.
+        """
         owner_id, tenant_id = self._scope_values(principal)
         now = _timestamp(datetime.now(timezone.utc))
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
-            row = connection.execute(
-                '''
-                SELECT * FROM agent_sessions
-                WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
-                ''',
-                (session_id, owner_id, tenant_id),
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise AgentSessionNotFound(session_id)
-            if row['state'] == 'finalized':
-                connection.commit()
-                existing = self._session(row)
-                if existing.selected_run_id != selected_run_id:
+            try:
+                row = connection.execute(
+                    '''
+                    SELECT * FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, owner_id, tenant_id),
+                ).fetchone()
+                if row is None:
+                    raise AgentSessionNotFound(session_id)
+                if (
+                    row['state'] == 'finalized'
+                    and row['selected_run_id'] != selected_run_id
+                ):
                     raise AgentSessionClosed(
                         f'session {session_id} already finalized with different run'
                     )
-                return existing
-            connection.execute(
-                '''
-                UPDATE agent_sessions
-                SET state = 'finalized', selected_run_id = ?, finalized_at = ?
-                WHERE session_id = ? AND state = 'open'
-                ''',
-                (selected_run_id, now, session_id),
-            )
-            updated = connection.execute(
-                'SELECT * FROM agent_sessions WHERE session_id = ?', (session_id,)
-            ).fetchone()
-            connection.commit()
+                if self._session_requests_memory_write(row):
+                    self._assert_memory_write_policy(row)
+                    self._ensure_selected_case_locked(
+                        connection,
+                        session_id=session_id,
+                        run_id=selected_run_id,
+                        principal=principal,
+                        now=now,
+                    )
+                if row['state'] == 'open':
+                    changed = connection.execute(
+                        '''
+                        UPDATE agent_sessions
+                        SET state = 'finalized', selected_run_id = ?, finalized_at = ?
+                        WHERE session_id = ? AND state = 'open'
+                          AND owner_id IS ? AND tenant_id IS ?
+                        ''',
+                        (
+                            selected_run_id,
+                            now,
+                            session_id,
+                            owner_id,
+                            tenant_id,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentSessionClosed(
+                            f'session {session_id} could not be finalized'
+                        )
+                updated = connection.execute(
+                    '''
+                    SELECT * FROM agent_sessions
+                    WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                    ''',
+                    (session_id, owner_id, tenant_id),
+                ).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
         assert updated is not None
         return self._session(updated)
 

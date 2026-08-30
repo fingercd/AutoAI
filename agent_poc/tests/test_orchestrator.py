@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pytest
+
+import agent_poc.orchestrator as orchestrator_module
 
 from agent_poc.orchestrator import (
     AgentTimeout,
@@ -8,13 +12,14 @@ from agent_poc.orchestrator import (
     _proposal_recipes,
     run_agent,
 )
+from agent_poc.priors import load_prior_catalog
 from agent_poc.schemas import (
     FinalizeDecision,
     ReplanDecision,
     RequestHumanDecision,
     RunExperimentDecision,
 )
-from agent_poc.state import AgentConfig
+from agent_poc.state import AgentConfig, AgentModuleConfig
 
 
 class FakeAutoAI:
@@ -26,6 +31,7 @@ class FakeAutoAI:
         limited_replanning=False,
         failure_actions=None,
         decision_support=None,
+        evidence_risks=None,
     ):
         self.feedback_states = list(feedback_states)
         self.feedback_calls = 0
@@ -36,6 +42,7 @@ class FakeAutoAI:
         self.limited_replanning = limited_replanning
         self.failure_actions = failure_actions or ['choose_unused_proposal']
         self.decision_support = decision_support
+        self.evidence_risks = evidence_risks
 
     def health(self):
         return {'status': 'ok', 'worker': {'available': True, 'compatible': True}}
@@ -64,6 +71,15 @@ class FakeAutoAI:
                     'proposals': self.proposal_catalog,
                 },
             }
+            if self.evidence_risks is not None:
+                response['context']['evidence_card'] = {
+                    'schema_version': 'small-sample-evidence-v1',
+                    'status': 'ready',
+                    'scope': 'train_only',
+                    'statistics': {
+                        'risk_codes': list(self.evidence_risks),
+                    },
+                }
         decision_support = (
             self.decision_support(self)
             if callable(self.decision_support)
@@ -130,10 +146,12 @@ class SchemaAwareFakeLLM(FakeLLM):
     def __init__(self, decisions):
         super().__init__(decisions)
         self.schemas = []
+        self.messages = []
 
-    def decide(self, _messages, *, decision_schema):
+    def decide(self, messages, *, decision_schema):
         self.call_count += 1
         self.schemas.append(decision_schema)
+        self.messages.append(messages)
         return next(self.decisions)
 
 
@@ -620,3 +638,98 @@ def test_ordinary_parent_link_does_not_mark_failure_as_replanned():
         ('run-failed',),
         ('request_human',),
     )
+
+
+def test_static_prior_catalog_is_loaded_once_per_agent_invocation(monkeypatch):
+    catalog = load_prior_catalog()
+    calls = []
+
+    def counted_loader():
+        calls.append('loaded')
+        return catalog
+
+    monkeypatch.setattr(orchestrator_module, 'load_prior_catalog', counted_loader)
+    autoai = FakeAutoAI(['succeeded'])
+    llm = FakeLLM([
+        _run_decision(),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(
+        _cfg(modules=AgentModuleConfig(case_memory=True)),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'finalized'
+    assert calls == ['loaded']
+
+
+def test_disabled_case_memory_does_not_load_or_inject_static_prior(monkeypatch):
+    def unexpected_loader():
+        raise AssertionError('disabled static prior must not be loaded')
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        'load_prior_catalog',
+        unexpected_loader,
+    )
+    autoai = FakeAutoAI(['succeeded'])
+    llm = FakeLLM([
+        _run_decision(),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(_cfg(), llm, autoai, sleep_fn=lambda _seconds: None)
+    assert result['status'] == 'finalized'
+
+
+def test_orchestrator_injects_prior_only_while_mapped_proposal_is_available():
+    recipe = {
+        'proposal_id': 'p_0123456789abcdef',
+        'model_type': 'logistic_regression',
+        'normalization': 'zscore',
+        'class_balance': 'none',
+    }
+    autoai = FakeAutoAI(
+        ['succeeded'],
+        proposal_catalog=[recipe],
+        evidence_risks=['very_small_train_partition'],
+    )
+    llm = SchemaAwareFakeLLM([
+        RunExperimentDecision(
+            decision='RUN_EXPERIMENT',
+            **recipe,
+            rationale='baseline',
+        ),
+        FinalizeDecision(
+            decision='FINALIZE',
+            selected_run_id='run-1',
+            rationale='finalize',
+        ),
+    ])
+    result = run_agent(
+        _cfg(
+            modules=AgentModuleConfig(
+                evidence_card=True,
+                restricted_strategy_pool=True,
+                case_memory=True,
+            )
+        ),
+        llm,
+        autoai,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result['status'] == 'finalized'
+    first_payload = json.loads(llm.messages[0][1]['content'])
+    assert first_payload['static_prior']['recommendations'][0][
+        'proposal_id'
+    ] == recipe['proposal_id']
+    second_payload = json.loads(llm.messages[1][1]['content'])
+    assert 'static_prior' not in second_payload
