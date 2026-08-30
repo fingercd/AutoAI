@@ -25,6 +25,7 @@ from typing import Any, Iterator
 
 from ..runs.contracts import Principal
 from ..runs.repository import RunRepository, RunNotFound
+from .contracts import AgentContextPolicy, AgentModuleFlags
 
 
 def _timestamp(value: datetime) -> str:
@@ -37,6 +38,10 @@ def _decode_json(value: str | None, default: object) -> object:
     if not value:
         return default
     return json.loads(value)
+
+
+_DEFAULT_MODULE_FLAGS = AgentModuleFlags().model_dump()
+_DEFAULT_CONTEXT_POLICY = AgentContextPolicy().model_dump()
 
 
 class AgentSessionNotFound(KeyError):
@@ -66,6 +71,9 @@ class AgentSessionRecord:
     max_runs: int
     seed: int
     evaluation_config: dict[str, Any]
+    module_flags: dict[str, bool]
+    context_policy: dict[str, Any]
+    context: dict[str, Any]
     selected_run_id: str | None
     created_at: str | None
     finalized_at: str | None
@@ -143,6 +151,9 @@ class AgentSessionRepository:
                     max_runs INTEGER NOT NULL,
                     seed INTEGER NOT NULL,
                     evaluation_config_json TEXT NOT NULL,
+                    module_flags_json TEXT NOT NULL DEFAULT '{}',
+                    context_policy_json TEXT NOT NULL DEFAULT '{}',
+                    context_json TEXT NOT NULL DEFAULT '{}',
                     selected_run_id TEXT,
                     created_at TEXT NOT NULL,
                     finalized_at TEXT,
@@ -160,6 +171,18 @@ class AgentSessionRepository:
                 'finalized_at': 'ALTER TABLE agent_sessions ADD COLUMN finalized_at TEXT',
                 'owner_id': 'ALTER TABLE agent_sessions ADD COLUMN owner_id TEXT',
                 'tenant_id': 'ALTER TABLE agent_sessions ADD COLUMN tenant_id TEXT',
+                'module_flags_json': (
+                    "ALTER TABLE agent_sessions ADD COLUMN "
+                    "module_flags_json TEXT NOT NULL DEFAULT '{}'"
+                ),
+                'context_policy_json': (
+                    "ALTER TABLE agent_sessions ADD COLUMN "
+                    "context_policy_json TEXT NOT NULL DEFAULT '{}'"
+                ),
+                'context_json': (
+                    "ALTER TABLE agent_sessions ADD COLUMN "
+                    "context_json TEXT NOT NULL DEFAULT '{}'"
+                ),
             }
             for name, statement in session_migrations.items():
                 if name not in session_columns:
@@ -229,6 +252,25 @@ class AgentSessionRepository:
 
     @staticmethod
     def _session(row: sqlite3.Row) -> AgentSessionRecord:
+        stored_flags = dict(_decode_json(
+            row['module_flags_json'] if 'module_flags_json' in row.keys() else None,
+            {},
+        ))
+        module_flags = {**_DEFAULT_MODULE_FLAGS, **stored_flags}
+        stored_policy = dict(_decode_json(
+            row['context_policy_json'] if 'context_policy_json' in row.keys() else None,
+            {},
+        ))
+        context_policy = {**_DEFAULT_CONTEXT_POLICY, **stored_policy}
+        default_context = {
+            'schema_version': 'agent-context-v1',
+            'status': 'pending' if any(module_flags.values()) else 'disabled',
+            'source_role': context_policy['source_role'],
+        }
+        stored_context = dict(_decode_json(
+            row['context_json'] if 'context_json' in row.keys() else None,
+            {},
+        ))
         return AgentSessionRecord(
             session_id=str(row['session_id']),
             state=row['state'],
@@ -238,6 +280,9 @@ class AgentSessionRepository:
             max_runs=int(row['max_runs']),
             seed=int(row['seed']),
             evaluation_config=dict(_decode_json(row['evaluation_config_json'], {})),
+            module_flags=module_flags,
+            context_policy=context_policy,
+            context={**default_context, **stored_context},
             selected_run_id=row['selected_run_id'],
             created_at=row['created_at'],
             finalized_at=row['finalized_at'],
@@ -284,6 +329,9 @@ class AgentSessionRepository:
         seed: int,
         evaluation_config: dict[str, Any],
         principal: Principal,
+        module_flags: dict[str, bool] | None = None,
+        context_policy: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> AgentSessionRecord:
         session_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
@@ -295,8 +343,10 @@ class AgentSessionRepository:
                 INSERT INTO agent_sessions (
                     session_id, state, dataset_id, selection_metric,
                     allowed_models_json, max_runs, seed,
-                    evaluation_config_json, created_at, owner_id, tenant_id
-                ) VALUES (?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    evaluation_config_json, module_flags_json,
+                    context_policy_json, context_json,
+                    created_at, owner_id, tenant_id
+                ) VALUES (?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     session_id,
@@ -306,11 +356,43 @@ class AgentSessionRepository:
                     int(max_runs),
                     int(seed),
                     json.dumps(evaluation_config, ensure_ascii=False, sort_keys=True),
+                    json.dumps(module_flags or {}, ensure_ascii=False, sort_keys=True),
+                    json.dumps(context_policy or {}, ensure_ascii=False, sort_keys=True),
+                    json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
                     now,
                     owner_id,
                     tenant_id,
                 ),
             )
+            row = connection.execute(
+                'SELECT * FROM agent_sessions WHERE session_id = ?', (session_id,)
+            ).fetchone()
+            connection.commit()
+        assert row is not None
+        return self._session(row)
+
+    def update_context_scoped(
+        self,
+        session_id: str,
+        *,
+        context: dict[str, Any],
+        principal: Principal,
+    ) -> AgentSessionRecord:
+        """Replace the server-owned context snapshot under Principal scope."""
+        owner_id, tenant_id = self._scope_values(principal)
+        encoded = json.dumps(context, ensure_ascii=False, sort_keys=True)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            cursor = connection.execute(
+                '''
+                UPDATE agent_sessions SET context_json = ?
+                WHERE session_id = ? AND owner_id IS ? AND tenant_id IS ?
+                ''',
+                (encoded, session_id, owner_id, tenant_id),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise AgentSessionNotFound(session_id)
             row = connection.execute(
                 'SELECT * FROM agent_sessions WHERE session_id = ?', (session_id,)
             ).fetchone()

@@ -77,6 +77,51 @@ def test_create_session_returns_locked_config(client, uploaded_dataset):
     assert sorted(payload["locked_config"]["allowed_models"]) == [
         "logistic_regression", "random_forest", "svm"
     ]
+    assert not any(payload['locked_config']['modules'].values())
+    assert payload['context'] == {
+        'schema_version': 'agent-context-v1',
+        'status': 'disabled',
+        'source_role': 'development',
+    }
+
+
+def test_session_persists_enabled_modules_and_context_policy(client, uploaded_dataset):
+    response = _create_session(
+        client,
+        uploaded_dataset,
+        modules={
+            'evidence_card': True,
+            'feedback_diagnosis': True,
+            'budget_control': True,
+        },
+        context_policy={'source_role': 'domain', 'case_write': True},
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created['context']['status'] == 'pending'
+    session = client.get(f"/api/agent/sessions/{created['session_id']}").json()
+    assert session['locked_config']['modules']['evidence_card'] is True
+    assert session['locked_config']['modules']['feedback_diagnosis'] is True
+    assert session['locked_config']['modules']['budget_control'] is True
+    assert session['locked_config']['context_policy'] == {
+        'source_role': 'domain',
+        'case_write': True,
+    }
+
+
+def test_session_rejects_unknown_module_and_benchmark_case_write(client, uploaded_dataset):
+    unknown = _create_session(
+        client,
+        uploaded_dataset,
+        modules={'not_a_real_module': True},
+    )
+    assert unknown.status_code == 422
+    benchmark_write = _create_session(
+        client,
+        uploaded_dataset,
+        context_policy={'source_role': 'benchmark', 'case_write': True},
+    )
+    assert benchmark_write.status_code == 422
 
 
 # ---------- 2. 非白名单模型返回 422 ----------

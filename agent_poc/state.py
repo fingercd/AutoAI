@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,21 @@ class ModelConfig:
     served_model_name: str
     model_path: str
     revision: str = 'master'
+
+
+@dataclass(frozen=True)
+class AgentModuleConfig:
+    evidence_card: bool = False
+    dynamic_preprocessing: bool = False
+    restricted_strategy_pool: bool = False
+    bounded_hpo: bool = False
+    fail_fast_guard: bool = False
+    constrained_code_evolution: bool = False
+    feedback_diagnosis: bool = False
+    limited_replanning: bool = False
+    uncertainty_selection: bool = False
+    case_memory: bool = False
+    budget_control: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,9 +60,12 @@ class AgentConfig:
     temperature: float = 0.0
     trace_path: Path = Path('outputs/agent_poc_acceptance/trace.jsonl')
     code_revision: str = 'unknown'
+    modules: AgentModuleConfig = field(default_factory=AgentModuleConfig)
+    source_role: str = 'development'
+    case_write: bool = False
 
     def session_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             'dataset_id': self.dataset_id,
             'selection_metric': self.selection_metric,
             'allowed_models': list(self.allowed_models),
@@ -60,6 +78,18 @@ class AgentConfig:
                 'split_test': self.split_test,
             },
         }
+        module_flags = asdict(self.modules)
+        if (
+            any(module_flags.values())
+            or self.source_role != 'development'
+            or self.case_write
+        ):
+            payload['modules'] = module_flags
+            payload['context_policy'] = {
+                'source_role': self.source_role,
+                'case_write': self.case_write,
+            }
+        return payload
 
 
 @dataclass
@@ -124,6 +154,30 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
     selected_max_runs = int(values.get('max_runs', 1) if max_runs is None else max_runs)
     if selected_max_runs < 1 or selected_max_runs > 10:
         raise ValueError('max_runs must be between 1 and 10')
+    raw_modules = values.get('modules', {})
+    if not isinstance(raw_modules, dict):
+        raise ValueError('agent.modules must be a table')
+    allowed_module_keys = set(AgentModuleConfig.__dataclass_fields__)
+    unknown_module_keys = set(raw_modules) - allowed_module_keys
+    if unknown_module_keys:
+        raise ValueError(f'unknown agent module flags: {sorted(unknown_module_keys)}')
+    if not all(isinstance(value, bool) for value in raw_modules.values()):
+        raise ValueError('agent module flags must be booleans')
+    modules = AgentModuleConfig(**raw_modules)
+    raw_context = values.get('context', {})
+    if not isinstance(raw_context, dict):
+        raise ValueError('agent.context must be a table')
+    unknown_context_keys = set(raw_context) - {'source_role', 'case_write'}
+    if unknown_context_keys:
+        raise ValueError(f'unknown agent context fields: {sorted(unknown_context_keys)}')
+    source_role = str(raw_context.get('source_role', 'development'))
+    if source_role not in {'development', 'benchmark', 'domain'}:
+        raise ValueError('agent context source_role is invalid')
+    case_write = raw_context.get('case_write', False)
+    if not isinstance(case_write, bool):
+        raise ValueError('agent context case_write must be boolean')
+    if source_role == 'benchmark' and case_write:
+        raise ValueError('benchmark context cannot write cases')
     return AgentConfig(
         autoai_base_url=_require_string(values, 'autoai_base_url'),
         dataset_id=dataset_id,
@@ -141,4 +195,7 @@ def load_agent_config(path: Path, *, dataset_id: str, max_runs: int | None = Non
         temperature=float(values.get('temperature', 0.0)),
         trace_path=trace_path or Path(str(values.get('trace_path', 'outputs/agent_poc_acceptance/trace.jsonl'))),
         code_revision=str(values.get('code_revision', 'unknown')),
+        modules=modules,
+        source_role=source_role,
+        case_write=case_write,
     )

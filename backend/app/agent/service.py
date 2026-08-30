@@ -190,6 +190,13 @@ class AgentService:
             # 对外使用同一不可见语义，不泄露其他 Principal 的 dataset 是否存在。
             raise TrainingConfigValidationError('dataset_id 不存在或不可访问') from exc
         evaluation_config = payload.evaluation.model_dump()
+        module_flags = payload.modules.model_dump()
+        context_policy = payload.context_policy.model_dump()
+        context = {
+            'schema_version': 'agent-context-v1',
+            'status': 'pending' if any(module_flags.values()) else 'disabled',
+            'source_role': context_policy['source_role'],
+        }
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -198,6 +205,9 @@ class AgentService:
             seed=payload.seed,
             evaluation_config=evaluation_config,
             principal=principal,
+            module_flags=module_flags,
+            context_policy=context_policy,
+            context=context,
         )
         return {
             'session_id': session.session_id,
@@ -210,7 +220,10 @@ class AgentService:
                 'max_runs': session.max_runs,
                 'seed': session.seed,
                 'evaluation_config': evaluation_config,
+                'modules': session.module_flags,
+                'context_policy': session.context_policy,
             },
+            'context': session.context,
             'created_at': session.created_at,
         }
 
@@ -460,7 +473,10 @@ class AgentService:
                 'max_runs': session.max_runs,
                 'seed': session.seed,
                 'evaluation_config': session.evaluation_config,
+                'modules': session.module_flags,
+                'context_policy': session.context_policy,
             },
+            'context': session.context,
             'remaining_runs': max(0, session.max_runs - len(experiments)),
             'best_run_id': best_run_id,
             'selected_run_id': session.selected_run_id,
