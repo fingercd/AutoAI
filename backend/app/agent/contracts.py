@@ -130,6 +130,12 @@ class CreateAgentSessionRequest(BaseModel):
             )
         if self.modules.uncertainty_selection and not self.modules.feedback_diagnosis:
             raise ValueError('uncertainty_selection 需要 feedback_diagnosis')
+        if self.modules.case_memory and not (
+            self.modules.evidence_card and self.modules.feedback_diagnosis
+        ):
+            raise ValueError('case_memory 需要 evidence_card 和 feedback_diagnosis')
+        if self.context_policy.case_write and not self.modules.case_memory:
+            raise ValueError('case_write 需要启用 case_memory')
 
 
 class CreateAgentExperimentRequest(BaseModel):

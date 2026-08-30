@@ -10,6 +10,7 @@ import httpx
 
 from .clients.autoai_client import AutoAIClient
 from .clients.llm_client import LLMClient
+from .priors import load_prior_catalog, project_priors
 from .prompts import build_messages
 from .schemas import (
     FinalizeDecision,
@@ -210,6 +211,15 @@ def run_agent(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Run one complete controlled Agent session."""
+    # The fixed catalog is loaded exactly once per controller invocation.  It
+    # is immutable thereafter; only its safe projection is recomputed as the
+    # server-owned proposal catalog is consumed.
+    prior_catalog = load_prior_catalog() if cfg.modules.case_memory else None
+    if trace and prior_catalog is not None:
+        trace.record_prior_metadata(
+            schema_version=prior_catalog.schema_version,
+            digest=prior_catalog.digest,
+        )
     health = autoai.health()
     worker = health.get('worker')
     if isinstance(worker, dict) and (
@@ -243,6 +253,16 @@ def run_agent(
             observation,
             locked_proposal_recipes,
         ) if restricted else ()
+        prior_guidance = (
+            project_priors(
+                prior_catalog,
+                observation=observation,
+                allowed_models=cfg.allowed_models,
+                proposal_recipes=proposal_recipes,
+            )
+            if prior_catalog is not None
+            else None
+        )
         failed_run_ids, failure_allowed_actions = _failed_replan_context(
             observation
         )
@@ -313,6 +333,7 @@ def run_agent(
             proposal_recipes=proposal_recipes,
             failed_run_ids=failed_run_ids,
             allowed_replan_actions=allowed_replan_actions,
+            prior_guidance=prior_guidance,
         )
         decision_schema = decision_json_schema(
             allowed_decisions=allowed_decisions,

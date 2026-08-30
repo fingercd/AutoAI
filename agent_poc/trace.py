@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .priors import PRIOR_SCHEMA_VERSION
 from .schemas import AgentDecision
 from .state import ModelConfig
 
@@ -27,7 +28,12 @@ _FORBIDDEN_KEY_PARTS = (
     'explainability',
     'sample_id',
 )
-_ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_ABSOLUTE_PATH = re.compile(
+    r'(?:[A-Za-z]:[\\/][^\s,;]*|'
+    r'/(?:users|home|var|tmp|opt|srv|etc|root|mnt|data)/[^\s,;]*|'
+    r'(?:^|\s)/[^\s,;]+)',
+    flags=re.IGNORECASE,
+)
 _URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
     r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
@@ -96,6 +102,18 @@ class TraceRecorder:
             'decision',
             latency_ms=round(float(latency_ms), 3),
             decision=decision.model_dump(mode='json'),
+        )
+
+    def record_prior_metadata(self, *, schema_version: str, digest: str) -> None:
+        """Record provenance only; never serialize prior contents or its path."""
+        if schema_version != PRIOR_SCHEMA_VERSION:
+            raise ValueError('prior schema_version is invalid')
+        if not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise ValueError('prior digest is invalid')
+        self.record(
+            'static_prior_loaded',
+            prior_schema_version=schema_version,
+            prior_digest=digest,
         )
 
     def record_experiment(self, experiment: dict[str, Any], *, latency_ms: float) -> None:

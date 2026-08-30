@@ -93,6 +93,7 @@ def test_session_persists_enabled_modules_and_context_policy(client, uploaded_da
             'evidence_card': True,
             'fail_fast_guard': True,
             'feedback_diagnosis': True,
+            'case_memory': True,
             'budget_control': True,
         },
         context_policy={'source_role': 'domain', 'case_write': True},
@@ -103,6 +104,7 @@ def test_session_persists_enabled_modules_and_context_policy(client, uploaded_da
     session = client.get(f"/api/agent/sessions/{created['session_id']}").json()
     assert session['locked_config']['modules']['evidence_card'] is True
     assert session['locked_config']['modules']['feedback_diagnosis'] is True
+    assert session['locked_config']['modules']['case_memory'] is True
     assert session['locked_config']['modules']['fail_fast_guard'] is True
     assert session['locked_config']['modules']['budget_control'] is True
     assert session['locked_config']['context_policy'] == {

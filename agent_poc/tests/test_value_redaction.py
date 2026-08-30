@@ -10,6 +10,7 @@ from agent_poc.trace import TraceRecorder, assert_trace_safe
 MALICIOUS = (
     'Bearer abc token=one password=two credential=three '
     'https://internal.example /users/private C:\\private\\secret.txt '
+    'path=/users/fotile/assigned-secret '
     'Sample_ID=patient-42，split rejected'
 )
 
@@ -20,6 +21,7 @@ def test_prompt_and_trace_redact_sensitive_string_values(tmp_path):
     for forbidden in (
         'bearer abc', 'token=one', 'password=two', 'credential=three',
         'internal.example', '/users/private', 'c:\\private', 'patient-42',
+        'assigned-secret',
     ):
         assert forbidden not in rendered
 
@@ -43,7 +45,7 @@ def test_prompt_and_trace_redact_sensitive_string_values(tmp_path):
     trace_text = trace_path.read_text(encoding='utf-8').lower()
     for forbidden in (
         'token=one', 'password=two', 'internal.example', '/users/private',
-        'patient-42', 'held-out-secret', 'sample_id',
+        'patient-42', 'held-out-secret', 'sample_id', 'assigned-secret',
     ):
         assert forbidden not in trace_text
 

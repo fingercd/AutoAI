@@ -33,6 +33,13 @@ from ..runs.repository import RunNotFound, RunRepository
 from .contracts import CreateAgentExperimentRequest, CreateAgentSessionRequest
 from .evidence import build_dataset_evidence_card
 from .feedback import build_diagnosis
+from .memory import (
+    MAX_MEMORY_CONTEXT_ITEMS,
+    build_memory_record,
+    build_memory_signatures,
+    build_terminal_outcome,
+    freeze_memory_context,
+)
 from .decision_support import (
     VALIDATION_UNCERTAINTY_METHOD,
     build_decision_support,
@@ -416,6 +423,33 @@ class AgentService:
                 for status in context['module_status'].values()
             ):
                 context['status'] = 'ready'
+        if module_flags['case_memory']:
+            task_signature, evidence_signature = build_memory_signatures(
+                selection_metric=payload.selection_metric,
+                allowed_models=payload.allowed_models,
+                evaluation_config=evaluation_config,
+                evidence_card=context.get('evidence_card'),
+            )
+            remembered = self.sessions.list_memory_payloads_scoped(
+                task_signature=task_signature,
+                evidence_signature=evidence_signature,
+                principal=principal,
+                limit=MAX_MEMORY_CONTEXT_ITEMS,
+            )
+            context['memory_policy'] = {
+                'schema_version': 'agent-memory-policy-v1',
+                'scope': 'principal',
+                'top_k': MAX_MEMORY_CONTEXT_ITEMS,
+                'frozen_at_session_creation': True,
+                'write_enabled': bool(context_policy['case_write']),
+            }
+            context['memory_context'] = freeze_memory_context(remembered)
+            context['module_status']['case_memory'] = 'ready'
+            if all(
+                status == 'ready'
+                for status in context['module_status'].values()
+            ):
+                context['status'] = 'ready'
         session = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -746,11 +780,12 @@ class AgentService:
         else:
             feedback['validation'] = {'status': 'pending', 'metrics': {}}
 
+        diagnosis: dict[str, Any] | None = None
         if session.module_flags.get('feedback_diagnosis'):
             train_metrics, validation_metrics, _ = _extract_train_validation_metrics(
                 run_id
             )
-            feedback['diagnosis'] = build_diagnosis(
+            diagnosis = build_diagnosis(
                 run_state=record.state,
                 selection_metric=session.selection_metric,
                 training_metrics=train_metrics,
@@ -760,6 +795,16 @@ class AgentService:
                 restricted_actions_available=isinstance(
                     session.context.get('proposal_catalog'), dict
                 ),
+            )
+            feedback['diagnosis'] = diagnosis
+
+        if record.state in {'succeeded', 'failed', 'cancelled'}:
+            self._persist_terminal_outcome(
+                session=session,
+                experiment=experiment,
+                record=record,
+                diagnosis=diagnosis,
+                principal=principal,
             )
 
         return _scrub(feedback)
@@ -919,6 +964,15 @@ class AgentService:
                 f'只能 finalize 训练成功的 Run，当前 run {selected_run_id} state={record.state}'
             )
 
+        self._persist_terminal_outcome(
+            session=session,
+            experiment=experiment,
+            record=record,
+            diagnosis=None,
+            principal=principal,
+            require_validation_score=True,
+        )
+
         updated = self.sessions.finalize_session(
             session_id=session_id,
             selected_run_id=selected_run_id,
@@ -937,6 +991,111 @@ class AgentService:
         })
 
     # ---- 内部 helpers ----
+
+    @staticmethod
+    def _memory_write_enabled(session: AgentSessionRecord) -> bool:
+        flags = session.module_flags
+        policy = session.context_policy
+        return bool(
+            flags.get('case_memory')
+            and flags.get('evidence_card')
+            and flags.get('fail_fast_guard')
+            and flags.get('feedback_diagnosis')
+            and policy.get('case_write') is True
+            and policy.get('source_role') != 'benchmark'
+        )
+
+    def _persist_terminal_outcome(
+        self,
+        *,
+        session: AgentSessionRecord,
+        experiment: AgentExperimentRecord,
+        record: RunRecord,
+        diagnosis: dict[str, Any] | None,
+        principal: Principal,
+        require_validation_score: bool = False,
+    ):
+        """Persist an allow-listed terminal snapshot when Session policy permits.
+
+        The returned repository record is internal.  It is used only to derive
+        the selected case during finalize and is never serialized by the API.
+        """
+        if not self._memory_write_enabled(session):
+            return None
+        if record.state not in {'succeeded', 'failed', 'cancelled'}:
+            return None
+        train_metrics, validation_metrics, source = _extract_train_validation_metrics(
+            record.run_id
+        )
+        if diagnosis is None:
+            diagnosis = build_diagnosis(
+                run_state=record.state,
+                selection_metric=session.selection_metric,
+                training_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+                error_details=record.error_details,
+                evidence_card=session.context.get('evidence_card'),
+                restricted_actions_available=isinstance(
+                    session.context.get('proposal_catalog'), dict
+                ),
+            )
+        validation_score = _selection_score(
+            session.selection_metric, validation_metrics
+        )
+        if record.state == 'succeeded' and validation_score is None:
+            if require_validation_score:
+                raise TrainingConfigValidationError(
+                    '启用 case_memory 写入时，成功 Run 必须包含有效 Validation 分数'
+                )
+            return None
+        metric_stds = source.get('metric_std')
+        validation_std = (
+            metric_stds.get(session.selection_metric)
+            if isinstance(metric_stds, dict)
+            else None
+        )
+        fit_count: int | None = None
+        guard = _guard_feedback(record)
+        if isinstance(guard, dict):
+            postflight = guard.get('postflight')
+            if isinstance(postflight, dict):
+                observed_fit_count = postflight.get('model_fit_count')
+                if isinstance(observed_fit_count, int) and not isinstance(
+                    observed_fit_count, bool
+                ):
+                    fit_count = observed_fit_count
+        duration_seconds = _safe_record_summary(record).get('duration_seconds')
+        task_signature, evidence_signature = build_memory_signatures(
+            selection_metric=session.selection_metric,
+            allowed_models=session.allowed_models,
+            evaluation_config=session.evaluation_config,
+            evidence_card=session.context.get('evidence_card'),
+        )
+        outcome_payload = build_terminal_outcome(
+            state=record.state,
+            selection_metric=session.selection_metric,
+            action=experiment.action_json,
+            validation_score=validation_score,
+            validation_std=validation_std,
+            diagnosis=diagnosis,
+            duration_seconds=duration_seconds,
+            model_fit_count=fit_count,
+        )
+        failure_payload = (
+            build_memory_record('failure', outcome_payload)
+            if record.state == 'failed'
+            else None
+        )
+        return self.sessions.record_terminal_outcome_scoped(
+            session_id=session.session_id,
+            run_id=record.run_id,
+            state=record.state,
+            task_signature=task_signature,
+            evidence_signature=evidence_signature,
+            payload=outcome_payload,
+            failure_memory_payload=failure_payload,
+            principal=principal,
+        )
 
     def _experiment_count(self, session_id: str, principal: Principal) -> int:
         return self.sessions.count_experiments_scoped(

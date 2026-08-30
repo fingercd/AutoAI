@@ -22,7 +22,12 @@ _FORBIDDEN_KEY_PARTS = (
     'filesystem',
     'sample_id',
 )
-_ABSOLUTE_PATH = re.compile(r'(?:(?:[A-Za-z]:[\\/])|(?:^|\s)/)[^\s,;]+')
+_ABSOLUTE_PATH = re.compile(
+    r'(?:[A-Za-z]:[\\/][^\s,;]*|'
+    r'/(?:users|home|var|tmp|opt|srv|etc|root|mnt|data)/[^\s,;]*|'
+    r'(?:^|\s)/[^\s,;]+)',
+    flags=re.IGNORECASE,
+)
 _URL = re.compile(r'https?://[^\s,;]+', flags=re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
     r'\b(?:token|secret|password|credential|authorization)\s*[:=]\s*[^\s,;]+',
@@ -71,6 +76,7 @@ def build_messages(
     proposal_recipes: tuple[dict[str, str], ...] = (),
     failed_run_ids: tuple[str, ...] = (),
     allowed_replan_actions: tuple[str, ...] = (),
+    prior_guidance: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     schema = json.dumps(
         decision_json_schema(
@@ -96,6 +102,37 @@ def build_messages(
             'split_test': cfg.split_test,
         },
     }
+    user_payload: dict[str, Any] = {
+        'locked_agent_config': visible_config,
+        'observation': safe_observation(observation),
+        'instruction': (
+            'An empty experiments list and a null best_run_id are normal at the '
+            'start of a session; when a remaining run is available, choose '
+            'RUN_EXPERIMENT with one allowed, new effective configuration. '
+            'Choose RUN_EXPERIMENT only when a remaining run is available and '
+            'the proposed effective configuration is new. Choose FINALIZE only '
+            'for a known succeeded experiment with usable validation. When '
+            'choosing FINALIZE, copy selected_run_id character-for-character '
+            'from one observed experiment or best_run_id; never shorten, merge, '
+            'or synthesize a run id. If experiments already exist, never repeat '
+            'an effective configuration. When proposal recipes are supplied, '
+            'copy proposal_id and all canonical fields exactly. Static prior '
+            'recommendations are advisory, train-only, and already mapped to '
+            'available proposal recipes; prefer them only when current validation '
+            'evidence does not contradict them. Prefer svm or random_forest only '
+            'when that model is present in allowed_models. When allowed_models '
+            'contains only logistic_regression, choose logistic_regression. Otherwise '
+            'Use one short rationale/reason label from the schema enum. '
+            'choose REQUEST_HUMAN; do not request human input solely because no '
+            'experiment has been run yet.'
+        ),
+    }
+    if prior_guidance is not None:
+        # Defense in depth: even a caller-supplied projection passes the same
+        # recursive prompt boundary as server observations.
+        safe_prior = safe_observation(prior_guidance)
+        if isinstance(safe_prior, dict) and safe_prior.get('recommendations'):
+            user_payload['static_prior'] = safe_prior
     return [
         {
             'role': 'system',
@@ -110,29 +147,7 @@ def build_messages(
         {
             'role': 'user',
             'content': json.dumps(
-                {
-                    'locked_agent_config': visible_config,
-                    'observation': safe_observation(observation),
-                    'instruction': (
-                        'An empty experiments list and a null best_run_id are normal at the '
-                        'start of a session; when a remaining run is available, choose '
-                        'RUN_EXPERIMENT with one allowed, new effective configuration. '
-                        'Choose RUN_EXPERIMENT only when a remaining run is available and '
-                        'the proposed effective configuration is new. Choose FINALIZE only '
-                        'for a known succeeded experiment with usable validation. When '
-                        'choosing FINALIZE, copy selected_run_id character-for-character '
-                        'from one observed experiment or best_run_id; never shorten, merge, '
-                        'or synthesize a run id. If experiments already exist, never repeat '
-                        'an effective configuration. When proposal recipes are supplied, '
-                        'copy proposal_id and all canonical fields exactly. Prefer svm or '
-                        'random_forest only when that model is present in allowed_models. '
-                        'When allowed_models contains only logistic_regression, choose '
-                        'logistic_regression. Otherwise '
-                        'Use one short rationale/reason label from the schema enum. '
-                        'choose REQUEST_HUMAN; do not request human input solely because no '
-                        'experiment has been run yet.'
-                    ),
-                },
+                user_payload,
                 ensure_ascii=False,
                 sort_keys=True,
             ),

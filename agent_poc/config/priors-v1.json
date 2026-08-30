@@ -1,0 +1,51 @@
+{
+  "schema_version": "small-sample-priors-v1",
+  "recipes": [
+    {
+      "risk_codes": [
+        "high_dimension",
+        "very_small_train_partition"
+      ],
+      "model_type": "logistic_regression",
+      "normalization": "zscore",
+      "class_balance": "none",
+      "rationale_code": "high_dimension_regularized_linear"
+    },
+    {
+      "risk_codes": [
+        "class_imbalance"
+      ],
+      "model_type": "logistic_regression",
+      "normalization": "zscore",
+      "class_balance": "class_weight",
+      "rationale_code": "class_imbalance_compensation"
+    },
+    {
+      "risk_codes": [
+        "high_dimension"
+      ],
+      "model_type": "svm",
+      "normalization": "zscore",
+      "class_balance": "none",
+      "rationale_code": "high_dimension_margin_check"
+    },
+    {
+      "risk_codes": [
+        "very_small_train_partition"
+      ],
+      "model_type": "logistic_regression",
+      "normalization": "zscore",
+      "class_balance": "none",
+      "rationale_code": "small_sample_regularized_linear"
+    },
+    {
+      "risk_codes": [
+        "very_small_train_partition"
+      ],
+      "model_type": "random_forest",
+      "normalization": "zscore",
+      "class_balance": "none",
+      "rationale_code": "small_sample_tree_comparison"
+    }
+  ]
+}
