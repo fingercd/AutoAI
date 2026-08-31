@@ -70,6 +70,7 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
             "fold_index": 0,
             "params": {"pca_components": 8},
             "selection_metric": "balanced_accuracy",
+            "selection_source": "validation",
             "selection_score": 0.81,
             "valid_balanced_accuracy": 0.81,
         },
@@ -77,6 +78,7 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
             "fold_index": 1,
             "params": {"pca_components": 10},
             "selection_metric": "balanced_accuracy",
+            "selection_source": "validation",
             "selection_score": 0.91,
             "valid_balanced_accuracy": 0.91,
         },
@@ -193,6 +195,7 @@ def test_projects_random_forest_oob_selection_separately_from_validation(tmp_pat
             "fold_index": 1,
             "params": {"random_forest_max_depth": 5},
             "selection_metric": "oob_balanced_accuracy",
+            "selection_source": "oob",
             "selection_score": 0.87,
             "valid_balanced_accuracy": 0.79,
         }
@@ -279,6 +282,7 @@ def test_project_status_attaches_audit_without_reading_its_previous_status(tmp_p
         "hyperparameter_search_csv": {"artifact": "hyperparameter_search.csv", "available": False},
         "best_params": {"svm_c": 1.0},
         "selection_metric": "balanced_accuracy",
+        "selection_source": "validation",
         "selection_score": 0.88,
         "valid_balanced_accuracy": 0.88,
     }
