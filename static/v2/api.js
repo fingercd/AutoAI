@@ -181,6 +181,20 @@ export function cancelRun(runId, options = {}) {
   return request(`/api/training/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', ...options });
 }
 
+/** 创建多模型/重复实验 Batch；请求仅入队，不在 HTTP 线程训练。 */
+export function createBatch(payload, options = {}) {
+  return request('/api/training/batches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    ...options,
+  });
+}
+
+export const getBatch = (batchId, options = {}) => request(`/api/training/batches/${encodeURIComponent(batchId)}`, options);
+export const getBatchComparison = (batchId, options = {}) => request(`/api/training/batches/${encodeURIComponent(batchId)}/comparison`, options);
+export const stopBatch = (batchId, options = {}) => request(`/api/training/batches/${encodeURIComponent(batchId)}/stop`, { method: 'POST', ...options });
+
 /** 停止 Run，只保留 STOP 记录并丢弃本次训练产物。 */
 export async function stopRun(runId, options = {}) {
   const encoded = encodeURIComponent(runId);

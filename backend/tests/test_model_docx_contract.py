@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 
-def test_word_random_forest_oob_random_search_space_is_exact():
+def test_random_forest_grouped_search_space_is_exact():
     import backend.app.training as training
 
     candidates = training._traditional_candidate_configs(
@@ -15,13 +15,13 @@ def test_word_random_forest_oob_random_search_space_is_exact():
         [0, 1] * 50,
     )
 
-    assert len(candidates) == 10
-    assert len({(item.random_forest_max_depth, item.random_forest_min_samples_leaf, item.random_forest_max_features) for item in candidates}) == 10
-    assert {item.random_forest_n_estimators for item in candidates} == {200}
-    assert {item.random_forest_max_depth for item in candidates} <= {3, 5, 10}
-    assert {item.random_forest_min_samples_leaf for item in candidates} <= {2, 5}
-    assert {item.random_forest_max_features for item in candidates} <= {"sqrt", "log2", 0.1}
-    assert all(item.random_forest_oob_score for item in candidates)
+    assert len(candidates) == 12
+    assert len({(item.random_forest_max_depth, item.random_forest_min_samples_leaf, item.random_forest_max_features) for item in candidates}) == 12
+    assert {item.random_forest_n_estimators for item in candidates} == {500}
+    assert {item.random_forest_max_depth for item in candidates} <= {None, 5, 10}
+    assert {item.random_forest_min_samples_leaf for item in candidates} <= {1, 5}
+    assert {item.random_forest_max_features for item in candidates} <= {"sqrt", 0.1}
+    assert not any(item.random_forest_oob_score for item in candidates)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +55,7 @@ def test_word_v2_binary_models_emit_single_logit(model_type, sample_count):
         (1000, [7, 5, 3], [2, 2, 2]),
         (1001, [9, 5, 3], [4, 2, 2]),
         (2999, [9, 5, 3], [4, 2, 2]),
-        (3000, [9, 7, 5], [4, 4, 2]),
+        (3000, [9, 7, 5], [4, 2, 2]),
     ],
 )
 def test_word_cnn_feature_boundaries_are_exact(feature_count, kernels, pools):

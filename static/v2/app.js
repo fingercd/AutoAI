@@ -24,7 +24,8 @@ import { initAuthGate, probeAuth } from './components/auth-gate.js';
 import { mountWorkbench } from './views/workbench.js';
 import { mountModeling } from './views/modeling.js';
 import { mountRuns } from './views/runs.js';
-import { mountResult } from './views/result.js';
+import { mountResult } from './views/result.js?v=20260820-compact-visualization-v3';
+import { mountComparison } from './views/comparison.js';
 import { mountManual } from './views/manual.js';
 
 /**
@@ -52,6 +53,11 @@ const ROUTES = {
     sub: '指标、曲线、混淆矩阵与可下载产物，全部来自训练真实输出。',
     mount: mountResult,
   },
+  comparison: {
+    title: '模型性能比较',
+    sub: '仅汇总经过完整性校验的成功子 Run；缺失结果不会伪造成零值。',
+    mount: mountComparison,
+  },
   manual: {
     title: '使用手册',
     sub: '字段含义、数据契约与常见问题。',
@@ -68,14 +74,14 @@ const DEFAULT_VIEW = 'workbench';
  * 容错策略：空 hash、未知视图名一律回退 DEFAULT_VIEW，保证页面永远可渲染。
  *
  * @param {string} hash 原始 hash（可含或不含前导 #）。
- * @returns {{view: string, runId: string|null}} 视图名与结果页 run_id 参数。
+ * @returns {{view: string, runId: string|null, batchId: string|null}} 路由参数。
  */
 export function parseHash(hash) {
   const raw = String(hash || '').replace(/^#/, '');
   const [pathPart, queryPart] = raw.split('?');
   const view = pathPart.replace(/^\//, '') || DEFAULT_VIEW;
   const params = new URLSearchParams(queryPart || '');
-  return { view: ROUTES[view] ? view : DEFAULT_VIEW, runId: params.get('run_id') || null };
+  return { view: ROUTES[view] ? view : DEFAULT_VIEW, runId: params.get('run_id') || null, batchId: params.get('batch_id') || null };
 }
 
 /**

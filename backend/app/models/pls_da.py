@@ -94,15 +94,43 @@ class PLSDAClassifier:
                更直接，且类别表顺序可控）；
             3. 用 one-hot 矩阵作为多输出回归目标拟合 PLS。
         """
+        values = np.asarray(x, dtype=np.float32)
+        if values.ndim != 2 or values.shape[0] < 2 or values.shape[1] < 1:
+            raise ValueError("PLS-DA 至少需要 2 个样本和 1 个特征")
+        if not np.isfinite(values).all():
+            raise ValueError("PLS-DA 输入特征必须全部为有限数值")
         y = np.asarray(y, dtype=np.int64)
+        if y.ndim != 1 or y.shape[0] != values.shape[0]:
+            raise ValueError("PLS-DA 的标签长度必须与样本数一致")
         self.classes_ = np.unique(y)
+        if self.classes_.size < 2:
+            raise ValueError("PLS-DA 至少需要两个类别")
         y_one_hot = np.zeros((len(y), len(self.classes_)), dtype=np.float32)
         for col, class_id in enumerate(self.classes_):
             # 第 col 列在“真实类别为 class_id”的样本行上置 1，其余为 0
             y_one_hot[y == class_id, col] = 1.0
+        # one-hot 响应经过中心化后最多只有 C-1 个独立方向。若仍把候选
+        # 分量数直接交给 PLSRegression，二分类的小训练折会在已耗尽的 Y
+        # 残差上继续迭代，SciPy SVD 可能出现 NaN。将有效分量裁剪到
+        # min(N-1, P, C-1) 是 PLS-DA 的可辨识秩，不是模型替代或降级。
+        effective_components = min(
+            self.n_components,
+            values.shape[0] - 1,
+            values.shape[1],
+            self.classes_.size - 1,
+        )
+        if effective_components < 1:
+            raise ValueError("PLS-DA 当前训练折没有可辨识的潜变量")
+        self.effective_n_components_ = int(effective_components)
+        self.model = PLSRegression(
+            n_components=self.effective_n_components_,
+            scale=False,
+            max_iter=500,
+            tol=1e-6,
+        )
         # 特征转 float32 与 one-hot 目标 dtype 对齐，避免 sklearn 内部
         # 重复拷贝和类型提升带来的额外内存开销。
-        self.model.fit(np.asarray(x, dtype=np.float32), y_one_hot)
+        self.model.fit(values, y_one_hot)
         return self
 
     def _responses(self, x: np.ndarray) -> np.ndarray:

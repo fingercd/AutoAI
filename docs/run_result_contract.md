@@ -1,6 +1,6 @@
 # 建模结果接口契约（run-result-v1）
 
-> 最近核对：2026-07-17。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
+> 最近核对：2026-08-22。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
 
 前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。
 
@@ -17,7 +17,7 @@ GET /api/training/runs/{run_id}/result
 /static/v2/index.html#/results?run_id=<URL-encoded Run ID>
 ```
 
-v2 公共入口 `/v2` 会重定向到静态工作台；结果页刷新、分享链接和自动跳转均以 URL 中的 Run ID 重新取数。两套前端只能下载 `artifacts[]` 中 `downloadable=true` 且 `download_url` 合法的条目。单样品解释在摘要为 `ready` 且 JSON artifact 可下载时默认加载，使用样品自身的 `curve` 与 `sample_x_axis`；旧产物缺少这些字段时才允许回退到全局轴或基线曲线。
+v2 公共入口 `/v2` 会重定向到静态工作台；结果页刷新、分享链接和自动跳转均以 URL 中的 Run ID 重新取数。两套前端只能下载 `artifacts[]` 中 `downloadable=true` 且 `download_url` 合法的条目。`TEMPORARILY_HIDDEN` 期间两套前端均不渲染或请求可解释性/模型特征图数据。
 
 Run ID 属于当前 Principal 时返回结果；不存在、已删除或不属于当前 Principal 均返回 404。server 模式还需要 Bearer 令牌。
 
@@ -137,6 +137,11 @@ queued | running | succeeded | failed | cancelled
 - 不得用折 Test Macro F1 平均值覆盖 pooled OOF Macro F1。
 - 图表分析的 Test 使用 pooled OOF；Train/Valid 使用跨折预测合并，`aggregation="pooled_cross_fold"`，同一样本可能在不同折重复出现。Train/Valid 标量主展示仍是 fold mean。
 
+独立测试集 + 留一审计：
+
+- `evaluation.strategy="leave_one_sample_id_cv_with_external_test"` 时，`metrics.primary` 与 `metrics.splits.test` 是 `aggregation="direct_external_test"` 的独立测试集结果。
+- `evaluation.primary_aggregation` 为 `direct_external_test`；`cv_summary.audit.pooled_oof`（以及 `metrics.audit.pooled_oof`）仅保存主数据的留一 OOF 审计，绝不与外部 Test 排名混用。
+
 当前可能返回的标量：
 
 ```text
@@ -197,23 +202,15 @@ weighted_f1
 
 新页面以 `analysis.splits` 为准。顶层 `confusion_matrix`、`classification_report`、`prediction_distribution` 暂时继续映射 Test，供旧调用方兼容。传统模型不生成 `history.csv`，`history.available=false` 时前端不渲染训练曲线区域；历史传统 Run 即使含单行 history 也按不适用处理。深度模型曲线使用真实 epoch，并展示数值轴、刻度和网格。当前没有正式 ROC-AUC/ROC/PR 产物，前端不得自行猜测。
 
+`analysis.model_feature_visualization` 在 `TEMPORARILY_HIDDEN` 期间不返回。模型表征/置换/VIP、PCA 得分与森林 proximity 的实现仍保留在内部源码，待明确产品需求恢复后再同步契约、artifact 白名单与前端。
+
 ## 解释性
 
 ```json
-{
-  "explainability": {
-    "samples": {
-      "status": "ready",
-      "artifact": "sample_feature_importance.json",
-      "csv_artifact": "sample_feature_importance.csv",
-      "method": "sample_occlusion_log_loss",
-      "sample_count": 9
-    }
-  }
-}
+{"explainability": {"status": "temporarily_hidden"}}
 ```
 
-这里仅提供单样品解释的安全摘要。完整 JSON/CSV 由 `artifacts[]` 下载；单样品文件可能较大，前端应在用户明确点击后再懒加载，加载完成后才在本地切换样品，不能把全部内容重复塞入首屏结果响应。新 Run 不生成或投影全局重要性。
+传统模型窗口遮挡、卷积 Grad-CAM 与 DSCARNet 双通路映射实现均保留，但关闭期间新 Run 不计算、不生成对应 artifact；响应不包含方法、样品数据或服务器路径，前端也不发送 JSON 下载请求。
 
 ## Artifact 描述
 
@@ -249,6 +246,8 @@ ok | volatile | missing | corrupt | not_generated
 
 新 Manifest 使用显式 catalog。`model.pkl`、`model.pt`、`*.joblib`、`status.json` 和 Manifest 本身不作为结果页下载；无服务器路径的 `config.json` 可下载，含路径字段的历史配置自动禁用。
 
+`sample_feature_importance.*`、`feature_importance.*`、`model_feature_visualization.json` 和 `dscarnet_mapping.json` 在 `TEMPORARILY_HIDDEN` 期间均不是可下载 artifact；对新旧 Manifest 的直接请求统一受控返回 404。
+
 ## 兼容性
 
 训练记录列表的 `GET /api/training/runs?projection=summary` 不属于 `run-result-v1` 完整投影，但可额外返回可空标量 `test_macro_f1`。该值必须与本契约的 Test 主口径一致：holdout 取直接测试指标，CV 取 pooled OOF 主指标，禁止用 fold mean；指标文件缺失、损坏、Run 未成功或结果不完整时返回 `null`。
@@ -256,7 +255,7 @@ ok | volatile | missing | corrupt | not_generated
 - 原 Run 状态接口、旧顶层字段和旧 artifact URL 不删除。
 - 新 Manifest v2 使用大小和 SHA-256 校验。
 - 历史 Manifest 继续按旧 `downloadable` 做 local 只读兼容，但结果页会给出兼容 warning。
-- 历史 Manifest 已登记的 `feature_importance.json/csv` 保留直接下载兼容，但 descriptors 和新页面不列出；新 Manifest catalog 不再登记这两个文件。
+- 历史 Manifest 已登记的解释性 artifact 也服从当前隐藏下载限制；descriptors 和新页面均不列出。
 - server Principal 不使用“无 DB 的旧目录”旁路。
 - 部分文件损坏只影响对应分析和下载，不应导致整个结果页 500。
 
@@ -268,5 +267,5 @@ ok | volatile | missing | corrupt | not_generated
 4. 私有、缺失、篡改和未成功 Run 的下载分别被拒绝。
 5. server 模式下其他 Principal 和旧 owner 为空 Run 返回 404。
 6. 响应和公开配置中不存在服务器绝对路径。
-7. Holdout/CV fixture 均验证三分区分析口径；新结果不含 `explainability.global`。
+7. Holdout/CV fixture 均验证三分区分析口径；新结果仅有 `explainability.status="temporarily_hidden"`，不含解释 artifact。
 8. 传统模型没有 history 文件/曲线，深度模型保留真实 history。

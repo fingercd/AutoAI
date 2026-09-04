@@ -97,8 +97,31 @@ class RunRecord:
     updated_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    batch_id: str | None = None
+    batch_model_order: int | None = None
+    batch_repeat_index: int | None = None
+    split_seed: int | None = None
+    model_seed: int | None = None
 
     # legacy_status 是派生只读视图：库中只存规范 state，旧词表在读取时即时映射。
     @property
     def legacy_status(self) -> str:
         return LEGACY_STATUS[self.state]
+
+
+@dataclass(frozen=True)
+class BatchRecord:
+    """A durable multi-model training request whose state is derived from runs."""
+
+    batch_id: str
+    dataset_id: str | None
+    test_dataset_id: str | None
+    config: dict[str, Any]
+    model_types: list[str]
+    repeat_count: int
+    base_seed: int
+    dataset_snapshot: dict[str, Any] = field(default_factory=dict)
+    owner_id: str | None = None
+    tenant_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None

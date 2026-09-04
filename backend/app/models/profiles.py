@@ -38,9 +38,11 @@ class ModelProfile:
 # 支持 profile 分档的模型集合：未列入的模型 ID 会被 build_model_profile 直接拒绝。
 PROFILE_MODEL_TYPES = {
     "pls_da",
+    "spls_da",
     "pca_lda",
     "logistic_regression",
     "svm",
+    "pca_svm",
     "random_forest",
     "xgboost",
     "pca_mlp",
@@ -72,7 +74,7 @@ _CNN_KERNELS_BY_FEATURE_BAND = {
 _CNN_POOLS_BY_FEATURE_BAND = {
     "short": [2, 2, 2],
     "medium": [4, 2, 2],
-    "long": [4, 4, 2],
+    "long": [4, 2, 2],
 }
 _RESNET_L_VALUES = {
     "short": {"kernels": [7, 5, 3], "pools": [2, 2, 2]},

@@ -8,11 +8,11 @@
 #
 # 在系统中的位置：
 #   前端启动时调用 /api/models 渲染可选模型列表，依据 available /
-#   unavailable_reason 禁用当前环境不可训练的模型；可解释性方法声明来自
-#   backend/app/training_explainability.py，与训练侧保持一致。
+#   unavailable_reason 禁用当前环境不可训练的模型。ui_visible 是产品展示
+#   边界，不影响后端兼容训练能力。
 #
 # 关键设计约束：
-#   - 模型目录固定返回 15 个目标 ID，前端不维护第二份硬编码清单；
+#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的十项；
 #     可选依赖（mamba-ssm、aggmap）缺失时只标 available=false，
 #     绝不用近似实现静默顶替。
 #   - capability 探测运行在 Web 请求路径上，必须廉价：只查文件存在性与
@@ -25,8 +25,8 @@
 
 """首页、健康检查、本地样例摘要和模型能力目录路由。
 
-模型目录始终返回 15 个目标 ID，并用 capability 字段表达可选依赖是否可用；
-前端据此禁用模型，而不是维护另一份硬编码清单。
+模型目录返回所有后端能力，并用 capability 与显式 UI 可见性表达可用边界；
+前端不维护第二份硬编码清单，也不得因 UI 收敛删除后端能力。
 """
 
 from __future__ import annotations
@@ -47,31 +47,35 @@ router = APIRouter()
 
 # 顺序同时决定前端目录的稳定展示顺序；新增模型需同步 registry 与契约测试。
 # 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族) 三元组。
-_MODEL_CATALOG: tuple[tuple[str, str, str], ...] = (
-    ("pls_da", "PLS-DA", "traditional_ml"),
-    ("pca_lda", "PCA-LDA", "traditional_ml"),
-    ("logistic_regression", "Logistic Regression", "traditional_ml"),
-    ("svm", "SVM", "traditional_ml"),
-    ("random_forest", "Random Forest", "traditional_ml"),
-    ("xgboost", "XGBoost", "traditional_ml"),
-    ("pca_mlp", "PCA-MLP", "basic_deep"),
-    ("cnn1d", "1D CNN", "basic_deep"),
-    ("cnn1d_se", "1D CNN-SE", "convolutional"),
-    ("resnet1d", "1D ResNet", "convolutional"),
-    ("inception1d", "1D Inception", "convolutional"),
-    ("tcn1d", "1D TCN", "convolutional"),
-    ("cnn_transformer1d", "CNN-Transformer", "long_range"),
-    ("cnn_mamba1d", "CNN-Mamba", "long_range"),
-    ("dscarnet", "DSCARNet", "two_dimensional_mapping"),
+_MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
+    ("pls_da", "PLS-DA", "traditional_ml", True),
+    ("spls_da", "sPLS-DA", "traditional_ml", True),
+    ("pca_lda", "PCA-LDA", "traditional_ml", True),
+    ("logistic_regression", "Logistic Regression", "traditional_ml", True),
+    ("svm", "SVM", "traditional_ml", True),
+    ("pca_svm", "PCA-SVM", "traditional_ml", True),
+    ("random_forest", "Random Forest", "traditional_ml", True),
+    ("xgboost", "XGBoost", "traditional_ml", True),
+    ("pca_mlp", "PCA-MLP", "basic_deep", True),
+    ("cnn1d", "1D-CNN", "basic_deep", True),
+    ("cnn1d_se", "1D CNN-SE", "convolutional", False),
+    ("resnet1d", "1D ResNet", "convolutional", False),
+    ("inception1d", "1D Inception", "convolutional", False),
+    ("tcn1d", "1D TCN", "convolutional", False),
+    ("cnn_transformer1d", "CNN-Transformer", "long_range", False),
+    ("cnn_mamba1d", "CNN-Mamba", "long_range", False),
+    ("dscarnet", "DSCARNet", "two_dimensional_mapping", False),
 )
 
 # 各模型对应的内部实现模块路径，用于“模块文件是否存在”的廉价探测；
 # cnn_mamba1d 与 dscarnet 不在此表——它们走专属的可选依赖探测函数。
 _MODEL_MODULES = {
     "pls_da": "backend.app.models.pls_da",
+    "spls_da": "backend.app.models.spls_da",
     "pca_lda": "backend.app.models.pca_lda",
     "logistic_regression": "backend.app.models.logistic_regression",
     "svm": "backend.app.models.svm",
+    "pca_svm": "backend.app.models.pca_svm",
     "random_forest": "backend.app.models.random_forest",
     "xgboost": "backend.app.models.xgboost",
     "pca_mlp": "backend.app.models.pca_mlp",
@@ -136,7 +140,7 @@ def _model_capability(model_type: str, display_name: str) -> tuple[bool, str | N
     """按模型类型分派到对应 capability 探测函数的统一入口。
 
     两个特殊模型（cnn_mamba1d、dscarnet）走可选依赖探测，
-    其余 13 个走通用的“模块文件存在性”探测。
+    其余 15 个走通用的“模块文件存在性”探测。
     """
     if model_type == "cnn_mamba1d":
         return _mamba_capability()
@@ -240,15 +244,12 @@ def health(request: Request) -> dict[str, object]:
 
 @router.get('/api/models')
 def get_models_catalog() -> dict[str, list[dict[str, object]]]:
-    """返回稳定的 15 项模型目录及当前环境 capability，不启动训练。"""
-
-    # 延迟导入可解释性声明，避免目录接口拉起训练侧重依赖。
-    from ..training_explainability import explainability_method
+    """返回完整后端模型目录及当前 capability，不启动训练。"""
 
     models: list[dict[str, object]] = []
     # 按 _MODEL_CATALOG 的固定顺序逐项探测 capability 并组装响应；
     # 该顺序即前端展示顺序，新增模型必须同步 registry 与契约测试。
-    for model_type, display_name, family in _MODEL_CATALOG:
+    for model_type, display_name, family, ui_visible in _MODEL_CATALOG:
         available, unavailable_reason = _model_capability(model_type, display_name)
         models.append(
             {
@@ -257,7 +258,8 @@ def get_models_catalog() -> dict[str, list[dict[str, object]]]:
                 "family": family,
                 "available": available,
                 "unavailable_reason": unavailable_reason,
-                "explainability_method": explainability_method(model_type),
+                "ui_visible": ui_visible,
+                "visibility_reason": None if ui_visible else "temporarily_hidden_from_ui",
             }
         )
     return {"models": models}

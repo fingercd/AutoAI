@@ -32,6 +32,12 @@ import {
 } from '../components/artifacts.js';
 import { normalizeMatrix, cellIntensity, matrixTotals } from '../components/confusion-matrix.js';
 import { resolveSampleSeries } from '../components/explainability-panel.js';
+import {
+  confusionMatrixCanvasLayout,
+  confusionMatrixPngFilename,
+  normalizeConfusionMatrix,
+} from '../../js/confusion-matrix-download.js';
+import { normalizeVisualizationPayload, scatterPlotDomain } from '../../js/model-feature-charts.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -91,7 +97,7 @@ test('result_state 八态映射齐备', () => {
 test('三种评估口径常量齐备', () => {
   assert.deepEqual(
     Object.keys(EVALUATION_STRATEGIES).sort(),
-    ['external_test_holdout', 'leave_one_sample_id_cv', 'stratified_holdout'],
+    ['external_test_holdout', 'leave_one_sample_id_cv', 'leave_one_sample_id_cv_with_external_test', 'stratified_holdout'],
   );
   for (const meta of Object.values(EVALUATION_STRATEGIES)) {
     assert.ok(meta.label && meta.description);
@@ -396,6 +402,51 @@ test('混淆矩阵纯函数：清洗、强度与合计', () => {
   assert.equal(cellIntensity(0, 3), 0);
   assert.equal(cellIntensity(5, 0), 0);
   assert.deepEqual(matrixTotals(matrix), { total: 6, correct: 5 });
+});
+
+test('混淆矩阵 PNG 布局与文件名按分区确定且清理危险字符', () => {
+  assert.deepEqual(normalizeConfusionMatrix([[3, '1'], [null, 4]]), [[3, 1], [0, 4]]);
+  const layout = confusionMatrixCanvasLayout([[3, 1], [0, 4]], ['类别 A', '类别 B']);
+  assert.equal(layout.size, 2);
+  assert.ok(layout.width > 0 && layout.height > 0 && layout.gridX > layout.padding);
+  assert.equal(layout.gridY, layout.padding + layout.axisTitleSize + layout.columnLabelHeight);
+  assert.equal(layout.width - (layout.gridX + layout.size * layout.cellSize), layout.padding);
+  assert.equal(layout.height - (layout.gridY + layout.size * layout.cellSize), layout.padding + layout.legendHeight);
+  const numericLayout = confusionMatrixCanvasLayout([[3, 1], [0, 4]], ['1', '2']);
+  assert.equal(numericLayout.height - numericLayout.width, numericLayout.legendHeight);
+  assert.equal('titleHeight' in layout, false);
+  assert.equal('footerHeight' in layout, false);
+  assert.equal(confusionMatrixPngFilename('run/中文:42', 'train'), 'run_run_42__confusion_matrix_train.png');
+  assert.equal(confusionMatrixPngFilename('safe-run', 'invalid'), 'run_safe-run__confusion_matrix_test.png');
+});
+
+test('模型特征散点坐标域同时覆盖样本点与置信椭圆', () => {
+  const domain = scatterPlotDomain({
+    points: [{ x: -2, y: -3 }, { x: 4, y: 5 }],
+    ellipse: { points: [{ x: -10, y: 1 }, { x: 8, y: 12 }, { x: 'bad', y: 2 }] },
+  });
+  assert.ok(domain.xMin < -10);
+  assert.ok(domain.xMax > 8);
+  assert.ok(domain.yMin < -3);
+  assert.ok(domain.yMax > 12);
+  assert.equal(domain.points.length, 2);
+  assert.equal(domain.ellipse.length, 2);
+});
+
+test('模型特征可视化只接受已知图形并保留明确空态', () => {
+  const ready = normalizeVisualizationPayload({
+    schema_version: 'model-feature-visualization-v1',
+    status: 'ready',
+    plots: [
+      { type: 'scatter', points: [] },
+      { type: 'script', code: 'alert(1)' },
+      { type: 'dendrogram', leaves: [] },
+    ],
+  });
+  assert.deepEqual(ready.plots.map((plot) => plot.type), ['scatter', 'dendrogram']);
+  const unsupported = normalizeVisualizationPayload({ status: 'unsupported', reason: 'CV 不对齐', plots: [] });
+  assert.equal(unsupported.status, 'unsupported');
+  assert.equal(unsupported.reason, 'CV 不对齐');
 });
 
 test('单样品解释优先使用样品谱线和样品 X 轴', () => {

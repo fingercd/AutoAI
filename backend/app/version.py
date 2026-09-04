@@ -24,6 +24,8 @@ ARTIFACT_MANIFEST_CONTRACT_VERSION = 'run-artifact-manifest-v2'
 # Run 列表摘要投影（`GET /api/training/runs?projection=summary`）的契约版本，
 # 该投影可返回可空的 `test_macro_f1` 字段。
 RUN_SUMMARY_CONTRACT_VERSION = 'v1'
+TRAINING_BATCH_CONTRACT_VERSION = 'training-batch-v1'
+MODEL_COMPARISON_CONTRACT_VERSION = 'model-comparison-v1'
 
 # Worker 产出是否能被当前 Web 结果页完整解释，以 Manifest 契约为边界。
 WORKER_CONTRACT_VERSION = ARTIFACT_MANIFEST_CONTRACT_VERSION
@@ -34,4 +36,6 @@ WEB_CONTRACTS: dict[str, str] = {
     'run_result': RUN_RESULT_CONTRACT_VERSION,
     'artifact_manifest': ARTIFACT_MANIFEST_CONTRACT_VERSION,
     'run_summary': RUN_SUMMARY_CONTRACT_VERSION,
+    'training_batch': TRAINING_BATCH_CONTRACT_VERSION,
+    'model_comparison': MODEL_COMPARISON_CONTRACT_VERSION,
 }

@@ -31,9 +31,8 @@ import {
 import { createPoller } from '../lib/poller.js';
 import { lineChart, groupedBarChart, chartLegend } from '../lib/charts.js';
 import { getRunResult, getRun, getHealth, listRunsSummary, download, downloadArtifactJson } from '../api.js';
-import { renderConfusionMatrix } from '../components/confusion-matrix.js';
+import { renderConfusionMatrix } from '../components/confusion-matrix.js?v=20260820-compact-visualization-v3';
 import { renderArtifacts } from '../components/artifacts.js';
-import { renderExplainabilityPanel } from '../components/explainability-panel.js';
 import { stateBadge } from '../components/run-list.js';
 
 const POLL_INTERVAL_MS = 3000;
@@ -208,6 +207,9 @@ function splitPanel(result, split) {
     matrix: analysis?.confusion_matrix,
     labels: labels || [],
     caption: `${SPLIT_LABELS[split]} 分区混淆矩阵`,
+    runId: result?.run?.run_id || '',
+    split,
+    aggregation,
   }));
   const distribution = analysis?.prediction_distribution;
   if (distribution?.labels?.length) {
@@ -399,41 +401,8 @@ function datasetCard(result) {
   ]);
 }
 
-/** 单样品解释：默认展开并加载，仍可由用户收起以减少页面长度。 */
-/**
- * 单样品可解释性面板卡。
- *
- * 默认展开并立即渲染（renderExplainabilityPanel 内部按需加载 JSON，
- * 加载后切换样品不重复请求）；实际解释方法（Grad-CAM / 窗口遮挡 Log-loss 增量等）
- * 由后端产物决定，本视图只做展示。
- */
-function explainabilityCard(result) {
-  const body = el('div', { attrs: { id: 'v2-explain-panel' } });
-  const toggle = el('button', {
-    className: 'btn btn-ghost',
-    text: '收起单样品解释',
-    attrs: { type: 'button', 'aria-expanded': 'true', 'aria-controls': 'v2-explain-panel' },
-    on: {
-      click: () => {
-        const opening = body.hidden;
-        body.hidden = !opening;
-        toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
-        toggle.textContent = opening ? '收起单样品解释' : '展开单样品解释';
-      },
-    },
-  });
-  renderExplainabilityPanel(body, {
-    summary: result.explainability?.samples,
-    artifacts: result.artifacts || [],
-    onLoadJson: (url) => downloadArtifactJson(url),
-  });
-  return el('div', { className: 'card' }, [
-    el('h2', { className: 'card-title', text: '单样品解释' }),
-    el('p', { className: 'hint', text: '解释数据默认自动加载；加载后切换样品不会重复请求。' }),
-    toggle,
-    body,
-  ]);
-}
+// TEMPORARILY_HIDDEN: explainability remains implemented on the backend but is
+// deliberately absent from this product surface until it is explicitly restored.
 
 /**
  * 渲染产物下载卡。
@@ -483,7 +452,8 @@ function fullResult(result, { toast }) {
   frag.append(datasetCard(result));
   const unavailable = unavailableAnalysisNotes(result);
   if (unavailable) frag.append(unavailable);
-  frag.append(explainabilityCard(result));
+  // TEMPORARILY_HIDDEN: do not re-enable without an explicit product requirement
+  // and synchronized backend/frontend contract tests.
   frag.append(artifactsCard(result, { toast }));
   return frag;
 }

@@ -18,7 +18,6 @@ def test_classification_v2_contract_is_documented_consistently():
         Path('docs/frontend_backend_handoff.md').read_text(encoding='utf-8'),
     ]
     required_phrases = (
-        '15 个目标分类模型',
         '仅支持分类',
         'Sample_ID',
         'external_test_holdout',
@@ -26,15 +25,11 @@ def test_classification_v2_contract_is_documented_consistently():
         'stratified_holdout',
         '8:1:1',
         'leave_one_sample_id_cv',
-        'balanced accuracy',
-        'train+valid',
         'AdamW',
-        'batch size 8',
-        '最多 200 epochs',
-        '最低 validation loss',
-        'docx-classification-v2',
+        'docx-classification-v3',
         'cnn_mamba1d',
         '依赖不可用',
+        'TEMPORARILY_HIDDEN',
     )
     for document in documents:
         for phrase in required_phrases:

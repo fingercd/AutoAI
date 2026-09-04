@@ -85,11 +85,7 @@ def test_projects_traditional_selection_by_fold_and_search_csv(tmp_path: Path) -
         "artifact": "hyperparameter_search.csv",
         "available": True,
     }
-    assert projection["explainability"] == {
-        "declared_method": "window_permutation",
-        "artifact_method": "interval_permutation_importance",
-        "importance_metric": "baseline_macro_f1_minus_perturbed_macro_f1",
-    }
+    assert projection["explainability"] == {"status": "temporarily_hidden"}
 
 
 def test_projects_deep_audit_values_from_status_history(tmp_path: Path) -> None:
@@ -131,7 +127,7 @@ def test_projects_deep_audit_values_from_status_history(tmp_path: Path) -> None:
         "actual_epochs": 3,
         "min_learning_rate": 0.0001,
     }
-    assert projection["explainability"]["importance_metric"] == "gradcam_activation"
+    assert projection["explainability"] == {"status": "temporarily_hidden"}
 
 
 def test_projects_log_loss_occlusion_contract(tmp_path: Path) -> None:
@@ -156,11 +152,7 @@ def test_projects_log_loss_occlusion_contract(tmp_path: Path) -> None:
 
     projection = build_training_status_projection(tmp_path)
 
-    assert projection["explainability"] == {
-        "declared_method": "window_occlusion_log_loss",
-        "artifact_method": "sample_occlusion_log_loss",
-        "importance_metric": "masked_true_class_log_loss_minus_original_true_class_log_loss",
-    }
+    assert projection["explainability"] == {"status": "temporarily_hidden"}
 
 
 def test_projects_random_forest_oob_selection_separately_from_validation(tmp_path: Path) -> None:
@@ -229,7 +221,7 @@ def test_external_projection_never_exposes_cv_or_fold_fields_and_legacy_runs_are
     assert "fold" not in json.dumps(projection).lower()
     legacy_projection = build_training_status_projection(tmp_path / "missing")
     assert legacy_projection["model_type"] is None
-    assert legacy_projection["explainability"] == {}
+    assert legacy_projection["explainability"] == {"status": "temporarily_hidden"}
 
 
 def test_project_status_attaches_audit_without_reading_its_previous_status(tmp_path: Path) -> None:
@@ -246,7 +238,7 @@ def test_project_status_attaches_audit_without_reading_its_previous_status(tmp_p
     queued_payload = project_status(tmp_path, queued)
 
     assert queued_payload["training_audit"]["evaluation_strategy"] == "external_test_holdout"
-    assert queued_payload["training_audit"]["explainability"] == {}
+    assert queued_payload["training_audit"]["explainability"] == {"status": "temporarily_hidden"}
 
     _write_json(tmp_path, "model_metadata.json", {"model_family": "traditional_ml"})
     _write_json(

@@ -118,6 +118,32 @@ def _write_ready_artifacts(
         'sample_feature_importance.csv',
         b'sample_id,start_index,end_index,importance\nsample-1,0,1,0.5\n',
     )
+    writer.write_json('model_feature_visualization.json', {
+        'schema_version': 'model-feature-visualization-v1',
+        'status': 'ready',
+        'model_type': model_type,
+        'evaluation_strategy': strategy,
+        'plots': [
+            {
+                'id': 'scores',
+                'type': 'scatter',
+                'title': '得分图',
+                'points': [
+                    {'index': 0, 'name': 'S1', 'sample_id': '1', 'label': 'A', 'split': 'test', 'x': 0.1, 'y': -0.2},
+                ],
+            },
+            {
+                'id': 'vip',
+                'type': 'bar',
+                'title': 'VIP',
+                'display_limit': 24,
+                'items': [
+                    {'feature_index': index, 'label': str(index), 'value': 100 - index}
+                    for index in range(60)
+                ],
+            },
+        ],
+    })
     if model_family == 'deep_learning':
         writer.write_bytes(
             'history.csv',
@@ -232,8 +258,8 @@ def test_result_v1_is_refreshable_traceable_and_contains_only_real_analysis(tmp_
     assert 'traditional' in payload['analysis']['training_audit']
     assert payload['analysis']['roc']['available'] is False
     assert payload['analysis']['precision_recall']['available'] is False
-    assert 'global' not in payload['explainability']
-    assert payload['explainability']['samples']['artifact'] == 'sample_feature_importance.json'
+    assert 'model_feature_visualization' not in payload['analysis']
+    assert payload['explainability'] == {'status': 'temporarily_hidden'}
     assert r'D:\private' not in first.text
 
     artifacts = {item['name']: item for item in payload['artifacts']}
@@ -241,7 +267,8 @@ def test_result_v1_is_refreshable_traceable_and_contains_only_real_analysis(tmp_
     assert artifacts['metrics.json']['download_url'].endswith('/artifact/metrics.json')
     assert artifacts['config.json']['downloadable'] is False
     assert artifacts['model.pkl']['downloadable'] is False
-    assert artifacts['sample_feature_importance.json']['downloadable'] is True
+    assert 'sample_feature_importance.json' not in artifacts
+    assert 'model_feature_visualization.json' not in artifacts
     assert 'feature_importance.json' not in artifacts
     assert 'feature_importance.csv' not in artifacts
     assert artifacts['history.csv']['applicable'] is False
@@ -317,7 +344,45 @@ def test_result_v1_separates_pooled_oof_from_fold_mean(tmp_path, monkeypatch) ->
     assert payload['analysis']['splits']['test']['aggregation'] == 'pooled_oof'
 
 
-@pytest.mark.parametrize('strategy', ['stratified_holdout', 'external_test_holdout'])
+def test_result_v1_external_leave_one_keeps_external_test_primary_and_oof_audit(tmp_path, monkeypatch) -> None:
+    repository, run_root = _patch_run_storage(monkeypatch, tmp_path)
+    external = {
+        'accuracy': 0.66, 'balanced_accuracy': 0.66, 'macro_precision': 0.66,
+        'macro_recall': 0.66, 'macro_f1': 0.66, 'weighted_f1': 0.66,
+        'aggregation': 'direct_external_test', 'confusion_matrix': [[3, 1], [1, 3]],
+        'classification_report': {},
+    }
+    audit_pooled = {
+        'accuracy': 0.91, 'balanced_accuracy': 0.91, 'macro_precision': 0.91,
+        'macro_recall': 0.91, 'macro_f1': 0.91, 'weighted_f1': 0.91,
+        'aggregation': 'pooled_out_of_fold', 'confusion_matrix': [[5, 0], [1, 4]],
+        'classification_report': {},
+    }
+    record = _create_succeeded_run(
+        repository,
+        run_root,
+        strategy='leave_one_sample_id_cv_with_external_test',
+        metrics={'train': external, 'valid': external, 'test': external, 'audit': {'pooled_oof': audit_pooled}},
+        cv_summary={
+            'primary_test_aggregation': 'direct_external_test',
+            'pooled_test': audit_pooled,
+            'fold_mean': {'test': {'macro_f1': 0.5}},
+            'fold_std': {'test': {'macro_f1': 0.1}},
+            'audit': {'pooled_oof': audit_pooled, 'fold_mean': {'macro_f1': 0.5}, 'fold_std': {'macro_f1': 0.1}},
+            'external_test': external,
+        },
+    )
+
+    payload = TestClient(app).get(f'/api/training/runs/{record.run_id}/result').json()
+
+    assert payload['evaluation']['primary_aggregation'] == 'direct_external_test'
+    assert payload['metrics']['primary']['macro_f1'] == pytest.approx(0.66)
+    assert payload['metrics']['splits']['test']['aggregation'] == 'direct_external_test'
+    assert payload['metrics']['pooled_oof']['macro_f1'] == pytest.approx(0.91)
+    assert payload['analysis']['splits']['test']['aggregation'] == 'direct_external_test'
+
+
+@pytest.mark.parametrize('strategy', ['stratified_holdout', 'external_test_holdout', 'leave_one_sample_id_cv_with_external_test'])
 def test_summary_projection_includes_dataset_training_time_duration_and_test_macro_f1(
     tmp_path,
     monkeypatch,

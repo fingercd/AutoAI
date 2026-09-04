@@ -62,7 +62,12 @@ def test_pca_mlp_log_loss_occlusion_keeps_original_feature_axis():
         dtype=np.float32,
     )
     y = np.asarray([0, 1, 0, 1], dtype=np.int64)
-    config = TrainConfig(model_type="pca_mlp", feature_window_count=3, feature_top_k=2)
+    config = TrainConfig(
+        model_type="pca_mlp",
+        feature_selection_enabled=True,
+        feature_window_count=3,
+        feature_top_k=2,
+    )
     model = build_deep_model(
         config,
         input_length=6,

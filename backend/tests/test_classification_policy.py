@@ -31,12 +31,13 @@ def test_internal_policy_defaults_to_eight_one_one():
     assert policy.strategy == "stratified_holdout"
 
 
-def test_external_policy_rejects_cross_validation():
-    with pytest.raises(ValueError, match="独立测试集.*交叉验证"):
-        resolve_evaluation_policy(
-            {"split_mode": "leave_one_sample_id_cv"},
-            has_external_test=True,
-        )
+def test_external_policy_keeps_leave_one_as_primary_data_audit():
+    policy = resolve_evaluation_policy(
+        {"split_mode": "leave_one_sample_id_cv", "split_train": 8, "split_valid": 2, "split_test": 0},
+        has_external_test=True,
+    )
+    assert policy.strategy == "leave_one_sample_id_cv_with_external_test"
+    assert policy.cv_allowed is True
 
 
 def test_classification_metrics_include_balanced_accuracy():
@@ -57,6 +58,10 @@ def test_traditional_selection_uses_balanced_accuracy(monkeypatch):
         training.TrainConfig(model_type="svm", svm_c=1.0),
         training.TrainConfig(model_type="svm", svm_c=10.0),
     ]
+    x_raw = np.zeros((10, 4), dtype=np.float32)
+    y = np.asarray([0] * 5 + [1] * 5)
+    sample_id = np.asarray([str(index) for index in range(10)])
+    splits = {"train": list(range(8)), "valid": [8, 9], "test": []}
 
     class FakeModel:
         def __init__(self, c):
@@ -66,6 +71,7 @@ def test_traditional_selection_uses_balanced_accuracy(monkeypatch):
             return self
 
     monkeypatch.setattr(training, "_traditional_candidate_configs", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(training, "_grouped_inner_cv_indices", lambda **_kwargs: [(np.asarray([0, 1, 5, 6]), np.asarray([2, 7]))] * 5)
     monkeypatch.setattr(training, "build_traditional_model", lambda config, y, class_count: FakeModel(config.svm_c))
 
     def fake_evaluate(model, x, y, indices, labels):
@@ -82,10 +88,10 @@ def test_traditional_selection_uses_balanced_accuracy(monkeypatch):
     selection = training._select_traditional_config(
         training.TrainConfig(model_type="svm"),
         "svm",
-        np.zeros((2, 4), dtype=np.float32),
-        np.asarray([0, 1]),
-        np.zeros((2, 4), dtype=np.float32),
-        np.asarray([0, 1]),
+        x_raw,
+        y,
+        sample_id,
+        splits,
         ["A", "B"],
     )
 
@@ -96,7 +102,7 @@ def test_traditional_selection_uses_balanced_accuracy(monkeypatch):
     assert '"svm_c": 10.0' in selected_rows[0]["params_json"]
 
 
-def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_winner(monkeypatch):
+def test_random_forest_selection_uses_grouped_inner_balanced_accuracy_not_oob(monkeypatch):
     import backend.app.training as training
 
     candidates = [
@@ -106,20 +112,14 @@ def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_w
     validation_calls = []
 
     class FakeForest:
-        classes_ = np.asarray([0, 1])
-
         def __init__(self, depth):
             self.depth = depth
-            self.oob_decision_function_ = (
-                np.asarray([[0.9, 0.1], [0.8, 0.2], [0.1, 0.9], [0.2, 0.8]])
-                if depth == 3
-                else np.asarray([[0.1, 0.9], [0.2, 0.8], [0.9, 0.1], [0.8, 0.2]])
-            )
 
         def fit(self, x, y):
             return self
 
     monkeypatch.setattr(training, "_traditional_candidate_configs", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(training, "_grouped_inner_cv_indices", lambda **_kwargs: [(np.asarray([0, 1, 5, 6]), np.asarray([2, 7]))] * 5)
     monkeypatch.setattr(
         training,
         "build_traditional_model",
@@ -130,7 +130,7 @@ def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_w
         validation_calls.append(model.depth)
         return {
             "accuracy": 0.2,
-            "balanced_accuracy": 0.2,
+            "balanced_accuracy": 0.8 if model.depth == 3 else 0.2,
             "macro_f1": 0.2,
             "true": [0, 1],
             "pred": [1, 0],
@@ -141,21 +141,21 @@ def test_random_forest_selection_uses_oob_balanced_accuracy_and_validates_only_w
     selection = training._select_traditional_config(
         training.TrainConfig(model_type="random_forest"),
         "random_forest",
-        np.zeros((4, 3), dtype=np.float32),
-        np.asarray([0, 0, 1, 1]),
-        np.zeros((2, 3), dtype=np.float32),
-        np.asarray([0, 1]),
+        np.zeros((10, 3), dtype=np.float32),
+        np.asarray([0] * 5 + [1] * 5),
+        np.asarray([str(index) for index in range(10)]),
+        {"train": list(range(8)), "valid": [8, 9], "test": []},
         ["A", "B"],
     )
 
     assert selection.config.random_forest_max_depth == 3
-    assert validation_calls == [3]
+    assert validation_calls.count(3) == 6
+    assert validation_calls.count(5) == 5
     selected = [row for row in selection.search_rows if row["is_selected"]]
     assert len(selected) == 1
-    assert selected[0]["selection_metric"] == "oob_balanced_accuracy"
-    assert selected[0]["selection_score"] == pytest.approx(1.0)
-    assert selected[0]["valid_balanced_accuracy"] == pytest.approx(0.2)
-    assert all(row["valid_balanced_accuracy"] is None for row in selection.search_rows if not row["is_selected"])
+    assert selected[0]["selection_metric"] == "mean_balanced_accuracy_grouped_5fold"
+    assert selected[0]["selection_score"] == pytest.approx(0.8)
+    assert all("oob_accuracy" not in row and "oob_balanced_accuracy" not in row for row in selection.search_rows)
 
 
 def test_final_traditional_fit_uses_only_train_and_valid(monkeypatch):
@@ -187,13 +187,79 @@ def test_final_traditional_fit_uses_only_train_and_valid(monkeypatch):
     assert normalizer["mode"] == "none"
 
 
+def test_spls_da_is_sparse_supervised_and_pickle_safe():
+    """A fixed signal fixture checks sparse components and probability semantics."""
+    import pickle
+    from backend.app.models.spls_da import SPLSDAClassifier
+
+    rng = np.random.default_rng(7)
+    labels = np.repeat([0, 1], 24)
+    values = rng.normal(0, 0.05, size=(48, 8))
+    values[labels == 1, 0] += 2.5
+    values[labels == 0, 1] += 2.5
+    model = SPLSDAClassifier(n_components=2, keepX=2).fit(values, labels)
+    restored = pickle.loads(pickle.dumps(model))
+    probabilities = restored.predict_proba(values)
+
+    assert model.actual_n_components_ >= 1
+    assert all(len(component) <= 2 for component in model.selected_feature_indices_by_component)
+    assert {0, 1}.intersection(model.selected_feature_indices_by_component[0])
+    assert np.all(np.isfinite(probabilities))
+    assert np.allclose(probabilities.sum(axis=1), 1.0)
+    assert (restored.predict(values) == labels).mean() >= 0.95
+
+
+def test_pca_svm_pca_is_fit_only_on_the_caller_training_fold():
+    from backend.app.models.pca_svm import build_pca_svm
+
+    train = np.asarray([[-2.0, -1.0, 0.0], [-1.5, -0.9, 0.1], [1.5, 1.0, 0.0], [2.0, 0.9, -0.1]])
+    held_out = np.asarray([[1000.0, -1000.0, 500.0]])
+    model = build_pca_svm(n_components=2, c=1.0, seed=9)
+    assert not hasattr(model.named_steps["pca"], "components_")
+    model.fit(train, np.asarray([0, 0, 1, 1]))
+
+    assert np.allclose(model.named_steps["pca"].mean_, train.mean(axis=0))
+    assert not np.allclose(model.named_steps["pca"].mean_, np.vstack([train, held_out]).mean(axis=0))
+    probabilities = model.predict_proba(held_out)
+    assert np.all(np.isfinite(probabilities)) and np.allclose(probabilities.sum(axis=1), 1.0)
+
+
+def test_grouped_inner_cv_rejects_less_than_five_sample_ids_per_class():
+    import backend.app.training as training
+
+    with pytest.raises(ValueError, match="每类至少 5 个 Sample_ID"):
+        training._grouped_inner_cv_indices(
+            y=np.asarray([0, 0, 0, 0, 1, 1, 1, 1]),
+            sample_id=np.asarray(["a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3"]),
+            candidate_indices=list(range(8)),
+            split_seed=42,
+            label_names=["A", "B"],
+        )
+
+
+def test_split_seed_controls_group_partitions_independently_of_model_seed():
+    import backend.app.training as training
+
+    sample_id = np.asarray([str(index) for index in range(1, 15) for _ in range(2)])
+    y = np.asarray([0 if index <= 7 else 1 for index in range(1, 15) for _ in range(2)])
+    first = training.TrainConfig(split_seed=31, model_seed=31, seed=31)
+    second = training.TrainConfig(split_seed=31, model_seed=87, seed=87)
+    changed = training.TrainConfig(split_seed=32, model_seed=31, seed=31)
+
+    assert training._split_indices(y, sample_id, first, ["A", "B"]) == training._split_indices(y, sample_id, second, ["A", "B"])
+    assert training._leave_one_sample_id_folds(y, sample_id, first) == training._leave_one_sample_id_folds(y, sample_id, second)
+    assert training._split_indices(y, sample_id, first, ["A", "B"]) != training._split_indices(y, sample_id, changed, ["A", "B"])
+
+
 @pytest.mark.parametrize(
     ("model_type", "expected_keys"),
     [
         ("pls_da", {"pls_components"}),
+        ("spls_da", {"spls_components", "spls_keepx"}),
         ("pca_lda", {"pca_components"}),
-        ("logistic_regression", {"logistic_c"}),
+        ("logistic_regression", {"logistic_c", "logistic_l1_ratio"}),
         ("svm", {"svm_kernel", "svm_c", "svm_gamma"}),
+        ("pca_svm", {"pca_components", "svm_kernel", "svm_c"}),
         (
             "random_forest",
             {

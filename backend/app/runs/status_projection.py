@@ -167,7 +167,7 @@ def _recover_sample_id_count(folds: list[Any], evaluation_strategy: str) -> int 
     sample_ids: set[str] = set()
     fields = {'train_sample_ids', 'valid_sample_ids'}
     # 独立测试集的 Sample_ID 不属于主数据集统计口径。
-    if evaluation_strategy != 'external_test_holdout':
+    if evaluation_strategy not in {'external_test_holdout', 'leave_one_sample_id_cv_with_external_test'}:
         fields.add('test_sample_ids')
     for raw_fold in folds:
         if not isinstance(raw_fold, dict):
@@ -606,12 +606,9 @@ def build_training_status_projection(
             config_payload.get("architecture_version"),
         ),
         "evaluation_strategy": evaluation_strategy,
-        "explainability": _explainability_projection(
-            run_path,
-            config=config_payload,
-            status=status_payload,
-            model_metadata=metadata_payload,
-        ),
+        # TEMPORARILY_HIDDEN: no explainability method or artifact detail is
+        # exposed in active status projections.
+        "explainability": {"status": "temporarily_hidden"},
     }
 
     selection_entries = _selection_entries(run_path, status_payload)

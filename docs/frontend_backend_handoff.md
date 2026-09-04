@@ -1,6 +1,6 @@
 # SpecAutoAI 前后端接口契约
 
-> 最近核对：2026-07-17。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
+> 最近核对：2026-08-22。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
 
 ## 1. 当前架构
 
@@ -8,10 +8,12 @@
 - 两套前端共享 `static/js/api-client.js`、Principal 鉴权、Dataset/Run API、artifact 规则和 `run-result-v1`；v2 是并行正式入口，不改变经典前端 URL。
 - FastAPI 同源托管网页和 API，公共启动器为 `run.py`；`run_classic.py` 与 `run_v2.py` 仅分别选择自动打开 `/` 或 `/v2`，后端和 worker 生命周期完全复用。手动入口仍为 `backend.app.main:app`。
 - `POST /api/training/runs` 只创建 SQLite 中的 `queued` Run；训练由独立 `backend.app.runs.worker` 进程执行。
+- `POST /api/training/batches` 原子创建统一 Batch 与其所有 queued 子 Run；仍不在 HTTP 请求或 `BackgroundTasks` 中启动训练。
 - FastAPI BackgroundTasks 不承担训练执行。
 - SQLite `RunRepository` 是任务状态权威；`status.json` 只是历史兼容投影。
 - 每次训练通过唯一 Run ID 关联训练记录、结果页和 artifact。
 - 结果页使用 `#/results?run_id=<Run ID>`；v2 的可复制完整地址为 `/static/v2/index.html#/results?run_id=<Run ID>`。刷新页面后重新请求后端，不依赖浏览器内存中的旧结果。
+- v2 批次比较使用 `#/comparison?batch_id=<Batch ID>`；经典入口在建模页内显示同一比较接口的紧凑视图。
 
 ## 2. 本机与服务器认证
 
@@ -377,25 +379,28 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 ## 6. 分类模型与评估契约
 
-能力目录固定公开 **15 个目标分类模型**。当前仅支持分类；`Label` 即使为数字也按类别处理。
+能力目录公开 **17 个后端分类模型**，其中 UI 仅通过 `ui_visible=true` 展示 10 个：PLS-DA、sPLS-DA、PCA-LDA、Logistic Regression、SVM、PCA-SVM、Random Forest、XGBoost、PCA-MLP、1D-CNN。当前仅支持分类；`Label` 即使为数字也按类别处理。
 
-当前通常可训练 14 项；`cnn_mamba1d` 因依赖不可用返回 `available=false`，不得静默替换。新 Run 使用 `architecture_version="docx-classification-v2"`。
+当前通常可训练 16 项；`cnn_mamba1d` 因依赖不可用返回 `available=false`，不得静默替换。隐藏深度模型仍可通过后端兼容 API 训练。新 Run 使用 `architecture_version="docx-classification-v3-0821"`。
 
 评估方式：
 
 - `stratified_holdout`：按 `Sample_ID` 整组、以 8:1:1 为目标划分。Train/Valid/Test 都必须包含全部类别；Valid/Test 至少为每类 1 个 `Sample_ID`，该下限优先于比例，因此每类少于 3 个不同 `Sample_ID` 时拒绝训练。
 - `leave_one_sample_id_cv`：每折留一个 Sample_ID 作 test，其余按 8:2 形成 train/valid。
-- `external_test_holdout`：主数据 8:2，独立测试集作为最终 test；与 CV 互斥。
+- `external_test_holdout`：主数据 8:2，独立测试集作为最终 test。
+- `leave_one_sample_id_cv_with_external_test`：保留主数据 OOF 审计并单独报告独立测试集最终指标；外部数据绝不进入 CV 拆分。
 
 交叉验证的 Test 主指标来自所有折合并后的 OOF 预测。Train/Valid 标量展示折均值，折标准差作为审计值；图表分析使用跨折预测合并并标记 `pooled_cross_fold`，样本可能重复。不得把 fold mean、pooled cross-fold 和 pooled OOF 混在同一口径中。
 
-传统模型按 valid balanced accuracy 选优，再使用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+传统模型以 `Sample_ID` 分组的内层 5 折 Balanced Accuracy 选优，所有 normalizer/PCA 仅在内层训练折拟合，再使用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
 
-可解释性：
+可解释性实现保留，但由内部常量 `TEMPORARILY_HIDDEN` 关闭。新训练不计算或生成解释性 artifact；前端不显示入口或发起解释性请求；结果投影仅返回 `{"status":"temporarily_hidden"}`，历史解释性 artifact 也不得下载。
 
-- 六个传统模型、`pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡。
-- `cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM-like，并保留输入梯度 sanity check。
-- `dscarnet` 使用 SAR/CAR 双通路 2D 映射和 2D Grad-CAM 回投。
+### 6.1 多模型 Batch 与比较
+
+`POST /api/training/batches` 请求包含 `model_types`、`base_seed` 和通用 `config`。新产品流程遵循“一模型一个 Run”，`repeat_count` 缺省且只允许为 1，普通前端不再展示或提交重复实验次数。仓储与结果投影仍能读取既有历史 R>1 批次，但创建接口不再接受新的重复训练。Batch 为所有模型写入相同 `split_seed=base_seed`，确保在相同划分上比较。单个子 Run 失败或取消不会破坏已成功结果；Batch 聚合状态为 `queued`、`running`、`succeeded`、`partial`、`failed` 或 `cancelled`。
+
+`GET /api/training/batches/{batch_id}/comparison` 返回 `model-comparison-v1`。仅完整成功、划分 digest 和评估口径一致的子 Run 可比较；它返回 Accuracy、Balanced Accuracy、Macro-F1、Weighted-F1、Sample_ID × 模型正确率、类别 Recall 和每模型的单 Run 混淆矩阵入口。历史响应可能仍带 `repeat_stability` 兼容字段，新前端不渲染该区块。缺失值为显式缺失，不补零、不伪造 ROC/PR。
 
 ## 7. 结果页数据能力
 
@@ -406,8 +411,10 @@ GET /api/training/runs/{run_id}/artifact/{name}
 - CV pooled OOF、fold mean、fold std。
 - 混淆矩阵、分类报告、由混淆矩阵计算的真实/预测类别分布。
 - Train/Valid/Test 三分区混淆矩阵、各类别指标和竖向预测分布。
+- 三个混淆矩阵各自提供纯前端 PNG 下载；PNG 直接由同一矩阵数据重绘，标题包含 Run、分区和聚合口径，不依赖后端截图 artifact。
 - 深度模型训练历史；传统模型不生成 `history.csv`，结果页不显示空曲线。
-- 单样品解释摘要及 JSON/CSV artifact；新 Run 不生成或展示全局重要性。
+- Batch 比较中的 Accuracy 排名、四项总体指标自适应图、Sample_ID × 模型正确率、类别 Recall 与单模型混淆矩阵入口。
+- 可解释性和模型特征图当前均为 `temporarily_hidden`，不在 Run 结果页投影或渲染。
 
 当前没有正式计算 ROC-AUC、ROC 曲线和 Precision-Recall 曲线。结果契约会返回 `available=false` 和原因；前端不得绘制空图或伪造数值。
 
@@ -424,8 +431,6 @@ GET /api/training/runs/{run_id}/artifact/{name}
 | `cv_predictions.csv` | OOF/兼容预测明细 |
 | `history.csv` | 深度模型训练过程，适用时 |
 | `hyperparameter_search.csv` | 传统模型参数搜索，适用时 |
-| `sample_feature_importance.json/csv` | 单样品解释结果，适用时 |
-| `dscarnet_mapping.json` | DSCARNet 映射说明，适用时 |
 | `config.json` | 已移除服务器路径的训练配置；只在内容审查通过时公开 |
 | `model_metadata.json` | 模型元数据 |
 | `label_map.json` | 类别映射 |
@@ -437,12 +442,13 @@ GET /api/training/runs/{run_id}/artifact/{name}
 - `model.pkl`、`model.pt`：本轮不开放裸模型对象/权重下载。
 - `*.joblib`：内部 PCA/AggMap 等拟合对象。
 - `manifest.json`：内部索引。
+- `sample_feature_importance.*`、`feature_importance.*`、`model_feature_visualization.json`、`dscarnet_mapping.json`：`TEMPORARILY_HIDDEN` 期间不公开；即使历史 Manifest 声明可下载也返回 404。
 
 `config.json` 采用内容审查：新训练生成的无路径配置可下载；历史或异常配置只要包含 `data_path`、`test_data_path`、`*_path` 等服务器路径字段，就会自动标为不可下载并说明原因。
 
 前端只消费 `/result` 返回的 `artifacts[]`，不得维护自己的固定文件数组。
 
-历史 Manifest 已登记的 `feature_importance.json/csv` 只保留原 Principal、Manifest 和完整性校验下的直接 URL 兼容；新 descriptors 不列出，前端也不展示。
+历史 Manifest 中的解释性 artifact 同样受当前隐藏下载限制；新 descriptors 不列出，前端也不展示。
 
 ## 9. 前端页面与状态流
 

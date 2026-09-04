@@ -48,17 +48,6 @@ def test_unknown_training_fields_are_ignored_with_an_explicit_warning() -> None:
         ({'model_type': 'cnn1d', 'dropout': 1}, False, '小于 1'),
         ({'model_type': 'svm', 'svm_gamma': 0}, False, '必须大于 0'),
         ({'model_type': 'xgboost', 'xgboost_subsample': 1.1}, False, '不超过 1'),
-        (
-            {
-                'model_type': 'cnn1d',
-                'split_mode': 'leave_one_sample_id_cv',
-                'split_train': 8,
-                'split_valid': 2,
-                'split_test': 0,
-            },
-            True,
-            '独立测试集时不允许开启交叉验证',
-        ),
     ],
 )
 def test_invalid_training_configuration_fails_before_queueing(
@@ -68,6 +57,20 @@ def test_invalid_training_configuration_fails_before_queueing(
 ) -> None:
     with pytest.raises(TrainingConfigValidationError, match=message):
         TrainingSpec.from_legacy(config).validated(has_external_test=has_external_test)
+
+
+def test_external_test_can_request_leave_one_sample_id_audit() -> None:
+    spec = TrainingSpec.from_legacy(
+        {
+            'model_type': 'cnn1d',
+            'split_mode': 'leave_one_sample_id_cv',
+            'split_train': 8,
+            'split_valid': 2,
+            'split_test': 0,
+        }
+    ).validated(has_external_test=True)
+
+    assert spec.to_legacy_dict()['split_mode'] == 'leave_one_sample_id_cv_with_external_test'
 
 
 def test_transformer_compatibility_alias_is_normalized_to_catalog_id() -> None:

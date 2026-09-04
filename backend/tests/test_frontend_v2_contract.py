@@ -30,6 +30,7 @@ REQUIRED_FILES = [
     "views/modeling.js",
     "views/runs.js",
     "views/result.js",
+    "views/comparison.js",
     "views/manual.js",
     "components/auth-gate.js",
     "components/toast.js",
@@ -83,7 +84,7 @@ def test_v2_has_no_framework_or_cdn() -> None:
             assert cdn not in source, f"{name} 引用了 CDN {cdn}"
     assert 'src="http' not in html and "src='http" not in html
     assert 'href="http' not in html and "href='http" not in html
-    assert '<script type="module" src="./app.js"></script>' in html
+    assert re.search(r'<script type="module" src="\./app\.js(?:\?[^"<>]+)?"></script>', html)
 
 
 def test_v2_hplc_preprocess_preserves_range_and_interpolation_controls() -> None:
@@ -207,16 +208,52 @@ def test_v2_result_view_consumes_run_result_v1_only() -> None:
     assert "download_url" in artifacts
 
 
-def test_v2_explainability_auto_loads_current_sample_series() -> None:
+def test_v2_hides_explainability_requests_and_keeps_component_retained() -> None:
     view = _read("views/result.js")
     panel = _read("components/explainability-panel.js")
-    assert "收起单样品解释" in view
-    assert "解释数据默认自动加载" in view
-    assert "renderExplainabilityPanel" in view
-    assert "if (action.enabled) load();" in panel
-    assert "sample?.curve" in panel
-    assert "sample?.sample_x_axis" in panel
-    assert "resolveSampleSeries" in panel
+    assert "TEMPORARILY_HIDDEN" in view
+    assert "renderExplainabilityPanel" not in view
+    assert "model_feature_visualization" not in view
+    assert "TEMPORARILY_HIDDEN" in panel
+
+
+def test_v2_downloads_confusion_png_and_renders_adaptive_batch_comparison() -> None:
+    result = _read("views/result.js")
+    confusion = _read("components/confusion-matrix.js")
+    comparison = _read("views/comparison.js")
+    assert "downloadConfusionMatrixPng" in confusion
+    assert "runId" in confusion and "aggregation" in confusion
+    assert "renderModelFeatureVisualization" not in result
+    assert "overall_metrics" in comparison
+    assert "sample_correctness" in comparison
+    assert "repeat_stability" not in comparison
+    assert "class_recall" in comparison
+    assert "confusion_matrices" in comparison
+    assert "table-wrap comparison-scroll" in comparison
+    assert "groupedBarChart" in comparison
+    assert "metricVisualization" in comparison
+    assert "renderConfusionMatrix" in comparison
+    assert "showDownload: false" in comparison
+    assert "comparison-matrix-grid" in comparison
+    assert "Sample_ID × 模型预测正确/错误" in comparison
+    assert "${successful}/${requested}" not in comparison
+    assert "showDownload = true" in confusion
+    assert "AbortController" in comparison
+    assert "已保留上一次结果" in comparison
+
+
+def test_v2_model_catalog_filters_by_explicit_ui_visibility_and_uses_batches() -> None:
+    catalog = _read("components/model-catalog.js")
+    modeling = _read("views/modeling.js")
+    api = _read("api.js")
+    assert "ui_visible !== false" in catalog
+    assert "checkbox" in catalog
+    assert "repeat_count" not in modeling
+    assert "v2-p-repeats" not in modeling
+    assert "delete batchConfig.seed" in modeling
+    assert "config: batchConfig" in modeling
+    assert "createBatch" in modeling
+    assert "/api/training/batches" in api
 
 
 def test_v2_forbidden_artifact_names_only_in_guard_and_tests() -> None:

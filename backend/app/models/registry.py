@@ -8,8 +8,8 @@
   build_deep_model / build_dscarnet_model（PyTorch 系）真正实例化模型。
 
 【关键常量】
-`TARGET_MODEL_TYPES` 是 15 项能力目录（对外宣传“支持哪些模型”），
-`TRADITIONAL_MODEL_TYPES` 与 `DEEP_MODEL_TYPES` 是当前实际可训练集合（14 项：
+`TARGET_MODEL_TYPES` 是 17 项后端能力目录（对外宣传“支持哪些模型”），
+`TRADITIONAL_MODEL_TYPES` 与 `DEEP_MODEL_TYPES` 是当前实际可训练集合（16 项：
 `cnn_mamba1d` 因 mamba-ssm 依赖不可用，只出现在能力目录中并标记 available=false）。
 可选 Mamba 依赖不可用时必须抛出明确错误，不能静默换成近似模型；
 旧模型类（KNN/MLP/UNet 等）仅用于兼容读取历史 Run，不进入 v2 新 Run。
@@ -35,6 +35,8 @@ from .cnn_transformer1d import CNNTransformer1D
 from .dscarnet import dual_dscarnet, single_dscarnet
 from .inception1d import Inception1DDocumentV2
 from .pls_da import build_pls_da
+from .spls_da import build_spls_da
+from .pca_svm import build_pca_svm
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
 from .pca_mlp import PCAMLPClassifier
@@ -53,6 +55,8 @@ MODEL_ALIASES = {
     "pls": "pls_da",
     "pls-da": "pls_da",
     "pls_da": "pls_da",
+    "spls_da": "spls_da",
+    "spls-da": "spls_da",
     "pca_lda": "pca_lda",
     "logistic_regression": "logistic_regression",
     "logistic-regression": "logistic_regression",
@@ -80,6 +84,8 @@ MODEL_ALIASES = {
     "random-forest": "random_forest",
     "rf": "random_forest",
     "svm": "svm",
+    "pca_svm": "pca_svm",
+    "pca-svm": "pca_svm",
     "support_vector_machine": "svm",
     "xgboost": "xgboost",
     "xgb": "xgboost",
@@ -98,7 +104,7 @@ RETIRED_OR_REGRESSION_MODEL_TYPES = {
     "svr",
 }
 
-# 能力目录（15 项）：对外宣称“平台支持哪些模型”的全集，含暂不可训练的 cnn_mamba1d。
+# 能力目录（17 项）：后端能力全集，含暂不可训练的 cnn_mamba1d。
 TARGET_DEEP_MODEL_TYPES = {
     "pca_mlp",
     "cnn1d",
@@ -112,14 +118,16 @@ TARGET_DEEP_MODEL_TYPES = {
 }
 TARGET_TRADITIONAL_MODEL_TYPES = {
     "pls_da",
+    "spls_da",
     "pca_lda",
     "logistic_regression",
     "svm",
+    "pca_svm",
     "random_forest",
     "xgboost",
 }
 TARGET_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES | TARGET_TRADITIONAL_MODEL_TYPES
-# 下面的 DEEP/TRADITIONAL/SUPPORTED 是当前实际可训练集合（14 项）：
+# 下面的 DEEP/TRADITIONAL/SUPPORTED 是当前实际可训练集合（16 项）：
 # 与能力目录的差别就在 cnn_mamba1d——目录里有它但这里刻意排除，
 # 由 canonical_model_type 对其抛 ModelNotImplementedForVersion。
 DEEP_MODEL_TYPES = {
@@ -134,18 +142,20 @@ DEEP_MODEL_TYPES = {
 }
 TRADITIONAL_MODEL_TYPES = {
     "pls_da",
+    "spls_da",
     "pca_lda",
     "logistic_regression",
     "svm",
+    "pca_svm",
     "random_forest",
     "xgboost",
 }
 SUPPORTED_MODEL_TYPES = DEEP_MODEL_TYPES | TRADITIONAL_MODEL_TYPES
 
 
-# 架构版本号：写入 Run 元数据，标记模型结构/输出契约属于 docx-classification-v2，
+# 架构版本号：写入 Run 元数据，标记模型结构/输出契约属于当前分类版本，
 # 供结果读取端区分新旧格式的 Run。
-ARCHITECTURE_VERSION = "docx-classification-v2"
+ARCHITECTURE_VERSION = "docx-classification-v3-0821"
 
 
 # 专门的异常类型：模型在能力目录（TARGET_MODEL_TYPES）里、但当前环境/版本无法构造
@@ -169,14 +179,12 @@ def canonical_model_type(model_type: str) -> str:
     # 空 model_type 回落到 "cnn1d"：历史默认模型，保证旧调用不传参也能工作。
     key = str(model_type or "cnn1d").strip().lower()
     if key in RETIRED_OR_REGRESSION_MODEL_TYPES:
-        # “10 类模型”是旧客户端依赖的错误文本，契约测试暂时保持原样；实际
-        # 能力集合必须读取 TARGET_MODEL_TYPES/SUPPORTED_MODEL_TYPES。
-        raise ValueError("当前仅支持分类任务的 10 类模型；KNN/MLP/UNet 已移除，PLSR/SVR 是回归变体暂不启用")
+        raise ValueError("当前仅支持登记的分类模型；KNN/MLP/UNet 已移除，PLSR/SVR 是回归变体暂不启用")
     canonical = MODEL_ALIASES.get(key, key)
     if canonical in TARGET_MODEL_TYPES and canonical not in SUPPORTED_MODEL_TYPES:
-        raise ModelNotImplementedForVersion(f"模型 {canonical} 尚未在 docx-classification-v2 实现")
+        raise ModelNotImplementedForVersion(f"模型 {canonical} 在当前环境不可用")
     if canonical not in SUPPORTED_MODEL_TYPES:
-        raise ValueError(f"当前仅支持分类任务的 10 类模型，不支持: {model_type}")
+        raise ValueError(f"当前仅支持登记的分类模型，不支持: {model_type}")
     return canonical
 
 
@@ -367,10 +375,20 @@ def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any
     class_weight = "balanced" if config.class_balance == "class_weight" else None
     if model_type == "pls_da":
         return build_pls_da(getattr(config, "pls_components", 2) or 2)
+    if model_type == "spls_da":
+        return build_spls_da(
+            getattr(config, "spls_components", 2) or 2,
+            getattr(config, "spls_keepx", 50) or 50,
+        )
     if model_type == "pca_lda":
         return build_pca_lda(getattr(config, "pca_components", 2) or 2)
     if model_type == "logistic_regression":
-        return build_logistic_regression(getattr(config, "logistic_c", 1.0), config.seed, class_weight)
+        return build_logistic_regression(
+            getattr(config, "logistic_c", 1.0),
+            config.seed,
+            class_weight,
+            getattr(config, "logistic_l1_ratio", 0.5),
+        )
     if model_type == "random_forest":
         return build_random_forest(
             config.random_forest_n_estimators,
@@ -383,6 +401,13 @@ def build_traditional_model(config: Any, y: np.ndarray, class_count: int) -> Any
         )
     if model_type == "svm":
         return build_svm(config.svm_c, config.svm_gamma, class_weight, config.seed, getattr(config, "svm_kernel", "rbf"))
+    if model_type == "pca_svm":
+        return build_pca_svm(
+            getattr(config, "pca_components", 2) or 2,
+            config.svm_c,
+            class_weight,
+            config.seed,
+        )
     if model_type == "xgboost":
         return build_xgboost(
             y,

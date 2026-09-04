@@ -6,7 +6,7 @@ import pytest
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
 
 
-def test_registry_contains_exactly_fifteen_docx_classifiers():
+def test_registry_retains_backend_models_and_adds_two_comparison_classifiers():
     from backend.app.models.registry import (
         DEEP_MODEL_TYPES,
         TARGET_DEEP_MODEL_TYPES,
@@ -16,9 +16,11 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
 
     assert TARGET_TRADITIONAL_MODEL_TYPES == {
         "pls_da",
+        "spls_da",
         "pca_lda",
         "logistic_regression",
         "svm",
+        "pca_svm",
         "random_forest",
         "xgboost",
     }
@@ -35,9 +37,11 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
     }
     assert TRADITIONAL_MODEL_TYPES == {
         "pls_da",
+        "spls_da",
         "pca_lda",
         "logistic_regression",
         "svm",
+        "pca_svm",
         "random_forest",
         "xgboost",
     }
@@ -146,7 +150,7 @@ def test_traditional_candidate_grids_are_exact():
     assert {candidate.pca_components for candidate in training._traditional_candidate_configs(config, "pca_lda", 3, [0, 1, 0, 1])} == {2, 3}
 
     logistic = training._traditional_candidate_configs(config, "logistic_regression", 100, y_train)
-    assert {candidate.logistic_c for candidate in logistic} == {0.1, 1.0, 10.0}
+    assert {candidate.logistic_c for candidate in logistic} == {0.01, 0.1, 1.0, 10.0, 100.0}
 
     svm = training._traditional_candidate_configs(config, "svm", 100, y_train)
     assert {candidate.svm_c for candidate in svm} == {0.01, 0.1, 1.0, 10.0, 100.0}
@@ -159,11 +163,11 @@ def test_traditional_candidate_grids_are_exact():
         candidate.random_forest_min_samples_leaf,
         candidate.random_forest_max_features,
     )
-    assert len(random_forest) == 10
+    assert len(random_forest) == 12
     assert [params(candidate) for candidate in random_forest] == [params(candidate) for candidate in repeated_random_forest]
-    assert len({params(candidate) for candidate in random_forest}) == 10
-    assert {candidate.random_forest_n_estimators for candidate in random_forest} == {200}
-    assert all(candidate.random_forest_oob_score for candidate in random_forest)
+    assert len({params(candidate) for candidate in random_forest}) == 12
+    assert {candidate.random_forest_n_estimators for candidate in random_forest} == {500}
+    assert not any(candidate.random_forest_oob_score for candidate in random_forest)
 
     xgboost = training._traditional_candidate_configs(config, "xgboost", 100, y_train)
     assert len(xgboost) == 12
@@ -244,7 +248,7 @@ def test_training_writes_architecture_v2_metadata(tmp_path, monkeypatch):
 
     source = write_grouped_classification_csv(
         tmp_path / "grouped.csv",
-        groups_per_class=5,
+        groups_per_class=7,
         repeats=2,
         feature_count=12,
     )
@@ -264,11 +268,11 @@ def test_training_writes_architecture_v2_metadata(tmp_path, monkeypatch):
     status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
 
     assert result["status"] == "success"
-    assert metadata["architecture_version"] == "docx-classification-v2"
+    assert metadata["architecture_version"] == "docx-classification-v3-0821"
     assert metadata["model_type"] == "pls_da"
     assert metadata["N_train"] == len(split["splits"]["train"])
     assert metadata["L"] == 12
-    assert metadata["explainability_method"] == "window_occlusion_log_loss"
+    assert metadata["explainability_status"] == "temporarily_hidden"
     assert config["architecture_version"] == metadata["architecture_version"]
     assert status["architecture_version"] == metadata["architecture_version"]
     assert status["model_metadata"] == metadata

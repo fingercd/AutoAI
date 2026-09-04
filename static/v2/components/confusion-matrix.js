@@ -19,6 +19,7 @@
  *   因为结果页需要在 Manifest 不完整等边缘情况下仍然可渲染。
  */
 import { el } from '../lib/dom.js';
+import { downloadConfusionMatrixPng } from '../../js/confusion-matrix-download.js?v=20260820-compact-visualization-v3';
 
 /**
  * 把任意输入归一化为"数字构成的二维矩阵"。
@@ -126,9 +127,18 @@ function cellBackground(diagonal, value, intensity) {
  * @param {*} options.matrix 混淆矩阵二维数组（脏数据会被归一化）。
  * @param {string[]} [options.labels] 类别名列表，长度需与矩阵阶数一致才生效。
  * @param {string} [options.caption] 表格标题（如 "Test 集（pooled OOF）"），空串则不渲染 caption。
+ * @param {boolean} [options.showDownload=true] 是否显示 PNG 下载操作；批次聚合矩阵关闭。
  * @returns {HTMLElement} `.table-wrap` 容器，或空数据时的提示段落。
  */
-export function renderConfusionMatrix({ matrix, labels = [], caption = '' }) {
+export function renderConfusionMatrix({
+  matrix,
+  labels = [],
+  caption = '',
+  runId = '',
+  split = 'test',
+  aggregation = '',
+  showDownload = true,
+}) {
   const normalized = normalizeMatrix(matrix);
   if (!normalized.length) {
     return el('p', { className: 'hint', text: '该分区没有混淆矩阵数据。' });
@@ -167,5 +177,29 @@ export function renderConfusionMatrix({ matrix, labels = [], caption = '' }) {
     className: 'hint',
     text: `共 ${total} 个样本，预测正确 ${correct} 个。行是真实类别，列是预测类别；绿色为预测正确，红色为误测。`,
   }));
+  if (showDownload) {
+    const status = el('span', { className: 'hint', attrs: { role: 'status', 'aria-live': 'polite' } });
+    const button = el('button', {
+      className: 'btn btn-ghost btn-sm',
+      text: `下载 ${String(split).toUpperCase()} 混淆矩阵`,
+      attrs: { type: 'button' },
+    });
+    button.addEventListener('click', async () => {
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = '正在下载…';
+      status.textContent = '';
+      try {
+        await downloadConfusionMatrixPng({ matrix: normalized, labels: resolvedLabels, runId, split, aggregation });
+        status.textContent = '';
+      } catch (error) {
+        status.textContent = error?.message || 'PNG 生成失败';
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+    wrap.append(el('div', { className: 'card-actions confusion-download-actions' }, [button, status]));
+  }
   return wrap;
 }
