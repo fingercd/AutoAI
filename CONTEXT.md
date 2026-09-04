@@ -22,6 +22,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 独立结果页使用 `#/results?run_id=...`，刷新后从 `GET /api/training/runs/{run_id}/result` 恢复。
 - `run-result-v1` 明确区分 direct、pooled OOF、fold mean 与 fold std；`analysis.splits.train/valid/test` 提供三分区混淆矩阵、分类报告和预测分布。传统模型不生成或展示 epoch history。
 - Run 成功前必须提交 Manifest；新 Manifest 使用显式 catalog 和 SHA-256/大小校验。模型 pickle/PT 和 joblib 私有；无路径 `config.json` 才可下载。
+- Agent API 已冻结为 `agent-session-v1`，Observation 为 `agent-observation-v1`。人工训练与 Agent 实验共用 `RunSubmissionService`；Agent reservation、幂等键和预算状态持久化在独立 `agent.sqlite3`，Runs DB 使用内部 durable submission mapping 原子关联 reservation 与 Run，并由显式 Principal-scoped reconciliation 恢复崩溃窗口；Test 数据不进入 Observation、Session 或对账响应。
 
 ## 预处理与接口事实
 

@@ -88,7 +88,8 @@ def test_create_session_rejects_unknown_model(client, uploaded_dataset):
         allowed_models=["logistic_regression", "cnn1d"],
     )
     assert response.status_code == 422
-    assert "allowed_models" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "agent_invalid_action"
+    assert "allowed_models" in response.json()["detail"]["message"]
 
 
 # ---------- 3. experiment 传入额外字段返回 422 ----------
@@ -136,7 +137,7 @@ def test_duplicate_effective_config_returns_409(client, uploaded_dataset):
         f"/api/agent/sessions/{session['session_id']}/experiments", json=body
     )
     assert second.status_code == 409
-    assert "config_hash" in second.json()["detail"]
+    assert second.json()["detail"]["code"] == "agent_duplicate_config"
 
 
 # ---------- 6. 超出 max_runs 返回 409 ----------
@@ -164,31 +165,38 @@ def test_exceeding_max_runs_returns_409(client, uploaded_dataset):
         f"/api/agent/sessions/{session['session_id']}/experiments", json=actions[2]
     )
     assert overflow.status_code == 409
-    assert "max_runs" in overflow.json()["detail"]
+    assert overflow.json()["detail"]["code"] == "agent_run_budget_exhausted"
 
 
 def _claim_and_finish(repo: RunRepository, run_id: str) -> None:
-    """test helper：把 queued / running Run 直接推入 succeeded。
+    """通过正式 RunWorker 状态机推进，不用私有 SQL 伪造终态。"""
+    from backend.app.runs.artifacts import RunArtifactWriter
+    from backend.app.runs.worker import RunWorker
 
-    通过私有 SQL 路径绕过 claim_next 的 FIFO 顺序，让测试能逐个指定目标
-    Run 进入终态。仅供测试用，不属于公开 API。
-    """
-    from backend.app.runs.repository import _timestamp
-    now_text = _timestamp(datetime.now(timezone.utc))
-    with repo._connection() as connection:  # type: ignore[attr-defined]
-        connection.execute('BEGIN IMMEDIATE')
-        connection.execute(
-            '''
-            UPDATE runs
-            SET state = 'succeeded', version = version + 1, lease_expires_at = NULL,
-                claim_token = 'test-claim', worker_id = 'test-worker',
-                manifest_name = ?, error = NULL, error_json = '{}',
-                updated_at = ?, finished_at = ?, started_at = COALESCE(started_at, ?)
-            WHERE run_id = ? AND state IN ('queued', 'running')
-            ''',
-            ('manifest.json', now_text, now_text, now_text, run_id),
-        )
-        connection.commit()
+    def execute(record):
+        writer = RunArtifactWriter(RUNS_DIR / record.run_id)
+        if not (RUNS_DIR / record.run_id / 'metrics.json').is_file():
+            writer.write_json('metrics.json', {'valid': {'macro_f1': 0.5, 'balanced_accuracy': 0.5}})
+        for name in ('cv_metrics.json', 'model_metadata.json', 'label_map.json', 'split.json'):
+            if not (RUNS_DIR / record.run_id / name).is_file():
+                writer.write_json(name, {})
+        if not (RUNS_DIR / record.run_id / 'config.json').is_file():
+            writer.write_json('config.json', {'model_type': record.config.get('model_type')})
+        for name in ('fold_metrics.csv', 'predictions.csv'):
+            if not (RUNS_DIR / record.run_id / name).is_file():
+                writer.write_bytes(name, b'a,b\n1,2\n')
+        writer.finalize(run_id=record.run_id, metadata={'model_family': 'traditional_ml'})
+        return {'manifest_name': 'manifest.json'}
+
+    worker = RunWorker(
+        repository=repo, worker_id='agent-test-worker', execute=execute,
+        now=lambda: datetime.now(timezone.utc), heartbeat_seconds=60,
+    )
+    for _ in range(100):
+        if repo.get(run_id).state == 'succeeded':
+            return
+        assert worker.run_once()
+    raise AssertionError('target run was not processed')
 
 
 # ---------- 7. 同 Session 内存在非终态 Run 时继续提交返回 409 ----------
@@ -274,8 +282,8 @@ def test_finalize_requires_successful_run_in_same_session(client, uploaded_datas
         json={"selected_run_id": experiment["run_id"]},
     )
     assert finalize.status_code == 422
-    # detail 含"训练成功"，但避免直接断言中文字符
-    assert "state=queued" in finalize.json()["detail"]
+    assert finalize.json()["detail"]["code"] == "agent_invalid_action"
+    assert "state=queued" in finalize.json()["detail"]["message"]
 
 
 # ---------- 11. Finalize 后不能继续提交实验 ----------

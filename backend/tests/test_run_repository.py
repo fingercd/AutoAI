@@ -3,7 +3,13 @@ import sqlite3
 
 import pytest
 
-from backend.app.runs.repository import InvalidRunTransition, RunNotFound, RunRepository
+from backend.app.runs.contracts import Principal
+from backend.app.runs.repository import (
+    InvalidRunTransition,
+    RunNotFound,
+    RunRepository,
+    RunSubmissionKeyConflict,
+)
 
 
 def test_cancelled_run_cannot_be_reclaimed_or_completed(tmp_path):
@@ -146,3 +152,79 @@ def test_initialize_migrates_legacy_worker_heartbeat_table_without_dropping_rows
     assert health['compatible'] is False
     assert health['workers'][0]['worker_id'] == 'legacy-worker'
     assert health['workers'][0]['contract_version'] is None
+
+
+def test_submission_mapping_is_atomic_and_idempotent(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    principal = Principal('owner-a', 'tenant-a')
+    kwargs = {
+        'dataset_id': 'ds-1',
+        'config': {'model_type': 'logistic_regression'},
+        'principal': principal,
+        'submission_key': 'reservation-1',
+        'submission_source': 'agent',
+        'submission_payload_hash': 'a' * 64,
+    }
+
+    first = repo.create_queued(**kwargs)
+    second = repo.create_queued(**kwargs)
+
+    assert second.run_id == first.run_id
+    assert len(repo.list()) == 1
+    mapping = repo.lookup_submission_mapping('reservation-1', principal=principal)
+    assert mapping.status == 'found'
+    assert mapping.run_id == first.run_id
+
+
+def test_submission_mapping_conflicts_fail_closed_without_leaking_run_id(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    first_principal = Principal('owner-a', 'tenant-a')
+    run = repo.create_queued(
+        dataset_id='ds-1', config={}, principal=first_principal,
+        submission_key='reservation-1', submission_source='agent',
+        submission_payload_hash='a' * 64,
+    )
+
+    with pytest.raises(RunSubmissionKeyConflict):
+        repo.create_queued(
+            dataset_id='ds-1', config={}, principal=first_principal,
+            submission_key='reservation-1', submission_source='agent',
+            submission_payload_hash='b' * 64,
+        )
+    with pytest.raises(RunSubmissionKeyConflict) as cross_scope:
+        repo.create_queued(
+            dataset_id='ds-1', config={}, principal=Principal('owner-b', 'tenant-a'),
+            submission_key='reservation-1', submission_source='agent',
+            submission_payload_hash='a' * 64,
+        )
+
+    assert run.run_id not in str(cross_scope.value)
+    invisible = repo.lookup_submission_mapping(
+        'reservation-1', principal=Principal('owner-b', 'tenant-a')
+    )
+    assert invisible.status == 'scope_mismatch'
+    assert invisible.run_id is None
+    assert len(repo.list()) == 1
+
+
+def test_cancel_queued_unstarted_never_cancels_started_run(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    principal = Principal('owner-a', 'tenant-a')
+    queued = repo.create_queued(dataset_id='ds-1', config={}, principal=principal)
+    cancelled = repo.cancel_queued_unstarted_scoped(
+        queued.run_id, now=datetime.now(timezone.utc), principal=principal
+    )
+    assert cancelled.state == 'cancelled'
+    assert cancelled.started_at is None
+
+    started = repo.create_queued(dataset_id='ds-1', config={}, principal=principal)
+    claimed = repo.claim_next(worker_id='worker-a', now=datetime.now(timezone.utc))
+    assert claimed is not None and claimed.run_id == started.run_id
+    with pytest.raises(InvalidRunTransition):
+        repo.cancel_queued_unstarted_scoped(
+            started.run_id, now=datetime.now(timezone.utc), principal=principal
+        )
+    assert repo.get(started.run_id).state == 'running'

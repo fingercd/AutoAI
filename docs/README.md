@@ -9,6 +9,7 @@
 - `../AGENTS.md`：协作、修改边界、模型口径和验证要求。
 - `frontend_backend_handoff.md`：前端调用后端时必须遵守的请求、响应和 artifact 契约。
 - `run_result_contract.md`：独立建模结果页使用的 `run-result-v1` 字段、状态、指标聚合和下载描述。
+- `agent_api_contract.md`：Agent Session/Experiment、durable submission mapping、显式 reservation reconciliation、Observation Test 防火墙及 LLM Tool Client 契约。
 - `../deploy/server_deploy.md`：校园集群 Web + worker 部署说明。
 - `github_publish_policy.md`：可以进入 Git/GitHub 的内容边界。
 - `adr/0001-stable-run-architecture.md`：SQLite Run 状态机、worker、lease 与 Manifest 的架构决策。

@@ -30,6 +30,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -60,6 +61,24 @@ class InvalidRunTransition(RuntimeError):
 class RunNotFound(KeyError):
     """请求的 run_id 在当前仓库和 Principal 范围内不存在。"""
     pass
+
+
+class RunSubmissionKeyConflict(RuntimeError):
+    """submission key 已被不同 payload 或 Principal 使用。"""
+
+
+class RunSubmissionMappingCorrupt(RuntimeError):
+    """submission mapping 存在，但目标 Run 已不可验证。"""
+
+
+@dataclass(frozen=True)
+class RunSubmissionMappingLookup:
+    """内部 submission mapping 查询结果；scope mismatch 不携带 Run 标识。"""
+
+    status: str
+    run_id: str | None = None
+    payload_hash: str | None = None
+    submission_source: str | None = None
 
 
 # 统一把时间戳规范化为带 UTC 时区的 ISO 字符串：naive 时间一律按 UTC 解释。
@@ -215,6 +234,19 @@ class RunRepository:
                 )
                 '''
             )
+            connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS run_submission_keys_v1 (
+                    submission_key TEXT PRIMARY KEY,
+                    submission_source TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL,
+                    run_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT,
+                    tenant_id TEXT,
+                    created_at TEXT NOT NULL
+                )
+                '''
+            )
             heartbeat_columns = {
                 str(row['name'])
                 for row in connection.execute('PRAGMA table_info(worker_heartbeats)').fetchall()
@@ -236,11 +268,51 @@ class RunRepository:
         config: dict[str, Any],
         dataset_snapshot: dict[str, Any] | None = None,
         principal: Principal = Principal(),
+        submission_key: str | None = None,
+        submission_source: str | None = None,
+        submission_payload_hash: str | None = None,
     ) -> RunRecord:
+        mapping_values = (submission_key, submission_source, submission_payload_hash)
+        if any(value is not None for value in mapping_values):
+            if not all(isinstance(value, str) and value for value in mapping_values):
+                raise ValueError('submission mapping parameters must be provided together')
+            if submission_source != 'agent':
+                raise ValueError('submission mapping is only available to agent submissions')
+            if len(submission_payload_hash or '') != 64 or any(
+                character not in '0123456789abcdef'
+                for character in (submission_payload_hash or '').lower()
+            ):
+                raise ValueError('submission_payload_hash must be a SHA-256 hex digest')
         run_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            if submission_key is not None:
+                existing_mapping = connection.execute(
+                    'SELECT * FROM run_submission_keys_v1 WHERE submission_key = ?',
+                    (submission_key,),
+                ).fetchone()
+                if existing_mapping is not None:
+                    same_scope = (
+                        existing_mapping['owner_id'] == principal.owner_id
+                        and existing_mapping['tenant_id'] == principal.tenant_id
+                    )
+                    same_payload = (
+                        existing_mapping['submission_source'] == submission_source
+                        and existing_mapping['payload_hash'] == submission_payload_hash
+                    )
+                    if not same_scope or not same_payload:
+                        connection.rollback()
+                        raise RunSubmissionKeyConflict('submission key conflict')
+                    row = connection.execute(
+                        'SELECT * FROM runs WHERE run_id = ?',
+                        (existing_mapping['run_id'],),
+                    ).fetchone()
+                    if row is None:
+                        connection.rollback()
+                        raise RunSubmissionMappingCorrupt('submission mapping target is missing')
+                    connection.commit()
+                    return self._record(row)
             connection.execute(
                 '''
                 INSERT INTO runs (
@@ -261,10 +333,51 @@ class RunRepository:
                     now,
                 ),
             )
+            if submission_key is not None:
+                connection.execute(
+                    '''
+                    INSERT INTO run_submission_keys_v1(
+                        submission_key, submission_source, payload_hash, run_id,
+                        owner_id, tenant_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        submission_key,
+                        submission_source,
+                        submission_payload_hash,
+                        run_id,
+                        principal.owner_id,
+                        principal.tenant_id,
+                        now,
+                    ),
+                )
             row = connection.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone()
             connection.commit()
         assert row is not None
         return self._record(row)
+
+    def lookup_submission_mapping(
+        self,
+        submission_key: str,
+        *,
+        principal: Principal,
+    ) -> RunSubmissionMappingLookup:
+        """按内部 key 查询映射；跨 Principal 只返回不可枚举的 scope_mismatch。"""
+        with self._connection() as connection:
+            row = connection.execute(
+                'SELECT * FROM run_submission_keys_v1 WHERE submission_key = ?',
+                (submission_key,),
+            ).fetchone()
+        if row is None:
+            return RunSubmissionMappingLookup(status='missing')
+        if row['owner_id'] != principal.owner_id or row['tenant_id'] != principal.tenant_id:
+            return RunSubmissionMappingLookup(status='scope_mismatch')
+        return RunSubmissionMappingLookup(
+            status='found',
+            run_id=str(row['run_id']),
+            payload_hash=str(row['payload_hash']),
+            submission_source=str(row['submission_source']),
+        )
 
     # worker 领取队首任务（FIFO：created_at 最早优先，run_id 打破并列）。
     # 并发安全靠两点：BEGIN IMMEDIATE 串行化所有 claim；UPDATE 的 WHERE 带上
@@ -822,6 +935,55 @@ class RunRepository:
                 connection.rollback()
                 raise InvalidRunTransition(f'cannot cancel run {run_id}')
             updated = connection.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone()
+            connection.commit()
+        assert updated is not None
+        return self._record(updated)
+
+    def cancel_queued_unstarted_scoped(
+        self,
+        run_id: str,
+        *,
+        now: datetime,
+        principal: Principal,
+        reason: str = 'agent_reconciliation',
+        message: str = 'Agent 对账已取消未开始的 Run',
+    ) -> RunRecord:
+        """仅在同一事务内证明 queued 且 started_at 为空时取消。"""
+        now_text = _timestamp(now)
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute(
+                '''SELECT * FROM runs WHERE run_id=?
+                   AND owner_id IS ? AND tenant_id IS ?''',
+                (run_id, owner_id, tenant_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise RunNotFound(run_id)
+            if row['state'] != 'queued' or row['started_at'] is not None:
+                connection.rollback()
+                raise InvalidRunTransition(f'run {run_id} is not queued and unstarted')
+            changed = connection.execute(
+                '''UPDATE runs SET state='cancelled',version=version+1,claim_token=NULL,
+                   worker_id=NULL,lease_expires_at=NULL,manifest_name=NULL,progress_json=?,
+                   updated_at=?,finished_at=?
+                   WHERE run_id=? AND state='queued' AND started_at IS NULL
+                   AND owner_id IS ? AND tenant_id IS ?''',
+                (
+                    _stopped_progress(
+                        row['progress_json'], stopped_at=now_text,
+                        reason=reason, message=message,
+                    ),
+                    now_text, now_text, run_id, owner_id, tenant_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                connection.rollback()
+                raise InvalidRunTransition(f'cannot cancel unstarted run {run_id}')
+            updated = connection.execute(
+                'SELECT * FROM runs WHERE run_id=?', (run_id,)
+            ).fetchone()
             connection.commit()
         assert updated is not None
         return self._record(updated)
