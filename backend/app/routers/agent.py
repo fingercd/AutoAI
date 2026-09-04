@@ -10,17 +10,26 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+import sqlite3
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Path
 
 from ..contracts import TrainingConfigValidationError
 from ..datasets.repository import DatasetRepository
 from ..http.principal import Principal, get_principal
-from ..paths import AGENT_DATABASE, DATASETS_DATABASE, RUNS_DATABASE, STORAGE_DIR
+from ..paths import AGENT_DATABASE, DATASETS_DATABASE, RUNS_DATABASE, RUNS_DIR, STORAGE_DIR
 from ..runs.repository import RunRepository
+from ..runs.status_projection import project_status
+from ..runs.submission import RunSubmissionService
+from ..version import WORKER_CONTRACT_VERSION
+from ..agent.capabilities import health_payload
 from ..agent.contracts import (
+    AgentDomainError,
     CreateAgentExperimentRequest,
     CreateAgentSessionRequest,
     FinalizeAgentSessionRequest,
+    ReconcileAgentSessionRequest,
 )
 from ..agent.repository import (
     AgentConfigCollision,
@@ -30,6 +39,7 @@ from ..agent.repository import (
     AgentSessionRepository,
 )
 from ..agent.service import AgentService
+from ..agent.reconciliation import AgentReconciliationService
 
 
 router = APIRouter()
@@ -50,11 +60,38 @@ def _agent_service() -> AgentService:
         session_repository=sessions,
         run_repository=runs,
         dataset_repository=datasets,
+        submission_service=RunSubmissionService(
+            run_repository=runs,
+            dataset_repository=datasets,
+            run_dir=lambda run_id: RUNS_DIR / run_id,
+            status_projector=project_status,
+        ),
+        run_root=RUNS_DIR,
+    )
+
+
+def _reconciliation_service() -> AgentReconciliationService:
+    try:
+        sessions = AgentSessionRepository(AGENT_DATABASE)
+        sessions.initialize()
+        runs = RunRepository(RUNS_DATABASE)
+        runs.initialize()
+    except (sqlite3.Error, OSError) as exc:
+        raise AgentDomainError(
+            'agent_reconciliation_unavailable', '对账存储暂时不可用',
+            status_code=503, retryable=True,
+            allowed_actions=('inspect_ml_session',),
+        ) from exc
+    return AgentReconciliationService(
+        session_repository=sessions,
+        run_repository=runs,
     )
 
 
 def _to_http_exception(exc: Exception) -> HTTPException:
     """把领域异常映射到 HTTP 状态码，避免在每个路由重复 try/except。"""
+    if isinstance(exc, AgentDomainError):
+        return HTTPException(status_code=exc.status_code, detail=exc.detail())
     if isinstance(exc, AgentSessionNotFound):
         return HTTPException(status_code=404, detail='agent session 不存在')
     if isinstance(exc, AgentExperimentNotFound):
@@ -72,6 +109,20 @@ def _to_http_exception(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail='agent session 内部错误')
 
 
+@router.get('/api/agent/health')
+def agent_health() -> dict[str, object]:
+    runs = RunRepository(RUNS_DATABASE)
+    runs.initialize()
+    health = runs.worker_health(
+        now=datetime.now(timezone.utc),
+        expected_contract_version=WORKER_CONTRACT_VERSION,
+    )
+    return health_payload(
+        worker_available=bool(health.get('available')),
+        worker_compatible=bool(health.get('compatible')),
+    )
+
+
 @router.post('/api/agent/sessions', status_code=201)
 def create_session(
     payload: CreateAgentSessionRequest,
@@ -82,7 +133,7 @@ def create_session(
     service = _agent_service()
     try:
         return service.create_session(payload, principal=principal)
-    except (TrainingConfigValidationError, ValueError) as exc:
+    except (AgentDomainError, TrainingConfigValidationError, ValueError) as exc:
         # Pydantic 已经在更外层捕获了 extra='forbid'，这里只覆盖业务校验。
         raise _to_http_exception(exc) from exc
 
@@ -103,13 +154,7 @@ def create_experiment(
         return service.create_experiment(
             session_id=session_id, payload=payload, principal=principal
         )
-    except (
-        AgentSessionNotFound,
-        AgentExperimentNotFound,
-        AgentSessionClosed,
-        AgentConfigCollision,
-        TrainingConfigValidationError,
-    ) as exc:
+    except (AgentDomainError, TrainingConfigValidationError) as exc:
         raise _to_http_exception(exc) from exc
 
 
@@ -127,11 +172,7 @@ def get_feedback(
         return service.get_feedback(
             session_id=session_id, run_id=run_id, principal=principal
         )
-    except (
-        AgentSessionNotFound,
-        AgentExperimentNotFound,
-        TrainingConfigValidationError,
-    ) as exc:
+    except (AgentDomainError, TrainingConfigValidationError) as exc:
         raise _to_http_exception(exc) from exc
 
 
@@ -144,7 +185,24 @@ def get_session(
     service = _agent_service()
     try:
         return service.get_session(session_id=session_id, principal=principal)
-    except (AgentSessionNotFound, TrainingConfigValidationError) as exc:
+    except (AgentDomainError, TrainingConfigValidationError) as exc:
+        raise _to_http_exception(exc) from exc
+
+
+@router.post('/api/agent/sessions/{session_id}/reconcile')
+def reconcile_session(
+    session_id: str = Path(..., min_length=1),
+    payload: ReconcileAgentSessionRequest = Body(
+        default_factory=ReconcileAgentSessionRequest
+    ),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, object]:
+    """显式执行 Principal-scoped 对账；HTTP 不接受阈值、ID 或目标状态。"""
+    del payload
+    try:
+        service = _reconciliation_service()
+        return service.reconcile_session(session_id=session_id, principal=principal)
+    except AgentDomainError as exc:
         raise _to_http_exception(exc) from exc
 
 
@@ -168,10 +226,5 @@ def finalize_session(
             selected_run_id=payload.selected_run_id,
             principal=principal,
         )
-    except (
-        AgentSessionNotFound,
-        AgentExperimentNotFound,
-        AgentSessionClosed,
-        TrainingConfigValidationError,
-    ) as exc:
+    except (AgentDomainError, TrainingConfigValidationError) as exc:
         raise _to_http_exception(exc) from exc

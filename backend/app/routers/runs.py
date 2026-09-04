@@ -62,6 +62,7 @@ from ..runs.contracts import Principal, RunRecord, public_error_message
 from ..runs.repository import InvalidRunTransition, RunNotFound
 from ..runs.result_projection import project_run_result
 from ..runs.status_projection import project_status, recover_status_from_artifacts
+from ..runs.submission import RunSubmissionError, RunSubmissionService
 from ..version import WORKER_CONTRACT_VERSION
 from .deps import get_run_dir, get_run_repository, resolve_training_data_reference
 
@@ -478,58 +479,34 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
     # resolve_training_data_reference 内部强制 server 模式只接受 dataset_id，
     # 拒绝浏览器传入的任意 data_path（防目录穿越/任意文件读）。
     data_ref = resolve_training_data_reference(payload, principal=principal)
-    try:
-        # TrainingSpec.validated 会按是否携带独立测试集校验评估口径等约束
-        # （例如 external_test_holdout 必须有独立测试集）。
-        spec = TrainingSpec.from_legacy(payload.config).validated(
-            has_external_test=bool(data_ref.test_dataset_id or data_ref.test_legacy_path)
-        )
-    except TrainingConfigValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={'code': 'invalid_training_config', 'message': str(exc)},
-        ) from exc
     repository = get_run_repository()
-    _assert_worker_contract_compatible(repository)
-    # config 落库时附带数据集名/测试集引用等快照信息，保证历史 Run 在数据集
-    # 被清理后仍能展示“当时用的是什么数据”。
-    config = spec.to_legacy_dict()
-    config['dataset_name'] = data_ref.dataset_name
-    if data_ref.test_dataset_id:
-        config['test_dataset_id'] = data_ref.test_dataset_id
-    if data_ref.test_legacy_path:
-        config['test_data_path'] = data_ref.test_legacy_path
-    if data_ref.test_dataset_name:
-        config['test_dataset_name'] = data_ref.test_dataset_name
-    dataset_snapshot = _dataset_snapshot_for_reference(
-        dataset_id=data_ref.dataset_id,
-        legacy_path=data_ref.legacy_path,
-        dataset_name=data_ref.dataset_name,
+    datasets = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
+    datasets.initialize()
+    service = RunSubmissionService(
+        run_repository=repository,
+        dataset_repository=datasets,
+        run_dir=get_run_dir,
+        status_projector=project_status,
     )
-    if data_ref.test_dataset_id or data_ref.test_legacy_path:
-        # 独立测试集同样记录 SHA-256 指纹，防止测试集被替换后结果被误读。
-        test_snapshot = _dataset_snapshot_for_reference(
-            dataset_id=data_ref.test_dataset_id,
-            legacy_path=data_ref.test_legacy_path,
-            dataset_name=data_ref.test_dataset_name,
+    try:
+        submitted = service.submit_prepared(
+            reference=data_ref,
+            raw_config=payload.config,
+            principal=principal,
+            submission_source='human',
+            snapshot_provider=_dataset_snapshot_for_reference,
         )
-        config['test_dataset_sha256'] = test_snapshot['sha256']
-    # create_queued 只做状态机允许的“创建 queued”迁移；身份由服务端
-    # Principal 注入，请求体里的 owner_id/tenant_id 不会被采信。
-    record = repository.create_queued(
-        dataset_id=data_ref.dataset_id,
-        legacy_data_path=data_ref.legacy_path,
-        config=config,
-        dataset_snapshot=dataset_snapshot,
-        principal=principal,
-    )
-    # 同步写一份兼容 status.json，让旧前端在 Worker 尚未拾取时也能看到进度壳。
-    project_status(get_run_dir(record.run_id), record, config=config)
+    except RunSubmissionError as exc:
+        detail: dict[str, object] = {'code': exc.code, 'message': exc.message}
+        if exc.code == 'worker_contract_mismatch':
+            detail['expected_contract_version'] = WORKER_CONTRACT_VERSION
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+    record = submitted.record
     return {
         'run_id': record.run_id,
         'status': record.legacy_status,
         'state': record.state,
-        'warnings': list(spec.warnings),
+        'warnings': list(submitted.warnings),
     }
 
 

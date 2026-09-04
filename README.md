@@ -13,6 +13,7 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
 - 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
+- Agent 接口适配层使用 `agent-session-v1` / `agent-observation-v1`：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
 ## 双前端入口

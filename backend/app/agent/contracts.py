@@ -1,106 +1,131 @@
-"""Agent Session HTTP 契约（Pydantic）。
-
-设计要点：
-- 所有 Agent 请求体 ``extra='forbid'``：Agent 显式不允许扩展字段，绝不静默丢弃
-  未知键（与现有 ``TrainingRunRequest`` 保持一致风格）。
-- Session 创建后所有字段都被锁定；Experiment 只接收 ``model_type``、
-  ``normalization``、``class_balance`` 与 ``parent_run_id``、``rationale``。
-- 响应模型不在此定义——服务层直接构造 dict，避免 Pydantic 模型把
-  ``arbitrary_types_allowed`` 关掉之后还把额外字段塞进序列化结果。
-"""
+"""Agent API v1 的稳定请求与领域错误契约。"""
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-# 第一版锁定的传统模型白名单；与 ``backend/app/models/registry.py`` 的
-# TRADITIONAL_MODEL_TYPES 取交集得到 6 个，这里只开放 3 个简单稳定基线。
-_AGENT_ALLOWED_MODELS = frozenset({'logistic_regression', 'svm', 'random_forest'})
-# selection_metric 第一版只允许 macro_f1 / balanced_accuracy——这两个值在
-# ``training.py:1156-1218`` 的 ``_traditional_candidate_configs`` 选优路径上
-# 都是天然支持的。
-_AGENT_SELECTION_METRICS = frozenset({'macro_f1', 'balanced_accuracy'})
-# 评估口径只允许 stratified_holdout（外部测试集由 Session 锁定后不可改）。
-_AGENT_SPLIT_MODES = frozenset({'stratified_holdout'})
-# normalization 与 class_balance 的合法值取自现有 ``TrainingSpec.validated``。
-_AGENT_NORMALIZATIONS = frozenset({'zscore', 'minmax', 'area', 'none'})
-_AGENT_CLASS_BALANCES = frozenset({'none', 'class_weight'})
+AGENT_API_CONTRACT_VERSION = 'agent-session-v1'
+AGENT_OBSERVATION_VERSION = 'agent-observation-v1'
+AGENT_RESERVATION_PROTOCOL_VERSION = 'agent-reservation-reconciliation-v1'
+
+AGENT_ALLOWED_MODELS = ('logistic_regression', 'svm', 'random_forest')
+AGENT_SELECTION_METRICS = ('macro_f1', 'balanced_accuracy')
+AGENT_NORMALIZATIONS = ('zscore', 'minmax', 'area', 'none')
+AGENT_CLASS_BALANCES = ('none', 'class_weight')
+
+_REQUEST_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+
+
+class AgentDomainError(RuntimeError):
+    """统一、可安全公开的 Agent 领域错误。"""
+
+    def __init__(self, code: str, message: str, *, status_code: int,
+                 retryable: bool = False, allowed_actions: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        self.retryable = retryable
+        self.allowed_actions = allowed_actions
+
+    def detail(self) -> dict[str, object]:
+        return {
+            'code': self.code,
+            'message': self.message,
+            'retryable': self.retryable,
+            'allowed_actions': list(self.allowed_actions),
+        }
 
 
 class AgentEvaluationBlock(BaseModel):
-    """Session 内锁定的评估口径（split_mode + 比例）。"""
-
     model_config = ConfigDict(extra='forbid')
 
     split_mode: Literal['stratified_holdout'] = 'stratified_holdout'
-    split_train: int = Field(8, ge=1, le=9)
-    split_valid: int = Field(1, ge=1, le=9)
-    split_test: int = Field(1, ge=1, le=9)
+    split_train: int = Field(8, strict=True, ge=1, le=9)
+    split_valid: int = Field(1, strict=True, ge=1, le=9)
+    split_test: int = Field(1, strict=True, ge=1, le=9)
 
 
-class CreateAgentSessionRequest(BaseModel):
-    """``POST /api/agent/sessions`` 的请求体。"""
-
+class AgentContextPolicy(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    dataset_id: str = Field(..., min_length=1)
-    selection_metric: str = Field(...)
-    allowed_models: list[str] = Field(..., min_length=1)
-    max_runs: int = Field(..., ge=1, le=10)
-    seed: int = Field(42, ge=0)
+    source_role: Literal['development', 'benchmark', 'domain'] = 'development'
+    case_write: bool = False
+
+
+class _IdempotentRequest(BaseModel):
+    client_request_id: str | None = Field(None, min_length=1, max_length=128)
+
+    @field_validator('client_request_id')
+    @classmethod
+    def valid_request_id(cls, value: str | None) -> str | None:
+        if value is not None and not _REQUEST_ID.fullmatch(value):
+            raise ValueError('client_request_id 只能包含字母、数字、点、下划线、冒号和连字符')
+        return value
+
+
+class CreateAgentSessionRequest(_IdempotentRequest):
+    model_config = ConfigDict(extra='forbid')
+
+    dataset_id: str = Field(..., min_length=1, max_length=128)
+    selection_metric: str
+    allowed_models: list[str] = Field(..., min_length=1, max_length=3)
+    max_runs: int = Field(..., strict=True, ge=1, le=10)
+    seed: int = Field(42, strict=True, ge=0)
     evaluation: AgentEvaluationBlock = Field(default_factory=AgentEvaluationBlock)
+    modules: list[str] = Field(default_factory=list, max_length=16)
+    context_policy: AgentContextPolicy = Field(default_factory=AgentContextPolicy)
 
-    def validate(self) -> None:
-        if self.selection_metric not in _AGENT_SELECTION_METRICS:
-            raise ValueError(
-                f'selection_metric 必须来自 {sorted(_AGENT_SELECTION_METRICS)}'
+    def validate_business(self) -> None:
+        if self.selection_metric not in AGENT_SELECTION_METRICS:
+            raise AgentDomainError('agent_invalid_action', f'selection_metric 必须来自 {list(AGENT_SELECTION_METRICS)}', status_code=422)
+        unknown = [item for item in self.allowed_models if item not in AGENT_ALLOWED_MODELS]
+        if unknown:
+            raise AgentDomainError('agent_invalid_action', f'allowed_models 仅支持 {list(AGENT_ALLOWED_MODELS)}，当前收到 {unknown}', status_code=422)
+        if len(set(self.allowed_models)) != len(self.allowed_models):
+            raise AgentDomainError(
+                'agent_invalid_action', 'allowed_models 不能包含重复项', status_code=422
             )
-        unknown_models = [
-            model for model in self.allowed_models if model not in _AGENT_ALLOWED_MODELS
-        ]
-        if unknown_models:
-            raise ValueError(
-                f'allowed_models 仅支持 {sorted(_AGENT_ALLOWED_MODELS)},'
-                f' 当前收到 {unknown_models}'
+        ratios = (self.evaluation.split_train, self.evaluation.split_valid, self.evaluation.split_test)
+        if sum(ratios) != 10:
+            raise AgentDomainError(
+                'agent_invalid_action', 'evaluation 比例三项必须相加等于 10', status_code=422
             )
-        ratios = (self.evaluation.split_train, self.evaluation.split_valid,
-                  self.evaluation.split_test)
-        if sum(ratios) != 10 or min(ratios) <= 0:
-            raise ValueError('evaluation 比例三项必须为正且相加等于 10')
+
+    validate = validate_business
 
 
-class CreateAgentExperimentRequest(BaseModel):
-    """``POST /api/agent/sessions/{session_id}/experiments`` 的请求体。"""
-
+class CreateAgentExperimentRequest(_IdempotentRequest):
     model_config = ConfigDict(extra='forbid')
 
-    model_type: str = Field(...)
-    normalization: str = Field('zscore')
-    class_balance: str = Field('none')
-    parent_run_id: str | None = None
+    model_type: str
+    normalization: str = 'zscore'
+    class_balance: str = 'none'
+    parent_run_id: str | None = Field(None, min_length=1, max_length=128)
     rationale: str | None = Field(None, max_length=2000)
 
-    def validate(self) -> None:
-        if self.model_type not in _AGENT_ALLOWED_MODELS:
-            raise ValueError(
-                f'model_type 仅支持 {sorted(_AGENT_ALLOWED_MODELS)}'
-            )
-        if self.normalization not in _AGENT_NORMALIZATIONS:
-            raise ValueError(
-                f'normalization 仅支持 {sorted(_AGENT_NORMALIZATIONS)}'
-            )
-        if self.class_balance not in _AGENT_CLASS_BALANCES:
-            raise ValueError(
-                f'class_balance 仅支持 {sorted(_AGENT_CLASS_BALANCES)}'
-            )
+    def validate_business(self) -> None:
+        if self.model_type not in AGENT_ALLOWED_MODELS:
+            raise AgentDomainError('agent_invalid_action', f'model_type 仅支持 {list(AGENT_ALLOWED_MODELS)}', status_code=422)
+        if self.normalization not in AGENT_NORMALIZATIONS:
+            raise AgentDomainError('agent_invalid_action', f'normalization 仅支持 {list(AGENT_NORMALIZATIONS)}', status_code=422)
+        if self.class_balance not in AGENT_CLASS_BALANCES:
+            raise AgentDomainError('agent_invalid_action', f'class_balance 仅支持 {list(AGENT_CLASS_BALANCES)}', status_code=422)
+
+    validate = validate_business
 
 
 class FinalizeAgentSessionRequest(BaseModel):
-    """``POST /api/agent/sessions/{session_id}/finalize`` 的请求体。"""
-
     model_config = ConfigDict(extra='forbid')
 
-    selected_run_id: str = Field(..., min_length=1)
+    selected_run_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ReconcileAgentSessionRequest(BaseModel):
+    """显式空请求体；任何客户端提供的恢复参数都被拒绝。"""
+
+    model_config = ConfigDict(extra='forbid')
