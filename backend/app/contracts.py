@@ -23,6 +23,22 @@ class TrainingRunRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class TrainingBatchRequest(BaseModel):
+    """Multi-model request.  Identity and filesystem paths remain server-owned."""
+    model_config = ConfigDict(extra='forbid')
+
+    dataset_id: str | None = None
+    data_path: str | None = None
+    test_dataset_id: str | None = None
+    test_data_path: str | None = None
+    model_types: list[str] = Field(min_length=1, max_length=50)
+    # 新请求只允许“一模型一个 Run”。仓储/结果投影仍能读取历史 R>1 批次，
+    # 但公开创建接口不再接受新的重复训练。
+    repeat_count: int = Field(default=1, ge=1, le=1)
+    base_seed: int = 42
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class TrainingConfigValidationError(ValueError):
     """训练配置在创建 queued Run 前即可确定的错误。"""
 
@@ -30,7 +46,7 @@ class TrainingConfigValidationError(ValueError):
 _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
     {
         'epochs', 'batch_size', 'learning_rate', 'weight_decay', 'scheduler_factor',
-        'scheduler_patience', 'min_learning_rate', 'seed', 'normalization', 'split_mode',
+        'scheduler_patience', 'min_learning_rate', 'seed', 'split_seed', 'model_seed', 'normalization', 'split_mode',
         'split_train', 'split_valid', 'split_test', 'class_balance', 'model_type',
         'early_stopping_patience', 'dropout', 'hidden_size', 'transformer_heads',
         'unet_depth', 'dscarnet_inception_blocks', 'dscarnet_pca_components',
@@ -43,16 +59,19 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'pca_components', 'logistic_c', 'svm_kernel', 'random_forest_max_features',
         'random_forest_oob_score', 'xgboost_min_child_weight', 'xgboost_gamma',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
-        'feature_n_repeats', 'feature_eval_split',
+        'feature_n_repeats', 'feature_eval_split', 'spls_components', 'spls_keepx',
+        'logistic_l1_ratio',
     }
 )
 
 _MODEL_ALIASES = {
     'pls': 'pls_da', 'pls-da': 'pls_da', 'pls_da': 'pls_da',
+    'spls_da': 'spls_da', 'spls-da': 'spls_da',
     'pca_lda': 'pca_lda',
     'logistic_regression': 'logistic_regression', 'logistic-regression': 'logistic_regression',
     'logreg': 'logistic_regression',
     'svm': 'svm', 'support_vector_machine': 'svm',
+    'pca_svm': 'pca_svm', 'pca-svm': 'pca_svm',
     'random_forest': 'random_forest', 'random-forest': 'random_forest', 'rf': 'random_forest',
     'xgboost': 'xgboost', 'xgb': 'xgboost',
     'pca_mlp': 'pca_mlp',
@@ -144,6 +163,7 @@ class TrainingSpec:
             'random_forest_n_estimators', 'random_forest_search_iterations',
             'random_forest_min_samples_leaf', 'xgboost_n_estimators', 'xgboost_max_depth',
             'feature_window_count', 'feature_top_k', 'feature_n_repeats',
+            'spls_components', 'spls_keepx',
         }
         for field in positive_integer_fields:
             if field not in values:
@@ -178,13 +198,14 @@ class TrainingSpec:
                     raise TrainingConfigValidationError(f'{field} 必须大于等于 0')
                 values[field] = number
 
-        if 'seed' in values:
-            seed = _finite_number(values['seed'], field='seed')
-            if not seed.is_integer():
-                raise TrainingConfigValidationError('seed 必须是整数')
-            values['seed'] = int(seed)
+        for field in ('seed', 'split_seed', 'model_seed'):
+            if field in values:
+                seed = _finite_number(values[field], field=field)
+                if not seed.is_integer():
+                    raise TrainingConfigValidationError(f'{field} 必须是整数')
+                values[field] = int(seed)
 
-        for field in ('pls_components', 'pca_components', 'random_forest_max_depth'):
+        for field in ('pls_components', 'spls_components', 'spls_keepx', 'pca_components', 'random_forest_max_depth'):
             if field in values and values[field] is not None:
                 number = _finite_number(values[field], field=field)
                 if number < 1 or not number.is_integer():
@@ -196,6 +217,12 @@ class TrainingSpec:
             if not 0 <= dropout < 1:
                 raise TrainingConfigValidationError('dropout 必须大于等于 0 且小于 1')
             values['dropout'] = dropout
+
+        if 'logistic_l1_ratio' in values:
+            ratio = _finite_number(values['logistic_l1_ratio'], field='logistic_l1_ratio')
+            if not 0 <= ratio <= 1:
+                raise TrainingConfigValidationError('logistic_l1_ratio 必须在 0 到 1 之间')
+            values['logistic_l1_ratio'] = ratio
 
         if 'svm_gamma' in values and isinstance(values['svm_gamma'], str):
             gamma = values['svm_gamma'].strip().lower()

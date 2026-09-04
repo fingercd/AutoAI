@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -219,7 +220,7 @@ def _sample_id_count_from_splits(
     """
     sample_ids: set[str] = set()
     allowed_fields = {'train_sample_ids', 'valid_sample_ids'}
-    if evaluation_strategy != 'external_test_holdout':
+    if evaluation_strategy not in {'external_test_holdout', 'leave_one_sample_id_cv_with_external_test'}:
         allowed_fields.add('test_sample_ids')
     for raw_fold in folds:
         if not isinstance(raw_fold, dict):
@@ -294,6 +295,77 @@ def _sample_explainability_summary(
             else None
         ),
     }
+
+
+def _contains_non_finite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_non_finite(item) for item in value)
+    return False
+
+
+def _model_feature_visualization(
+    run_dir: Path,
+    descriptors: list[dict[str, Any]],
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    """Read the optional checked visualization artifact for inline result rendering."""
+    descriptor = next(
+        (item for item in descriptors if item.get('name') == 'model_feature_visualization.json'),
+        None,
+    )
+    if not isinstance(descriptor, dict) or not descriptor.get('exists'):
+        return None
+    if descriptor.get('integrity') != 'ok':
+        warnings.append('模型特征可视化文件完整性校验失败')
+        return {
+            'schema_version': 'model-feature-visualization-v1',
+            'status': 'unavailable',
+            'reason': descriptor.get('reason') or '模型特征可视化文件损坏',
+            'plots': [],
+        }
+    payload = _read_json_object(run_dir / 'model_feature_visualization.json', warnings)
+    if not payload:
+        return {
+            'schema_version': 'model-feature-visualization-v1',
+            'status': 'unavailable',
+            'reason': '模型特征可视化文件无法解析',
+            'plots': [],
+        }
+    valid_status = payload.get('status') in {'ready', 'unsupported', 'unavailable'}
+    valid_plots = isinstance(payload.get('plots'), list)
+    if (
+        payload.get('schema_version') != 'model-feature-visualization-v1'
+        or not valid_status
+        or not valid_plots
+        or _contains_non_finite(payload)
+    ):
+        warnings.append('模型特征可视化文件不符合契约')
+        return {
+            'schema_version': 'model-feature-visualization-v1',
+            'status': 'unavailable',
+            'reason': '模型特征可视化文件不符合契约',
+            'plots': [],
+        }
+    safe_payload = _without_paths(payload)
+    # VIP artifact 保留全量特征供下载审计；首屏只内联显示上限内的最高项，
+    # 避免 16,380 特征宽表把 /result 响应膨胀到数 MB。
+    for plot in safe_payload.get('plots', []):
+        if not isinstance(plot, dict) or plot.get('type') != 'bar' or not isinstance(plot.get('items'), list):
+            continue
+        display_limit = plot.get('display_limit', 24)
+        try:
+            limit = max(1, min(50, int(display_limit)))
+        except (TypeError, ValueError):
+            limit = 24
+        item_count = len(plot['items'])
+        plot['items'] = plot['items'][:limit]
+        plot['truncated'] = item_count > limit
+        plot['total_item_count'] = item_count
+    return safe_payload
 
 
 def _result_state(
@@ -417,7 +489,13 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         if isinstance(raw_metrics.get(name), dict)
     }
     is_cv = strategy == 'leave_one_sample_id_cv'
-    pooled_oof = cv_summary.get('pooled_test') if is_cv and isinstance(cv_summary.get('pooled_test'), dict) else None
+    is_external_loso = strategy == 'leave_one_sample_id_cv_with_external_test'
+    pooled_oof = (
+        cv_summary.get('pooled_test') if is_cv and isinstance(cv_summary.get('pooled_test'), dict)
+        else cv_summary.get('audit', {}).get('pooled_oof')
+        if is_external_loso and isinstance(cv_summary.get('audit'), dict) and isinstance(cv_summary.get('audit', {}).get('pooled_oof'), dict)
+        else None
+    )
     fold_mean = cv_summary.get('fold_mean') if isinstance(cv_summary.get('fold_mean'), dict) else {}
     fold_std = cv_summary.get('fold_std') if isinstance(cv_summary.get('fold_std'), dict) else {}
     # CV 口径：test 主指标必须是 pooled OOF（所有折合并计算），不能取 fold mean。
@@ -442,7 +520,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     else:
         split_metrics = {
             name: {
-                'aggregation': 'direct',
+                'aggregation': 'direct_external_test' if is_external_loso and name == 'test' else 'direct',
                 'values': payload,
                 'fold_std': None,
                 'pooled': None,
@@ -505,7 +583,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         if is_cv:
             aggregation = 'pooled_oof' if split_name == 'test' else 'pooled_cross_fold'
         else:
-            aggregation = 'direct'
+            aggregation = 'direct_external_test' if is_external_loso and split_name == 'test' else 'direct'
         analysis_splits[split_name] = _analysis_split(
             chart_payload,
             labels=labels,
@@ -578,7 +656,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             'strategy': strategy,
             'fold_count': int(fold_count) if fold_count is not None else None,
             'primary_split': 'test',
-            'primary_aggregation': 'pooled_oof' if is_cv else 'direct',
+            'primary_aggregation': 'pooled_oof' if is_cv else 'direct_external_test' if is_external_loso else 'direct',
         },
         'metrics': {
             'primary': _without_paths(primary),
@@ -604,13 +682,9 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             'roc': {'available': False, 'reason': '当前训练产物未计算 ROC 曲线或 ROC-AUC'},
             'precision_recall': {'available': False, 'reason': '当前训练产物未计算 Precision-Recall 曲线'},
         },
-        'explainability': {
-            'samples': (
-                _sample_explainability_summary(status, descriptors)
-                if is_succeeded
-                else None
-            ),
-        },
+        # TEMPORARILY_HIDDEN: new and historic artifacts are deliberately not
+        # projected to clients while the product surface is disabled.
+        'explainability': {'status': 'temporarily_hidden'},
         'artifacts': descriptors,
         'warnings': list(dict.fromkeys(warnings)),
     }

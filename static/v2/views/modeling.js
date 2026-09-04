@@ -10,20 +10,20 @@
  * - 通过 ../store.js 的 consumeModelingDraft 读取"从历史 Run 复制配置"的草稿（训练记录页跳转过来时携带），
  *   markRunCreated 记录本次会话新建的 run_id（用于训练记录页高亮/识别）。
  * - 通过 ../components/model-catalog.js 渲染模型目录卡片（含 available=false 的不可用模型折叠展示）。
- * - EVALUATION_STRATEGIES 来自 ../lib/format.js，定义三种评估口径的展示文案：
+ * - EVALUATION_STRATEGIES 来自 ../lib/format.js，定义四种评估口径的展示文案：
  *   stratified_holdout（分层留出 8:1:1）、leave_one_sample_id_cv（留一样本交叉验证）、
- *   external_test_holdout（独立测试集，需要第 1 步上传独立测试 CSV）。
+ *   external_test_holdout（独立测试集）和 leave_one_sample_id_cv_with_external_test（独立测试集 + 留一审计）。
  *
  * 关键设计约束（与后端契约一致）：
  * - 训练 HTTP 请求只创建 queued Run，不直接启动训练；成功响应不代表训练已开始或完成（见 renderSuccess）。
  * - 上传的 CSV 必须满足 wide-feature-v2 宽表契约：Index, Label, Sample_ID, Name 四个元数据列 +
  *   第 5 列起严格递增的真实数值坐标表头；旧 wide-feature-v1（无 Name 列）仍兼容。
- * - external_test_holdout 必须携带 test_dataset_id；未上传独立测试集时该口径禁用并自动回退。
+ * - 两种独立测试集口径必须携带 test_dataset_id；未上传时禁用并自动回退。
  * - Label 始终按分类处理；同一 Sample_ID 整组划分，不会跨 train/valid/test。
  */
 import { el, clear } from '../lib/dom.js';
 import { EVALUATION_STRATEGIES } from '../lib/format.js';
-import { uploadDataset, getModels, createRun } from '../api.js';
+import { uploadDataset, getModels, createBatch, createRun } from '../api.js';
 import { renderModelCatalog, findModel } from '../components/model-catalog.js';
 import { markRunCreated, consumeModelingDraft } from '../store.js';
 import { naturalCompare, renderSampleIdList } from '../../js/ui-utils.js';
@@ -195,7 +195,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       : 'stratified_holdout',
     models: null,
     modelsError: null,
-    modelId: draft?.config?.model_type || null,
+    modelIds: draft?.config?.model_type ? [draft.config.model_type] : [],
     // 参数默认值与后端约定一致：epochs 200 / batch_size 8 / lr 0.001 / zscore；seed 留空表示用默认。
     params: {
       epochs: Number(draft?.config?.epochs) || 200,
@@ -337,17 +337,17 @@ export function mountModeling(container, { announce, toast, navigate }) {
   }
 
   /**
-   * 第 2 步：选择评估口径（三种互斥单选）。
-   * external_test_holdout 依赖第 1 步上传的独立测试集：未上传时该选项禁用；
+   * 第 2 步：选择评估口径（四种互斥单选）。
+   * 两种 external 策略依赖第 1 步上传的独立测试集：未上传时禁用；
    * 若当前恰好选中它（例如草稿带入），自动回退为 stratified_holdout，避免提交无效配置。
    */
   function renderStep2() {
-    if (wizard.strategy === 'external_test_holdout' && !wizard.testDatasetId) {
+    if (['external_test_holdout', 'leave_one_sample_id_cv_with_external_test'].includes(wizard.strategy) && !wizard.testDatasetId) {
       wizard.strategy = 'stratified_holdout';
     }
     const group = el('div', { className: 'stack', attrs: { role: 'radiogroup', 'aria-label': '评估口径' } });
     for (const [key, meta] of Object.entries(EVALUATION_STRATEGIES)) {
-      const needsTest = key === 'external_test_holdout';
+      const needsTest = key === 'external_test_holdout' || key === 'leave_one_sample_id_cv_with_external_test';
       const disabled = needsTest && !wizard.testDatasetId;
       const radio = el('input', {
         attrs: {
@@ -369,7 +369,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
         el('h2', { className: 'card-title', text: '选择评估口径' }),
         el('span', { className: 'badge', text: '第 2 步，共 4 步' }),
       ]),
-      el('p', { className: 'hint', text: '默认“分层留出”适合大多数情况，直接下一步即可。三种口径互斥；交叉验证的 Test 主指标由全部折的测试预测合并计算，不会与逐折均值混用。' }),
+      el('p', { className: 'hint', text: '默认“分层留出”适合大多数情况，直接下一步即可。四种口径互斥；交叉验证的 Test 主指标由全部折的测试预测合并计算，不会与逐折均值混用。' }),
       group,
       navButtons({ onNext: () => goto(3) }),
     ]));
@@ -386,8 +386,8 @@ export function mountModeling(container, { announce, toast, navigate }) {
     const nextButton = el('button', {
       className: 'btn btn-primary',
       text: '下一步',
-      attrs: { type: 'button', disabled: wizard.modelId ? null : true },
-      on: { click: () => { if (wizard.modelId) goto(4); } },
+      attrs: { type: 'button', disabled: wizard.modelIds.length ? null : true },
+      on: { click: () => { if (wizard.modelIds.length) goto(4); } },
     });
     body.append(el('div', { className: 'card' }, [
       el('div', { className: 'row spread' }, [
@@ -399,7 +399,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
       el('div', { className: 'card-actions' }, [
         el('button', { className: 'btn btn-ghost', text: '上一步', attrs: { type: 'button' }, on: { click: () => goto(2) } }),
         nextButton,
-        wizard.modelId ? null : el('span', { className: 'hint', text: '请先选择一个可训练模型。' }),
+        wizard.modelIds.length ? null : el('span', { className: 'hint', text: '请至少选择一个可训练模型。' }),
       ]),
     ]));
     // 状态一：目录加载失败 —— 显示错误与重试（重试清空缓存状态后重新 render 触发再次拉取）。
@@ -414,8 +414,8 @@ export function mountModeling(container, { announce, toast, navigate }) {
     if (wizard.models) {
       renderModelCatalog(host, {
         models: wizard.models,
-        selectedId: wizard.modelId,
-        onSelect: (id) => { wizard.modelId = id; nextButton.disabled = false; },
+        selectedIds: wizard.modelIds,
+        onSelect: (ids) => { wizard.modelIds = ids; nextButton.disabled = !ids.length; },
       });
       return;
     }
@@ -429,9 +429,10 @@ export function mountModeling(container, { announce, toast, navigate }) {
       .then((result) => {
         wizard.models = Array.isArray(result?.models) ? result.models : [];
         // 草稿带入的模型当前不可用时清空选择，强制用户重新选可训练模型。
-        if (wizard.modelId && !findModel(wizard.models, wizard.modelId)?.available) {
-          wizard.modelId = null;
-        }
+        wizard.modelIds = wizard.modelIds.filter((id) => {
+          const model = findModel(wizard.models, id);
+          return model?.available && model?.ui_visible !== false;
+        });
       })
       .catch((error) => {
         wizard.modelsError = error?.message || '模型目录加载失败';
@@ -452,7 +453,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
    * 不在浏览器侧传 data_path（server 模式安全约束）。seed 留空时不出现在 config 中。
    */
   function renderStep4() {
-    const model = findModel(wizard.models, wizard.modelId);
+    const selectedModels = wizard.modelIds.map((id) => findModel(wizard.models, id)).filter(Boolean);
     const inputs = {
       epochs: el('input', { className: 'input', attrs: { type: 'number', min: '1', step: '1', value: String(wizard.params.epochs), id: 'v2-p-epochs' } }),
       batch_size: el('input', { className: 'input', attrs: { type: 'number', min: '1', step: '1', value: String(wizard.params.batch_size), id: 'v2-p-batch' } }),
@@ -466,13 +467,15 @@ export function mountModeling(container, { announce, toast, navigate }) {
       stratified_holdout: 'train/valid/test 目标 8:1:1（按 Sample_ID 整组；Valid/Test 每类至少 1 个）',
       leave_one_sample_id_cv: '每折留 1 个 Sample_ID 作 test，其余 8:2；Test 主指标为合并交叉验证预测',
       external_test_holdout: '主数据 8:2 划分 train/valid，独立测试集作 test',
+      leave_one_sample_id_cv_with_external_test: '主数据留一合并预测仅作审计；在全部主数据重训后以独立测试集作主指标',
     }[wizard.strategy];
     const summaryRows = [
       ['主数据集', wizard.datasetName || wizard.datasetId || '—'],
-      ['独立测试集', wizard.strategy === 'external_test_holdout' ? (wizard.testDatasetName || wizard.testDatasetId || '—') : '不使用'],
+      ['独立测试集', ['external_test_holdout', 'leave_one_sample_id_cv_with_external_test'].includes(wizard.strategy) ? (wizard.testDatasetName || wizard.testDatasetId || '—') : '不使用'],
       ['评估口径', EVALUATION_STRATEGIES[wizard.strategy].shortLabel],
       ['划分', splitInfo],
-      ['模型', model ? `${model.display_name}（${model.id}）` : wizard.modelId || '—'],
+      ['模型', selectedModels.length ? selectedModels.map((model) => `${model.display_name}（${model.id}）`).join('、') : '—'],
+      ['任务数', `${wizard.modelIds.length} 个模型 = ${wizard.modelIds.length} 个 queued Run`],
     ];
     const errorBox = el('p', { className: 'error-text', attrs: { role: 'alert' } });
     const submit = el('button', { className: 'btn btn-primary', text: '提交训练', attrs: { type: 'button' } });
@@ -489,7 +492,7 @@ export function mountModeling(container, { announce, toast, navigate }) {
     const paramsHint = el('p', { className: 'hint' });
     // 实时摘要行：参数修改即时反映，未填项回退默认值展示。
     const updateParamsHint = () => {
-      paramsHint.textContent = `训练参数：epochs ${inputs.epochs.value || 200} · batch_size ${inputs.batch_size.value || 8} · learning_rate ${inputs.learning_rate.value || 0.001} · normalization ${inputs.normalization.value}${inputs.seed.value === '' ? '' : ` · seed ${inputs.seed.value}`}（默认值已适合大多数情况）`;
+      paramsHint.textContent = `训练参数：epochs ${inputs.epochs.value || 200} · batch_size ${inputs.batch_size.value || 8} · learning_rate ${inputs.learning_rate.value || 0.001} · normalization ${inputs.normalization.value}${inputs.seed.value === '' ? '' : ` · seed ${inputs.seed.value}`}（总任务数 ${wizard.modelIds.length}）`;
     };
     for (const input of Object.values(inputs)) {
       input.addEventListener('change', updateParamsHint);
@@ -500,7 +503,6 @@ export function mountModeling(container, { announce, toast, navigate }) {
       errorBox.textContent = '';
       syncParams();
       const config = {
-        model_type: wizard.modelId,
         epochs: Number(inputs.epochs.value),
         batch_size: Number(inputs.batch_size.value),
         learning_rate: Number(inputs.learning_rate.value),
@@ -509,26 +511,28 @@ export function mountModeling(container, { announce, toast, navigate }) {
       };
       // seed 可选：留空则不传，由后端使用默认随机种子。
       if (inputs.seed.value !== '') config.seed = Number(inputs.seed.value);
-      if (!config.model_type) {
-        errorBox.textContent = '还没有选择模型。请返回第 3 步选择一个可训练模型。';
+      if (!wizard.modelIds.length) {
+        errorBox.textContent = '还没有选择模型。请返回第 3 步选择一个或多个可训练模型。';
         return;
       }
       submit.disabled = true;
       submit.textContent = '提交中…';
       try {
-        // 只创建 queued Run；test_dataset_id 仅在独立测试口径下传递，其余口径传 null。
-        const result = await createRun({
-          dataset_id: wizard.datasetId,
-          test_dataset_id: wizard.strategy === 'external_test_holdout' ? wizard.testDatasetId : null,
-          config,
-        });
-        markRunCreated(result.run_id);
-        toast(`Run ${result.run_id} 已入队（queued），等待 worker 执行。`, {
-          type: 'success',
-          action: { label: '查看进度', onClick: () => goResult(result.run_id) },
-        });
-        announce(`训练已入队：${result.run_id}`);
-        renderSuccess(result);
+        const shared = { dataset_id: wizard.datasetId, test_dataset_id: ['external_test_holdout', 'leave_one_sample_id_cv_with_external_test'].includes(wizard.strategy) ? wizard.testDatasetId : null };
+        if (wizard.modelIds.length === 1) {
+          const result = await createRun({ ...shared, config: { ...config, model_type: wizard.modelIds[0] } });
+          markRunCreated(result.run_id);
+          toast(`Run ${result.run_id} 已入队（queued），等待 worker 执行。`, { type: 'success', action: { label: '查看进度', onClick: () => goResult(result.run_id) } });
+          announce(`训练已入队：${result.run_id}`);
+          renderSuccess(result);
+        } else {
+          const batchConfig = { ...config };
+          delete batchConfig.seed;
+          const result = await createBatch({ ...shared, model_types: wizard.modelIds, base_seed: inputs.seed.value === '' ? 42 : Number(inputs.seed.value), config: batchConfig });
+          toast(`Batch ${result.batch_id} 已入队，共 ${result.run_count} 个任务。`, { type: 'success', action: { label: '查看比较', onClick: () => navigate(`#/comparison?batch_id=${encodeURIComponent(result.batch_id)}`) } });
+          announce(`批量训练已入队，共 ${result.run_count} 个任务`);
+          renderBatchSuccess(result);
+        }
       } catch (error) {
         errorBox.textContent = `创建失败：${error?.message || '未知错误'}。下一步：检查网络与登录状态后重新点击提交；参数本身已保留。`;
       } finally {
@@ -636,6 +640,25 @@ export function mountModeling(container, { announce, toast, navigate }) {
       }
       countdownText.textContent = `${remaining} 秒后自动跳转到建模结果（仅本次新建 Run 自动跳转）`;
     }, 1000);
+  }
+
+  function renderBatchSuccess(result) {
+    cleanupCountdown();
+    clear(body);
+    clear(stepper);
+    const batchId = result.batch_id;
+    body.append(el('div', { className: 'card stack' }, [
+      el('div', { className: 'row spread' }, [
+        el('h2', { className: 'card-title', text: '批量训练已创建' }),
+        el('span', { className: 'badge status-queued', text: 'queued' }),
+      ]),
+      el('p', {}, ['Batch ID：', el('code', { text: batchId })]),
+      el('p', { className: 'hint', text: `已原子入队 ${result.run_count} 个子任务（${result.model_count} 个模型，每个模型一个 Run）。所有模型使用同一数据划分。` }),
+      el('div', { className: 'card-actions' }, [
+        el('button', { className: 'btn btn-primary', text: '查看批次和比较', attrs: { type: 'button' }, on: { click: () => navigate(`#/comparison?batch_id=${encodeURIComponent(batchId)}`) } }),
+        el('button', { className: 'btn btn-ghost', text: '再建一个 Batch', attrs: { type: 'button' }, on: { click: () => { wizard.step = 1; render(); } } }),
+      ]),
+    ]));
   }
 
   render();

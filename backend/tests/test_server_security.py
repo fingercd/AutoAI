@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 import pytest
 
-from backend.app.contracts import TrainingRunRequest
+from backend.app.contracts import TrainingBatchRequest, TrainingRunRequest
 from backend.app.http.security import (
     ServerAuthMiddleware,
     cors_origins,
@@ -198,6 +198,9 @@ def test_run_repository_scopes_records_to_the_server_derived_principal(tmp_path)
         TrainingRunRequest(data_path='D:/server/data.csv'),
         TrainingRunRequest(),
         TrainingRunRequest(dataset_id='dataset-1', test_data_path='D:/server/test.csv'),
+        TrainingBatchRequest(model_types=['pls_da'], data_path='D:/server/data.csv'),
+        TrainingBatchRequest(model_types=['pls_da']),
+        TrainingBatchRequest(model_types=['pls_da'], dataset_id='dataset-1', test_data_path='D:/server/test.csv'),
     ],
 )
 def test_server_principal_requires_stable_dataset_ids(payload) -> None:

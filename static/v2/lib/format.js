@@ -153,7 +153,12 @@ export const EVALUATION_STRATEGIES = {
   external_test_holdout: {
     label: '独立测试集 external_test_holdout',
     shortLabel: '独立测试集 8:2',
-    description: '主数据按 Sample_ID 整组 8:2 划分 train/valid，独立测试集作为最终 test；与交叉验证互斥。',
+    description: '主数据按 Sample_ID 整组 8:2 划分 train/valid，独立测试集作为最终 test。',
+  },
+  leave_one_sample_id_cv_with_external_test: {
+    label: '独立测试集 + 留一审计',
+    shortLabel: '独立测试集 + 留一审计',
+    description: '主数据按 Sample_ID 留一生成合并预测审计；最终在全部主数据重训，只以独立测试集作为主指标。',
   },
 };
 
@@ -166,6 +171,7 @@ export const EVALUATION_STRATEGIES = {
  */
 export const AGGREGATION_LABELS = {
   direct: '直接计算',
+  direct_external_test: '独立测试集直接计算',
   pooled_oof: '合并交叉验证预测',
   fold_mean: '逐折均值（审计）',
   pooled_cross_fold: '跨折预测合并（样本可能重复）',

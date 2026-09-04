@@ -17,11 +17,13 @@
 本模块只负责把请求中的划分选项归一化成不可歧义的策略；它不读取数据，
 也不执行划分。训练代码必须以这里返回的策略为准，避免前端、API 和训练器
 分别解释比例，尤其要保证 external test 与留一交叉验证不会同时启用。
-三种合法评估口径：
+四种合法评估口径：
 - stratified_holdout：无独立测试集时的分层留出（train/valid/test 均 > 0 且和为 10）。
 - leave_one_sample_id_cv：留一样品交叉验证（train/valid 和为 10，test=0）。
 - external_test_holdout：有独立测试集时，主数据只分 train/valid（和为 10），
-  独立测试集充当最终 test，此时禁止开启交叉验证。
+  独立测试集充当最终 test。
+- leave_one_sample_id_cv_with_external_test：主数据完成按 Sample_ID 留一 OOF
+  审计，最终只用独立测试集作为主测试集。
 """
 
 from __future__ import annotations
@@ -86,6 +88,7 @@ class EvaluationPolicy:
 # 解释为 CV 而不是静默退回 stratified_holdout。
 _CV_MODES = {
     "leave_one_sample_id_cv",
+    "leave_one_sample_id_cv_with_external_test",
     "leave_one_repeat_index_cv",
     "outer_leave_one_repeat_index_cv",
     "loocv",
@@ -121,18 +124,18 @@ def resolve_evaluation_policy(
     config = dict(config_data or {})
     requested = str(config.get("split_mode") or "stratified_holdout").strip().lower()
 
-    # 分支一：有独立测试集。此时 CV 与外部 test 语义冲突，直接拒绝；
+    # 分支一：有独立测试集。请求留一时保留主数据 OOF 审计，但最终
+    # 排名指标只来自独立测试集；外部数据绝不进入任何 CV 拆分。
     # 主数据只划分 train/valid（默认 8:2），内部 test 必须为 0，
     # 因为最终测试由独立测试集承担，不允许再从主数据里切一份 test。
     if has_external_test:
-        if requested in _CV_MODES:
-            raise ValueError("已提供独立测试集时不允许开启交叉验证")
         train = int(config.get("split_train", 8))
         valid = int(config.get("split_valid", 2))
         test = int(config.get("split_test", 0))
         if test != 0 or train <= 0 or valid <= 0 or train + valid != 10:
             raise ValueError("独立测试集模式要求主数据训练/验证比例相加必须等于 10，且内部测试比例为 0")
-        # cv_allowed=False：已用独立测试集，禁止再开交叉验证。
+        if requested in _CV_MODES:
+            return EvaluationPolicy("leave_one_sample_id_cv_with_external_test", train, valid, 0, True)
         return EvaluationPolicy("external_test_holdout", train, valid, 0, False)
 
     # 分支二：无独立测试集且用户请求了留一交叉验证。

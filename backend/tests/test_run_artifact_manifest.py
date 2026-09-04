@@ -44,11 +44,13 @@ def test_v2_manifest_uses_an_explicit_catalog_and_keeps_model_objects_private(tm
         writer.resolve_download('unknown.bin')
 
 
-def test_new_catalog_exposes_only_sample_level_explainability() -> None:
-    assert 'sample_feature_importance.json' in ARTIFACT_CATALOG
-    assert 'sample_feature_importance.csv' in ARTIFACT_CATALOG
-    assert 'feature_importance.json' not in ARTIFACT_CATALOG
-    assert 'feature_importance.csv' not in ARTIFACT_CATALOG
+def test_new_catalog_hides_all_explainability_artifacts() -> None:
+    for name in (
+        'sample_feature_importance.json', 'sample_feature_importance.csv',
+        'feature_importance.json', 'feature_importance.csv',
+        'model_feature_visualization.json', 'dscarnet_mapping.json',
+    ):
+        assert name not in ARTIFACT_CATALOG
 
 
 def test_manually_written_global_importance_is_private_for_new_manifests(tmp_path) -> None:
@@ -59,7 +61,7 @@ def test_manually_written_global_importance_is_private_for_new_manifests(tmp_pat
     manifest = writer.finalize(run_id='run-no-global')
 
     assert manifest['artifacts']['feature_importance.json']['downloadable'] is False
-    with pytest.raises(PermissionError):
+    with pytest.raises(FileNotFoundError):
         writer.resolve_download('feature_importance.json')
 
 
@@ -115,6 +117,5 @@ def test_legacy_manifest_download_flag_remains_read_only_compatible(tmp_path):
         encoding='utf-8',
     )
 
-    resolved = RunArtifactWriter(run_dir).resolve_download('feature_importance.json')
-
-    assert json.loads(resolved.read_text(encoding='utf-8')) == {'status': 'ready'}
+    with pytest.raises(FileNotFoundError):
+        RunArtifactWriter(run_dir).resolve_download('feature_importance.json')

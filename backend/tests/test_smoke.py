@@ -454,9 +454,11 @@ def test_registry_allows_only_current_active_classification_models():
 
     assert TRADITIONAL_MODEL_TYPES == {
         "pls_da",
+        "spls_da",
         "pca_lda",
         "logistic_regression",
         "svm",
+        "pca_svm",
         "random_forest",
         "xgboost",
     }
@@ -476,12 +478,12 @@ def test_registry_allows_only_current_active_classification_models():
     assert canonical_model_type("1D-Inception") == "inception1d"
     assert canonical_model_type("1D-TCN") == "tcn1d"
     for retired in ["knn", "mlp", "unet1d", "plsr", "svr"]:
-        with pytest.raises(ValueError, match="当前仅支持分类任务的 10 类模型"):
+        with pytest.raises(ValueError, match="当前仅支持登记的分类模型"):
             canonical_model_type(retired)
 
 
 @pytest.mark.parametrize("input_length", [1500, 5000, 9000])
-@pytest.mark.parametrize("model_type", ["cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d"])
+@pytest.mark.parametrize("model_type", ["cnn1d", "cnn1d_se", "transformer1d", "resnet1d", "inception1d", "tcn1d"])
 def test_deep_model_architectures_accept_dimension_bands(input_length, model_type):
     import torch
     from backend.app.models.registry import build_deep_model
@@ -570,7 +572,7 @@ def test_dscarnet_lapjv_compat_uses_linear_assignment():
     assert total_cost == pytest.approx(5.0)
 
 
-def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, monkeypatch):
+def test_dscarnet_training_keeps_dual_2d_mapping_but_skips_hidden_explainability(tmp_path, monkeypatch):
     import backend.app.dscarnet_mapping as dscarnet_mapping
     import backend.app.training as training
 
@@ -596,28 +598,16 @@ def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, 
     )
 
     run_dir = Path(result["run_dir"])
-    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
     mapping_payload = json.loads((run_dir / "dscarnet_mapping.json").read_text(encoding="utf-8"))
 
     assert result["status"] == "success"
-    assert result["sample_feature_importance"]["method"] == "dscarnet_dual_2d_gradcam"
-    assert result["sample_feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
+    assert result["explainability_status"] == "temporarily_hidden"
     assert "feature_importance" not in result
     assert not (run_dir / "feature_importance.json").exists()
     assert not (run_dir / "feature_importance.csv").exists()
-    assert sample_payload["method"] == "dscarnet_dual_2d_gradcam"
-    assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-    assert sample_payload["window_count"] == 40
-    assert sample_payload["samples"]
-    assert all(sample["primary_segment"] for sample in sample_payload["samples"])
-    assert sample_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
-    assert all(len(sample["windows"]) == 40 for sample in sample_payload["samples"])
-    assert all("sar_top_segments" in sample and "car_top_segments" in sample for sample in sample_payload["samples"])
-    assert all(
-        0.0 <= window["normalized_importance"] <= 1.0
-        for sample in sample_payload["samples"]
-        for window in sample["windows"]
-    )
+    assert not (run_dir / "sample_feature_importance.json").exists()
+    assert not (run_dir / "sample_feature_importance.csv").exists()
+    assert mapping_payload["source_url"]
     assert (run_dir / "dscarnet_pca.joblib").exists()
     assert (run_dir / "dscarnet_sar_aggmap.joblib").exists()
     assert (run_dir / "dscarnet_car_aggmap.joblib").exists()
@@ -637,8 +627,9 @@ def test_outer_leave_one_cv_uses_each_sample_id_once(tmp_path, monkeypatch):
     import backend.app.training as training
 
     source = tmp_path / "grouped.csv"
-    _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=12)
+    _write_grouped_modeling_csv(source, group_count=12, repeats=2, curve_length=12)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(training, "_traditional_candidate_configs", lambda config, *_args: [config])
 
     result = train_model(
         source,
@@ -683,8 +674,8 @@ def test_outer_leave_one_cv_uses_each_sample_id_once(tmp_path, monkeypatch):
         assert set(fold["train_sample_ids"]).isdisjoint(fold["valid_sample_ids"])
         assert set(fold["test_sample_ids"]).isdisjoint(fold["train_sample_ids"])
         assert set(fold["test_sample_ids"]).isdisjoint(fold["valid_sample_ids"])
-        assert len(fold["splits"]["train"]) == 8
-        assert len(fold["splits"]["valid"]) == 2
+        assert len(fold["splits"]["train"]) == 18
+        assert len(fold["splits"]["valid"]) == 4
         assert len(fold["splits"]["test"]) == 2
 
 
@@ -722,7 +713,7 @@ def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
     import backend.app.training as training
 
     source = tmp_path / "grouped.csv"
-    _write_grouped_modeling_csv(source, group_count=10, repeats=2)
+    _write_grouped_modeling_csv(source, group_count=14, repeats=2)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
 
     result = train_model(
@@ -744,12 +735,12 @@ def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
     assert set(result["metrics"]).issuperset({"accuracy", "train", "valid", "test"})
     assert result["metrics"]["test"]["accuracy"] == result["metrics"]["accuracy"]
     assert all("accuracy" in result["metrics"][split] for split in ("train", "valid", "test"))
-    assert len(split_payload[0]["splits"]["train"]) == 12
+    assert len(split_payload[0]["splits"]["train"]) == 20
     assert len(split_payload[0]["splits"]["valid"]) == 4
     assert len(split_payload[0]["splits"]["test"]) == 4
     for split_name in ("train", "valid", "test"):
         split_labels = {
-            "A" if int(sample_id) <= 5 else "B"
+            "A" if int(sample_id) <= 7 else "B"
             for sample_id in split_payload[0][f"{split_name}_sample_ids"]
         }
         assert split_labels == {"A", "B"}
@@ -790,6 +781,46 @@ def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     assert train_groups.isdisjoint(valid_groups)
     assert set(split_payload[0]["test_sample_ids"]) == {"1", "2", "3", "4"}
     assert set(predictions["dataset"]) == {"external_test"}
+
+
+def test_external_test_with_leave_one_audits_primary_data_but_ranks_external_test(tmp_path, monkeypatch):
+    """External rows must not enter LOSO/selection, while external Test is primary."""
+    import backend.app.training as training
+
+    train_source = tmp_path / "train.csv"
+    test_source = tmp_path / "test.csv"
+    _write_grouped_modeling_csv(train_source, group_count=12, repeats=2, curve_length=12)
+    _write_grouped_modeling_csv(test_source, group_count=4, repeats=2, curve_length=12)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(training, "_traditional_candidate_configs", lambda config, *_args: [config])
+
+    result = train_model(
+        train_source,
+        {
+            "model_type": "pls_da",
+            "test_data_path": str(test_source),
+            "split_mode": "leave_one_sample_id_cv",
+            "split_train": 8,
+            "split_valid": 2,
+            "split_test": 0,
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    cv_metrics = json.loads((run_dir / "cv_metrics.json").read_text(encoding="utf-8"))
+    split_payload = json.loads((run_dir / "split.json").read_text(encoding="utf-8"))
+    predictions = pd.read_csv(run_dir / "predictions.csv")
+
+    assert result["evaluation_strategy"] == "leave_one_sample_id_cv_with_external_test"
+    assert result["metrics"]["test"]["aggregation"] == "direct_external_test"
+    assert result["test_sample_count"] == 8
+    assert result["cv_summary"]["primary_test_aggregation"] == "direct_external_test"
+    assert result["cv_summary"]["audit"]["pooled_oof"]["aggregation"] == "pooled_out_of_fold"
+    assert len(cv_metrics["folds"]) == 12
+    assert cv_metrics["external_final"]["test_sample_ids"] == ["1", "2", "3", "4"]
+    assert split_payload[-1]["fold_index"] == "external_final"
+    assert set(predictions["dataset"]) == {"test", "external_test"}
+    assert metrics["audit"]["pooled_oof"]["accuracy"] == result["cv_summary"]["audit"]["pooled_oof"]["accuracy"]
 
 
 @pytest.mark.parametrize(
@@ -858,17 +889,17 @@ def test_train_smoke(tmp_path, monkeypatch):
     assert (run_dir / "cv_predictions.csv").exists()
     assert not (run_dir / "feature_importance.json").exists()
     assert not (run_dir / "feature_importance.csv").exists()
-    assert (run_dir / "sample_feature_importance.json").exists()
-    assert (run_dir / "sample_feature_importance.csv").exists()
     assert "feature_importance" not in result
-    assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
+    assert result["explainability_status"] == "temporarily_hidden"
+    assert not (run_dir / "sample_feature_importance.json").exists()
+    assert not (run_dir / "sample_feature_importance.csv").exists()
     assert result["evaluation_strategy"] == "stratified_holdout"
     assert "classification_report" in result["metrics"]
     assert result["metrics"]["test"]["accuracy"] == result["metrics"]["accuracy"]
     assert result["total_target_epochs"] == result["target_epochs"]
 
 
-def test_training_writes_only_sample_importance_artifacts_and_downloads(tmp_path, monkeypatch):
+def test_training_skips_hidden_explainability_artifacts_and_blocks_downloads(tmp_path, monkeypatch):
     import backend.app.main as main
     import backend.app.routers.deps as router_deps
     import backend.app.training as training
@@ -882,39 +913,26 @@ def test_training_writes_only_sample_importance_artifacts_and_downloads(tmp_path
     result = train_model(
         source,
             {
-                "model_type": "svm",
+                "model_type": "pls_da",
                 "normalization": "none",
-                "split_mode": "leave_one_sample_id_cv",
-                "split_train": 8,
-                "split_valid": 2,
-                "split_test": 0,
+                "split_mode": "stratified_holdout",
             "feature_window_count": 4,
             "feature_top_k": 2,
             "feature_n_repeats": 2,
         },
     )
     run_dir = Path(result["run_dir"])
-    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-
     assert "feature_importance" not in result
-    assert result["sample_feature_importance"]["status"] == "ready"
+    assert result["explainability_status"] == "temporarily_hidden"
     assert not (run_dir / "feature_importance.json").exists()
     assert not (run_dir / "feature_importance.csv").exists()
-    assert any(
-        segment["start_index"] <= 29 and segment["end_index"] >= 20
-        for sample in sample_payload["samples"]
-        for segment in sample["top_segments"]
-    )
-    assert sample_payload["window_count"] == 4
-    assert sample_payload["method"] == "sample_occlusion_log_loss"
-    assert sample_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
-    assert (run_dir / "sample_feature_importance.json").exists()
-    assert (run_dir / "sample_feature_importance.csv").exists()
+    assert not (run_dir / "sample_feature_importance.json").exists()
+    assert not (run_dir / "sample_feature_importance.csv").exists()
 
     client = TestClient(main.app)
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.json").status_code == 404
     assert client.get(f"/api/training/runs/{result['run_id']}/artifact/feature_importance.csv").status_code == 404
-    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 200
+    assert client.get(f"/api/training/runs/{result['run_id']}/artifact/sample_feature_importance.json").status_code == 404
 
 
 def test_external_test_dataset_rejects_different_wide_feature_axis(tmp_path, monkeypatch):
@@ -940,14 +958,38 @@ def test_external_test_dataset_rejects_different_wide_feature_axis(tmp_path, mon
         )
 
 
-@pytest.mark.parametrize("model_type", ["pls_da", "svm", "random_forest", "xgboost", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"])
+def test_pls_holdout_skips_hidden_model_feature_visualization(tmp_path, monkeypatch):
+    import backend.app.training as training
+
+    source = tmp_path / "pls_visualization.csv"
+    _write_grouped_modeling_csv(source, group_count=14, repeats=2, curve_length=24)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+
+    result = train_model(
+        source,
+        {
+            "model_type": "pls_da",
+            "split_mode": "stratified_holdout",
+            "feature_selection_enabled": False,
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    assert result["explainability_status"] == "temporarily_hidden"
+    assert not (run_dir / "model_feature_visualization.json").exists()
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "model_feature_visualization.json" not in manifest["artifacts"]
+
+
+@pytest.mark.parametrize("model_type", ["pls_da", "spls_da", "pca_lda", "pca_svm", "cnn1d", "transformer1d", "dscarnet"])
 def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     import backend.app.dscarnet_mapping as dscarnet_mapping
     import backend.app.training as training
 
     source = tmp_path / f"{model_type}_grouped.csv"
-    _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=40)
+    _write_grouped_modeling_csv(source, group_count=12, repeats=2, curve_length=40)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
+    if model_type in {"pls_da", "spls_da", "pca_lda", "pca_svm"}:
+        monkeypatch.setattr(training, "_traditional_candidate_configs", lambda config, *_args: [config])
     if model_type == "dscarnet":
         _FakeAggMap.instances = []
         monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
@@ -957,7 +999,7 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
             "epochs": 1,
             "batch_size": 8,
             "model_type": model_type,
-            "split_mode": "leave_one_sample_id_cv",
+            "split_mode": "stratified_holdout",
             "early_stopping_patience": 5,
             "hidden_size": 32,
             "transformer_heads": 4,
@@ -970,56 +1012,25 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
     assert result["status"] == "success"
     expected_model_type = "cnn_transformer1d" if model_type == "transformer1d" else model_type
     assert result["model_type"] == expected_model_type
-    assert result["evaluation_strategy"] == "leave_one_sample_id_cv"
-    assert result["fold_count"] == 6
+    assert result["evaluation_strategy"] == "stratified_holdout"
+    assert result["fold_count"] == 1
     run_dir = tmp_path / result["run_id"]
+    assert result["explainability_status"] == "temporarily_hidden"
+    assert not (run_dir / "model_feature_visualization.json").exists()
     if result.get("model_family") == "traditional_ml":
         assert (run_dir / "model.pkl").exists()
-        assert result["sample_feature_importance"]["status"] == "ready"
-        assert (run_dir / "sample_feature_importance.json").exists()
-        assert (run_dir / "sample_feature_importance.csv").exists()
-        sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
         assert "feature_importance" not in result
         assert not (run_dir / "feature_importance.json").exists()
         assert not (run_dir / "feature_importance.csv").exists()
-        assert sample_payload["importance_metric"] == "masked_true_class_log_loss_minus_original_true_class_log_loss"
-        assert sample_payload["method"] == "sample_occlusion_log_loss"
-        assert sample_payload["window_count"] == 4
+        assert not (run_dir / "sample_feature_importance.json").exists()
+        assert not (run_dir / "sample_feature_importance.csv").exists()
     else:
         assert (run_dir / "model.pt").exists()
-        assert result["sample_feature_importance"]["status"] == "ready"
-        assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
-        sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-        assert sample_payload["status"] == "ready"
-        assert sample_payload["method"] in {"gradcam_1d", "sample_occlusion_log_loss", "dscarnet_dual_2d_gradcam"}
-        expected_window_count = 4 if sample_payload["method"] == "sample_occlusion_log_loss" else 40
-        assert sample_payload["window_count"] == expected_window_count
-        assert sample_payload["x_axis_warning"]["status"] in {"consistent", "inconsistent"}
-        assert sample_payload["samples"]
-        assert all(sample["primary_segment"] is None or sample["primary_segment"]["importance"] > 0 for sample in sample_payload["samples"])
-        assert all(
-            len(sample["windows"]) == sample_payload["window_count"]
-            for sample in sample_payload["samples"]
-        )
-        assert all("sample_x_axis" in sample for sample in sample_payload["samples"])
-        if sample_payload["method"] == "gradcam_1d":
-            assert sample_payload["sanity_checks"]["auxiliary_method"] == "input_gradient_attribution"
-            assert all(
-                "sanity_checks" in sample and "auxiliary_top_segments" in sample
-                for sample in sample_payload["samples"]
-            )
-        if sample_payload["method"] == "dscarnet_dual_2d_gradcam":
-            assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-            assert "dscarnet_mapping" in sample_payload
-            assert (run_dir / "dscarnet_mapping.json").exists()
-        assert all(
-            0.0 <= window["normalized_importance"] <= 1.0
-            for sample in sample_payload["samples"]
-            for window in sample["windows"]
-        )
+        assert not (run_dir / "sample_feature_importance.json").exists()
+        assert not (run_dir / "sample_feature_importance.csv").exists()
 
 
-def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp_path, monkeypatch):
+def test_cv_deep_training_skips_hidden_sample_feature_importance(tmp_path, monkeypatch):
     import torch
     from torch import nn
     import backend.app.training as training
@@ -1063,23 +1074,10 @@ def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp
     )
 
     run_dir = Path(result["run_dir"])
-    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-    sample_csv = pd.read_csv(run_dir / "sample_feature_importance.csv")
-
     assert result["test_sample_count"] == 90
-    assert result["sample_feature_importance"]["sample_count"] == result["test_sample_count"]
-    assert sample_payload["sample_count"] == result["test_sample_count"]
-    assert len(sample_payload["samples"]) == result["test_sample_count"]
-    assert all("fold_index" in sample for sample in sample_payload["samples"])
-    assert sample_payload["requested_window_count"] == 100
-    assert sample_payload["window_count"] == 80
-    assert sample_payload["window_width"] == 2
-    assert sample_payload["window_policy"] == "nearest_divisor_equal_width"
-    assert len(sample_csv) == 90 * sample_payload["window_count"]
-    assert "fold_index" in sample_csv.columns
-    assert sample_csv["fold_index"].notna().all()
-    assert "original_loss" in sample_csv.columns
-    assert "masked_loss" in sample_csv.columns
+    assert result["explainability_status"] == "temporarily_hidden"
+    assert not (run_dir / "sample_feature_importance.json").exists()
+    assert not (run_dir / "sample_feature_importance.csv").exists()
 
 
 def test_create_run_persists_independent_queued_runs(tmp_path):
@@ -1564,28 +1562,40 @@ def test_obsolete_ui_variant_assets_are_not_served():
     assert client.get("/static/autoai-variants.js").status_code == 404
 
 
-def test_main_ui_prefers_sample_feature_importance_panel():
+def test_main_ui_hides_explainability_and_uses_batch_model_selection():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert 'id="resultExplainability"' in content
-    assert "sample_feature_importance" in results
-    assert "function renderSampleImportance" in results
-    assert "resultSampleExplanationSelect" in results
-    assert "加载单样品解释" in results
-    assert "sample.top_segments" in results
-    assert "normalized_importance" in results
+    assert 'id="resultExplainability"' not in content
+    assert 'id="resultFeatureVisualization"' not in content
+    assert 'id="modelTypeChoices"' in content
+    assert 'id="repeatCount"' not in content
+    assert 'model.ui_visible !== false' in content
+    assert '"/api/training/batches"' in content
+    assert '#/comparison?batch_id=' in content
+    assert 'createGroupedMetricChart' in content
+    assert '重复实验预测一致性' not in content
+    assert "renderExplainability(result);" not in results
+    assert "renderFeatureVisualization(result);" not in results
     assert "renderGlobalFeatureImportance" not in content
     assert "run.feature_importance" not in content
-    assert 'id="featureWindowOptions"' in content
-    assert "featureWindowCount" in content
-    assert 'value="100"' in content
-    assert 'max="5000"' in content
+    assert 'id="featureWindowOptions"' not in content
+    assert "featureWindowCount" not in content
     assert "function usesFeatureWindowCount" in content
-    assert '$("featureWindowOptions").classList.toggle("hidden", !usesFeatureWindowCount(modelType));' in content
-    assert 'if (usesFeatureWindowCount(payload.model_type)) {' in content
-    assert 'payload.feature_window_count = Number($("featureWindowCount").value);' in content
     assert 'feature_window_count: Number($("featureWindowCount").value)' not in content
+
+
+def test_classic_batch_comparison_renders_required_figures_without_metadata_banner():
+    content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "Batch ${batchId} · 主指标口径" not in content
+    assert "历史重复批次兼容展示" not in content
+    assert "Sample_ID × 模型预测正确/错误" in content
+    assert "createCorrectnessHeatSection" in content
+    assert "createComparisonMatrixCard" in content
+    assert "各模型混淆矩阵" in content
+    assert 'text.setAttribute("font-size", "14")' in content
+    assert 'text.setAttribute("font-weight", "600")' in content
 
 
 def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
@@ -1601,14 +1611,14 @@ def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     assert "startButton.disabled = false" in content
 
 
-def test_main_ui_external_dataset_forces_eight_two_and_hides_cv():
+def test_main_ui_external_dataset_supports_optional_cv_audit():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
     assert "function applySplitPreset(mode)" in content
     assert 'id="cvOptions"' in content
     assert 'id="splitTestField"' in content
-    assert '$("cvEnabled").checked = false' in content
-    assert '$("cvOptions").classList.toggle("hidden", hasExternalTest)' in content
+    assert '$("cvOptions").classList.remove("hidden")' in content
+    assert 'leave_one_sample_id_cv_with_external_test' in content
     assert 'applySplitPreset("external")' in content
 
 
@@ -1624,7 +1634,7 @@ def test_main_ui_uses_documented_deep_training_defaults():
     assert 'value = $("trainTime").value === "deep" ? "100" : "50"' not in content
 
 
-def test_main_ui_handles_cancelled_runs_and_bounds_explainability_lists():
+def test_main_ui_handles_cancelled_runs_while_explainability_is_hidden():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
@@ -1632,11 +1642,8 @@ def test_main_ui_handles_cancelled_runs_and_bounds_explainability_lists():
     assert '"STOP"' in content
     assert "run.stop_message" in content
     assert "stopTrainingRun" in content
-    assert "sample?.fold_index" in results
-    assert "第 ${sample.fold_index} 折" in results
-    assert ".filter(Boolean).slice(0, 8)" in results
-    assert "sample.top_segments" in results
-    assert "不同模型使用其实际生成的解释方法" in results
+    assert "TEMPORARILY_HIDDEN" in results
+    assert "renderExplainability(result);" not in results
     assert "primaryFeatureSegment" not in content
     assert "renderIntensitySummary" not in content
     assert 'id="intensitySummary"' not in content
@@ -1653,7 +1660,7 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
     assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
     assert 'const cvEnabled = $("cvEnabled").checked;' in content
-    assert 'split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),' in content
+    assert 'split_mode: hasExternalTest ? splitMode : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content

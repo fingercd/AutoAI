@@ -27,6 +27,7 @@ from .registry import (
     build_dscarnet_model,
     build_logistic_regression,
     build_pca_lda,
+    build_pca_svm,
     build_traditional_model,
     canonical_model_type,
     model_family,
@@ -54,6 +55,7 @@ __all__ = [
     "build_dscarnet_model",
     "build_logistic_regression",
     "build_pca_lda",
+    "build_pca_svm",
     "PCAMLPClassifier",
     "CNN1DDocumentV2",
     "CNNSE1DDocumentV2",
@@ -67,6 +69,9 @@ __all__ = [
     "canonical_model_type",
     "model_family",
 ]
+
+from .spls_da import SPLSDAClassifier, build_spls_da
+__all__ += ["SPLSDAClassifier", "build_spls_da"]
 
 # ---- 第 3 类导出：profile 分档（追加到 __all__ 末尾）----
 from .profiles import ModelProfile, build_model_profile, model_range_warnings

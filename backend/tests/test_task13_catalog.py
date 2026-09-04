@@ -3,9 +3,11 @@ from fastapi.testclient import TestClient
 
 CANONICAL_MODELS = {
     "pls_da",
+    "spls_da",
     "pca_lda",
     "logistic_regression",
     "svm",
+    "pca_svm",
     "random_forest",
     "xgboost",
     "pca_mlp",
@@ -30,11 +32,11 @@ def _catalog_models() -> list[dict[str, object]]:
     return payload["models"]
 
 
-def test_models_catalog_exposes_exactly_fifteen_canonical_models():
+def test_models_catalog_exposes_all_backend_models_with_explicit_ui_visibility():
     models = _catalog_models()
 
     assert {item["id"] for item in models} == CANONICAL_MODELS
-    assert len(models) == 15
+    assert len(models) == 17
     assert len({item["id"] for item in models}) == len(models)
     for item in models:
         assert set(item) == {
@@ -43,12 +45,14 @@ def test_models_catalog_exposes_exactly_fifteen_canonical_models():
             "family",
             "available",
             "unavailable_reason",
-            "explainability_method",
+            "ui_visible",
+            "visibility_reason",
         }
         assert item["display_name"]
         assert item["family"]
         assert isinstance(item["available"], bool)
-        assert item["explainability_method"]
+        assert isinstance(item["ui_visible"], bool)
+        assert (item["visibility_reason"] is None) is item["ui_visible"]
         assert (item["unavailable_reason"] is None) is item["available"]
 
 
@@ -66,7 +70,8 @@ def test_models_catalog_degrades_optional_dependencies_without_server_error(monk
         "family": "long_range",
         "available": False,
         "unavailable_reason": "mamba test dependency missing",
-        "explainability_method": "window_occlusion_log_loss",
+        "ui_visible": False,
+        "visibility_reason": "temporarily_hidden_from_ui",
     }
     assert by_id["dscarnet"]["available"] is False
     assert by_id["dscarnet"]["unavailable_reason"] == "aggmap test dependency missing"

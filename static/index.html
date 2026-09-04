@@ -261,6 +261,110 @@
         width: auto;
         min-height: 0;
       }
+      .model-checkbox-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
+        max-height: 290px;
+        overflow: auto;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fbfcfd;
+      }
+      .model-checkbox-grid .checkbox-line {
+        align-items: flex-start;
+        margin: 0;
+        padding: 7px;
+        border: 1px solid transparent;
+        border-radius: 5px;
+      }
+      .model-checkbox-grid .checkbox-line:has(input:checked) {
+        background: #e7f4f2;
+        border-color: #b8ded8;
+      }
+      .model-checkbox-grid small { color: var(--muted); font-weight: 400; }
+      .comparison-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+      .comparison-table { min-width: 720px; width: 100%; border-collapse: collapse; }
+      .comparison-table th, .comparison-table td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; white-space: nowrap; }
+      #trainingProgress:not(:empty),
+      #batchComparison:not(:empty) { margin-top: 12px; }
+      .comparison-page-shell { display: grid; gap: 14px; }
+      .comparison-page-shell > .notice { margin: 0; }
+      .comparison-content { display: grid; gap: 14px; }
+      section.comparison-section { padding: 0; margin: 0; min-width: 0; }
+      .comparison-section,
+      .comparison-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        background: #fff;
+      }
+      .comparison-section h3,
+      .comparison-section h4,
+      .comparison-card h4 { margin: 0 0 10px; }
+      .comparison-overview-grid {
+        display: grid;
+        grid-template-columns: minmax(260px, 0.8fr) minmax(480px, 1.2fr);
+        gap: 14px;
+        align-items: start;
+      }
+      .comparison-ranking { display: grid; gap: 10px; }
+      .comparison-ranking-row {
+        display: grid;
+        grid-template-columns: minmax(90px, 150px) minmax(120px, 1fr) 68px;
+        gap: 10px;
+        align-items: center;
+      }
+      .comparison-ranking-track { height: 12px; overflow: hidden; border-radius: 99px; background: #e7ebf0; }
+      .comparison-ranking-fill { height: 100%; min-width: 2px; border-radius: inherit; background: linear-gradient(90deg, #0f766e, #2aa198); }
+      .comparison-ranking-value { text-align: right; font-variant-numeric: tabular-nums; }
+      .comparison-chart { display: block; width: 100%; min-width: 560px; height: auto; }
+      .comparison-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+      .comparison-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+      .comparison-legend-swatch { width: 11px; height: 11px; border-radius: 3px; }
+      .comparison-heat td { text-align: center; font-variant-numeric: tabular-nums; }
+      .comparison-heat-grid,
+      .comparison-matrix-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        align-items: start;
+      }
+      .comparison-heat-grid .comparison-table { min-width: 560px; }
+      .comparison-correctness-cell { font-weight: 650; text-align: center; }
+      .comparison-correctness-cell.is-correct { background: #dcfce7; color: #166534; }
+      .comparison-correctness-cell.is-wrong { background: #fee2e2; color: #991b1b; }
+      .comparison-correctness-cell.is-missing { background: #f1f5f9; color: var(--muted); }
+      .comparison-matrix-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: #fbfcfd;
+      }
+      .comparison-matrix-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .comparison-matrix-heading h5 { margin: 0; font-size: 14px; }
+      .comparison-matrix-table { width: 100%; border-collapse: collapse; }
+      .comparison-matrix-table th,
+      .comparison-matrix-table td {
+        border: 1px solid var(--line);
+        padding: 7px;
+        min-width: 44px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
+      .comparison-matrix-summary { margin: 9px 0; color: var(--muted); font-size: 12px; }
+      .comparison-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+      .comparison-actions a { width: 100%; }
+      .comparison-error:empty { display: none; }
       .chart-toolbar {
         display: flex;
         align-items: center;
@@ -862,6 +966,79 @@
         margin: 0 0 8px;
         font-size: 14px;
       }
+      .result-card-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .model-feature-warning {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        border: 1px solid #f5d48a;
+        border-radius: 8px;
+        background: #fff8e6;
+        color: #7a4b00;
+        font-size: 12px;
+      }
+      .model-feature-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .model-feature-card {
+        min-width: 0;
+        overflow: hidden;
+        padding: 14px;
+      }
+      .model-feature-svg-scroll {
+        overflow: hidden;
+        overscroll-behavior-inline: contain;
+      }
+      .model-feature-chart {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        height: auto;
+        background: #fff;
+      }
+      .model-feature-legend {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px 10px;
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .model-feature-legend li {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .model-feature-swatch,
+      .model-feature-shape {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border: 1px solid #fff;
+        box-shadow: 0 0 0 1px #98a2b3;
+      }
+      .model-feature-swatch,
+      .shape-train { border-radius: 50%; }
+      .shape-valid { border-radius: 1px; background: #64748b; }
+      .shape-test {
+        width: 0;
+        height: 0;
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-bottom: 11px solid #64748b;
+        border-top: 0;
+        box-shadow: none;
+      }
       .audit-details > summary,
       .artifact-group > summary {
         cursor: pointer;
@@ -1161,10 +1338,19 @@
         grid-column: 1 / -1;
       }
       @media (max-width: 1180px) {
+        .comparison-overview-grid {
+          grid-template-columns: 1fr;
+        }
+        .comparison-heat-grid {
+          grid-template-columns: 1fr;
+        }
         .artifact-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
         .analysis-split-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .model-feature-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
@@ -1189,7 +1375,11 @@
         .modeling-primary-grid,
         .metrics,
         .chart-grid,
-        .result-analysis-grid {
+        .result-analysis-grid,
+        .model-feature-grid {
+          grid-template-columns: 1fr;
+        }
+        .comparison-matrix-grid {
           grid-template-columns: 1fr;
         }
         .analysis-split-grid {
@@ -1341,12 +1531,16 @@
             </div>
             <div class="panel">
               <h2>训练配置</h2>
-              <label for="modelType">模型架构</label>
-              <select id="modelType" aria-describedby="modelCatalogHint" disabled>
+              <label for="modelTypeChoices">模型架构（可多选）</label>
+              <div id="modelTypeChoices" class="model-checkbox-grid" aria-describedby="modelCatalogHint" aria-live="polite">
+                正在加载模型目录…
+              </div>
+              <!-- 保留旧 ID 供现有训练配置/字符串契约使用；值始终同步为首个选中模型。 -->
+              <select id="modelType" hidden aria-hidden="true" tabindex="-1" disabled>
                 <option value="">正在加载模型目录…</option>
               </select>
               <p id="modelCatalogHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                正在读取当前环境可用的分类模型。
+                请选择一个或多个模型；同一批次使用固定的数据划分进行公平比较。
               </p>
               <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
@@ -1371,10 +1565,7 @@
                   几个 Sample_ID 就跑几折，折数不可调。
                 </p>
               </div>
-              <div id="featureWindowOptions">
-                <label for="featureWindowCount">重要性分段数</label>
-                <input id="featureWindowCount" type="number" value="100" min="1" max="5000" />
-              </div>
+              <!-- TEMPORARILY_HIDDEN：解释性计算和入口均暂不向产品界面暴露。 -->
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
               </div>
@@ -1484,6 +1675,7 @@
               <div id="trainingAudit"></div>
               <div id="trainingCharts"></div>
               <div id="confusionMatrix"></div>
+              <div id="batchComparison" class="comparison-scroll"></div>
               <div id="downloads" class="actions"></div>
             </div>
           </div>
@@ -1593,10 +1785,30 @@
           </div>
         </div>
 
+        <!-- 批次比较视图：不占用左侧导航项，通过可刷新 Hash 深链进入。 -->
+        <div id="view-comparison" class="view hidden">
+          <details class="page-help">
+            <summary>模型比较说明</summary>
+            <ol>
+              <li>一个所选模型对应一个独立 Run；本页只比较成功且完整的真实结果。</li>
+              <li>2–5 个模型显示四指标分组柱图，更多模型自动切换为热力表。</li>
+              <li>普通划分使用直接 Test，留一交叉验证使用 pooled OOF，独立测试集使用 direct external Test。</li>
+            </ol>
+          </details>
+          <div class="panel wide comparison-page-shell">
+            <div class="panel-title">
+              <h2>模型性能对比</h2>
+              <a class="secondary" href="#/modeling">返回 AI 建模</a>
+            </div>
+            <div id="batchComparisonError" class="comparison-error" role="status"></div>
+            <div id="batchComparisonPage" class="comparison-content" aria-live="polite"></div>
+          </div>
+        </div>
+
         <!-- 建模结果视图：专属结果页容器，按 run-result-v1 契约渲染。
              六个 result-section 分别由 run-results.js 填充：加载状态、Run 概览、
              汇总指标、分折/分集合指标、分析图表（混淆矩阵/分布等）、可解释性、
-             产物下载清单；空 section 被 CSS（.result-section:empty）自动隐藏。 -->
+             模型特征可视化、产物下载清单；空 section 被 CSS 自动隐藏。 -->
         <div id="view-results" class="view hidden">
           <details class="page-help">
             <summary>建模结果查看说明</summary>
@@ -1612,7 +1824,6 @@
             <section id="resultMetrics" class="result-section"></section>
             <section id="resultSplitMetrics" class="result-section"></section>
             <section id="resultAnalysis" class="result-section"></section>
-            <section id="resultExplainability" class="result-section"></section>
             <section id="resultArtifacts" class="result-section"></section>
           </div>
         </div>
@@ -1679,7 +1890,7 @@
       <div class="auth-card training-result-card">
         <span class="status success">训练完成</span>
         <h2 id="trainingResultDialogTitle">建模结果已生成</h2>
-        <p id="trainingResultDialogDescription">完整指标、图表、单样品解释和下载文件已移至本次训练的专属结果页。</p>
+        <p id="trainingResultDialogDescription">完整指标、图表和允许下载的文件已移至本次训练的专属结果页。</p>
         <p class="training-result-run"><strong>Run ID：</strong><span id="trainingResultRunId"></span></p>
         <p id="trainingResultCountdown" aria-live="polite">3 秒后进入建模结果</p>
         <div class="actions">
@@ -1695,7 +1906,7 @@
          就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
-    <script type="module" src="/static/js/run-results.js"></script>
+    <script type="module" src="/static/js/run-results.js?v=20260820-compact-visualization-v3"></script>
     <script>
       /*
        * ====================================================================
@@ -1726,7 +1937,15 @@
       let testDatasetId = null;
       let currentRunId = null;
       const CURRENT_RUN_STORAGE_KEY = "specautoai.current-run-id";
+      let currentBatchId = null;
+      const CURRENT_BATCH_STORAGE_KEY = "specautoai.current-batch-id";
       let trainingRequestInFlight = false;
+      let batchPollTimer = null;
+      let batchPollController = null;
+      let batchPollGeneration = 0;
+      let batchPollRetryCount = 0;
+      let batchLastComparisonSignature = "";
+      let healthPollTimer = null;
       let lastSummaryCurves = [];
       let lastTestSummaryCurves = [];
       let currentCurveSource = "train";
@@ -1837,8 +2056,6 @@
         { id: "two_dimensional_mapping", label: "二维映射模型" },
       ];
 
-      const HIDDEN_MODEL_IDS = new Set(["cnn_mamba1d"]);
-
       const MODEL_FAMILY_GROUP_ALIASES = {
         traditional: "traditional",
         traditional_ml: "traditional",
@@ -1869,49 +2086,87 @@
           id: item.id,
           displayName: String(item.display_name || item.id),
           family: item.family,
-          explainabilityMethod: item.explainability_method,
         } : null;
       };
 
+      function selectedModelTypes() {
+        return [...document.querySelectorAll("#modelTypeChoices input[data-model-id]:checked")]
+          .filter((input) => !input.disabled)
+          .map((input) => String(input.dataset.modelId || ""))
+          .filter(Boolean);
+      }
+
+      function syncPrimarySelectedModel() {
+        const select = $("modelType");
+        const selected = selectedModelTypes();
+        select.value = selected[0] || "";
+        updateModelOptionVisibility();
+      }
+
       function renderModelCatalog(models, preferredModelId = $("modelType").value) {
         const select = $("modelType");
+        const choices = $("modelTypeChoices");
         const entries = models.filter((model) => (
-          typeof model?.id === "string" && model.id.trim() && !HIDDEN_MODEL_IDS.has(model.id)
+          typeof model?.id === "string" && model.id.trim() && model.ui_visible !== false
         ));
         if (!entries.length) throw new Error("模型目录未返回可渲染的模型");
 
         const grouped = new Map(MODEL_CATALOG_GROUPS.map((group) => [group.id, []]));
         entries.forEach((model) => grouped.get(modelCatalogGroupId(model.family)).push(model));
         modelCatalogById = new Map(entries.map((model) => [model.id, model]));
+        const firstAvailable = entries.find((model) => model.available !== false);
+        const preferred = entries.find((model) => model.id === preferredModelId && model.available !== false);
+        const selected = preferred || firstAvailable || entries[0];
         select.replaceChildren();
 
+        choices.replaceChildren();
         MODEL_CATALOG_GROUPS.forEach((group) => {
           const groupModels = grouped.get(group.id);
           if (!groupModels.length) return;
-          const optgroup = document.createElement("optgroup");
-          optgroup.label = group.label;
+          const heading = document.createElement("p");
+          heading.className = "model-group-heading";
+          heading.textContent = group.label;
+          heading.style.gridColumn = "1 / -1";
+          heading.style.margin = "4px 0 0";
+          choices.append(heading);
           groupModels.forEach((model) => {
             const available = model.available !== false;
             const reason = String(model.unavailable_reason || "当前环境不满足运行条件");
             const option = document.createElement("option");
             option.value = model.id;
             option.disabled = !available;
-            option.textContent = available
-              ? String(model.display_name || model.id)
-              : `${String(model.display_name || model.id)}（当前环境不可用）`;
-            option.title = available ? String(model.explainability_method || "") : reason;
-            optgroup.append(option);
+            option.textContent = String(model.display_name || model.id);
+            select.append(option);
+            const label = document.createElement("label");
+            label.className = "checkbox-line";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.dataset.modelId = model.id;
+            input.disabled = !available;
+            input.checked = available && model.id === selected.id;
+            input.addEventListener("change", () => {
+              if (!selectedModelTypes().length) {
+                input.checked = true;
+                window.alert("至少选择一个可用模型");
+              }
+              syncPrimarySelectedModel();
+            });
+            const text = document.createElement("span");
+            text.textContent = available ? String(model.display_name || model.id) : `${String(model.display_name || model.id)}（当前环境不可用）`;
+            label.append(input, text);
+            if (!available) {
+              const detail = document.createElement("small");
+              detail.textContent = reason;
+              label.append(detail);
+            }
+            choices.append(label);
           });
-          select.append(optgroup);
         });
 
-        const preferred = modelCatalogItem(preferredModelId);
-        const firstAvailable = entries.find((model) => model.available !== false);
-        const selected = preferred && preferred.available !== false ? preferred : firstAvailable || entries[0];
         select.value = selected.id;
         select.disabled = !firstAvailable;
         $("modelCatalogHint").textContent = "";
-        updateModelOptionVisibility();
+        syncPrimarySelectedModel();
         window.dispatchEvent(new CustomEvent("specautoai:model-catalog-ready"));
       }
 
@@ -1923,6 +2178,7 @@
           return;
         }
         select.replaceChildren();
+        $("modelTypeChoices").replaceChildren();
         const option = document.createElement("option");
         option.value = "";
         option.disabled = true;
@@ -1948,8 +2204,10 @@
         if (apiBackedUiInitialized) return;
         apiBackedUiInitialized = true;
         loadHealth();
+        healthPollTimer = window.setInterval(loadHealth, 30000);
         loadModelCatalog().catch(() => undefined);
         restoreCurrentRun().catch(() => undefined);
+        restoreCurrentBatch().catch(() => undefined);
       }
       window.addEventListener("specautoai:modules-ready", initializeApiBackedUi, { once: true });
       window.addEventListener("DOMContentLoaded", () => {
@@ -2388,7 +2646,7 @@
        *  - 否则 → stratified_holdout，三项比例之和必须等于 10。
        * 校验：无外部测试集时 train+valid+test==10；train 必须 >0；
        * 外部测试或 CV 时 valid 必须 >0（CV 需要 valid 做早停/选参）。
-       * 传统模型额外附带 feature_window_count（重要性分段数）。
+       * TEMPORARILY_HIDDEN：解释性配置不随训练请求发送。
        * @returns {object} TrainConfig
        * @throws {Error} 比例不满足约束时抛出中文错误（调用方 alert）
        */
@@ -2396,7 +2654,7 @@
         const dropoutValue = $("dropout").value.trim();
         const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
         const cvEnabled = $("cvEnabled").checked;
-        const splitMode = hasExternalTest ? "external_test_holdout" : "stratified_holdout";
+        const splitMode = hasExternalTest ? (cvEnabled ? "leave_one_sample_id_cv_with_external_test" : "external_test_holdout") : "stratified_holdout";
         const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);
         const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);
         const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);
@@ -2414,7 +2672,7 @@
           batch_size: Number($("batchSize").value),
           learning_rate: Number($("learningRate").value),
           normalization: $("normalization").value,
-          split_mode: hasExternalTest ? "external_test_holdout" : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),
+          split_mode: hasExternalTest ? splitMode : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),
           split_train: splitTrain,
           split_valid: splitValid,
           split_test: splitTest,
@@ -2437,9 +2695,6 @@
           xgboost_reg_lambda: Number($("xgbRegLambda").value),
           seed: Number($("seed").value),
         };
-        if (usesFeatureWindowCount(payload.model_type)) {
-          payload.feature_window_count = Number($("featureWindowCount").value);
-        }
         return payload;
       }
 
@@ -2472,7 +2727,7 @@
        *  外部测试集模式下不显示折进度，而显示"独立测试集最终评估"）。 */
       function isExternalTestHoldout(run) {
         const strategy = run?.evaluation_strategy || run?.config?.evaluation_strategy || run?.config?.split_mode;
-        return strategy === "external_test_holdout";
+        return strategy === "external_test_holdout" || strategy === "leave_one_sample_id_cv_with_external_test";
       }
       /** 时间戳本地化为 "zh-CN" 24 小时制；空值返回 "-"，非法日期原样返回。 */
       function formatTime(value) {
@@ -2503,17 +2758,512 @@
         return seconds < 60 ? `${seconds.toFixed(1)} 秒` : `${(seconds / 60).toFixed(1)} 分钟`;
       }
 
-      // Run 生命周期：清空旧结果、创建 queued Run，并用单飞锁避免重复 POST。
+      // Run/Batch 生命周期：请求只创建 queued 记录，并用单飞锁避免重复 POST。
       /** 重置"当前训练"面板：取消上一次训练的自动跳转与轮询，
        *  清空旧指标/图表/下载区，显示"正在创建新的训练任务"加载提示。 */
       function resetTrainingPanel(message = "模型正在训练") {
         window.SpecAutoAIResults?.cancelAutoRedirect();
         window.SpecAutoAIResults?.stopTrainingWatch();
+        stopBatchWatch({ clearIdentity: true });
         $("runStatus").textContent = "准备开始";
         $("runStatus").className = "status pending";
         $("stopTrain").classList.add("hidden");
         $("trainingProgress").replaceChildren(currentRunNotice("loading", message, "正在创建新的训练任务，旧结果已清空。"));
+        $("batchComparison").replaceChildren();
         clearCurrentRunDetails();
+      }
+
+      const COMPARISON_METRICS = [
+        ["accuracy", "Accuracy"],
+        ["balanced_accuracy", "Balanced Accuracy"],
+        ["macro_f1", "Macro-F1"],
+        ["weighted_f1", "Weighted-F1"],
+      ];
+      const COMPARISON_COLORS = ["#0f766e", "#2563eb", "#d97706", "#7c3aed", "#dc2626", "#0891b2", "#65a30d", "#be185d", "#475569", "#c2410c"];
+
+      function formatComparisonMetric(value) {
+        if (value == null || value === "") return "—";
+        return Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(2)}%` : "—";
+      }
+
+      function comparisonModels(comparison) {
+        return comparison?.overall_metrics?.rows || comparison?.models || [];
+      }
+
+      function comparisonHeatColor(value) {
+        if (value == null || value === "" || !Number.isFinite(Number(value))) return "transparent";
+        return `hsl(${Math.round(Math.max(0, Math.min(1, Number(value))) * 120)} 65% 88%)`;
+      }
+
+      function createComparisonTable(headers, rows, { heat = false } = {}) {
+        const scroll = document.createElement("div");
+        scroll.className = "comparison-scroll";
+        const table = document.createElement("table");
+        table.className = `comparison-table${heat ? " comparison-heat" : ""}`;
+        const headRow = document.createElement("tr");
+        headers.forEach((label) => {
+          const cell = document.createElement("th");
+          cell.textContent = label;
+          headRow.append(cell);
+        });
+        const head = document.createElement("thead");
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        rows.forEach((values) => {
+          const row = document.createElement("tr");
+          values.forEach((item, index) => {
+            const cell = document.createElement(index === 0 ? "th" : "td");
+            const value = typeof item === "object" && item !== null ? item.value : item;
+            cell.textContent = index === 0 || typeof value === "string" ? String(value ?? "—") : formatComparisonMetric(value);
+            if (heat && index > 0 && Number.isFinite(Number(value))) cell.style.background = comparisonHeatColor(value);
+            row.append(cell);
+          });
+          body.append(row);
+        });
+        table.append(head, body);
+        scroll.append(table);
+        return scroll;
+      }
+
+      function createAccuracyRanking(models) {
+        const card = document.createElement("div");
+        card.className = "comparison-card";
+        const title = document.createElement("h4");
+        title.textContent = "Test Accuracy 排名";
+        const list = document.createElement("div");
+        list.className = "comparison-ranking";
+        [...models].sort((left, right) => Number(right.metrics?.accuracy?.mean ?? -1) - Number(left.metrics?.accuracy?.mean ?? -1)).forEach((model) => {
+          const value = Number(model.metrics?.accuracy?.mean);
+          const row = document.createElement("div");
+          row.className = "comparison-ranking-row";
+          const name = document.createElement("strong");
+          name.textContent = model.model_type;
+          const track = document.createElement("div");
+          track.className = "comparison-ranking-track";
+          const fill = document.createElement("div");
+          fill.className = "comparison-ranking-fill";
+          fill.style.width = Number.isFinite(value) ? `${Math.max(0, Math.min(100, value * 100))}%` : "0";
+          track.append(fill);
+          const label = document.createElement("span");
+          label.className = "comparison-ranking-value";
+          label.textContent = formatComparisonMetric(value);
+          row.append(name, track, label);
+          list.append(row);
+        });
+        card.append(title, list);
+        return card;
+      }
+
+      function createGroupedMetricChart(models) {
+        const card = document.createElement("div");
+        card.className = "comparison-card comparison-scroll";
+        const title = document.createElement("h4");
+        title.textContent = "四项测试指标分组对比";
+        const namespace = "http://www.w3.org/2000/svg";
+        const svg = document.createElementNS(namespace, "svg");
+        const width = 920;
+        const height = 330;
+        const margin = { top: 24, right: 18, bottom: 58, left: 54 };
+        const plotWidth = width - margin.left - margin.right;
+        const plotHeight = height - margin.top - margin.bottom;
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.setAttribute("class", "comparison-chart");
+        svg.setAttribute("role", "img");
+        svg.setAttribute("aria-label", "按模型比较 Accuracy、Balanced Accuracy、Macro-F1 和 Weighted-F1");
+        [0, 0.25, 0.5, 0.75, 1].forEach((tick) => {
+          const y = margin.top + (1 - tick) * plotHeight;
+          const line = document.createElementNS(namespace, "line");
+          line.setAttribute("x1", margin.left); line.setAttribute("x2", width - margin.right);
+          line.setAttribute("y1", y); line.setAttribute("y2", y);
+          line.setAttribute("stroke", "#e2e8f0");
+          svg.append(line);
+          const text = document.createElementNS(namespace, "text");
+          text.setAttribute("x", margin.left - 8); text.setAttribute("y", y + 4);
+          text.setAttribute("text-anchor", "end"); text.setAttribute("font-size", "11"); text.setAttribute("fill", "#667085");
+          text.textContent = `${Math.round(tick * 100)}%`;
+          svg.append(text);
+        });
+        const groupWidth = plotWidth / COMPARISON_METRICS.length;
+        const barWidth = Math.min(34, groupWidth * 0.72 / Math.max(models.length, 1));
+        COMPARISON_METRICS.forEach(([key, label], metricIndex) => {
+          const center = margin.left + groupWidth * metricIndex + groupWidth / 2;
+          models.forEach((model, modelIndex) => {
+            const value = Number(model.metrics?.[key]?.mean);
+            if (!Number.isFinite(value)) return;
+            const bounded = Math.max(0, Math.min(1, value));
+            const x = center - models.length * barWidth / 2 + modelIndex * barWidth;
+            const y = margin.top + (1 - bounded) * plotHeight;
+            const rect = document.createElementNS(namespace, "rect");
+            rect.setAttribute("x", x + 1); rect.setAttribute("y", y);
+            rect.setAttribute("width", Math.max(2, barWidth - 2)); rect.setAttribute("height", Math.max(0, margin.top + plotHeight - y));
+            rect.setAttribute("rx", 3); rect.setAttribute("fill", COMPARISON_COLORS[modelIndex % COMPARISON_COLORS.length]);
+            const tip = document.createElementNS(namespace, "title");
+            tip.textContent = `${model.model_type} · ${label}: ${formatComparisonMetric(value)}`;
+            rect.append(tip);
+            svg.append(rect);
+          });
+          const text = document.createElementNS(namespace, "text");
+          text.setAttribute("x", center); text.setAttribute("y", height - 24);
+          text.setAttribute("text-anchor", "middle"); text.setAttribute("font-size", "14"); text.setAttribute("font-weight", "600"); text.setAttribute("fill", "#344054");
+          text.textContent = label;
+          svg.append(text);
+        });
+        const legend = document.createElement("div");
+        legend.className = "comparison-legend";
+        models.forEach((model, index) => {
+          const item = document.createElement("span"); item.className = "comparison-legend-item";
+          const swatch = document.createElement("i"); swatch.className = "comparison-legend-swatch"; swatch.style.background = COMPARISON_COLORS[index % COMPARISON_COLORS.length];
+          const label = document.createElement("span"); label.textContent = model.model_type;
+          item.append(swatch, label); legend.append(item);
+        });
+        card.append(title, svg, legend);
+        return card;
+      }
+
+      function createComparisonHeatSection(titleText, firstHeader, columns, rows, valueFor) {
+        const section = document.createElement("section");
+        section.className = "comparison-section";
+        const title = document.createElement("h4");
+        title.textContent = titleText;
+        const values = rows.map((row) => [row.model_type, ...columns.map((column, index) => valueFor(row, column, index))]);
+        section.append(title, createComparisonTable([firstHeader, ...columns], values, { heat: true }));
+        return section;
+      }
+
+      function createCorrectnessHeatSection(correctness, models) {
+        const section = document.createElement("section");
+        section.className = "comparison-section";
+        const title = document.createElement("h4");
+        title.textContent = "Sample_ID × 模型预测正确/错误";
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = "每个单元格表示该模型对一个 Sample_ID 的最终判断：绿色为正确，红色为错误。";
+        const scroll = document.createElement("div");
+        scroll.className = "comparison-scroll";
+        const table = document.createElement("table");
+        table.className = "comparison-table comparison-heat";
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        ["模型 / Sample_ID", ...(correctness.sample_ids || [])].forEach((label) => {
+          const cell = document.createElement("th");
+          cell.textContent = label;
+          headRow.append(cell);
+        });
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        const modelByType = new Map(models.map((model) => [model.model_type, model]));
+        (correctness.values || []).forEach((entry) => {
+          const row = document.createElement("tr");
+          const modelCell = document.createElement("th");
+          modelCell.textContent = entry.model_type;
+          row.append(modelCell);
+          const historical = Number(modelByType.get(entry.model_type)?.requested_repeats || 1) > 1;
+          (correctness.sample_ids || []).forEach((_sampleId, index) => {
+            const value = entry.values?.[index];
+            const cell = document.createElement("td");
+            cell.className = "comparison-correctness-cell";
+            if (!Number.isFinite(Number(value))) {
+              cell.textContent = "—";
+              cell.classList.add("is-missing");
+            } else if (Number(value) >= 1) {
+              cell.textContent = "正确";
+              cell.classList.add("is-correct");
+            } else if (Number(value) <= 0) {
+              cell.textContent = "错误";
+              cell.classList.add("is-wrong");
+            } else if (historical) {
+              cell.textContent = `${Math.round(Number(value) * 100)}% 正确`;
+              cell.style.background = comparisonHeatColor(value);
+              cell.title = "历史重复批次中部分运行预测正确";
+            } else {
+              cell.textContent = "错误";
+              cell.classList.add("is-wrong");
+            }
+            row.append(cell);
+          });
+          body.append(row);
+        });
+        table.append(head, body);
+        scroll.append(table);
+        section.append(title, hint, scroll);
+        return section;
+      }
+
+      function createComparisonMatrixCard(item) {
+        const card = document.createElement("article");
+        card.className = "comparison-matrix-card";
+        const heading = document.createElement("div");
+        heading.className = "comparison-matrix-heading";
+        const title = document.createElement("h5");
+        title.textContent = item.model_type || "未知模型";
+        heading.append(title);
+        if ((item.run_ids || []).length > 1) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "历史合并结果";
+          heading.append(badge);
+        }
+        card.append(heading);
+        const matrix = Array.isArray(item.confusion_matrix)
+          ? item.confusion_matrix.filter((row) => Array.isArray(row)).map((row) => row.map((value) => Number(value) || 0))
+          : [];
+        if (!matrix.length) {
+          const empty = document.createElement("p");
+          empty.className = "hint";
+          empty.textContent = "没有可显示的混淆矩阵。";
+          card.append(empty);
+          return card;
+        }
+        const labels = Array.isArray(item.labels) && item.labels.length === matrix.length
+          ? item.labels.map(String)
+          : matrix.map((_, index) => String(index));
+        const max = Math.max(0, ...matrix.flat());
+        const table = document.createElement("table");
+        table.className = "comparison-matrix-table";
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        ["真实 \\ 预测", ...labels].forEach((label) => {
+          const cell = document.createElement("th");
+          cell.textContent = label;
+          headRow.append(cell);
+        });
+        head.append(headRow);
+        const body = document.createElement("tbody");
+        matrix.forEach((values, rowIndex) => {
+          const row = document.createElement("tr");
+          const rowLabel = document.createElement("th");
+          rowLabel.textContent = labels[rowIndex];
+          row.append(rowLabel);
+          values.forEach((value, columnIndex) => {
+            const cell = document.createElement("td");
+            const intensity = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+            cell.textContent = String(value);
+            cell.style.background = rowIndex === columnIndex
+              ? `rgba(15, 118, 110, ${0.08 + intensity * 0.42})`
+              : value > 0 ? `rgba(220, 38, 38, ${0.05 + intensity * 0.35})` : "transparent";
+            row.append(cell);
+          });
+          body.append(row);
+        });
+        table.append(head, body);
+        const scroll = document.createElement("div");
+        scroll.className = "comparison-scroll";
+        scroll.append(table);
+        const total = matrix.flat().reduce((sum, value) => sum + value, 0);
+        const correct = matrix.reduce((sum, row, index) => sum + (row[index] || 0), 0);
+        const summary = document.createElement("p");
+        summary.className = "comparison-matrix-summary";
+        summary.textContent = `共 ${total} 条预测，正确 ${correct} 条；行是真实类别，列是预测类别。`;
+        card.append(scroll, summary);
+        if (item.run_ids?.[0]) {
+          const link = document.createElement("a");
+          link.href = `#/results?run_id=${encodeURIComponent(item.run_ids[0])}`;
+          link.textContent = "查看该模型详细结果";
+          link.className = "secondary";
+          card.append(link);
+        }
+        return card;
+      }
+
+      function renderBatchComparison(batchId, comparison) {
+        const target = $("batchComparisonPage");
+        if (!target) return;
+        if (!comparison?.comparable) {
+          target.replaceChildren(currentRunNotice("warning", "暂不可比较", comparison?.reason || "等待至少一个完整成功的模型结果。"));
+          return;
+        }
+        const models = comparisonModels(comparison);
+        const content = document.createDocumentFragment();
+
+        const overall = document.createElement("section");
+        overall.className = "comparison-section";
+        const overallTitle = document.createElement("h3");
+        overallTitle.textContent = "总体指标比较";
+        const overview = document.createElement("div");
+        overview.className = "comparison-overview-grid";
+        overview.append(createAccuracyRanking(models));
+        const allMetricsPresent = models.length > 0 && models.every((model) => COMPARISON_METRICS.every(([key]) => Number.isFinite(Number(model.metrics?.[key]?.mean))));
+        if (models.length <= 5 && allMetricsPresent) {
+          overview.append(createGroupedMetricChart(models));
+        } else {
+          const heatCard = document.createElement("div");
+          heatCard.className = "comparison-card";
+          const heatTitle = document.createElement("h4");
+          heatTitle.textContent = models.length > 5 ? "四项测试指标热力表" : "四项测试指标明细";
+          heatCard.append(heatTitle, createComparisonTable(
+            ["模型", ...COMPARISON_METRICS.map(([, label]) => label)],
+            models.map((model) => [model.model_type, ...COMPARISON_METRICS.map(([key]) => model.metrics?.[key]?.mean)]),
+            { heat: true },
+          ));
+          overview.append(heatCard);
+        }
+        overall.append(overallTitle, overview, createComparisonTable(
+          ["模型", ...COMPARISON_METRICS.map(([, label]) => label)],
+          models.map((model) => [
+            model.model_type,
+            ...COMPARISON_METRICS.map(([key]) => model.metrics?.[key]?.mean),
+          ]),
+        ));
+        content.append(overall);
+
+        const heatGrid = document.createElement("div");
+        heatGrid.className = "comparison-heat-grid";
+        const correctness = comparison.sample_correctness || {};
+        if (correctness.status === "ready") {
+          heatGrid.append(createCorrectnessHeatSection(correctness, models));
+        }
+        const recall = comparison.class_recall || {};
+        if (recall.status === "ready") {
+          const recallSection = createComparisonHeatSection(
+            "按类别 Recall / Sensitivity",
+            "模型 / 类别",
+            recall.labels || [],
+            recall.rows || [],
+            (row, _column, index) => row.values?.[index]?.mean ?? null,
+          );
+          const hint = document.createElement("p");
+          hint.className = "hint";
+          hint.textContent = "Recall = TP / (TP + FN)，按测试集预测记录统计。";
+          recallSection.insertBefore(hint, recallSection.children[1] || null);
+          heatGrid.append(recallSection);
+        }
+        if (heatGrid.childElementCount) content.append(heatGrid);
+
+        const matrixSection = document.createElement("section");
+        matrixSection.className = "comparison-section";
+        const matrixTitle = document.createElement("h4");
+        matrixTitle.textContent = "各模型混淆矩阵";
+        const matrixGrid = document.createElement("div");
+        matrixGrid.className = "comparison-matrix-grid";
+        (comparison.confusion_matrices || []).forEach((item) => matrixGrid.append(createComparisonMatrixCard(item)));
+        matrixSection.append(matrixTitle, matrixGrid.childElementCount ? matrixGrid : currentRunNotice("warning", "暂无矩阵", "当前没有可显示的混淆矩阵。"));
+        content.append(matrixSection);
+        target.replaceChildren(content);
+      }
+
+      function stopBatchWatch({ clearIdentity = false } = {}) {
+        batchPollGeneration += 1;
+        if (batchPollTimer != null) window.clearTimeout(batchPollTimer);
+        batchPollTimer = null;
+        batchPollController?.abort();
+        batchPollController = null;
+        batchPollRetryCount = 0;
+        if (clearIdentity) {
+          currentBatchId = null;
+          batchLastComparisonSignature = "";
+          try { window.sessionStorage.removeItem(CURRENT_BATCH_STORAGE_KEY); } catch (_) {}
+        }
+      }
+
+      function rememberCurrentBatch(batchId) {
+        currentBatchId = String(batchId || "").trim() || null;
+        if (!currentBatchId) return;
+        try { window.sessionStorage.setItem(CURRENT_BATCH_STORAGE_KEY, currentBatchId); } catch (_) {}
+      }
+
+      async function stopTrainingBatch(batchId) {
+        if (!batchId || !window.confirm(`确定停止整个批次 ${batchId} 吗？`)) return;
+        await api(`/api/training/batches/${encodeURIComponent(batchId)}/stop`, { method: "POST" });
+        watchBatchComparison(batchId);
+      }
+
+      function renderBatchSnapshot(batchId, status, comparison) {
+        const state = String(status?.state || "queued").toLowerCase();
+        const stateLabels = { queued: "已排队", running: "训练中", succeeded: "已完成", partial: "部分完成", failed: "失败", cancelled: "已停止" };
+        const stateLabel = stateLabels[state] || state;
+        const statusClass = state === "succeeded" ? "success" : state === "failed" ? "failed" : ["partial", "cancelled"].includes(state) ? "warning" : state === "running" ? "running" : "pending";
+        const counts = status?.counts || {};
+        const countText = `排队 ${counts.queued || 0} · 运行 ${counts.running || 0} · 成功 ${counts.succeeded || 0} · 失败 ${counts.failed || 0} · 已停止 ${counts.cancelled || 0}`;
+        $("runStatus").textContent = `批次 ${batchId} ${stateLabel}`;
+        $("runStatus").className = `status ${statusClass}`;
+        const link = document.createElement("a");
+        link.className = "secondary";
+        link.href = `#/comparison?batch_id=${encodeURIComponent(batchId)}`;
+        link.textContent = "查看完整模型对比";
+        const actions = [link];
+        if (["queued", "running"].includes(state)) {
+          const stop = document.createElement("button");
+          stop.className = "danger";
+          stop.type = "button";
+          stop.textContent = "停止整个批次";
+          stop.addEventListener("click", () => stopTrainingBatch(batchId).catch((error) => window.alert(error.message)));
+          actions.push(stop);
+        }
+        const noticeKind = state === "succeeded" ? "success" : state === "failed" ? "error" : ["partial", "cancelled"].includes(state) ? "warning" : "loading";
+        $("trainingProgress").replaceChildren(currentRunNotice(noticeKind, `批次${stateLabel}`, countText, actions));
+        $("batchComparison").replaceChildren();
+
+        const route = window.SpecAutoAIResults?.parseHash?.(window.location.hash);
+        if (route?.view === "comparison" && String(route.batchId || "") === batchId) {
+          const signature = JSON.stringify(comparison);
+          if (signature !== batchLastComparisonSignature || !$("batchComparisonPage").childElementCount) {
+            renderBatchComparison(batchId, comparison);
+            batchLastComparisonSignature = signature;
+          }
+        }
+        if (!["queued", "running"].includes(state)) loadRuns().catch(() => {});
+      }
+
+      function renderBatchPollingError(batchId, error) {
+        const message = `批次状态暂时无法刷新：${error?.message || "网络异常"}。已保留上一次结果，将自动重试。`;
+        $("runStatus").textContent = `批次 ${batchId} 连接中断`;
+        $("runStatus").className = "status warning";
+        const link = document.createElement("a");
+        link.className = "secondary";
+        link.href = `#/comparison?batch_id=${encodeURIComponent(batchId)}`;
+        link.textContent = "查看上一次模型对比";
+        $("trainingProgress").replaceChildren(currentRunNotice("warning", "连接暂时中断", message, [link]));
+        const errorTarget = $("batchComparisonError");
+        if (errorTarget) errorTarget.textContent = message;
+      }
+
+      function watchBatchComparison(batchId) {
+        const normalized = String(batchId || "").trim();
+        if (!normalized) return;
+        stopBatchWatch();
+        rememberCurrentBatch(normalized);
+        batchLastComparisonSignature = "";
+        const generation = ++batchPollGeneration;
+        const pageTarget = $("batchComparisonPage");
+        if (pageTarget && !pageTarget.childElementCount) {
+          pageTarget.replaceChildren(currentRunNotice("loading", "正在读取批次", "已有内容不会在后续轮询中被清空。"));
+        }
+
+        const poll = async () => {
+          if (generation !== batchPollGeneration) return;
+          batchPollController = new AbortController();
+          try {
+            const [status, comparison] = await Promise.all([
+              api(`/api/training/batches/${encodeURIComponent(normalized)}`, { signal: batchPollController.signal }),
+              api(`/api/training/batches/${encodeURIComponent(normalized)}/comparison`, { signal: batchPollController.signal }),
+            ]);
+            if (generation !== batchPollGeneration) return;
+            batchPollRetryCount = 0;
+            const errorTarget = $("batchComparisonError");
+            if (errorTarget) errorTarget.textContent = "";
+            renderBatchSnapshot(normalized, status, comparison);
+            if (["queued", "running"].includes(String(status.state || ""))) {
+              batchPollTimer = window.setTimeout(poll, 3000);
+            }
+          } catch (error) {
+            if (generation !== batchPollGeneration || error?.name === "AbortError") return;
+            batchPollRetryCount += 1;
+            renderBatchPollingError(normalized, error);
+            const delay = Math.min(3000 * (2 ** (batchPollRetryCount - 1)), 30000);
+            batchPollTimer = window.setTimeout(poll, delay);
+          } finally {
+            if (generation === batchPollGeneration) batchPollController = null;
+          }
+        };
+        poll();
+      }
+
+      async function restoreCurrentBatch() {
+        let savedBatchId = null;
+        try { savedBatchId = window.sessionStorage.getItem(CURRENT_BATCH_STORAGE_KEY); } catch (_) {}
+        if (!savedBatchId) return;
+        const route = window.SpecAutoAIResults?.parseHash?.(window.location.hash);
+        if (["modeling", "comparison"].includes(route?.view)) watchBatchComparison(savedBatchId);
       }
 
       /**
@@ -2523,8 +3273,8 @@
        *     会产生无法渲染的结果，必须在创建前拦截）；
        *  3. 组装请求体：dataset_id 优先，仅 local 兼容回退 data_path；
        *     独立测试集同理（test_dataset_id / test_data_path）；
-       *  4. createRun 仅创建 queued Run，训练由独立 worker 执行；
-       *  5. 记录 currentRunId 并开始轮询（watchCurrentRun）。
+       *  4. 单模型单次保持 createRun 兼容；其余通过 Batch API 原子创建 queued 子 Run；
+       *  5. 单 Run 继续轮询；Batch 提供动态指标对比入口。
        * @throws {Error} 未加载数据集或契约不匹配时抛出（调用方 alert）
        */
       async function startTrain() {
@@ -2537,16 +3287,34 @@
         trainingRequestInFlight = true;
         startButton.disabled = true;
         try {
-          resetTrainingPanel();
-          const body = { config: configPayload() };
+          const selectedModels = selectedModelTypes();
+          if (!selectedModels.length) throw new Error("至少选择一个可用模型");
+          resetTrainingPanel(selectedModels.length > 1 ? "正在创建多模型训练批次" : "模型正在训练");
+          const config = configPayload();
+          const body = { config: { ...config, model_type: selectedModels[0] } };
           if (datasetId) body.dataset_id = datasetId;
           else body.data_path = datasetPath;
           if (testDatasetId) body.test_dataset_id = testDatasetId;
           else if (testDatasetPath) body.test_data_path = testDatasetPath;
-          const result = await createRun(body);
-          rememberCurrentRun(result.run_id);
-          window.SpecAutoAIResults?.markNewRun(currentRunId);
-          watchCurrentRun();
+          if (selectedModels.length === 1) {
+            const result = await createRun(body);
+            rememberCurrentRun(result.run_id);
+            window.SpecAutoAIResults?.markNewRun(currentRunId);
+            watchCurrentRun();
+            return;
+          }
+          const { model_type, seed, split_seed, model_seed, ...batchConfig } = config;
+          const result = await api("/api/training/batches", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, model_types: selectedModels, base_seed: Number($("seed").value), config: batchConfig }),
+          });
+          $("runStatus").textContent = `批次 ${result.batch_id} 已排队`;
+          $("runStatus").className = "status pending";
+          clearRememberedCurrentRun();
+          currentRunId = null;
+          $("trainingProgress").replaceChildren(currentRunNotice("success", "多模型批次已创建", `${result.run_count} 个模型 Run 已排队；实际并行数由可用 worker 决定。`));
+          watchBatchComparison(result.batch_id);
         } finally {
           trainingRequestInFlight = false;
           startButton.disabled = trainingContractIssue() != null;
@@ -3321,7 +4089,7 @@
         const modelType = $("modelType").value;
         const traditional = isTraditionalModel(modelType);
         $("trainTimeBlock")?.classList.toggle("hidden", traditional);
-        $("featureWindowOptions").classList.toggle("hidden", !usesFeatureWindowCount(modelType));
+        $("featureWindowOptions")?.classList.add("hidden");
         $("deepOptions").classList.toggle("hidden", traditional);
         $("traditionalOptions").classList.toggle("hidden", !traditional);
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
@@ -3335,18 +4103,19 @@
         let cvEnabled = $("cvEnabled").checked;
         if (hasExternalTest) {
           applySplitPreset("external");
-          cvEnabled = false;
         } else if (cvEnabled) {
           applySplitPreset("loo");
         } else {
           applySplitPreset("holdout");
         }
-        $("cvOptions").classList.toggle("hidden", hasExternalTest);
+        $("cvOptions").classList.remove("hidden");
         $("splitTestField").classList.toggle("hidden", hasExternalTest || cvEnabled);
         $("splitTest").disabled = hasExternalTest || cvEnabled;
         $("customSplitOptions").setAttribute("aria-hidden", "false");
         if (hasExternalTest) {
-          $("splitModeHint").textContent = "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
+          $("splitModeHint").textContent = cvEnabled
+            ? "已加载独立测试集：主数据按 Sample_ID 留一交叉验证作审计，并在全部主数据拟合后对独立测试集做最终评估。"
+            : "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
         } else if (cvEnabled) {
           $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余固定按 8:2 训练/验证。";
         } else {
@@ -3354,13 +4123,14 @@
         }
       }
 
-      function showView(viewName) {
+      function showView(viewName, route = {}) {
         const targetView = $(`view-${viewName}`) ? viewName : "raman";
         document.querySelectorAll("nav button").forEach((item) => {
           item.classList.remove("active");
           item.removeAttribute("aria-current");
         });
-        const navButton = document.querySelector(`nav button[data-view="${targetView}"]`);
+        const navTarget = targetView === "comparison" ? "modeling" : targetView;
+        const navButton = document.querySelector(`nav button[data-view="${navTarget}"]`);
         if (navButton) {
           navButton.classList.add("active");
           navButton.setAttribute("aria-current", "page");
@@ -3368,6 +4138,15 @@
         document.querySelectorAll(".view").forEach((item) => item.classList.add("hidden"));
         $(`view-${targetView}`).classList.remove("hidden");
         if (targetView === "runs") loadRuns().catch((error) => window.alert(`训练记录加载失败：${error.message}`));
+        if (targetView === "comparison") {
+          const batchId = route.batchId || currentBatchId;
+          if (batchId) watchBatchComparison(batchId);
+          else $("batchComparisonPage").replaceChildren(currentRunNotice("warning", "缺少 Batch ID", "请从多模型训练完成提示进入比较页。"));
+        } else if (targetView === "modeling" && currentBatchId) {
+          watchBatchComparison(currentBatchId);
+        } else if (targetView !== "modeling") {
+          stopBatchWatch();
+        }
       }
       window.SpecAutoAIShowView = showView;
 

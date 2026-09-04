@@ -1,0 +1,148 @@
+"""Queued multi-model training batches and safe comparison endpoints."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from ..contracts import TrainingBatchRequest, TrainingConfigValidationError, TrainingSpec
+from ..http.principal import get_principal
+from ..models import canonical_model_type
+from ..runs.batch_projection import batch_status_payload, project_model_comparison
+from ..runs.contracts import Principal
+from ..runs.repository import InvalidRunTransition, RunNotFound
+from ..runs.status_projection import project_status
+from .deps import get_run_dir, get_run_repository, resolve_training_data_reference
+from .runs import _assert_worker_contract_compatible, _dataset_snapshot_for_reference
+
+router = APIRouter()
+
+
+def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> tuple[list[str], dict[str, Any], list[str]]:
+    raw = dict(payload.config or {})
+    forbidden = {"model_type", "seed", "split_seed", "model_seed", "feature_selection_enabled", "explainability_enabled"}
+    supplied = sorted(forbidden.intersection(raw))
+    if supplied:
+        raise TrainingConfigValidationError(f"Batch config 不允许包含：{', '.join(supplied)}")
+    if isinstance(payload.base_seed, bool):
+        raise TrainingConfigValidationError("base_seed 必须是整数")
+    try:
+        base_seed = int(payload.base_seed)
+    except (TypeError, ValueError) as exc:
+        raise TrainingConfigValidationError("base_seed 必须是整数") from exc
+    canonical: list[str] = []
+    warnings: list[str] = []
+    normalized_config: dict[str, Any] | None = None
+    for raw_model in payload.model_types:
+        model_type = canonical_model_type(str(raw_model))
+        if model_type in canonical:
+            continue
+        spec = TrainingSpec.from_legacy({**raw, "model_type": model_type}).validated(has_external_test=has_external_test)
+        canonical.append(str(spec.to_legacy_dict()["model_type"]))
+        warnings.extend(spec.warnings)
+        candidate = spec.to_legacy_dict()
+        candidate.pop("model_type", None)
+        if normalized_config is None:
+            normalized_config = candidate
+    if not canonical:
+        raise TrainingConfigValidationError("至少选择一个不同的模型")
+    if len(canonical) * int(payload.repeat_count) > 50:
+        raise TrainingConfigValidationError("模型数 × 重复次数不能超过 50")
+    config = dict(normalized_config or {})
+    config["split_seed"] = base_seed
+    config["feature_selection_enabled"] = False
+    return canonical, config, warnings
+
+
+@router.post("/api/training/batches", status_code=202)
+def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    """Validate every child first, then atomically enqueue all queued Runs."""
+    data_ref = resolve_training_data_reference(payload, principal=principal)
+    try:
+        model_types, config, warnings = _batch_config(payload, has_external_test=bool(data_ref.test_dataset_id or data_ref.test_legacy_path))
+    except (TrainingConfigValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail={"code": "invalid_training_batch", "message": str(exc)}) from exc
+    repository = get_run_repository()
+    _assert_worker_contract_compatible(repository)
+    config["dataset_name"] = data_ref.dataset_name
+    if data_ref.test_dataset_id:
+        config["test_dataset_id"] = data_ref.test_dataset_id
+    if data_ref.test_legacy_path:
+        config["test_data_path"] = data_ref.test_legacy_path
+    if data_ref.test_dataset_name:
+        config["test_dataset_name"] = data_ref.test_dataset_name
+    snapshot = _dataset_snapshot_for_reference(dataset_id=data_ref.dataset_id, legacy_path=data_ref.legacy_path, dataset_name=data_ref.dataset_name)
+    if data_ref.test_dataset_id or data_ref.test_legacy_path:
+        test_snapshot = _dataset_snapshot_for_reference(dataset_id=data_ref.test_dataset_id, legacy_path=data_ref.test_legacy_path, dataset_name=data_ref.test_dataset_name)
+        config["test_dataset_sha256"] = test_snapshot["sha256"]
+    try:
+        batch, records = repository.create_batch_queued(
+            dataset_id=data_ref.dataset_id, test_dataset_id=data_ref.test_dataset_id,
+            legacy_data_path=data_ref.legacy_path, config=config, model_types=model_types,
+            repeat_count=int(payload.repeat_count), base_seed=int(payload.base_seed),
+            dataset_snapshot=snapshot, principal=principal,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "invalid_training_batch", "message": str(exc)}) from exc
+    for record in records:
+        project_status(get_run_dir(record.run_id), record, config=record.config)
+    return {
+        "batch_id": batch.batch_id, "state": "queued", "model_count": len(model_types),
+        "repeat_count": batch.repeat_count, "run_count": len(records),
+        "runs": [{"model_type": record.config["model_type"], "repeat_index": record.batch_repeat_index, "run_id": record.run_id, "state": record.state} for record in records],
+        "warnings": warnings,
+    }
+
+
+@router.get("/api/training/batches/{batch_id}")
+def get_batch(batch_id: str, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    repository = get_run_repository()
+    try:
+        batch = repository.get_batch_scoped(batch_id, principal=principal)
+        records = repository.list_batch_runs_scoped(batch_id, principal=principal)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    return {"batch_id": batch.batch_id, "model_types": batch.model_types, "repeat_count": batch.repeat_count, "base_seed": batch.base_seed, "created_at": batch.created_at, **batch_status_payload(batch.batch_id, records)}
+
+
+@router.post("/api/training/batches/{batch_id}/stop")
+def stop_batch(batch_id: str, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    repository = get_run_repository()
+    try:
+        records = repository.cancel_batch_scoped(batch_id, now=datetime.now(timezone.utc), principal=principal)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    return batch_status_payload(batch_id, records)
+
+
+@router.delete("/api/training/batches/{batch_id}")
+def delete_batch(batch_id: str, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    repository = get_run_repository()
+    try:
+        run_ids = repository.delete_batch_terminal_scoped(batch_id, principal=principal)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    except InvalidRunTransition as exc:
+        raise HTTPException(status_code=409, detail="批次仍有正在执行的任务，不能删除") from exc
+    # DB deletion is deliberately transactional before best-effort file cleanup;
+    # stale directories expose no download route once their records are gone.
+    from ..runs.artifacts import discard_run_artifacts
+    for run_id in run_ids:
+        try:
+            discard_run_artifacts(get_run_dir(run_id))
+        except OSError:
+            pass
+    return {"batch_id": batch_id, "deleted_run_count": len(run_ids)}
+
+
+@router.get("/api/training/batches/{batch_id}/comparison")
+def get_batch_comparison(batch_id: str, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    repository = get_run_repository()
+    try:
+        repository.get_batch_scoped(batch_id, principal=principal)
+        records = repository.list_batch_runs_scoped(batch_id, principal=principal)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    return project_model_comparison(batch_id=batch_id, records=records, run_dir_for=get_run_dir)

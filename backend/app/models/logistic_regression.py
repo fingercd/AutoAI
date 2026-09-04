@@ -2,7 +2,7 @@
 
 模块定位：
     本文件实现传统机器学习模型 ``logistic_regression``（逻辑回归）
-    的工厂函数，是分类模型 v2 能力目录中 15 个目标模型之一，
+    的工厂函数，是当前前端 10 项目录与后端能力目录共用的传统模型之一，
     常作为线性分类基线与其他模型对比。
 
 系统协作：
@@ -12,15 +12,15 @@
       registry 按配置解析后传入；
     - 输入特征来自预处理输出的 ``wide-feature-v2`` 宽表，外层
       训练流程先用仅由训练集拟合的标准化器处理特征——逻辑回归
-      的 lbfgs 求解对特征量纲敏感，标准化是该模型正常收敛的
+      的 saga 求解对特征量纲敏感，标准化是该模型正常收敛的
       前提，但不在本文件职责内。
 
 关键设计约束：
     - sklearn 逻辑回归原生提供 ``predict_proba``（softmax /
       sigmoid 后验），可直接满足下游 Log-loss 评估与可解释性
       分析对概率输出的统一要求；
-    - 求解器固定为 ``lbfgs``：支持多分类（multinomial）、L2
-      正则，且对小中型稠密特征矩阵收敛稳定。
+    - 求解器固定为 ``saga`` + elastic-net；`C` 与 `l1_ratio` 都在
+      分组内层 5 折中选择，避免把验证或测试数据泄漏到正则选择。
 """
 
 from __future__ import annotations
@@ -32,8 +32,9 @@ def build_logistic_regression(
     c: float = 1.0,
     seed: int = 42,
     class_weight: str | None = None,
+    l1_ratio: float = 0.5,
 ) -> LogisticRegression:
-    """构造固定 lbfgs 求解器和可选类别权重的分类基线。
+    """构造固定 saga/elastic-net 求解器和可选类别权重的分类基线。
 
     参数：
         c: 正则化强度的倒数 C（sklearn 惯例）：C 越大正则越弱、
@@ -48,12 +49,15 @@ def build_logistic_regression(
     返回：
         配置完成的 sklearn ``LogisticRegression`` 实例（未拟合）。
         ``max_iter=1000`` 比默认值 100 更充裕，降低高维光谱特征
-        下 lbfgs 未收敛警告的概率。
+        下 saga 未收敛警告的概率。
     """
     return LogisticRegression(
         C=float(c),
         class_weight=class_weight,
         max_iter=1000,
         random_state=int(seed),
-        solver="lbfgs",
+        solver="saga",
+        penalty="elasticnet",
+        l1_ratio=float(l1_ratio),
+        multi_class="auto",
     )

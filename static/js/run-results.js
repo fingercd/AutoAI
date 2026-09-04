@@ -32,6 +32,7 @@
  */
 import { downloadFile, request } from './api-client.js';
 import { element, formatMetric, formatTime, replaceChildren } from './ui-utils.js';
+import { downloadConfusionMatrixPng } from './confusion-matrix-download.js?v=20260820-compact-visualization-v3';
 
 // ---- 路由与状态常量 ----
 
@@ -56,7 +57,7 @@ const TERMINAL_STATES = new Set(['succeeded', 'success', 'failed', 'cancelled', 
  * 六个传统机器学习模型 ID。它们不产生逐 Epoch 训练曲线（无 history），
  * 渲染"训练过程"卡片时据此直接跳过。
  */
-const TRADITIONAL_MODEL_IDS = new Set(['pls_da', 'pca_lda', 'logistic_regression', 'svm', 'random_forest', 'xgboost']);
+const TRADITIONAL_MODEL_IDS = new Set(['pls_da', 'spls_da', 'pca_lda', 'logistic_regression', 'svm', 'pca_svm', 'random_forest', 'xgboost']);
 
 /**
  * URL path → 内部视图名的别名表。
@@ -68,6 +69,7 @@ const VIEW_ALIASES = {
   hplc: 'chromatography',
   chromatography: 'chromatography',
   modeling: 'modeling',
+  comparison: 'comparison',
   results: 'results',
   runs: 'runs',
   help: 'manual',
@@ -83,6 +85,7 @@ const VIEW_PATHS = {
   raman: 'raman',
   chromatography: 'hplc',
   modeling: 'modeling',
+  comparison: 'comparison',
   results: 'results',
   runs: 'runs',
   manual: 'help',
@@ -105,7 +108,9 @@ export function parseHash(hash = '') {
   const [rawPath = '', rawQuery = ''] = raw.split('?', 2);
   const view = VIEW_ALIASES[rawPath.toLowerCase()] || 'raman';
   const params = new URLSearchParams(rawQuery);
-  return { view, runId: params.get('run_id') || null };
+  const route = { view, runId: params.get('run_id') || null };
+  if (view === 'comparison') route.batchId = params.get('batch_id') || null;
+  return route;
 }
 
 /**
@@ -569,7 +574,7 @@ function clearResultSections() {
     window.removeEventListener('resize', historyResizeHandler);
     historyResizeHandler = null;
   }
-  ['resultOverview', 'resultMetrics', 'resultSplitMetrics', 'resultAnalysis', 'resultExplainability', 'resultArtifacts']
+  ['resultOverview', 'resultMetrics', 'resultSplitMetrics', 'resultAnalysis', 'resultArtifacts']
     .forEach((id) => byId(id)?.replaceChildren());
 }
 
@@ -815,11 +820,45 @@ function renderSplitConfusion(splitName, splitAnalysis, result) {
       ...(Array.isArray(row) ? row : []).map((value) => element('td', { text: valueOrDash(value) })),
     ))),
   );
+  const downloadStatus = element('span', { className: 'download-message', role: 'status', 'aria-live': 'polite' });
+  const downloadButton = element('button', {
+    className: 'button secondary compact',
+    type: 'button',
+    text: `下载 ${splitLabel} 混淆矩阵`,
+  });
+  downloadButton.addEventListener('click', async () => {
+    const original = downloadButton.textContent;
+    downloadButton.disabled = true;
+    downloadButton.textContent = '正在下载…';
+    downloadStatus.textContent = '';
+    try {
+      await downloadConfusionMatrixPng({
+        matrix,
+        labels: safeLabels,
+        runId: result?.run?.run_id || result?.run_id || '',
+        split: splitName,
+        aggregation: splitAnalysis?.aggregation || result?.evaluation?.primary_aggregation || 'direct',
+      });
+      downloadStatus.textContent = '';
+    } catch (error) {
+      downloadStatus.textContent = error?.message || 'PNG 生成失败';
+    } finally {
+      downloadButton.disabled = false;
+      downloadButton.textContent = original;
+    }
+  });
   return element('article', { className: 'result-card result-split-card' },
     element('h3', { text: `${splitLabel} 混淆矩阵` }),
     element('p', { className: 'section-note', text: `行是真实类别，列是预测类别 · ${splitAggregationLabel(splitAnalysis, result, splitName)}` }),
     element('div', { className: 'matrix-wrap' }, table),
+    element('div', { className: 'result-card-actions' }, downloadButton, downloadStatus),
   );
+}
+
+/** 构造批次比较深链；Batch ID 缺失时返回比较页落地地址。 */
+export function buildComparisonHash(batchId) {
+  const normalized = String(batchId || '').trim();
+  return normalized ? `#/comparison?batch_id=${encodeURIComponent(normalized)}` : '#/comparison';
 }
 
 /**
@@ -1754,6 +1793,7 @@ function renderArtifacts(result) {
     config: '配置与元数据',
     metadata: '配置与元数据',
     training: '训练过程',
+    analysis: '模型分析',
     model: '模型文件',
     internal: '内部/兼容文件',
     other: '其他产物',
@@ -1818,8 +1858,10 @@ async function renderResultPayload(payload) {
   renderCoreMetrics(result);
   renderSplitMetrics(result);
   renderAnalysis(result);
+  // TEMPORARILY_HIDDEN: no explainability artifact is fetched or rendered while
+  // the product surface is disabled.  The implementation stays below for an
+  // explicit future re-enable, but this render path must remain disconnected.
   renderArtifacts(result);
-  renderExplainability(result);
   return result;
 }
 
@@ -2075,6 +2117,13 @@ export function navigateToResult(runId) {
   else window.location.hash = destination;
 }
 
+/** 跳转到可刷新恢复的 Batch 比较页。 */
+export function navigateToComparison(batchId) {
+  const destination = buildComparisonHash(batchId);
+  if (window.location.hash === destination) applyCurrentRoute();
+  else window.location.hash = destination;
+}
+
 /** 跳转到某个视图；hash 未变化时手动重放路由（同 navigateToResult 的幂等处理）。 */
 export function navigateToView(view) {
   const destination = buildViewHash(view);
@@ -2261,11 +2310,13 @@ async function initializeAuthentication() {
 function initialize() {
   window.SpecAutoAIResults = {
     AUTO_REDIRECT_DELAY_MS,
+    buildComparisonHash,
     buildResultHash,
     buildViewHash,
     cancelAutoRedirect,
     loadResult,
     markNewRun,
+    navigateToComparison,
     navigateToResult,
     navigateToView,
     parseHash,

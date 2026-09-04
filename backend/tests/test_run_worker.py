@@ -56,8 +56,17 @@ def test_worker_renews_lease_while_execution_is_running(tmp_path):
     assert started.wait(timeout=5)
     before = repo.get(created.run_id)
     assert before.state == 'running'
-    time.sleep(0.05)
-    assert repo.get(created.run_id).version > before.version
+    # Windows CI can delay a newly-created daemon thread beyond five 10 ms
+    # ticks.  Observe the externally visible renewal within a bounded window
+    # instead of treating scheduler jitter as a worker failure.
+    deadline = time.monotonic() + 2.0
+    renewed = False
+    while time.monotonic() < deadline:
+        if repo.get(created.run_id).version > before.version:
+            renewed = True
+            break
+        time.sleep(0.02)
+    assert renewed
     release.set()
     thread.join(timeout=5)
     assert not thread.is_alive()

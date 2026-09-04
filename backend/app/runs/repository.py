@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..version import WORKER_CONTRACT_VERSION
-from .contracts import Principal, RunRecord, RunState
+from .contracts import BatchRecord, Principal, RunRecord, RunState
 
 
 # 状态机迁移表：键是当前状态，值是允许到达的下一状态集合。
@@ -151,6 +151,28 @@ class RunRepository:
             updated_at=row['updated_at'] if 'updated_at' in columns else None,
             started_at=row['started_at'] if 'started_at' in columns else None,
             finished_at=row['finished_at'] if 'finished_at' in columns else None,
+            batch_id=row['batch_id'] if 'batch_id' in columns else None,
+            batch_model_order=int(row['batch_model_order']) if 'batch_model_order' in columns and row['batch_model_order'] is not None else None,
+            batch_repeat_index=int(row['batch_repeat_index']) if 'batch_repeat_index' in columns and row['batch_repeat_index'] is not None else None,
+            split_seed=int(row['split_seed']) if 'split_seed' in columns and row['split_seed'] is not None else None,
+            model_seed=int(row['model_seed']) if 'model_seed' in columns and row['model_seed'] is not None else None,
+        )
+
+    @staticmethod
+    def _batch_record(row: sqlite3.Row) -> BatchRecord:
+        return BatchRecord(
+            batch_id=str(row['batch_id']),
+            dataset_id=row['dataset_id'],
+            test_dataset_id=row['test_dataset_id'],
+            config=dict(_decode_json(row['config_json'], {})),
+            model_types=list(_decode_json(row['model_types_json'], [])),
+            repeat_count=int(row['repeat_count']),
+            base_seed=int(row['base_seed']),
+            dataset_snapshot=dict(_decode_json(row['dataset_snapshot_json'], {})),
+            owner_id=row['owner_id'],
+            tenant_id=row['tenant_id'],
+            created_at=row['created_at'],
+            updated_at=row['updated_at'],
         )
 
     # 建表 + 轻量迁移 + 索引，幂等可重复执行（启动时调用）。
@@ -197,6 +219,11 @@ class RunRepository:
                 'tenant_id': 'ALTER TABLE runs ADD COLUMN tenant_id TEXT',
                 'started_at': 'ALTER TABLE runs ADD COLUMN started_at TEXT',
                 'finished_at': 'ALTER TABLE runs ADD COLUMN finished_at TEXT',
+                'batch_id': 'ALTER TABLE runs ADD COLUMN batch_id TEXT',
+                'batch_model_order': 'ALTER TABLE runs ADD COLUMN batch_model_order INTEGER',
+                'batch_repeat_index': 'ALTER TABLE runs ADD COLUMN batch_repeat_index INTEGER',
+                'split_seed': 'ALTER TABLE runs ADD COLUMN split_seed INTEGER',
+                'model_seed': 'ALTER TABLE runs ADD COLUMN model_seed INTEGER',
             }
             for name, statement in migrations.items():
                 if name not in columns:
@@ -205,6 +232,26 @@ class RunRepository:
             connection.execute(
                 'CREATE INDEX IF NOT EXISTS idx_runs_scope ON runs(owner_id, tenant_id, created_at)'
             )
+            connection.execute('CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(batch_id, batch_model_order, batch_repeat_index)')
+            connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS training_batches (
+                    batch_id TEXT PRIMARY KEY,
+                    dataset_id TEXT,
+                    test_dataset_id TEXT,
+                    config_json TEXT NOT NULL,
+                    model_types_json TEXT NOT NULL,
+                    repeat_count INTEGER NOT NULL,
+                    base_seed INTEGER NOT NULL,
+                    dataset_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    owner_id TEXT,
+                    tenant_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+            connection.execute('CREATE INDEX IF NOT EXISTS idx_batches_scope ON training_batches(owner_id, tenant_id, created_at)')
             connection.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS worker_heartbeats (
@@ -265,6 +312,172 @@ class RunRepository:
             connection.commit()
         assert row is not None
         return self._record(row)
+
+    def create_batch_queued(
+        self,
+        *,
+        dataset_id: str | None,
+        test_dataset_id: str | None,
+        legacy_data_path: str | None,
+        config: dict[str, Any],
+        model_types: list[str],
+        repeat_count: int,
+        base_seed: int,
+        dataset_snapshot: dict[str, Any],
+        principal: Principal = Principal(),
+    ) -> tuple[BatchRecord, list[RunRecord]]:
+        """Atomically create a Batch and every queued child Run.
+
+        Each repeat shares the split seed; its model seed is ``base_seed + r``
+        across every model, so comparisons operate on identical held-out data
+        while still measuring repeat-level stochastic variation.
+        """
+        if not model_types or not 1 <= int(repeat_count) <= 5:
+            raise ValueError('batch requires models and repeat_count 1..5')
+        if len(model_types) * int(repeat_count) > 50:
+            raise ValueError('batch run count must not exceed 50')
+        batch_id = uuid.uuid4().hex
+        now = _timestamp(datetime.now(timezone.utc))
+        run_ids: list[str] = []
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            connection.execute(
+                '''
+                INSERT INTO training_batches (
+                    batch_id, dataset_id, test_dataset_id, config_json, model_types_json,
+                    repeat_count, base_seed, dataset_snapshot_json, owner_id, tenant_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    batch_id, dataset_id, test_dataset_id,
+                    json.dumps(config, ensure_ascii=False), json.dumps(model_types, ensure_ascii=False),
+                    int(repeat_count), int(base_seed), json.dumps(dataset_snapshot, ensure_ascii=False),
+                    principal.owner_id, principal.tenant_id, now, now,
+                ),
+            )
+            for model_order, model_type in enumerate(model_types):
+                for repeat_index in range(1, int(repeat_count) + 1):
+                    run_id = uuid.uuid4().hex
+                    run_ids.append(run_id)
+                    model_seed = int(base_seed) + repeat_index - 1
+                    run_config = {
+                        **config,
+                        'model_type': model_type,
+                        'seed': model_seed,
+                        'model_seed': model_seed,
+                        'split_seed': int(base_seed),
+                        'batch_id': batch_id,
+                        'batch_model_order': model_order,
+                        'batch_repeat_index': repeat_index,
+                    }
+                    connection.execute(
+                        '''
+                        INSERT INTO runs (
+                            run_id, state, version, dataset_id, legacy_data_path,
+                            config_json, progress_json, dataset_snapshot_json,
+                            owner_id, tenant_id, created_at, updated_at,
+                            batch_id, batch_model_order, batch_repeat_index, split_seed, model_seed
+                        ) VALUES (?, 'queued', 1, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            run_id, dataset_id, legacy_data_path,
+                            json.dumps(run_config, ensure_ascii=False), json.dumps(dataset_snapshot, ensure_ascii=False),
+                            principal.owner_id, principal.tenant_id, now, now,
+                            batch_id, model_order, repeat_index, int(base_seed), model_seed,
+                        ),
+                    )
+            batch_row = connection.execute('SELECT * FROM training_batches WHERE batch_id = ?', (batch_id,)).fetchone()
+            run_rows = [connection.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone() for run_id in run_ids]
+            connection.commit()
+        assert batch_row is not None and all(row is not None for row in run_rows)
+        return self._batch_record(batch_row), [self._record(row) for row in run_rows if row is not None]
+
+    def get_batch_scoped(self, batch_id: str, *, principal: Principal) -> BatchRecord:
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            row = connection.execute(
+                'SELECT * FROM training_batches WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?',
+                (batch_id, owner_id, tenant_id),
+            ).fetchone()
+        if row is None:
+            raise RunNotFound(batch_id)
+        return self._batch_record(row)
+
+    def list_batch_runs_scoped(self, batch_id: str, *, principal: Principal) -> list[RunRecord]:
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            rows = connection.execute(
+                '''SELECT * FROM runs WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?
+                   ORDER BY batch_model_order, batch_repeat_index, created_at, run_id''',
+                (batch_id, owner_id, tenant_id),
+            ).fetchall()
+        if not rows:
+            # Do not distinguish an empty/missing foreign batch from an inaccessible one.
+            self.get_batch_scoped(batch_id, principal=principal)
+        return [self._record(row) for row in rows]
+
+    def cancel_batch_scoped(self, batch_id: str, *, now: datetime, principal: Principal) -> list[RunRecord]:
+        """Stop each active child in one transaction; terminal children remain untouched."""
+        now_text = _timestamp(now)
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            batch = connection.execute(
+                'SELECT 1 FROM training_batches WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?',
+                (batch_id, owner_id, tenant_id),
+            ).fetchone()
+            if batch is None:
+                connection.rollback()
+                raise RunNotFound(batch_id)
+            rows = connection.execute(
+                '''SELECT * FROM runs WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?
+                   ORDER BY batch_model_order, batch_repeat_index''',
+                (batch_id, owner_id, tenant_id),
+            ).fetchall()
+            for row in rows:
+                if row['state'] not in {'queued', 'running'}:
+                    continue
+                connection.execute(
+                    '''UPDATE runs SET state = 'cancelled', version = version + 1,
+                       claim_token = NULL, worker_id = NULL, lease_expires_at = NULL,
+                       manifest_name = NULL, progress_json = ?, updated_at = ?, finished_at = ?
+                       WHERE run_id = ? AND state IN ('queued', 'running')''',
+                    (_stopped_progress(row['progress_json'], stopped_at=now_text, reason='batch_stop', message='批次已停止'), now_text, now_text, row['run_id']),
+                )
+            connection.execute('UPDATE training_batches SET updated_at = ? WHERE batch_id = ?', (now_text, batch_id))
+            updated = connection.execute(
+                '''SELECT * FROM runs WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?
+                   ORDER BY batch_model_order, batch_repeat_index''',
+                (batch_id, owner_id, tenant_id),
+            ).fetchall()
+            connection.commit()
+        return [self._record(row) for row in updated]
+
+    def delete_batch_terminal_scoped(self, batch_id: str, *, principal: Principal) -> list[str]:
+        """Delete a Batch only after every child reached a terminal state."""
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            batch = connection.execute(
+                'SELECT 1 FROM training_batches WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?',
+                (batch_id, owner_id, tenant_id),
+            ).fetchone()
+            if batch is None:
+                connection.rollback()
+                raise RunNotFound(batch_id)
+            rows = connection.execute(
+                'SELECT run_id, state FROM runs WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?',
+                (batch_id, owner_id, tenant_id),
+            ).fetchall()
+            if not rows or any(row['state'] not in TERMINAL_STATES for row in rows):
+                connection.rollback()
+                raise InvalidRunTransition(f'cannot delete non-terminal batch {batch_id}')
+            run_ids = [str(row['run_id']) for row in rows]
+            connection.execute('DELETE FROM runs WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?', (batch_id, owner_id, tenant_id))
+            connection.execute('DELETE FROM training_batches WHERE batch_id = ? AND owner_id IS ? AND tenant_id IS ?', (batch_id, owner_id, tenant_id))
+            connection.commit()
+        return run_ids
 
     # worker 领取队首任务（FIFO：created_at 最早优先，run_id 打破并列）。
     # 并发安全靠两点：BEGIN IMMEDIATE 串行化所有 claim；UPDATE 的 WHERE 带上

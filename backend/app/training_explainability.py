@@ -1,6 +1,8 @@
 # =============================================================================
 # 模块说明：模型可解释性方法的"单一事实来源"（single source of truth）
 # =============================================================================
+# TEMPORARILY_HIDDEN: this retained implementation is not reachable from new
+# training runs until an explicit product requirement restores the full contract.
 # 本文件只维护一件事：每个模型 ID 对应哪一种可解释性算法。
 #
 # 在系统中的位置：

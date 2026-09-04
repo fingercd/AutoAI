@@ -124,8 +124,14 @@ def test_hash_result_route_and_auto_redirect_are_pure_and_run_specific() -> None
           view: 'results',
           runId: 'run/中文',
         });
+        assert.deepEqual(results.parseHash('#/comparison?batch_id=batch%2F%E4%B8%AD%E6%96%87'), {
+          view: 'comparison',
+          runId: null,
+          batchId: 'batch/中文',
+        });
         assert.equal(results.buildViewHash('runs'), '#/runs');
         assert.equal(results.buildResultHash('run/中文'), '#/results?run_id=run%2F%E4%B8%AD%E6%96%87');
+        assert.equal(results.buildComparisonHash('batch/中文'), '#/comparison?batch_id=batch%2F%E4%B8%AD%E6%96%87');
         assert.equal(results.shouldAutoRedirect({ runId: 'run-1', state: 'succeeded', isNewRun: true }), true);
         assert.equal(results.shouldAutoRedirect({ runId: 'run-1', state: 'running', isNewRun: true }), false);
         assert.equal(results.shouldAutoRedirect({ runId: 'run-1', state: 'succeeded', isNewRun: false }), false);
@@ -235,7 +241,6 @@ def test_result_ui_has_a_dedicated_view_and_does_not_advertise_unavailable_roc_a
         "resultMetrics",
         "resultSplitMetrics",
         "resultAnalysis",
-        "resultExplainability",
         "resultArtifacts",
     ):
         assert f'id="{element_id}"' in html
@@ -243,6 +248,25 @@ def test_result_ui_has_a_dedicated_view_and_does_not_advertise_unavailable_roc_a
     assert "rocCanvas" not in html
     assert "precisionRecallCanvas" not in html
     assert "aucMetricCard" not in html
+    results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
+    assert "downloadConfusionMatrixPng" in results
+    assert "renderModelFeatureVisualization" not in results
+    assert "TEMPORARILY_HIDDEN" in results
+
+
+def test_confusion_png_filename_and_layout_are_safe_and_split_specific() -> None:
+    _run_node(
+        """
+        import assert from 'node:assert/strict';
+        const png = await import('./static/js/confusion-matrix-download.js');
+        assert.equal(png.confusionMatrixPngFilename('run/中文:42', 'valid'), 'run_run_42__confusion_matrix_valid.png');
+        assert.equal(png.confusionMatrixPngFilename('abc', 'test'), 'run_abc__confusion_matrix_test.png');
+        const layout = png.confusionMatrixCanvasLayout([[4, 1], [2, 3]], ['甲类', '乙类']);
+        assert.equal(layout.size, 2);
+        assert.deepEqual(layout.matrix, [[4, 1], [2, 3]]);
+        assert.ok(layout.width > 0 && layout.height > 0);
+        """
+    )
 
 
 def test_each_primary_page_has_short_contextual_help_and_global_help_stays_small() -> None:

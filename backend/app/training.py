@@ -48,11 +48,12 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.model_selection import ParameterSampler
+from sklearn.model_selection import StratifiedGroupKFold
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from .classification_policy import DEEP_TRAINING_DEFAULTS, EvaluationPolicy, resolve_evaluation_policy
+from .feature_flags import EXPLAINABILITY_ENABLED
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
     aggregate_attribution_sanity,
@@ -72,6 +73,10 @@ from .runs.artifacts import RunArtifactWriter
 from .runs.repository import InvalidRunTransition, RunRepository
 from .runs.status_projection import project_status
 from .training_explainability import explainability_method
+from .training_visualization import (
+    FEATURE_VISUALIZATION_SCHEMA,
+    build_model_feature_visualization,
+)
 
 
 # 训练被“新任务替换”时抛出的内部异常：旧直接调用入口用 status.json 的
@@ -96,6 +101,11 @@ class TrainConfig:
     scheduler_patience: int = DEEP_TRAINING_DEFAULTS.scheduler_patience
     min_learning_rate: float = DEEP_TRAINING_DEFAULTS.min_learning_rate
     seed: int = DEEP_TRAINING_DEFAULTS.seed
+    # split_seed is batch-wide and controls only data partitioning.  seed/model_seed
+    # controls model initialisation and stochastic learners.  Keeping both makes
+    # cross-model/repeat comparisons fair and reproducible.
+    split_seed: int = DEEP_TRAINING_DEFAULTS.seed
+    model_seed: int = DEEP_TRAINING_DEFAULTS.seed
     # ── 预处理与划分：normalization 只用当前折 train 拟合；split_* 为 10 份制比例 ──
     normalization: str = "zscore"
     split_mode: str = "stratified"
@@ -122,7 +132,7 @@ class TrainConfig:
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
     knn_p: int = 2
-    random_forest_n_estimators: int = 200
+    random_forest_n_estimators: int = 500
     random_forest_search_iterations: int = 10
     random_forest_max_depth: int | None = 3
     random_forest_min_samples_leaf: int = 2
@@ -137,13 +147,16 @@ class TrainConfig:
     pls_components: int | None = None
     pca_components: int | None = None
     logistic_c: float = 1.0
+    logistic_l1_ratio: float = 0.5
+    spls_components: int | None = None
+    spls_keepx: int | None = None
     svm_kernel: str = "rbf"
     random_forest_max_features: str | float = "sqrt"
     random_forest_oob_score: bool = False
     xgboost_min_child_weight: float = 1.0
     xgboost_gamma: float = 0.0
     # ── 可解释性（特征区间识别）配置：窗口数、top_k、重复次数与评估集合 ──
-    feature_selection_enabled: bool = True
+    feature_selection_enabled: bool = False
     feature_window_count: int = 100
     feature_top_k: int = 5
     feature_n_repeats: int = 5
@@ -209,7 +222,7 @@ def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
     ratios = (int(policy.split_train), int(policy.split_valid), int(policy.split_test))
     if any(value < 0 for value in ratios):
         raise ValueError("划分比例必须是非负整数")
-    if policy.strategy == "external_test_holdout":
+    if policy.strategy in {"external_test_holdout", "leave_one_sample_id_cv_with_external_test"}:
         if ratios[2] != 0 or ratios[0] <= 0 or ratios[1] <= 0 or ratios[0] + ratios[1] != 10:
             raise ValueError("独立测试集模式要求主数据训练/验证比例相加必须等于 10，且内部测试比例为 0")
         return
@@ -315,7 +328,7 @@ def _split_indices(
     train_count = len(group_values) - valid_count - test_count
 
         # 固定种子打乱各类别内部的组顺序，使同一数据 + 同一种子的划分完全可复现。
-    rng = np.random.default_rng(config.seed)
+    rng = np.random.default_rng(config.split_seed)
     for groups in label_to_groups.values():
         rng.shuffle(groups)
 
@@ -1015,7 +1028,7 @@ def _leave_one_sample_id_folds(y: np.ndarray, sample_id: np.ndarray, config: Tra
             group_to_label=group_to_label,
             label_count=label_count,
             valid_ratio=valid_ratio,
-            seed=int(config.seed) + fold_index,
+            seed=int(config.split_seed) + fold_index,
         )
         train_groups = [group for group in train_valid_groups if group not in set(valid_groups)]
         folds.append(
@@ -1153,48 +1166,77 @@ def _build_metrics_payload(
     return metrics, cv_summary
 
 
-def _traditional_candidate_configs(config: TrainConfig, model_type: str, n_features: int, y_train: np.ndarray) -> list[TrainConfig]:
+def _traditional_candidate_configs(
+    config: TrainConfig,
+    model_type: str,
+    n_features: int,
+    min_inner_train_size: int | list[int] | np.ndarray,
+) -> list[TrainConfig]:
     """为各传统模型生成超参候选列表（候选上限只依赖 train 数据统计量）。
 
-        pls_da/pca_lda 是成分数网格；logistic/SVM 是 C 网格；random_forest 用固定
-        种子的 ParameterSampler 随机搜索并强制开启 oob_score；xgboost 是小型
-        笛卡尔积网格。无法识别的模型退化为仅当前配置。"""
+        pls_da/pca_lda 是成分数网格；logistic/SVM 是 C 网格；random_forest 与
+        xgboost 使用小型笛卡尔积网格。所有候选均由分组内层 CV 的 Balanced
+        Accuracy 选择，不能退回 OOB 或外层验证集选参。"""
+    # Kept tolerant of the historical fourth-argument shape (the caller used
+    # to pass the training labels themselves).  The grouped-search path passes
+    # an integer minimum fold size; compatibility callers are reduced to their
+    # sample count without inspecting labels or test data.
+    if isinstance(min_inner_train_size, (list, tuple, np.ndarray)):
+        inner_train_size = len(min_inner_train_size)
+    else:
+        inner_train_size = int(min_inner_train_size)
+    if inner_train_size < 1:
+        return []
+
     if model_type == "pls_da":
         raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
-        cap = max(1, min(len(y_train), n_features))
+        cap = max(1, min(inner_train_size, n_features))
         return [_clone_config(config, pls_components=value) for value in raw if value <= cap]
+    if model_type == "spls_da":
+        component_cap = max(1, min(inner_train_size - 1, n_features))
+        # Documented grid is 25/50/100/300 for normal spectra.  Small unit
+        # fixtures still need a real sparse estimator, so cap (not drop) the
+        # requested keepX values and keep their stable order.
+        keepx_values = list(dict.fromkeys(min(value, n_features) for value in (25, 50, 100, 300)))
+        return [
+            _clone_config(config, spls_components=components, spls_keepx=keepx)
+            for components in (1, 2, 3, 5, 8, 10)
+            if components <= component_cap
+            for keepx in keepx_values
+        ]
     if model_type == "pca_lda":
         raw = [2, 3, 5, 8, 10, 15, 20, 30, 40, 50]
-        cap = max(1, min(len(y_train), n_features))
+        cap = max(1, min(inner_train_size, n_features))
         return [_clone_config(config, pca_components=value) for value in raw if value <= cap]
     if model_type == "logistic_regression":
-        return [_clone_config(config, logistic_c=value) for value in (0.1, 1.0, 10.0)]
+        return [
+            _clone_config(config, logistic_c=c, logistic_l1_ratio=l1_ratio)
+            for c in (0.01, 0.1, 1.0, 10.0, 100.0)
+            for l1_ratio in (0.1, 0.5, 0.9)
+        ]
     if model_type == "svm":
         return [_clone_config(config, svm_kernel="linear", svm_gamma="scale", svm_c=value) for value in (0.01, 0.1, 1.0, 10.0, 100.0)]
+    if model_type == "pca_svm":
+        component_cap = max(1, min(inner_train_size, n_features))
+        return [
+            _clone_config(config, pca_components=components, svm_c=c, svm_kernel="linear", svm_gamma="scale")
+            for components in (2, 3, 5, 8, 10, 15, 20, 30, 40, 50)
+            if components <= component_cap
+            for c in (0.01, 0.1, 1.0, 10.0, 100.0)
+        ]
     if model_type == "random_forest":
-        n_estimators = int(config.random_forest_n_estimators)
-        search_iterations = int(config.random_forest_search_iterations)
-        if not 50 <= n_estimators <= 1000:
-            raise ValueError("随机森林每组树数必须在 50 到 1000 之间")
-        if not 1 <= search_iterations <= 18:
-            raise ValueError("随机森林搜索候选数必须在 1 到 18 之间")
-        candidates = ParameterSampler(
-            {
-                "random_forest_max_depth": [3, 5, 10],
-                "random_forest_min_samples_leaf": [2, 5],
-                "random_forest_max_features": ["sqrt", "log2", 0.1],
-            },
-            n_iter=search_iterations,
-            random_state=config.seed,
-        )
         return [
             _clone_config(
                 config,
-                random_forest_n_estimators=n_estimators,
-                random_forest_oob_score=True,
-                **params,
+                random_forest_n_estimators=500,
+                random_forest_max_depth=max_depth,
+                random_forest_min_samples_leaf=min_samples_leaf,
+                random_forest_max_features=max_features,
+                random_forest_oob_score=False,
             )
-            for params in candidates
+            for max_depth in (None, 5, 10)
+            for min_samples_leaf in (1, 5)
+            for max_features in ("sqrt", 0.1)
         ]
     if model_type == "xgboost":
         candidates = [
@@ -1224,16 +1266,20 @@ def _traditional_params(config: TrainConfig, model_type: str) -> dict[str, Any]:
 
     if model_type == "pls_da":
         return {"pls_components": config.pls_components}
+    if model_type == "spls_da":
+        return {"spls_components": config.spls_components, "spls_keepx": config.spls_keepx}
     if model_type == "pca_lda":
         return {"pca_components": config.pca_components}
     if model_type == "logistic_regression":
-        return {"logistic_c": config.logistic_c}
+        return {"logistic_c": config.logistic_c, "logistic_l1_ratio": config.logistic_l1_ratio}
     if model_type == "svm":
         return {
             "svm_kernel": config.svm_kernel,
             "svm_c": config.svm_c,
             "svm_gamma": config.svm_gamma,
         }
+    if model_type == "pca_svm":
+        return {"pca_components": config.pca_components, "svm_c": config.svm_c, "svm_kernel": "linear"}
     if model_type == "random_forest":
         return {
             "random_forest_n_estimators": config.random_forest_n_estimators,
@@ -1279,170 +1325,96 @@ def _evaluate_single_2d(model: nn.Module, values: np.ndarray, y: np.ndarray, ind
     }
 
 
+def _grouped_inner_cv_indices(
+    *,
+    y: np.ndarray,
+    sample_id: np.ndarray,
+    candidate_indices: list[int],
+    split_seed: int,
+    label_names: list[str],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Create the required five stratified, Sample_ID-grouped inner folds."""
+    pool = np.asarray(candidate_indices, dtype=np.int64)
+    group_labels = _group_label_map(y[pool], sample_id[pool])
+    counts = {label: sum(item == label for item in group_labels.values()) for label in range(len(label_names))}
+    insufficient = {label_names[label]: count for label, count in counts.items() if count < 5}
+    if insufficient:
+        detail = "、".join(f"{name}（{count} 个 Sample_ID）" for name, count in insufficient.items())
+        raise ValueError(f"传统模型 5 折分组搜索要求每类至少 5 个 Sample_ID；当前不足：{detail}")
+    splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=int(split_seed))
+    return [
+        (pool[train_local], pool[valid_local])
+        for train_local, valid_local in splitter.split(np.zeros(len(pool)), y[pool], groups=sample_id[pool])
+    ]
+
+
 def _select_traditional_config(
     config: TrainConfig,
     model_type: str,
-    x_train: np.ndarray,
-    y_train: np.ndarray,
-    x_valid: np.ndarray,
-    y_valid: np.ndarray,
+    x_raw: np.ndarray,
+    y: np.ndarray,
+    sample_id: np.ndarray,
+    splits: dict[str, list[int]],
     label_names: list[str],
 ) -> TraditionalSelection:
-    """传统模型超参选择主循环：逐候选 fit(train) → 评估 valid，以
-        balanced_accuracy 为选择指标（类别不均衡时比 accuracy 更公平）。
-
-        更新最优用 1e-12 容差，标记选中行时用 (-index) 保证平手取先者，结果
-        完全确定；random_forest 走 OOB 专用路径（不消耗 valid）。"""
-    if model_type == "random_forest":
-        return _select_random_forest_config(
-            config,
-            x_train,
-            y_train,
-            x_valid,
-            y_valid,
-            label_names,
-        )
-    best_model: Any | None = None
-    best_config = config
-    best_eval: dict[str, Any] | None = None
-    best_balanced_accuracy: float | None = None
-    search_rows: list[dict[str, Any]] = []
-    candidates = _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train)
-    for candidate in candidates:
-        model = build_traditional_model(candidate, y_train, len(label_names))
-        model.fit(x_train, y_train)
-        valid_eval = _evaluate_traditional_model(
-            model,
-            x_valid,
-            y_valid,
-            list(range(len(y_valid))),
-            label_names,
-        )
-        params = _traditional_params(candidate, model_type)
-        balanced_accuracy = float(valid_eval["balanced_accuracy"])
-        macro_f1 = float(valid_eval["macro_f1"])
-        search_rows.append(
-            {
-                "model_type": model_type,
-                "is_selected": False,
-                "valid_balanced_accuracy": balanced_accuracy,
-                "valid_macro_f1": macro_f1,
-                "valid_accuracy": float(valid_eval["accuracy"]),
-                "selection_metric": "balanced_accuracy",
-                "selection_score": balanced_accuracy,
-                "oob_accuracy": None,
-                "oob_balanced_accuracy": None,
-                "params": params,
-                "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
-            }
-        )
-        if best_balanced_accuracy is None or balanced_accuracy > best_balanced_accuracy + 1e-12:
-            best_model = model
-            best_config = candidate
-            best_eval = valid_eval
-            best_balanced_accuracy = balanced_accuracy
-    if best_model is None or best_eval is None or best_balanced_accuracy is None:
-        raise ValueError("传统模型验证集搜索未产生可用模型")
-    selected_index = max(
-        range(len(search_rows)),
-        key=lambda index: (
-            float(search_rows[index]["valid_balanced_accuracy"]),
-            -index,
-        ),
+    """Select on grouped 5-fold mean balanced accuracy with fold-local preprocessing."""
+    pool = sorted({*splits["train"], *splits["valid"]})
+    inner_folds = _grouped_inner_cv_indices(
+        y=y, sample_id=sample_id, candidate_indices=pool,
+        split_seed=config.split_seed, label_names=label_names,
     )
-    search_rows[selected_index]["is_selected"] = True
-    return TraditionalSelection(
-        config=best_config,
-        valid_balanced_accuracy=best_balanced_accuracy,
-        valid_macro_f1=float(best_eval["macro_f1"]),
-        search_rows=search_rows,
-        model=best_model,
-        valid_eval=best_eval,
+    candidates = _traditional_candidate_configs(
+        config, model_type, x_raw.shape[1], min(len(train) for train, _ in inner_folds)
     )
-
-
-def _random_forest_oob_metrics(model: Any, y_train: np.ndarray) -> tuple[float, float]:
-    """从随机森林 oob_decision_function_ 计算袋外 accuracy/balanced_accuracy；
-        未覆盖任何训练样本（树太少或抽样极端）时拒绝，保证 OOB 选择指标可信。"""
-    probabilities = np.asarray(model.oob_decision_function_, dtype=float)
-    if probabilities.ndim != 2 or probabilities.shape[0] != len(y_train):
-        raise ValueError("随机森林未产生有效的袋外预测")
-    covered = np.isfinite(probabilities).all(axis=1) & (probabilities.sum(axis=1) > 0)
-    if not np.any(covered):
-        raise ValueError("随机森林袋外预测没有覆盖任何训练样本")
-    classes = np.asarray(model.classes_)
-    predicted = classes[np.argmax(probabilities[covered], axis=1)]
-    true = np.asarray(y_train)[covered]
-    return float(accuracy_score(true, predicted)), float(balanced_accuracy_score(true, predicted))
-
-
-def _select_random_forest_config(
-    config: TrainConfig,
-    x_train: np.ndarray,
-    y_train: np.ndarray,
-    x_valid: np.ndarray,
-    y_valid: np.ndarray,
-    label_names: list[str],
-) -> TraditionalSelection:
-    """随机森林专用选择：用 OOB balanced_accuracy 选参（不消耗 valid，等价于
-        免费的交叉验证），胜出后再补一次 valid 评估写入审计行，与其他模型的
-        search_rows 结构保持同构。"""
-    best_model: Any | None = None
-    best_config: TrainConfig | None = None
-    best_key: tuple[float, float, int] | None = None
-    best_index: int | None = None
+    if not candidates:
+        raise ValueError("当前数据维度下没有可用的传统模型候选参数")
     search_rows: list[dict[str, Any]] = []
-    candidates = _traditional_candidate_configs(config, "random_forest", x_train.shape[1], y_train)
+    best_index = 0
+    best_score = -np.inf
     for index, candidate in enumerate(candidates):
-        model = build_traditional_model(candidate, y_train, len(label_names))
-        model.fit(x_train, y_train)
-        oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
-        params = _traditional_params(candidate, "random_forest")
-        search_rows.append(
-            {
-                "model_type": "random_forest",
-                "is_selected": False,
-                "valid_balanced_accuracy": None,
-                "valid_macro_f1": None,
-                "valid_accuracy": None,
-                "selection_metric": "oob_balanced_accuracy",
-                "selection_score": oob_balanced_accuracy,
-                "oob_accuracy": oob_accuracy,
-                "oob_balanced_accuracy": oob_balanced_accuracy,
-                "params": params,
-                "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
-            }
-        )
-        candidate_key = (oob_balanced_accuracy, oob_accuracy, -index)
-        if best_key is None or candidate_key > best_key:
-            best_model = model
-            best_config = candidate
-            best_key = candidate_key
+        inner_scores: list[float] = []
+        for inner_train, inner_valid in inner_folds:
+            normalizer = _fit_x_normalizer(x_raw[inner_train], config.normalization)
+            train_values = _transform_x_with_normalizer(x_raw[inner_train], normalizer)
+            valid_values = _transform_x_with_normalizer(x_raw[inner_valid], normalizer)
+            model = build_traditional_model(candidate, y[inner_train], len(label_names))
+            model.fit(train_values, y[inner_train])
+            inner_scores.append(float(_evaluate_traditional_model(
+                model, valid_values, y[inner_valid], list(range(len(inner_valid))), label_names
+            )["balanced_accuracy"]))
+        mean_score = float(np.mean(inner_scores))
+        params = _traditional_params(candidate, model_type)
+        search_rows.append({
+            "model_type": model_type,
+            "is_selected": False,
+            "selection_metric": "mean_balanced_accuracy_grouped_5fold",
+            "selection_score": mean_score,
+            "inner_fold_scores": inner_scores,
+            "inner_fold_score_std": float(np.std(inner_scores)),
+            "valid_balanced_accuracy": mean_score,
+            "valid_macro_f1": None,
+            "valid_accuracy": None,
+            "params": params,
+            "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+        })
+        # Candidate order is stable and intentionally acts as the documented
+        # lower-complexity/fixed-order tie break.
+        if mean_score > best_score + 1e-12:
+            best_score = mean_score
             best_index = index
-    if best_model is None or best_config is None or best_key is None or best_index is None:
-        raise ValueError("随机森林袋外随机搜索未产生可用模型")
-    valid_eval = _evaluate_traditional_model(
-        best_model,
-        x_valid,
-        y_valid,
-        list(range(len(y_valid))),
-        label_names,
-    )
-    selected_row = search_rows[best_index]
-    selected_row.update(
-        {
-            "is_selected": True,
-            "valid_balanced_accuracy": float(valid_eval["balanced_accuracy"]),
-            "valid_macro_f1": float(valid_eval["macro_f1"]),
-            "valid_accuracy": float(valid_eval["accuracy"]),
-        }
-    )
+    selected = candidates[best_index]
+    search_rows[best_index]["is_selected"] = True
+    outer_normalizer = _fit_x_normalizer(x_raw[splits["train"]], config.normalization)
+    outer_x = _transform_x_with_normalizer(x_raw, outer_normalizer)
+    outer_model = build_traditional_model(selected, y[splits["train"]], len(label_names))
+    outer_model.fit(outer_x[splits["train"]], y[splits["train"]])
+    valid_eval = _evaluate_traditional_model(outer_model, outer_x, y, splits["valid"], label_names)
     return TraditionalSelection(
-        config=best_config,
-        valid_balanced_accuracy=float(valid_eval["balanced_accuracy"]),
+        config=selected,
+        valid_balanced_accuracy=float(best_score),
         valid_macro_f1=float(valid_eval["macro_f1"]),
         search_rows=search_rows,
-        model=best_model,
+        model=outer_model,
         valid_eval=valid_eval,
     )
 
@@ -1451,8 +1423,9 @@ def _select_random_forest_config(
 def _fit_traditional_fold(
     config: TrainConfig,
     model_type: str,
-    x: np.ndarray,
+    x_raw: np.ndarray,
     y: np.ndarray,
+    sample_id: np.ndarray,
     splits: dict[str, list[int]],
     label_names: list[str],
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
@@ -1461,10 +1434,10 @@ def _fit_traditional_fold(
     selection = _select_traditional_config(
         config,
         model_type,
-        x[splits["train"]],
-        y[splits["train"]],
-        x[splits["valid"]],
-        y[splits["valid"]],
+        x_raw,
+        y,
+        sample_id,
+        splits,
         label_names,
     )
     return selection.model, selection.config, selection.valid_eval, selection.search_rows
@@ -1811,6 +1784,9 @@ def _run_legacy_training(
     test_data_path = raw_config.get("test_data_path")
     policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
     config_input = {key: value for key, value in raw_config.items() if key in TrainConfig().__dict__}
+    legacy_seed = raw_config.get("seed", DEEP_TRAINING_DEFAULTS.seed)
+    model_seed = int(raw_config.get("model_seed", legacy_seed))
+    split_seed = int(raw_config.get("split_seed", legacy_seed))
     config = TrainConfig(
         **{
             **TrainConfig().__dict__,
@@ -1819,6 +1795,14 @@ def _run_legacy_training(
             "split_train": policy.split_train,
             "split_valid": policy.split_valid,
             "split_test": policy.split_test,
+            # Preserve the legacy seed surface while keeping the two new seed
+            # roles explicit in all emitted config/split audit data.
+            "seed": model_seed,
+            "model_seed": model_seed,
+            "split_seed": split_seed,
+            # TEMPORARILY_HIDDEN: this source constant is authoritative; an
+            # incoming request must never be able to turn explanation on.
+            "feature_selection_enabled": False,
         }
     )
     _validate_split_ratio_config(policy)
@@ -1849,8 +1833,8 @@ def _run_legacy_training(
 
         # ── 阶段 1：固定随机种子并读取宽表；Label 按字典序编成类别 id（即使为
         # 数字也按类别名处理），Sample_ID 作为分组单位取出 ──
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
+    torch.manual_seed(config.model_seed)
+    np.random.seed(config.model_seed)
     dataset = load_modeling_csv(data_path)
     sample_count = int(len(dataset.labels))
     x_raw = np.asarray(dataset.intensity, dtype=np.float32)
@@ -1860,6 +1844,10 @@ def _run_legacy_training(
     sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
     test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
     test_sample_count = 0
+    external_test_x_raw: np.ndarray | None = None
+    external_test_y: np.ndarray | None = None
+    external_test_sample_id: np.ndarray | None = None
+    external_test_metadata: list[dict[str, Any]] = []
         # 有独立测试集：先校验同轴，再把主数据与测试数据纵向拼接成一个矩阵，
         # 外部样本行号排在主数据之后，fold 用行号区间引用它们。
     if test_dataset is not None:
@@ -1873,20 +1861,32 @@ def _run_legacy_training(
         test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
         test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()
         test_sample_count = int(len(test_y))
-        x_model_raw = np.vstack([x_raw, test_x_raw])
-        y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, sample_id, config, label_names)
-        _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
-        external_indices = list(range(len(y), len(y_model)))
-        folds = [
-            _external_test_fold(
-                splits=internal_splits,
-                sample_id=sample_id,
-                external_test_indices=external_indices,
-                external_sample_id=test_sample_id,
-            )
-        ]
-        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
+        external_test_x_raw = test_x_raw
+        external_test_y = test_y
+        external_test_sample_id = test_sample_id
+        external_test_metadata = _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
+        if evaluation_strategy == "leave_one_sample_id_cv_with_external_test":
+            # The outer audit sees *only* the primary dataset.  The external
+            # dataset is retained for one final, full-primary-data fit below.
+            x_model_raw = x_raw
+            y_model = y
+            folds = _leave_one_sample_id_folds(y, sample_id, config)
+            metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
+        else:
+            x_model_raw = np.vstack([x_raw, test_x_raw])
+            y_model = np.concatenate([y, test_y])
+            internal_splits = _split_indices(y, sample_id, config, label_names)
+            _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
+            external_indices = list(range(len(y), len(y_model)))
+            folds = [
+                _external_test_fold(
+                    splits=internal_splits,
+                    sample_id=sample_id,
+                    external_test_indices=external_indices,
+                    external_sample_id=test_sample_id,
+                )
+            ]
+            metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + external_test_metadata
     else:
         x_model_raw = x_raw
         y_model = y
@@ -1916,6 +1916,7 @@ def _run_legacy_training(
     deep_sample_results: list[dict[str, Any]] = []
     traditional_sample_results: list[dict[str, Any]] = []
     best_search_rows: list[dict[str, Any]] = []
+    model_visualization_context: dict[str, Any] | None = None
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
 
@@ -1992,7 +1993,16 @@ def _run_legacy_training(
                 # 传统模型分支：搜索选参（train/valid）→ train+valid 重训 → 评估三个集合
                 # → 可选窗口遮挡解释性；深度分支：训练整折 → 评估 → 收集解释性上下文。
         if model_family(model_type) == "traditional_ml":
-            model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
+            model, selected_config, valid_eval, search_rows = _fit_traditional_fold(
+                config,
+                model_type,
+                x_model_raw,
+                y_model,
+                np.concatenate([sample_id, test_sample_id]) if test_dataset is not None else sample_id,
+                splits,
+                label_names,
+            )
+            selection_x = x
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
             fold_best_params = _traditional_params(selected_config, model_type)
@@ -2016,7 +2026,13 @@ def _run_legacy_training(
             test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
             model = final_model
             normalizer = final_normalizer
-            if config.feature_selection_enabled:
+            model_visualization_context = {
+                "model": model,
+                "x": final_x,
+                "selection_x": selection_x,
+                "splits": splits,
+            }
+            if EXPLAINABILITY_ENABLED and config.feature_selection_enabled:
                 check_run_active()
                 traditional_sample_results.append(
                     _tag_fold_sample_result(
@@ -2089,25 +2105,32 @@ def _run_legacy_training(
                 "dscarnet_mapped": dscarnet_mapped,
                 "dscarnet_mapping_metadata": dscarnet_mapping_metadata,
             }
-            check_run_active()
-            deep_sample_results.append(
-                _tag_fold_sample_result(
-                    _deep_sample_feature_result(
-                        config=config,
-                        model=model,
-                        x=x,
-                        y=y_model,
-                        splits=splits,
-                        x_axis=feature_x_axis,
-                        x_axis_warning=x_axis_warning,
-                        label_names=label_names,
-                        metadata=metadata,
-                        dscarnet_mapped=dscarnet_mapped,
-                        dscarnet_mapping_metadata=dscarnet_mapping_metadata,
-                    ),
-                    fold_index,
+            model_visualization_context = {
+                "model": model,
+                "x": x,
+                "selection_x": None,
+                "splits": splits,
+            }
+            if EXPLAINABILITY_ENABLED:
+                check_run_active()
+                deep_sample_results.append(
+                    _tag_fold_sample_result(
+                        _deep_sample_feature_result(
+                            config=config,
+                            model=model,
+                            x=x,
+                            y=y_model,
+                            splits=splits,
+                            x_axis=feature_x_axis,
+                            x_axis_warning=x_axis_warning,
+                            label_names=label_names,
+                            metadata=metadata,
+                            dscarnet_mapped=dscarnet_mapped,
+                            dscarnet_mapping_metadata=dscarnet_mapping_metadata,
+                        ),
+                        fold_index,
+                    )
                 )
-            )
         last_model = model
         split_evals = {"train": train_eval, "valid": valid_eval, "test": test_eval}
         split_metrics = {name: _metrics_from_eval(eval_payload, label_names) for name, eval_payload in split_evals.items()}
@@ -2177,7 +2200,123 @@ def _run_legacy_training(
         write_progress(fold_index, fold_index, fold)
 
         # ── 阶段 4：汇总指标（test 主值 = pooled OOF）、合并解释性并落盘全部产物 ──
-    metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
+    external_final_split_payload: dict[str, Any] | None = None
+    if evaluation_strategy == "leave_one_sample_id_cv_with_external_test":
+        # Keep the LOO folds above as an auditable, primary-data-only OOF
+        # experiment.  The ranking metric below is deliberately a *separate*
+        # final fit on all primary samples followed by exactly one external
+        # test evaluation.  External rows never enter the CV splitter, inner
+        # search, normalizer fit, PCA fit, or model training.
+        if external_test_x_raw is None or external_test_y is None or external_test_sample_id is None:
+            raise RuntimeError("独立测试集+留一模式缺少已校验的独立测试数据")
+        audit_metrics, audit_cv_summary = _build_metrics_payload(
+            fold_split_evals, label_names, "leave_one_sample_id_cv"
+        )
+        final_train_indices = list(range(len(y)))
+        external_indices = list(range(len(y), len(y) + len(external_test_y)))
+        final_x_raw = np.vstack([x_raw, external_test_x_raw])
+        final_y = np.concatenate([y, external_test_y])
+        final_sample_id = np.concatenate([sample_id, external_test_sample_id])
+        final_metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + external_test_metadata
+        final_splits = {"train": final_train_indices, "valid": final_train_indices, "test": external_indices}
+        final_fold_index = len(folds) + 1
+
+        if model_family(model_type) == "traditional_ml":
+            selection_splits = {"train": final_train_indices, "valid": final_train_indices, "test": []}
+            selection = _select_traditional_config(
+                config, model_type, x_raw, y, sample_id, selection_splits, label_names
+            )
+            best_search_rows.extend({**row, "fold_index": "external_final"} for row in selection.search_rows)
+            final_model, final_normalizer, final_fit_indices = _fit_final_traditional_model(
+                selected_config=selection.config,
+                model_type=model_type,
+                x_raw=final_x_raw,
+                y=final_y,
+                train_valid_indices=final_train_indices,
+                normalization=config.normalization,
+                label_names=label_names,
+            )
+            final_x = _transform_x_with_normalizer(final_x_raw, final_normalizer)
+            final_train_eval = _evaluate_traditional_model(final_model, final_x, final_y, final_train_indices, label_names)
+            external_test_eval = _evaluate_traditional_model(final_model, final_x, final_y, external_indices, label_names)
+            last_model = final_model
+            last_model_family = "traditional_ml"
+            model_visualization_context = {"model": final_model, "x": final_x, "selection_x": None, "splits": final_splits}
+            external_best_params = _traditional_params(selection.config, model_type)
+            external_selection_score = selection.valid_balanced_accuracy
+            external_mapping_metadata = None
+            final_deep_context = None
+        else:
+            final_normalizer = _fit_x_normalizer(x_raw, config.normalization)
+            final_x = _transform_x_with_normalizer(final_x_raw, final_normalizer)
+            model, history, mapped, external_mapping_metadata = _fit_deep_fold(
+                config=config,
+                model_type=model_type,
+                x=final_x,
+                y=final_y,
+                splits=final_splits,
+                label_names=label_names,
+                run_dir=run_dir,
+                sample_count=len(final_train_indices),
+                cancel_check=check_run_active,
+                progress_callback=lambda stage, label, epoch=None: _write_status_file(
+                    status_file,
+                    {**_read_status_file(status_file), "training_stage": stage, "training_stage_label": label, "current_epoch": epoch, "current_fold": final_fold_index, "fold_progress_text": f"{final_fold_index}/{final_fold_index}"},
+                ),
+            )
+            for row in history:
+                history_rows.append({**row, "fold_index": "external_final"})
+            if mapped is not None:
+                mode = mapped.metadata.get("mode", "dual")
+                if mode == "dual":
+                    final_train_eval = _evaluate_dual(model, mapped.x_sar, mapped.x_car, final_y, final_train_indices, label_names)
+                    external_test_eval = _evaluate_dual(model, mapped.x_sar, mapped.x_car, final_y, external_indices, label_names)
+                else:
+                    branch_values = mapped.x_sar if mode == "sar" else mapped.x_car
+                    final_train_eval = _evaluate_single_2d(model, branch_values, final_y, final_train_indices, label_names)
+                    external_test_eval = _evaluate_single_2d(model, branch_values, final_y, external_indices, label_names)
+            else:
+                final_train_eval = _evaluate(model, final_x, final_y, final_train_indices, label_names)
+                external_test_eval = _evaluate(model, final_x, final_y, external_indices, label_names)
+            last_model = model
+            last_model_family = "deep_learning"
+            final_deep_context = {"model": model, "x": final_x, "splits": final_splits, "dscarnet_mapped": mapped, "dscarnet_mapping_metadata": external_mapping_metadata}
+            model_visualization_context = {"model": model, "x": final_x, "selection_x": None, "splits": final_splits}
+            external_best_params = {}
+            external_selection_score = None
+            final_fit_indices = np.asarray(final_train_indices, dtype=np.int64)
+
+        external_metrics = _metrics_from_eval(external_test_eval, label_names)
+        external_metrics["aggregation"] = "direct_external_test"
+        final_train_metrics = _metrics_from_eval(final_train_eval, label_names)
+        metrics = {**external_metrics, "train": final_train_metrics, "valid": final_train_metrics, "test": external_metrics,
+                   "audit": {"pooled_oof": audit_metrics["test"], "fold_mean": audit_cv_summary["fold_mean"]["test"], "fold_std": audit_cv_summary["fold_std"]["test"]}}
+        cv_summary = {
+            **audit_cv_summary,
+            "strategy": evaluation_strategy,
+            "primary_test_aggregation": "direct_external_test",
+            "external_test": external_metrics,
+            "audit": {"strategy": "leave_one_sample_id_cv", "pooled_oof": audit_metrics["test"], "fold_mean": audit_cv_summary["fold_mean"]["test"], "fold_std": audit_cv_summary["fold_std"]["test"]},
+        }
+        all_true.extend(int(item) for item in external_test_eval["true"])
+        all_pred.extend(int(item) for item in external_test_eval["pred"])
+        for local_idx, source_idx in enumerate(external_indices):
+            source_metadata = final_metadata[source_idx]
+            row = {"dataset": "external_test", "fold_index": "external_final", "index": source_metadata["index"], "Sample_ID": source_metadata["sample_id"],
+                   "true_label": label_names[external_test_eval["true"][local_idx]], "pred_label": label_names[external_test_eval["pred"][local_idx]]}
+            for label, probability in zip(label_names, external_test_eval["probabilities"][local_idx]):
+                row[f"prob_{label}"] = float(probability)
+            prediction_rows.append(row)
+        external_final_split_payload = {
+            "fold_index": "external_final", "test_sample_id": "external_test", "train_sample_ids": _sample_ids_for_split(sample_id, final_train_indices),
+            "valid_sample_ids": _sample_ids_for_split(sample_id, final_train_indices), "test_sample_ids": _sample_ids_for_split(external_test_sample_id, list(range(len(external_test_sample_id)))),
+            "final_fit_indices": final_fit_indices.tolist(), "best_params": external_best_params, "selection_metric": "mean_balanced_accuracy_grouped_5fold" if model_family(model_type) == "traditional_ml" else None,
+            "selection_score": external_selection_score, "metrics": external_metrics, "split_metrics": {"train": final_train_metrics, "valid": final_train_metrics, "test": external_metrics},
+            "preprocess": _json_normalizer(final_normalizer), "dscarnet_mapping": external_mapping_metadata,
+            "splits": {"train": final_train_indices, "valid": final_train_indices, "test": external_indices}, "external_test_indices": external_indices,
+        }
+    else:
+        metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
     cv_metrics = {
         "strategy": evaluation_strategy,
         "fold_count": len(folds),
@@ -2185,38 +2324,20 @@ def _run_legacy_training(
         "cv_summary": cv_summary,
         "folds": cv_fold_payloads,
     }
+    if external_final_split_payload is not None:
+        cv_metrics["external_final"] = external_final_split_payload
 
-    if model_family(model_type) == "traditional_ml":
-        if config.feature_selection_enabled:
-            sample_result = _merge_deep_sample_results(traditional_sample_results, x_axis_warning)
-            sample_feature_summary = _write_sample_explainability_artifacts(
-                run_dir=run_dir,
-                sample_result=sample_result,
-                x_axis_warning=x_axis_warning,
-            )
-        else:
-            sample_feature_summary = _unsupported_explainability_summary(
-                "特征区间识别已关闭",
-                method="sample_occlusion_log_loss",
-            )
-    else:
-        if final_deep_context is None:
-            raise ValueError("深度模型训练未产生可解释性上下文")
-        check_run_active()
-        sample_result = _merge_deep_sample_results(deep_sample_results, x_axis_warning)
-        sample_feature_summary = _write_sample_explainability_artifacts(
-            run_dir=run_dir,
-            sample_result=sample_result,
-            x_axis_warning=x_axis_warning,
-        )
+    # TEMPORARILY_HIDDEN: do not re-enable without an explicit product requirement
+    # and synchronized backend/frontend contract tests.  Keep the implementation
+    # modules intact, but never calculate or write their artifacts in new Runs.
+    sample_feature_summary = {"status": "temporarily_hidden"}
+    model_feature_visualization_summary = {"status": "temporarily_hidden"}
 
     metadata_train_count = len(folds[0]["splits"].get("train", [])) if folds else 0
     if model_type == "dscarnet":
         profile_payload = build_dscarnet_profile(train_sample_count=metadata_train_count, feature_count=x_raw.shape[1])
     else:
         profile_payload = asdict(build_model_profile(model_type, train_sample_count=metadata_train_count, feature_count=x_raw.shape[1]))
-    dscarnet_mode = str(config.dscarnet_input_mode or "dual").lower()
-    explainability = explainability_method(model_type, dscarnet_mode=dscarnet_mode)
     range_warnings = model_range_warnings(
         train_sample_count=metadata_train_count,
         feature_count=x_raw.shape[1],
@@ -2233,11 +2354,7 @@ def _run_legacy_training(
         "model_profile": profile_payload,
         "resolved_profile": profile_payload,
         "model_range_warnings": range_warnings,
-        "explainability_method": explainability,
-        "artifact_explainability_method": (
-            sample_feature_summary.get("method")
-            or explainability
-        ),
+        "explainability_status": "temporarily_hidden",
     }
     if last_model_family == "deep_learning":
         model_metadata.update(
@@ -2249,6 +2366,15 @@ def _run_legacy_training(
         )
     if getattr(last_model, "pca_metadata", None) is not None:
         model_metadata["pca"] = last_model.pca_metadata
+    if model_type == "spls_da" and getattr(last_model, "selected_feature_indices_by_component", None) is not None:
+        model_metadata["spls_da"] = {
+            "selected_feature_indices_by_component": [
+                [int(index) for index in component]
+                for component in last_model.selected_feature_indices_by_component
+            ],
+            "actual_n_components": int(getattr(last_model, "actual_n_components_", 0)),
+            "actual_keepx": int(getattr(last_model, "actual_keepx_", 0)),
+        }
     config_out = {
         **config.__dict__,
         "model_type": model_type,
@@ -2261,13 +2387,15 @@ def _run_legacy_training(
         "L": int(x_raw.shape[1]),
         "model_profile": profile_payload,
         "model_range_warnings": range_warnings,
-        "explainability_method": explainability,
-        "artifact_explainability_method": model_metadata["artifact_explainability_method"],
+        "explainability_status": "temporarily_hidden",
     }
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (run_dir / "split.json").write_text(json.dumps(cv_fold_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
+    split_audit_payloads = list(cv_fold_payloads)
+    if external_final_split_payload is not None:
+        split_audit_payloads.append(external_final_split_payload)
+    (run_dir / "split.json").write_text(json.dumps(split_audit_payloads, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "cv_metrics.json").write_text(json.dumps(cv_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     pd.DataFrame(fold_metric_rows).to_csv(run_dir / "fold_metrics.csv", index=False, encoding="utf-8-sig")
@@ -2281,8 +2409,6 @@ def _run_legacy_training(
         "is_selected",
         "selection_metric",
         "selection_score",
-        "oob_accuracy",
-        "oob_balanced_accuracy",
         "valid_accuracy",
         "valid_balanced_accuracy",
         "valid_macro_f1",
@@ -2317,22 +2443,23 @@ def _run_legacy_training(
         "architecture_version": ARCHITECTURE_VERSION,
         "model_metadata": model_metadata,
         "model_profile": profile_payload,
-        "explainability_method": explainability,
         "model_artifact": last_model_artifact,
         "model_artifact_note": (
             "最后一个交叉验证折模型，仅作下载参考，不用于汇报的交叉验证指标"
             if evaluation_strategy == "leave_one_sample_id_cv"
+            else "在全部主数据重训后仅用于独立测试集最终评估的模型；留一 OOF 仅作审计"
+            if evaluation_strategy == "leave_one_sample_id_cv_with_external_test"
             else "本次 holdout 训练得到的模型，用于对应测试指标"
         ),
         "not_used_for_reported_cv_metrics": evaluation_strategy == "leave_one_sample_id_cv",
-        "sample_feature_importance": sample_feature_summary,
+        "explainability_status": "temporarily_hidden",
         "x_axis_warning": x_axis_warning,
         "sample_count": sample_count,
         "curve_count": sample_count,
         "sample_id_count": int(len(set(dataset.sample_id))),
         "class_count": int(len(label_names)),
         "feature_count": int(x_raw.shape[1]),
-        "test_sample_count": int(len(all_true)),
+        "test_sample_count": int(len(external_test_y)) if evaluation_strategy == "leave_one_sample_id_cv_with_external_test" and external_test_y is not None else int(len(all_true)),
         "label_names": label_names,
         "target_epochs": config.epochs,
         "actual_epochs": len(history_rows),
@@ -2345,6 +2472,7 @@ def _run_legacy_training(
         "best_valid_balanced_accuracy": max((row.get("valid_balanced_accuracy") or 0.0 for row in history_rows), default=None),
         "evaluation_strategy": evaluation_strategy,
         "fold_count": len(folds),
+        "external_final_completed": external_final_split_payload is not None,
         "config": config_out,
         "data_path": str(Path(data_path).resolve()),
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,

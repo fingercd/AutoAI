@@ -256,6 +256,7 @@ def _summary_test_macro_f1(
         'stratified',
         'holdout',
         'external_test_holdout',
+        'leave_one_sample_id_cv_with_external_test',
     }
 
     def evaluation_mode(value: Any) -> str | None:
@@ -647,6 +648,10 @@ def delete_run(run_id: str, principal: Principal = Depends(get_principal)) -> di
         record = repository.get_scoped(run_id, principal=principal)
     except RunNotFound as exc:
         raise HTTPException(status_code=404, detail='run 不存在') from exc
+    # Batch 子 Run 是批次完整性的一部分，单独删除会让模型数量、状态计数和
+    # 比较结果失真。历史与新批次都必须经 Batch DELETE 统一删除。
+    if record.batch_id:
+        raise HTTPException(status_code=409, detail='Batch 子 Run 不能单独删除，请删除整个批次')
     # 只允许删除终态 Run；queued/running 必须先取消，否则可能删掉 Worker
     # 正在写入的目录，留下半拉子产物与状态不一致。
     if record.state in {'queued', 'running'}:

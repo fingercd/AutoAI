@@ -9,11 +9,12 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
 - HPLC：保留行号/保留时间范围和线性插值开关；选择文件后逐个检测原文件名、点数与时间范围，支持任意一致且不少于 2 的点数，行号上限随当前批次动态变化。点数不一致时列出异常文件和实际点数，X 非严格递增时直接报错。
 - 开启插值时，范围只选择固定 0–50 分钟轴上的实际目标点（例如 100–4000 共 3901 点），再按完整源 X 左右邻点线性映射；仪器轴与固定轴仅有一个采样间隔内的边界相位差时使用首尾两点线性延伸。关闭时保留所选原始 X/Y，但批次内轴不一致会拒绝导出。均不消负或做面积归一化。
-- 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
+- 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout；批量比较时同一批次固定 `split_seed`，确保所有模型使用同一测试对象。
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
-- 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
-- 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
+- 前端建模页仅显示 10 个目标模型：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`。其余深度模型仍保留为后端能力，可由兼容 API 调用；`cnn_mamba1d` 仍按真实 `mamba-ssm` 依赖状态返回不可用。
+- 多模型批次：`POST /api/training/batches` 按“一模型一个 Run”原子创建 queued Run；`GET /api/training/batches/{batch_id}/comparison` 只比较完整成功的子 Run，显示 Accuracy 排名、四项指标自适应图、Sample_ID 正确/错误热图、类别 Recall 与页面内各模型混淆矩阵。历史重复批次继续只读兼容，但普通前端不再创建重复训练。
+- 可解释性实现已保留，但当前产品面通过内部 `TEMPORARILY_HIDDEN` 开关完全关闭：新训练不计算或生成解释性 artifact，结果投影仅返回隐藏状态，历史 artifact 也不开放直接下载。
 
 ## 双前端入口
 
@@ -178,13 +179,13 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 ## 分类模型 v2 契约
 
-当前能力目录公开 **15 个目标分类模型，其中 14 个可用**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 当前可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
+后端能力目录公开 **17 个目标分类模型，其中 16 个可用**：新增真实 `spls_da` 与 `pca_svm`；`cnn_mamba1d` 当前不可用。建模 UI 则固定展示其中 10 个产品模型（见上文），并以 API 的 `ui_visible` 字段过滤，绝不通过删除后端能力实现隐藏。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
 
-新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
+新 Run 使用 `architecture_version="docx-classification-v3-0821"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入当前结构。二分类深度模型继续使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
 
-评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
+评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为最终 test。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型以按 `Sample_ID` 分组的内层 5 折 Balanced Accuracy 选优，标准化和 PCA 均在内层训练折拟合，锁定参数后用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
+可解释性实现矩阵（传统模型窗口遮挡、卷积模型 Grad-CAM、DSCARNet 双通路 2D 回投）保留在后端源码中，但当前 `TEMPORARILY_HIDDEN`：新训练不计算、不写出解释性 artifact，经典与 v2 前端均不显示入口或发起请求，`sample_feature_importance.*`、`feature_importance.*`、`model_feature_visualization.json` 与 `dscarnet_mapping.json` 均不开放下载。`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
 ## 建模 CSV
 
@@ -211,9 +212,9 @@ Index,Label,Sample_ID,Name,0,0.0066675556740898788,...,50
 1. 在网页上传拉曼/色谱原始 CSV 并完成预处理。
 2. 下载统一 CSV，补全 `Label` 与 `Sample_ID`。
 3. 将建模 CSV 上传到“AI 建模”。
-4. 选择模型与评估口径，创建 queued Run。
+4. 选择一个或多个模型与评估口径；单模型创建一个 queued Run，多模型创建统一 Batch，并为每个模型创建一个 Run。
 5. worker 完成后，浏览器中央提示框提供“立即查看结果”和“留在当前页”；未操作时 3 秒后进入该 Run 的专属结果 URL。
-6. 在结果页查看 Train/Valid/Test 或 pooled OOF 指标、三分区混淆矩阵、各类别指标、预测分布、训练/参数审计和单样品解释。
+6. 在结果页查看 Train/Valid/Test 或 pooled OOF 指标、三分区混淆矩阵、各类别指标、预测分布和训练/参数审计；批次比较页还提供 Accuracy 排名、四指标分组柱图或热力表，以及样品与类别热力图。
 7. 在每项真实产物旁下载对应 JSON/CSV；裸 `model.pkl`、`model.pt` 和内部 joblib 本轮不开放。
 
 仓库不附带真实 `data.csv`。本地验证数据、上传文件、模型和运行结果都位于 Git 管理范围之外。

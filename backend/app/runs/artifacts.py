@@ -44,16 +44,25 @@ from ..version import ARTIFACT_MANIFEST_CONTRACT_VERSION
 # Manifest 的 schema 版本直接绑定全局契约版本：读写两侧用同一常量判断一份 Manifest
 # 是否属于“新版显式 catalog”（v2），从而在 resolve_download / descriptors 中区分新旧兼容路径。
 MANIFEST_SCHEMA_VERSION = ARTIFACT_MANIFEST_CONTRACT_VERSION
-# 历史 Run 曾把“全局” feature_importance 当作公开下载；当前正式前端只展示单样品解释结果。
-# 这两个旧文件名仅保留“已知名字的窄范围直接下载”兼容，不再进入结果页 catalog。
+# 历史 Run 曾把“全局” feature_importance 当作公开下载。名称仍被识别，
+# 但 TEMPORARILY_HIDDEN 期间绝不形成下载兼容旁路。
 LEGACY_DIRECT_DOWNLOAD_NAMES = frozenset({
     'feature_importance.json',
     'feature_importance.csv',
 })
 
+# TEMPORARILY_HIDDEN: do not re-enable without an explicit product requirement
+# and synchronized backend/frontend contract tests.  This applies to historical
+# runs too: an old manifest does not reopen an explanation download surface.
+HIDDEN_EXPLAINABILITY_ARTIFACT_NAMES = frozenset({
+    'feature_importance.json', 'feature_importance.csv',
+    'sample_feature_importance.json', 'sample_feature_importance.csv',
+    'model_feature_visualization.json', 'dscarnet_mapping.json',
+})
+
 # 新 Run 的公开下载面由这里唯一声明。未知文件和可执行模型对象默认私有；旧
-# manifest 的 downloadable 标记仍由 resolve_download 兼容读取。历史全局
-# 重要性文件不再出现在结果页 catalog，但保留已知文件名的直接下载兼容。
+# manifest 的 downloadable 标记仍由 resolve_download 兼容读取；隐藏解释性
+# 文件不出现在结果页 catalog，也不提供直接下载兼容。
 ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'metrics.json': {'label': '总体指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'cv_metrics.json': {'label': '交叉验证汇总', 'category': 'metrics', 'required': True, 'downloadable': True},
@@ -62,9 +71,6 @@ ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'cv_predictions.csv': {'label': '交叉验证预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
     'history.csv': {'label': '训练过程', 'category': 'training', 'required': False, 'downloadable': True},
     'hyperparameter_search.csv': {'label': '参数搜索记录', 'category': 'training', 'required': False, 'downloadable': True},
-    'sample_feature_importance.json': {'label': '单样品解释结果', 'category': 'explainability', 'required': False, 'downloadable': True},
-    'sample_feature_importance.csv': {'label': '单样品解释结果', 'category': 'explainability', 'required': False, 'downloadable': True},
-    'dscarnet_mapping.json': {'label': 'DSCARNet 映射说明', 'category': 'explainability', 'required': False, 'downloadable': True},
     'model_metadata.json': {'label': '模型元数据', 'category': 'metadata', 'required': True, 'downloadable': True},
     'label_map.json': {'label': '类别映射', 'category': 'metadata', 'required': True, 'downloadable': True},
     'split.json': {'label': '数据划分', 'category': 'metadata', 'required': True, 'downloadable': True},
@@ -424,6 +430,8 @@ class RunArtifactWriter:
     #    的窄范围历史兼容；5) 最后重算 sha256 做完整性校验。
     # 任一失败分别抛 PermissionError / FileNotFoundError / ArtifactIntegrityError。
     def resolve_download(self, name: str) -> Path:
+        if name in HIDDEN_EXPLAINABILITY_ARTIFACT_NAMES:
+            raise FileNotFoundError('artifact unavailable')
         manifest = self.load_manifest()
         entry, path = self._resolve_manifest_entry(manifest, name)
         is_v2 = manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
@@ -455,7 +463,7 @@ class RunArtifactWriter:
         is_v2 = manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
         descriptors: list[dict[str, Any]] = []
         for name in names:
-            if name in LEGACY_DIRECT_DOWNLOAD_NAMES:
+            if name in LEGACY_DIRECT_DOWNLOAD_NAMES or name in HIDDEN_EXPLAINABILITY_ARTIFACT_NAMES:
                 continue
             policy = _catalog_policy(name)
             entry = manifest_entries.get(name)

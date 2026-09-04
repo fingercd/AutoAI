@@ -73,8 +73,7 @@ def test_official_ui_hides_mamba_and_traditional_epoch_progress():
     content = Path("static/index.html").read_text(encoding="utf-8")
     results = Path("static/js/run-results.js").read_text(encoding="utf-8")
 
-    assert 'const HIDDEN_MODEL_IDS = new Set(["cnn_mamba1d"])' in content
-    assert '!HIDDEN_MODEL_IDS.has(model.id)' in content
+    assert 'model.ui_visible !== false' in content
     assert 'const epochMetric = traditionalModel' not in content
     assert '训练 Epoch<strong>${run.actual_epochs || "-"}/' not in content
     assert 'result.analysis?.history?.reason' in results

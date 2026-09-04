@@ -17,7 +17,8 @@ def test_model_catalog_matches_supported_training_models():
         'family',
         'available',
         'unavailable_reason',
-        'explainability_method',
+        'ui_visible',
+        'visibility_reason',
     }
     assert models
     assert {model['id'] for model in models} == TARGET_MODEL_TYPES

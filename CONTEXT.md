@@ -37,24 +37,22 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 模型与可解释性
 
-分类模型 v2 的权威目标为 **15 个目标分类模型**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`、`dscarnet`。当前仅支持分类；`Sample_ID` 是样品分组的规范字段。新 Run 写入 `architecture_version="docx-classification-v2"`，旧模型权重和 artifact 只读兼容。
+后端能力目录公开 **17 个分类模型**，其中普通建模 UI 只显示 10 个：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`。其余七个深度模型以 `ui_visible=false` 保留在后端兼容训练入口；`cnn_mamba1d` 仅因真实 `mamba-ssm` 依赖不可用而标记 unavailable，绝不回退成近似网络。新 Run 使用 `architecture_version="docx-classification-v3-0821"`，旧模型权重和 artifact 只读兼容。
 
-15 个目标模型是 catalog 契约，不表示每个依赖在本机都可用。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而禁用并跳过训练验收；不得回退成近似模型。`dscarnet` 支持 SAR、CAR、dual 三模式；二分类深度模型使用单 logit + `BCEWithLogitsLoss`。
-
-`stratified_holdout` 以 8:1:1 为目标；当 10% 的组数不足以覆盖全部类别时，Valid/Test 自动提高到每类至少 1 个 `Sample_ID`，Train 同样保留全部类别，因此每类至少需要 3 个不同 `Sample_ID`，不足时明确拒绝。`leave_one_sample_id_cv` 的外层 test 留一个 `Sample_ID`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。交叉验证测试集的 Precision、Recall 和 Macro F1 以全部折 OOF 预测合并后计算，逐折均值/标准差只作审计。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+`stratified_holdout` 以 8:1:1 为目标；`leave_one_sample_id_cv` 的主指标是全部外层 test 的 pooled OOF；`external_test_holdout` 主数据 8:2、独立数据为最终 test；`leave_one_sample_id_cv_with_external_test` 将主数据 pooled OOF 作为审计，而以全部主数据重训后的独立测试结果作为主指标。所有传统模型均以 `Sample_ID` 分组的内层 5 折 mean Balanced Accuracy 选优，normalizer/PCA/变量选择只在内层训练折拟合；深度模型使用 AdamW、学习率调度、早停和最佳 validation loss checkpoint。
 
 训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
 
-解释性矩阵以 `backend/app/training_explainability.py` 为准：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、未来可用的 `cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM，并保留输入梯度 sanity check；`dscarnet` 使用 SAR/CAR/dual 模式对应的 2D Grad-CAM 回投。旧 artifact 名保持兼容。
+可解释性源码和未来恢复所需的模型分支仍以 `backend/app/training_explainability.py` 为准，但当前由唯一硬编码 `TEMPORARILY_HIDDEN` 开关关闭：新训练不计算、不写入、不投影也不开放直接下载相应 artifact；两套前端不渲染或请求任何解释性数据。
 
 - 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
 - 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
-- 六个传统模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`。
+- 八个传统模型：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`。
 - 当前八个可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
 - 模型 profile 同时按训练样本数 N 和特征数 L 分档：N 为 `<=100`、`101-299`、`>=300`；L 为 `<=1000`、`1001-2999`、`>=3000`。模型输入范围会另行给出警告，但不会把警告阈值误当成 profile 分档。
-- 分类评估支持三种口径：`stratified_holdout` 为无独立测试集时以 8:1:1 为目标划分 train/valid/test，并强制三个集合都包含全部类别；Valid/Test 的每类 1 个 `Sample_ID` 是高于比例的硬下限。`leave_one_sample_id_cv` 为无独立测试集时按 `Sample_ID` 留一作 test，其余按 8:2 划分 train/valid；`external_test_holdout` 为有独立测试集时主数据 8:2 划分 train/valid、独立测试集作最终 test。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
+- 分类评估支持四种口径：`stratified_holdout`、`leave_one_sample_id_cv`、`external_test_holdout` 与 `leave_one_sample_id_cv_with_external_test`；最后一种把主数据 OOF 与外部 Test 严格分离，后者为主指标。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
 - 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。
-- 新训练只生成并展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条、中文色标和 Top 区间，不再生成全局重要性。历史 `feature_importance.json/csv` 仅保留原 Manifest、Principal 和完整性约束下的直接下载兼容，不进入新 catalog 或结果页。
+- `TEMPORARILY_HIDDEN` 期间新训练不生成任何 `feature_importance`、`sample_feature_importance` 或模型特征图 artifact；历史同类 artifact 也不提供公开下载。
 - DSCARNet 使用仅由当前训练折拟合的 AggMap/PCA 生成 SAR/CAR 2D 输入，额外写入 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。
 - 当前没有正式 ROC-AUC、ROC 曲线或 Precision-Recall 曲线产物；结果 API 明确返回 unavailable，前端不绘制虚假图表。
 - 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。

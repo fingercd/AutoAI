@@ -42,7 +42,7 @@ const FAMILY_ORDER = ['traditional_ml', 'basic_deep', 'convolutional', 'long_ran
 export function groupModelsByFamily(models) {
   const groups = new Map();
   for (const family of FAMILY_ORDER) groups.set(family, []);
-  for (const model of models || []) {
+  for (const model of (models || []).filter((item) => item?.ui_visible !== false)) {
     const family = model?.family || 'traditional_ml';
     if (!groups.has(family)) groups.set(family, []);
     groups.get(family).push(model);
@@ -76,14 +76,14 @@ function modelCard(model, { name, selected, onChoose }) {
   selectedBadge.hidden = !selected;
   const radio = el('input', {
     attrs: {
-      type: 'radio',
+      type: 'checkbox',
       name,
       value: model.id,
       disabled: available ? null : true,
       checked: selected ? true : null,
       id: `${name}-${model.id}`,
     },
-    on: { change: () => { if (available) onChoose?.(model.id); } },
+    on: { change: (event) => { if (available) onChoose?.(model.id, event.target.checked); } },
   });
   const card = el('label', {
     className: `card model-card${available ? '' : ' model-card-disabled'}`,
@@ -95,7 +95,7 @@ function modelCard(model, { name, selected, onChoose }) {
         ? el('span', { className: 'badge status-succeeded', text: '可训练' })
         : el('span', { className: 'badge status-failed', text: '不可用' }),
     ]),
-    el('span', { className: 'hint', text: `${model.id} · 解释方法：${model.explainability_method || '—'}` }),
+    el('span', { className: 'hint', text: `${model.id} · ${model.family || '分类模型'}` }),
     available ? selectedBadge : el('span', { className: 'error-text', text: model.unavailable_reason || '当前环境不可用' }),
   ]);
   return { card, radio, selectedBadge };
@@ -125,25 +125,26 @@ function modelCard(model, { name, selected, onChoose }) {
  * @param {?Function} options.onSelect 选择变化回调，参数为模型 id。
  * @param {string} [options.name='v2-model'] radio 组名，同页多个实例时需区分。
  */
-export function renderModelCatalog(container, { models, selectedId, onSelect, name = 'v2-model' }) {
+export function renderModelCatalog(container, { models, selectedIds, selectedId, onSelect, name = 'v2-model' }) {
   clear(container);
   if (!Array.isArray(models) || !models.length) {
     container.append(el('div', { className: 'empty', text: '模型目录为空，请稍后重试。' }));
     return;
   }
-  let currentId = selectedId || null;
+  const currentIds = new Set(selectedIds || (selectedId ? [selectedId] : []));
   const entries = [];
 
   const syncSelected = () => {
     for (const entry of entries) {
-      const active = entry.model.id === currentId;
+      const active = currentIds.has(entry.model.id);
       entry.card.dataset.selected = active ? 'true' : 'false';
       entry.card.classList.toggle('model-card-selected', active);
+      entry.radio.checked = active;
       if (entry.selectedBadge) entry.selectedBadge.hidden = !active;
     }
   };
 
-  const list = el('div', { className: 'stack', attrs: { role: 'radiogroup', 'aria-label': '选择模型' } });
+  const list = el('div', { className: 'stack', attrs: { role: 'group', 'aria-label': '选择一个或多个模型' } });
   for (const [family, items] of groupModelsByFamily(models)) {
     const available = items.filter((model) => model.available === true);
     const unavailable = items.filter((model) => model.available !== true);
@@ -156,7 +157,7 @@ export function renderModelCatalog(container, { models, selectedId, onSelect, na
     if (available.length) {
       const grid = el('div', { className: 'grid grid-3' });
       for (const model of available) {
-        const entry = modelCard(model, { name, selected: model.id === currentId, onChoose: (id) => { currentId = id; syncSelected(); onSelect?.(id); } });
+        const entry = modelCard(model, { name, selected: currentIds.has(model.id), onChoose: (id, checked) => { if (checked) currentIds.add(id); else currentIds.delete(id); syncSelected(); onSelect?.([...currentIds]); } });
         entries.push({ model, ...entry });
         grid.append(entry.card);
       }
@@ -179,7 +180,7 @@ export function renderModelCatalog(container, { models, selectedId, onSelect, na
   }
   container.append(list);
   syncSelected();
-  if (currentId && !models.some((model) => model.id === currentId && model.available)) {
+  if ([...currentIds].some((id) => !models.some((model) => model.id === id && model.available && model.ui_visible !== false))) {
     container.append(el('p', {
       className: 'error-text',
       attrs: { role: 'alert' },
