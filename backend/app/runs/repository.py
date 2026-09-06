@@ -404,6 +404,22 @@ class RunRepository:
             raise RunNotFound(batch_id)
         return self._batch_record(row)
 
+    def list_batches_scoped(self, *, principal: Principal, limit: int = 20, cursor: str | None = None):
+        """Keyset pagination over batches, never group a page of child Runs."""
+        owner_id, tenant_id = self._scope_values(principal)
+        with self._connection() as connection:
+            values: list[Any] = [owner_id, tenant_id]
+            condition = ''
+            if cursor:
+                anchor = connection.execute('SELECT created_at,batch_id FROM training_batches WHERE batch_id=? AND owner_id IS ? AND tenant_id IS ?', (cursor, owner_id, tenant_id)).fetchone()
+                if anchor is None:
+                    raise RunNotFound(cursor)
+                condition = ' AND (created_at < ? OR (created_at = ? AND batch_id < ?))'
+                values.extend([anchor['created_at'], anchor['created_at'], anchor['batch_id']])
+            values.append(limit + 1)
+            rows = connection.execute('SELECT * FROM training_batches WHERE owner_id IS ? AND tenant_id IS ?' + condition + ' ORDER BY created_at DESC,batch_id DESC LIMIT ?', values).fetchall()
+        return [self._batch_record(row) for row in rows[:limit]], rows[limit - 1]['batch_id'] if len(rows) > limit else None
+
     def list_batch_runs_scoped(self, batch_id: str, *, principal: Principal) -> list[RunRecord]:
         owner_id, tenant_id = self._scope_values(principal)
         with self._connection() as connection:
@@ -418,7 +434,7 @@ class RunRepository:
         return [self._record(row) for row in rows]
 
     def cancel_batch_scoped(self, batch_id: str, *, now: datetime, principal: Principal) -> list[RunRecord]:
-        """Stop each active child in one transaction; terminal children remain untouched."""
+        """Discard the whole batch, including completed child results, atomically."""
         now_text = _timestamp(now)
         owner_id, tenant_id = self._scope_values(principal)
         with self._connection() as connection:
@@ -436,13 +452,13 @@ class RunRepository:
                 (batch_id, owner_id, tenant_id),
             ).fetchall()
             for row in rows:
-                if row['state'] not in {'queued', 'running'}:
+                if row['state'] == 'cancelled':
                     continue
                 connection.execute(
                     '''UPDATE runs SET state = 'cancelled', version = version + 1,
                        claim_token = NULL, worker_id = NULL, lease_expires_at = NULL,
                        manifest_name = NULL, progress_json = ?, updated_at = ?, finished_at = ?
-                       WHERE run_id = ? AND state IN ('queued', 'running')''',
+                       WHERE run_id = ?''',
                     (_stopped_progress(row['progress_json'], stopped_at=now_text, reason='batch_stop', message='批次已停止'), now_text, now_text, row['run_id']),
                 )
             connection.execute('UPDATE training_batches SET updated_at = ? WHERE batch_id = ?', (now_text, batch_id))

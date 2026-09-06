@@ -1,5 +1,7 @@
 # SpecAutoAI 项目入口
 
+`cnn_mamba1d` 在依赖不可用时保持 unavailable；隐藏模型不允许用近似网络替代。
+
 ## 项目目标
 
 SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建模平台。核心流程是上传原始 CSV，做范围截取、拉曼基线校正或 HPLC 标准化预处理，生成统一建模 CSV，再选择模型训练并查看指标、混淆矩阵、预测结果和关键特征解释。
@@ -37,7 +39,11 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 模型与可解释性
 
-后端能力目录公开 **17 个分类模型**，其中普通建模 UI 只显示 10 个：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`。其余七个深度模型以 `ui_visible=false` 保留在后端兼容训练入口；`cnn_mamba1d` 仅因真实 `mamba-ssm` 依赖不可用而标记 unavailable，绝不回退成近似网络。新 Run 使用 `architecture_version="docx-classification-v3-0821"`，旧模型权重和 artifact 只读兼容。
+2026-09-05 临时调整：新增七/四种特征方案比较暂时停用。后端 `feature_policy.FEATURE_ENGINEERING_ENABLED=False` 阻止新版训练入口及特征方案绘图，普通训练和标准化不变；经典对比页隐藏整个特征工程区块。算法代码与历史文件保留。混淆矩阵放大宽度上限 640px，弹窗按视口宽高约束，不再接近全屏。
+
+后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。后端接受 experiment_version=word-0904，架构版本 docx-classification-v4-0904；经典表单在前端回退后未默认声明该版本，未声明版本的请求保留原训练行为。本轮对比图重做不改变训练请求。
+
+新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，v2/单模型结果页不变。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
 
 `stratified_holdout` 以 8:1:1 为目标；`leave_one_sample_id_cv` 的主指标是全部外层 test 的 pooled OOF；`external_test_holdout` 主数据 8:2、独立数据为最终 test；`leave_one_sample_id_cv_with_external_test` 将主数据 pooled OOF 作为审计，而以全部主数据重训后的独立测试结果作为主指标。所有传统模型均以 `Sample_ID` 分组的内层 5 折 mean Balanced Accuracy 选优，normalizer/PCA/变量选择只在内层训练折拟合；深度模型使用 AdamW、学习率调度、早停和最佳 validation loss checkpoint。
 
@@ -49,7 +55,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
 - 八个传统模型：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`。
 - 当前八个可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
-- 模型 profile 同时按训练样本数 N 和特征数 L 分档：N 为 `<=100`、`101-299`、`>=300`；L 为 `<=1000`、`1001-2999`、`>=3000`。模型输入范围会另行给出警告，但不会把警告阈值误当成 profile 分档。
+- 新版 CNN0904 的 N 为训练独立 Sample_ID 数，分档 <=100、101–300、>300；L 为变换后特征数，分档 <=1000、1001–3000、>3000。长序列池化 [4,2,2]。旧兼容模型仍保留原分档。
 - 分类评估支持四种口径：`stratified_holdout`、`leave_one_sample_id_cv`、`external_test_holdout` 与 `leave_one_sample_id_cv_with_external_test`；最后一种把主数据 OOF 与外部 Test 严格分离，后者为主指标。每个口径都只用当前训练集拟合标准化、调参、PCA/AggMap 或 early stopping。
 - 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。
 - `TEMPORARILY_HIDDEN` 期间新训练不生成任何 `feature_importance`、`sample_feature_importance` 或模型特征图 artifact；历史同类 artifact 也不提供公开下载。

@@ -26,7 +26,7 @@ def test_classification_v2_contract_is_documented_consistently():
         '8:1:1',
         'leave_one_sample_id_cv',
         'AdamW',
-        'docx-classification-v3',
+        'docx-classification-v4',
         'cnn_mamba1d',
         '依赖不可用',
         'TEMPORARILY_HIDDEN',

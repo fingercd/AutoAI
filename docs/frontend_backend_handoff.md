@@ -1,5 +1,9 @@
 # SpecAutoAI 前后端接口契约
 
+2026-09-05 增量：经典多模型对比页新增批次历史、归档与绘图接口，详见 `docs/model_comparison_contract.md` 的“经典对比页与持久归档”。Run summary 新增可空 batch_id；原 Run/Batch 契约、v2 和单模型结果页保持兼容。本轮没有改动训练请求和算法。
+
+当前建模入口仅支持分类，具体六模型与 0904 特征工程见第六节。
+
 > 最近核对：2026-08-22。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
 
 ## 1. 当前架构
@@ -379,9 +383,9 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 ## 6. 分类模型与评估契约
 
-能力目录公开 **17 个后端分类模型**，其中 UI 仅通过 `ui_visible=true` 展示 10 个：PLS-DA、sPLS-DA、PCA-LDA、Logistic Regression、SVM、PCA-SVM、Random Forest、XGBoost、PCA-MLP、1D-CNN。当前仅支持分类；`Label` 即使为数字也按类别处理。
+能力目录保留 17 个后端分类模型，UI 通过 ui_visible=true 展示六类：PLS-DA、Elastic Net、SVM、Random Forest、XGBoost、1D-CNN。Label 即使为数字也按类别处理。
 
-当前通常可训练 16 项；`cnn_mamba1d` 因依赖不可用返回 `available=false`，不得静默替换。隐藏深度模型仍可通过后端兼容 API 训练。新 Run 使用 `architecture_version="docx-classification-v3-0821"`。
+UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-v4-0904。未指定版本的旧请求保留原训练行为。隐藏模型继续通过兼容 API 调用；cnn_mamba1d 依赖不可用时必须真实返回 available=false。
 
 评估方式：
 

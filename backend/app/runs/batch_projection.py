@@ -46,6 +46,7 @@ def batch_status_payload(batch_id: str, records: list[RunRecord]) -> dict[str, A
                 "repeat_index": record.batch_repeat_index,
                 "state": record.state,
                 "error": record.error if record.state == "failed" else None,
+                "progress": {key: record.progress[key] for key in ('feature_scheme', 'current_fold', 'completed_folds', 'search_completed', 'search_total', 'current_epoch', 'training_stage_label') if key in record.progress},
             }
             for record in records
         ],
@@ -159,6 +160,7 @@ def project_model_comparison(
     batch_id: str,
     records: list[RunRecord],
     run_dir_for: Callable[[str], Path],
+    include_history: bool = True,
 ) -> dict[str, Any]:
     """Aggregate only verified success artifacts; missing values are explicit."""
     successful = [record for record in records if record.state == "succeeded"]
@@ -208,6 +210,17 @@ def project_model_comparison(
     if len(fingerprints) != 1 or len(strategies) != 1 or len(label_sets) != 1 or len(dataset_signatures) != 1 or len(test_sample_sets) != 1:
         base["reason"] = "子 Run 的数据快照、划分、测试样品/标签映射或评估口径不一致，不能进行公平比较"
         return base
+    if include_history:
+        grouped_records: dict[str, list[RunRecord]] = defaultdict(list)
+        for record, _test, _rows, _fingerprint in payloads:
+            grouped_records[str(record.config.get('model_type'))].append(record)
+        if any(len(items) > 1 for items in grouped_records.values()):
+            histories = {model: [project_model_comparison(batch_id=batch_id, records=[item], run_dir_for=run_dir_for, include_history=False) for item in sorted(items, key=lambda r: (r.batch_repeat_index or 0, r.run_id))] for model, items in grouped_records.items()}
+            selected = [sorted(items, key=lambda r: (r.batch_repeat_index or 0, r.run_id))[0] for items in grouped_records.values()]
+            result = project_model_comparison(batch_id=batch_id, records=selected, run_dir_for=run_dir_for, include_history=False)
+            result['run_comparisons'] = histories
+            result['state'] = aggregate_batch_state(records)
+            return result
     by_model: dict[str, list[tuple[RunRecord, dict[str, Any], list[dict[str, str]]]]] = defaultdict(list)
     for record, test, predictions, _ in payloads:
         by_model[str(record.config.get("model_type"))].append((record, test, predictions))
@@ -225,7 +238,7 @@ def project_model_comparison(
                 "min": float(min(values)), "max": float(max(values)), "values": values,
             }
         matrix: list[list[int]] | None = None
-        labels: list[str] = []
+        labels: list[str] = list(next(iter(label_sets)))
         for record, test, rows in entries:
             repeat_values.append({"run_id": record.run_id, "repeat_index": record.batch_repeat_index, **{key: test[key] for key in _METRICS}})
             # The external+LOSO strategy has both audit OOF rows and final
@@ -250,7 +263,6 @@ def project_model_comparison(
                 for row_index, row in enumerate(raw_matrix):
                     for column_index, value in enumerate(row if isinstance(row, list) else []):
                         matrix[row_index][column_index] += int(value)
-            labels.extend(label for label in (report or {}) if label not in {"macro avg", "weighted avg", "accuracy"})
         model_rows.append({
             "model_type": model_type,
             "successful_repeats": len(entries),
@@ -258,9 +270,10 @@ def project_model_comparison(
             "metrics": metric_summary,
             "repeats": repeat_values,
             "run_ids": [record.run_id for record, _test, _rows in entries],
+            "experiment": _json_artifact(run_dir_for(entries[0][0].run_id), entries[0][0].run_id, 'feature_experiments.json'),
         })
-        confusion_payloads.append({"model_type": model_type, "labels": sorted(set(labels)), "confusion_matrix": matrix, "run_ids": [record.run_id for record, _test, _rows in entries]})
-    model_rows.sort(key=lambda item: (-item["metrics"]["accuracy"]["mean"], -item["metrics"]["balanced_accuracy"]["mean"], -item["metrics"]["macro_f1"]["mean"], item["model_type"]))
+        confusion_payloads.append({"model_type": model_type, "labels": labels, "confusion_matrix": matrix, "run_ids": [record.run_id for record, _test, _rows in entries]})
+    model_rows.sort(key=lambda item: (-item["metrics"]["balanced_accuracy"]["mean"], -item["metrics"]["accuracy"]["mean"], -item["metrics"]["macro_f1"]["mean"], item["model_type"]))
     sample_ids = sorted({sample_id for model in all_sample_predictions.values() for sample_id in model})
     correctness_rows = []
     stability_rows = []
@@ -276,14 +289,28 @@ def project_model_comparison(
             correct = sum(true == predicted for true, predicted in predictions)
             values.append(correct / len(predictions))
             consistency.append(Counter(predicted for _true, predicted in predictions).most_common(1)[0][1] / len(predictions))
-        correctness_rows.append({"model_type": model_type, "values": values})
+        source_record, _test, source_rows = by_model[model_type][0]
+        if strategies == {'leave_one_sample_id_cv_with_external_test'}:
+            source_rows = [row for row in source_rows if row.get('dataset') == 'external_test']
+        sample_map, _error = _sample_predictions(source_rows)
+        details = []
+        for sid in sample_ids:
+            pair = sample_map.get(sid)
+            measurements = [row for row in source_rows if str(row.get('Sample_ID')) == sid]
+            details.append({'true_label': pair[0], 'pred_label': pair[1], 'measurement_count': len(measurements), 'aggregation': '各类别概率均值后取最大值' if measurements and any(key.startswith('prob_') for key in measurements[0]) else '重复测量预测投票'} if pair else None)
+        correctness_rows.append({"model_type": model_type, "values": values, "details": details})
         if model["successful_repeats"] >= 2:
             stability_rows.append({"model_type": model_type, "mean": float(sum(consistency) / len(consistency)) if consistency else None, "min": float(min(consistency)) if consistency else None, "max": float(max(consistency)) if consistency else None})
-    labels = sorted({label for values in recall_values.values() for label in values})
+    labels = list(next(iter(label_sets)))
     recall_rows = [{
         "model_type": model["model_type"],
         "values": [{"label": label, "mean": float(sum(recall_values[model["model_type"]][label]) / len(recall_values[model["model_type"]][label])), "std": float(np_std(recall_values[model["model_type"]][label]))} if recall_values[model["model_type"]].get(label) else None for label in labels],
     } for model in model_rows]
+    for row in recall_rows:
+        entries = by_model[row['model_type']]
+        for item in row['values']:
+            if item is not None:
+                item['support'] = sum(test.get('classification_report', {}).get(item['label'], {}).get('support', 0) for _record, test, _rows in entries)
     base.update({
         "comparable": True,
         "models": model_rows,
@@ -293,7 +320,7 @@ def project_model_comparison(
         "class_recall": {"status": "ready" if labels else "missing", "labels": labels, "rows": recall_rows},
         "confusion_matrices": confusion_payloads,
         "split_digest": next(iter(fingerprints)),
-        "evaluation": {"strategy": next(iter(strategies)), "primary_aggregation": "pooled_oof" if next(iter(strategies)).startswith("leave_one_sample_id_cv") else "direct"},
+        "evaluation": {"strategy": next(iter(strategies)), "primary_aggregation": "pooled_oof" if next(iter(strategies)) == "leave_one_sample_id_cv" else "direct_external_test" if next(iter(strategies)) == "leave_one_sample_id_cv_with_external_test" else "direct"},
     })
     return base
 

@@ -1,5 +1,7 @@
 # SpecAutoAI
 
+当前训练入口仅支持分类。`cnn_mamba1d` 在依赖不可用时返回 unavailable，不使用替代网络。
+
 SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
 
 当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
@@ -12,11 +14,13 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout；批量比较时同一批次固定 `split_seed`，确保所有模型使用同一测试对象。
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
-- 前端建模页仅显示 10 个目标模型：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`、`svm`、`pca_svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`。其余深度模型仍保留为后端能力，可由兼容 API 调用；`cnn_mamba1d` 仍按真实 `mamba-ssm` 依赖状态返回不可用。
-- 多模型批次：`POST /api/training/batches` 按“一模型一个 Run”原子创建 queued Run；`GET /api/training/batches/{batch_id}/comparison` 只比较完整成功的子 Run，显示 Accuracy 排名、四项指标自适应图、Sample_ID 正确/错误热图、类别 Recall 与页面内各模型混淆矩阵。历史重复批次继续只读兼容，但普通前端不再创建重复训练。
+- 前端建模页显示 Word 0904 六类：PLS-DA、Elastic Net（logistic_regression）、SVM、Random Forest、XGBoost、1D-CNN。其他模型保留后端兼容能力。
+- 多模型批次保持“一模型一 Run”。新版后端支持 experiment_version=word-0904 的七/四种特征方案；历史任务未声明该版本时仍按原训练流程。经典多模型对比页支持响应式四指标条图、墨绿色方形矩阵、正误筛选分页，以及 PNG/SVG/CSV 整套归档下载；v2 和单模型结果页保持原样。没有特征工程结果的历史批次不补造数据。
 - 可解释性实现已保留，但当前产品面通过内部 `TEMPORARILY_HIDDEN` 开关完全关闭：新训练不计算或生成解释性 artifact，结果投影仅返回隐藏状态，历史 artifact 也不开放直接下载。
 
 ## 双前端入口
+
+当前新增特征工程方案比较暂时停用，保留代码和历史文件；普通训练、标准化及其他对比图不受影响。经典混淆矩阵放大窗口已限制尺寸，避免四类别矩阵撑满屏幕。
 
 仓库同时维护两个受测试保护的原生静态前端，它们共享同一套 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约：
 
@@ -179,9 +183,9 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 ## 分类模型 v2 契约
 
-后端能力目录公开 **17 个目标分类模型，其中 16 个可用**：新增真实 `spls_da` 与 `pca_svm`；`cnn_mamba1d` 当前不可用。建模 UI 则固定展示其中 10 个产品模型（见上文），并以 API 的 `ui_visible` 字段过滤，绝不通过删除后端能力实现隐藏。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
+后端保留 17 个分类模型，依赖可用性按环境检测。UI 以 ui_visible 过滤显示六类模型，Label 按类别编码，Sample_ID 用于分组，隐藏模型保留兼容 API。
 
-新 Run 使用 `architecture_version="docx-classification-v3-0821"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入当前结构。二分类深度模型继续使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
+UI 新 Run 使用 architecture_version=docx-classification-v4-0904，CNN 二分类也使用两类别输出与 CrossEntropyLoss。未指定新版 experiment_version 的兼容 API 保留旧模型与单 logit 契约；旧权重不载入新结构。详情见 docs/plans/2026-09-05-word0904-models-and-scientific-results.md。
 
 评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为最终 test。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型以按 `Sample_ID` 分组的内层 5 折 Balanced Accuracy 选优，标准化和 PCA 均在内层训练折拟合，锁定参数后用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 

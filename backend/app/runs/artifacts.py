@@ -64,6 +64,8 @@ HIDDEN_EXPLAINABILITY_ARTIFACT_NAMES = frozenset({
 # manifest 的 downloadable 标记仍由 resolve_download 兼容读取；隐藏解释性
 # 文件不出现在结果页 catalog，也不提供直接下载兼容。
 ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
+    'feature_experiments.json': {'label': '特征工程与最佳配置审计', 'category': 'training', 'required': False, 'downloadable': True},
+    'feature_experiments.csv': {'label': '特征工程对比指标', 'category': 'metrics', 'required': False, 'downloadable': True},
     'metrics.json': {'label': '总体指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'cv_metrics.json': {'label': '交叉验证汇总', 'category': 'metrics', 'required': True, 'downloadable': True},
     'fold_metrics.csv': {'label': '分折指标', 'category': 'metrics', 'required': True, 'downloadable': True},
