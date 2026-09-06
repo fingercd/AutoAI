@@ -45,6 +45,7 @@ class TrainingConfigValidationError(ValueError):
 
 _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
     {
+        'experiment_version',
         'epochs', 'batch_size', 'learning_rate', 'weight_decay', 'scheduler_factor',
         'scheduler_patience', 'min_learning_rate', 'seed', 'split_seed', 'model_seed', 'normalization', 'split_mode',
         'split_train', 'split_valid', 'split_test', 'class_balance', 'model_type',
@@ -126,6 +127,17 @@ class TrainingSpec:
         if model_type is None:
             raise TrainingConfigValidationError(f'不支持的分类模型：{raw_model}')
         values['model_type'] = model_type
+        if values.get('experiment_version') not in (None, 'word-0904'):
+            raise TrainingConfigValidationError('未知建模方案版本')
+        if values.get('experiment_version') == 'word-0904':
+            from . import feature_policy
+            if not feature_policy.FEATURE_ENGINEERING_ENABLED:
+                raise TrainingConfigValidationError('特征工程暂时停用，请使用普通训练配置')
+            from .feature_engineering import MODELS
+            if model_type not in MODELS:
+                raise TrainingConfigValidationError('0904 方案仅支持六类公开模型')
+            if values.get('normalization', 'zscore') not in {'zscore', 'minmax'}:
+                raise TrainingConfigValidationError('0904 方案要求 zscore 或 minmax 特征标准化')
 
         normalization = str(values.get('normalization') or 'zscore').strip().lower()
         if normalization not in {'zscore', 'minmax', 'area', 'none'}:

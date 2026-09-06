@@ -261,6 +261,14 @@ class RunWorker:
             # 提交失败结果时发现 lease 已丢失：状态已被新持有者改写，不再覆盖
             except InvalidRunTransition:
                 pass
+        # Archive failures are not training failures. Never put this inside the
+        # execute/finish_success handler, or a plotting error could relabel a Run.
+        if run.batch_id:
+            try:
+                from .batch_archive import finalize_worker_batch
+                finalize_worker_batch(self.repository, run)
+            except Exception:
+                logger.exception('Comparison archive could not be completed for batch %s', run.batch_id)
         return True
 
 
@@ -332,6 +340,7 @@ def main() -> None:
         # worker_id = 主机名 + 8 位随机 hex：多机/多进程部署时可区分心跳来源
         execute=execute_claimed,
         now=utc_now,
+        heartbeat_seconds=0.25,
         project_status=lambda record: project_status(RUNS_DIR / record.run_id, record),
         discard_artifacts=discard_artifacts,
         on_lease_lost=exit_after_lease_loss,

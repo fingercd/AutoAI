@@ -1,5 +1,7 @@
 # 建模结果接口契约（run-result-v1）
 
+0904 增量：可选顶层 experiment 只读取 Manifest 完整性校验通过的 feature_experiments.json；未生成时为 null。包含最佳特征方案、参数、选择指标与分数、逐折配置和七种方案的测试指标。feature_experiments.json/csv 加入公开 artifact 目录，拟合变换 joblib 与模型文件仍为私有。CNN0904 采用多类别 CrossEntropyLoss，包括二分类；旧模型契约不改写。
+
 > 最近核对：2026-08-22。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
 
 前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。

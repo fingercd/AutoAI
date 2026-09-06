@@ -1,0 +1,42 @@
+/* Strictly scoped: no styling changes outside the classic comparison view. */
+#view-comparison .cmp { container-type:inline-size; display:grid; gap:14px; min-width:0; color:#25382f; font-size:14px; }
+#view-comparison .cmp * { box-sizing:border-box; }
+#view-comparison .cmp [hidden] { display:none !important; }
+#view-comparison .cmp h3, #view-comparison .cmp h4 { font-size:16px; margin:0; line-height:1.4; }
+#view-comparison .cmp p { margin:0; line-height:1.55; }
+#view-comparison .cmp-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
+#view-comparison .cmp-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+#view-comparison .cmp button, #view-comparison .cmp select, #view-comparison .cmp input { font-size:13px; padding:7px 10px; margin:0; height:auto; }
+#view-comparison .cmp select { width:auto; max-width:100%; }
+#view-comparison .cmp input[type=search] { width:180px; }
+#view-comparison .cmp label { display:flex; align-items:center; gap:6px; margin:0; font-size:13px; }
+#view-comparison .cmp input[type=checkbox] { width:auto; }
+#view-comparison .cmp-section { display:grid; gap:10px; min-width:0; padding:0; border:0; }
+#view-comparison .cmp-grid { display:grid; grid-template-columns:1fr; gap:12px; align-items:start; }
+#view-comparison .cmp-figure { margin:0; border:1px solid #e0e6e1; border-radius:6px; padding:10px; min-width:0; background:#fff; }
+#view-comparison .cmp-figure.cmp-compact { width:fit-content; max-width:100%; }
+#view-comparison .cmp-figure-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:5px; }
+#view-comparison .cmp-figure-head h4 { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+#view-comparison .cmp-figure-head { justify-content:flex-end; }
+#view-comparison .cmp-figure-head button { background:transparent; padding:3px 5px; color:#49695b; font-size:13px; }
+#view-comparison .cmp-scroll { overflow-x:auto; max-width:100%; min-width:0; overscroll-behavior-inline:contain; }
+#view-comparison .cmp img { display:block; max-width:none; }
+#view-comparison .cmp-note { color:#66746c; font-size:13px; }
+#view-comparison .cmp-error { color:#a24e38; font-size:13px; }
+#view-comparison .cmp details { border-top:1px solid #e5e9e6; padding-top:8px; min-width:0; }
+#view-comparison .cmp summary { cursor:pointer; font-size:13px; color:#4e6557; }
+#view-comparison .cmp table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+#view-comparison .cmp td, #view-comparison .cmp th { padding:7px 10px; text-align:right; border-bottom:1px solid #e5e9e6; white-space:nowrap; }
+#view-comparison .cmp th:first-child, #view-comparison .cmp td:first-child { text-align:left; }
+#view-comparison .cmp pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; }
+#view-comparison .cmp-sample-wrap { display:flex; min-width:0; }
+#view-comparison .cmp-sample-labels { flex:0 0 145px; overflow:hidden; background:white; z-index:1; }
+#view-comparison .cmp-sample-body { flex:1; overflow-x:auto; min-width:0; }
+#view-comparison .cmp-sample-body img { margin-left:-145px; }
+#view-comparison dialog.cmp { position:fixed; inset:5vh 3vw; width:94vw; max-width:none; max-height:90vh; margin:auto; padding:18px; border:1px solid #c8d4cc; border-radius:8px; overflow:auto; }
+#view-comparison dialog.cmp:not([open]) { display:none; }
+#view-comparison dialog.cmp::backdrop { background:#182d2566; }
+#view-comparison dialog.cmp-matrix-dialog { inset:0; max-width:calc(100vw - 24px); max-height:85vh; padding:16px; gap:12px; }
+#view-comparison dialog.cmp-matrix-dialog > button { justify-self:end; width:auto; padding:6px 12px; }
+@container (min-width:640px) { #view-comparison .cmp-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@container (min-width:1100px) { #view-comparison .cmp-grid { grid-template-columns:repeat(4,minmax(0,1fr)); } #view-comparison .cmp-grid.cmp-large-classes { grid-template-columns:repeat(2,minmax(0,1fr)); } }

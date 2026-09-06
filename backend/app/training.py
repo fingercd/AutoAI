@@ -115,6 +115,7 @@ class TrainConfig:
     class_balance: str = "none"
     # ── 模型与结构参数：model_type 会经 canonical_model_type 归一化（如 transformer1d 别名） ──
     model_type: str = "cnn1d"
+    experiment_version: str | None = None
     early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
     dropout: float | None = None
     hidden_size: int = 64
@@ -1807,6 +1808,17 @@ def _run_legacy_training(
     )
     _validate_split_ratio_config(policy)
     model_type = canonical_model_type(config.model_type)
+    modern = config.experiment_version == 'word-0904'
+    if modern:
+        from . import feature_policy
+        if not feature_policy.FEATURE_ENGINEERING_ENABLED:
+            raise ValueError('特征工程暂时停用，请使用普通训练配置')
+        from .feature_engineering import MODELS
+        from .training_experiments import fit_experiment_fold, summarize_experiments
+        if model_type not in MODELS:
+            raise ValueError('0904 方案仅支持六类公开模型')
+    experiment_folds = []
+    external_experiment = None
     evaluation_strategy = policy.strategy
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = RUNS_DIR / run_id
@@ -1860,6 +1872,8 @@ def _run_legacy_training(
         test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
         test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
         test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()
+        if modern and set(sample_id).intersection(test_sample_id):
+            raise ValueError('独立测试集与主数据包含相同 Sample_ID，不能跨集合使用同一样品')
         test_sample_count = int(len(test_y))
         external_test_x_raw = test_x_raw
         external_test_y = test_y
@@ -1992,7 +2006,27 @@ def _run_legacy_training(
         fold_selection_score: float | None = None
                 # 传统模型分支：搜索选参（train/valid）→ train+valid 重训 → 评估三个集合
                 # → 可选窗口遮挡解释性；深度分支：训练整折 → 评估 → 收集解释性上下文。
-        if model_family(model_type) == "traditional_ml":
+        if modern:
+            winner = fit_experiment_fold(
+                config, model_type, x_model_raw, y_model,
+                np.concatenate([sample_id, test_sample_id]) if test_dataset is not None and evaluation_strategy != 'leave_one_sample_id_cv_with_external_test' else sample_id,
+                splits, label_names, fold_index, check_run_active,
+                lambda extra: write_progress(fold_index, fold_index - 1, fold, extra=extra),
+            )
+            model = winner['model']
+            normalizer = winner['transform']
+            train_eval, valid_eval, test_eval = (winner['evals'][name] for name in ('train', 'valid', 'test'))
+            fold_best_params = {'feature_scheme': winner['scheme_id'], **winner['params']}
+            fold_selection_metric, fold_selection_score = winner['selection_metric'], winner['selection_score']
+            fold_final_fit_indices = np.asarray(sorted(set(splits['train']) | set(splits['valid']))) if model_type != 'cnn1d' else np.asarray(splits['train'])
+            best_search_rows.extend(winner['search_rows'])
+            history_rows.extend({**row, 'fold_index': fold_index, 'feature_scheme': winner['scheme_id']} for row in winner['history'])
+            experiment_folds.append({k: v for k, v in winner.items() if k not in {'model', 'transformer', 'history', 'search_rows', 'evals'}})
+            if model_type == 'cnn1d':
+                import joblib
+                joblib.dump(winner['transformer'], run_dir / 'feature_transform.joblib')
+            dscarnet_mapping_metadata = None
+        elif model_family(model_type) == "traditional_ml":
             model, selected_config, valid_eval, search_rows = _fit_traditional_fold(
                 config,
                 model_type,
@@ -2221,7 +2255,31 @@ def _run_legacy_training(
         final_splits = {"train": final_train_indices, "valid": final_train_indices, "test": external_indices}
         final_fold_index = len(folds) + 1
 
-        if model_family(model_type) == "traditional_ml":
+        if modern:
+            if model_type == 'cnn1d':
+                selection_config = _clone_config(config, split_mode='external_test_holdout', split_train=8, split_valid=2, split_test=0)
+                selection_splits = _split_indices(y, sample_id, selection_config, label_names)
+                selection_splits['test'] = external_indices
+            else:
+                selection_splits = final_splits
+            external_experiment = fit_experiment_fold(
+                config, model_type, final_x_raw, final_y, final_sample_id,
+                selection_splits, label_names, 'external_final', check_run_active,
+                lambda extra: write_progress(len(folds), len(folds), folds[-1], extra=extra), external_final=True,
+            )
+            last_model = external_experiment['model']
+            final_normalizer = external_experiment['transform']
+            final_train_eval, external_test_eval = (external_experiment['evals'][name] for name in ('train', 'test'))
+            external_best_params = {'feature_scheme': external_experiment['scheme_id'], **external_experiment['params']}
+            external_selection_score = external_experiment['selection_score']
+            final_fit_indices = np.asarray(final_train_indices)
+            external_mapping_metadata = None
+            best_search_rows.extend(external_experiment['search_rows'])
+            history_rows.extend({**row, 'fold_index': 'external_final'} for row in external_experiment['history'])
+            if model_type == 'cnn1d':
+                import joblib
+                joblib.dump(external_experiment['transformer'], run_dir / 'feature_transform.joblib')
+        elif model_family(model_type) == "traditional_ml":
             selection_splits = {"train": final_train_indices, "valid": final_train_indices, "test": []}
             selection = _select_traditional_config(
                 config, model_type, x_raw, y, sample_id, selection_splits, label_names
@@ -2356,6 +2414,14 @@ def _run_legacy_training(
         "model_range_warnings": range_warnings,
         "explainability_status": "temporarily_hidden",
     }
+    experiment = summarize_experiments(experiment_folds, label_names, external_final=external_experiment) if modern else None
+    if modern:
+        selected = external_experiment or experiment_folds[-1]
+        model_metadata.update(architecture_version='docx-classification-v4-0904', experiment_version='word-0904', feature_transform=selected['transform'])
+        if model_type == 'cnn1d':
+            model_metadata.update(profile=selected['profile'], model_profile=selected['profile'], resolved_profile=selected['profile'], N_train=selected['profile']['N'], L=selected['profile']['L'])
+            profile_payload = selected['profile']
+            metadata_train_count = selected['profile']['N']
     if last_model_family == "deep_learning":
         model_metadata.update(
             {
@@ -2366,6 +2432,8 @@ def _run_legacy_training(
         )
     if getattr(last_model, "pca_metadata", None) is not None:
         model_metadata["pca"] = last_model.pca_metadata
+    if modern and model_type == 'cnn1d':
+        model_metadata.update(classification_head='multiclass_logits', loss_function='CrossEntropyLoss', output_dim=len(label_names))
     if model_type == "spls_da" and getattr(last_model, "selected_feature_indices_by_component", None) is not None:
         model_metadata["spls_da"] = {
             "selected_feature_indices_by_component": [
@@ -2389,6 +2457,15 @@ def _run_legacy_training(
         "model_range_warnings": range_warnings,
         "explainability_status": "temporarily_hidden",
     }
+    if modern:
+        config_out['architecture_version'] = 'docx-classification-v4-0904'
+        config_out['experiment_version'] = 'word-0904'
+        config_out['model_profile'] = profile_payload
+        config_out['L'] = selected['transform']['output_features']
+        (run_dir / 'feature_experiments.json').write_text(json.dumps(experiment, ensure_ascii=False, indent=2), encoding='utf-8')
+        pd.DataFrame([{'scheme_id': item['scheme_id'], 'scheme_name': item['scheme_name'], 'status': item['status'], 'reason': item['reason'], **{key: (item['metrics'] or {}).get(key) for key in ('accuracy', 'balanced_accuracy', 'macro_f1', 'weighted_f1')}} for item in experiment['schemes']]).to_csv(run_dir / 'feature_experiments.csv', index=False, encoding='utf-8-sig')
+        for row in best_search_rows:
+            row['params_json'] = json.dumps(row.get('params', {}), ensure_ascii=False)
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2404,6 +2481,7 @@ def _run_legacy_training(
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
     search_columns = [
+        "scheme_id", "scheme_name", "status", "reason", "inner_fold_scores",
         "fold_index",
         "model_type",
         "is_selected",
@@ -2440,7 +2518,7 @@ def _run_legacy_training(
         "history": history_rows,
         "model_type": model_type,
         "model_family": last_model_family,
-        "architecture_version": ARCHITECTURE_VERSION,
+        "architecture_version": config_out['architecture_version'],
         "model_metadata": model_metadata,
         "model_profile": profile_payload,
         "model_artifact": last_model_artifact,

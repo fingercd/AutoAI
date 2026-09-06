@@ -435,6 +435,7 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
         'state': record.state,
         'status': record.legacy_status,
         'result_state': result_state,
+        'batch_id': record.batch_id,
         'model_type': record.config.get('model_type'),
         'dataset_id': record.dataset_id,
         'dataset_name': snapshot.get('name') or _dataset_name_for_record(record),

@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from ..contracts import TrainingBatchRequest, TrainingConfigValidationError, TrainingSpec
 from ..http.principal import get_principal
@@ -114,6 +116,16 @@ def stop_batch(batch_id: str, principal: Principal = Depends(get_principal)) -> 
         records = repository.cancel_batch_scoped(batch_id, now=datetime.now(timezone.utc), principal=principal)
     except RunNotFound as exc:
         raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    from ..runs.artifacts import discard_run_artifacts
+    from ..runs.batch_archive import discard_batch_archive
+    discard_batch_archive(repository, batch_id)
+    for record in records:
+        try:
+            discard_run_artifacts(get_run_dir(record.run_id))
+        except OSError:
+            # A stopping worker may briefly hold a Windows file handle; its
+            # shutdown/startup cleanup retries after releasing that handle.
+            pass
     return batch_status_payload(batch_id, records)
 
 
@@ -129,6 +141,8 @@ def delete_batch(batch_id: str, principal: Principal = Depends(get_principal)) -
     # DB deletion is deliberately transactional before best-effort file cleanup;
     # stale directories expose no download route once their records are gone.
     from ..runs.artifacts import discard_run_artifacts
+    from ..runs.batch_archive import discard_batch_archive
+    discard_batch_archive(repository, batch_id)
     for run_id in run_ids:
         try:
             discard_run_artifacts(get_run_dir(run_id))
@@ -146,3 +160,86 @@ def get_batch_comparison(batch_id: str, principal: Principal = Depends(get_princ
     except RunNotFound as exc:
         raise HTTPException(status_code=404, detail="batch 不存在") from exc
     return project_model_comparison(batch_id=batch_id, records=records, run_dir_for=get_run_dir)
+
+
+@router.get('/api/training/batches')
+def list_batches(principal: Principal = Depends(get_principal), limit: int = Query(20, ge=1, le=100), cursor: str | None = None):
+    from ..runs.batch_archive import archive_status
+    repository = get_run_repository()
+    try:
+        batches, next_cursor = repository.list_batches_scoped(principal=principal, limit=limit, cursor=cursor)
+        items = []
+        for batch in batches:
+            status = batch_status_payload(batch.batch_id, repository.list_batch_runs_scoped(batch.batch_id, principal=principal))
+            items.append({'batch_id': batch.batch_id, 'created_at': batch.created_at, 'dataset_name': batch.dataset_snapshot.get('name') or batch.config.get('dataset_name') or batch.dataset_id,
+                          'model_types': batch.model_types, 'state': status['state'], 'counts': status['counts'], 'archive': archive_status(repository, batch.batch_id, principal)})
+        return {'items': items, 'next_cursor': next_cursor}
+    except RunNotFound as exc:
+        raise HTTPException(404, '批次不存在') from exc
+
+
+def _archive_call(callback):
+    from ..runs.batch_archive import ArchiveBusy, ArchiveUnavailable
+    try:
+        return callback()
+    except RunNotFound as exc:
+        raise HTTPException(404, '批次不存在') from exc
+    except ArchiveBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ArchiveUnavailable, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, '对比图像或归档生成失败，请重试') from exc
+
+
+@router.get('/api/training/batches/{batch_id}/archive')
+def get_archive(batch_id: str, principal: Principal = Depends(get_principal)):
+    from ..runs.batch_archive import archive_status, load_archive
+    repository = get_run_repository()
+    def read():
+        status = archive_status(repository, batch_id, principal)
+        return {**status, 'comparison': load_archive(repository, batch_id, principal) if status['state'] == 'ready' else None}
+    return _archive_call(read)
+
+
+@router.post('/api/training/batches/{batch_id}/archive')
+def save_archive(batch_id: str, principal: Principal = Depends(get_principal), force: bool = False):
+    from ..runs.batch_archive import ensure_archive
+    return _archive_call(lambda: ensure_archive(get_run_repository(), batch_id, principal, get_run_dir, force=force))
+
+
+@router.get('/api/training/batches/{batch_id}/archive/files/{name}')
+def get_archive_file(batch_id: str, name: str, principal: Principal = Depends(get_principal)):
+    from ..runs.batch_archive import archive_download
+    content = _archive_call(lambda: archive_download(get_run_repository(), batch_id, principal, name))
+    media = {'svg': 'image/svg+xml', 'png': 'image/png', 'csv': 'text/csv', 'json': 'application/json', 'zip': 'application/zip'}[name.rsplit('.', 1)[-1]]
+    return Response(content, media_type=media, headers={'Content-Disposition': f'attachment; filename="{name}"', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store'})
+
+
+class ComparisonFigureRequest(BaseModel):
+    kind: str = Field(pattern='^(overall|matrix|recall|samples|features)$')
+    metric: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')
+    model: str = Field(default='', max_length=100, pattern='^[a-zA-Z0-9_-]*$')
+    sort: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')
+    page: int = Field(default=0, ge=0, le=100000)
+    search: str = Field(default='', max_length=128)
+    errors: bool = False
+    matrix_mode: str = Field(default='percent', pattern='^(percent|count)$')
+    width: int = Field(default=360, ge=260, le=1800)
+
+
+@router.post('/api/training/batches/{batch_id}/figure')
+def get_comparison_figure(batch_id: str, payload: ComparisonFigureRequest, principal: Principal = Depends(get_principal), format: str = Query('svg', pattern='^(svg|png)$')):
+    from ..runs.batch_archive import archive_status, load_archive
+    from ..runs.comparison_figures import render_figure
+    repository = get_run_repository()
+    def draw():
+        status = archive_status(repository, batch_id, principal)
+        if status['state'] == 'discarded':
+            raise ValueError('批次已停止，不提供结果')
+        data = load_archive(repository, batch_id, principal) if status['state'] == 'ready' else get_batch_comparison(batch_id, principal)
+        content, metadata = render_figure(data, format=format, **payload.model_dump())
+        if format == 'svg':
+            return {'svg': content.decode('utf-8'), **metadata}
+        return Response(content, media_type='image/png', headers={'Content-Disposition': 'attachment; filename="comparison.png"', 'Cache-Control': 'private, no-store'})
+    return _archive_call(draw)

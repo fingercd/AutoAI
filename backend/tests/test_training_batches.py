@@ -42,8 +42,7 @@ def test_catalog_has_exactly_ten_ui_models_and_keeps_hidden_models_callable() ->
 
     visible = [item[0] for item in _MODEL_CATALOG if item[-1] is True]
     assert visible == [
-        "pls_da", "spls_da", "pca_lda", "logistic_regression", "svm",
-        "pca_svm", "random_forest", "xgboost", "pca_mlp", "cnn1d",
+        "pls_da", "logistic_regression", "svm", "random_forest", "xgboost", "cnn1d",
     ]
     assert canonical_model_type("resnet1d") == "resnet1d"
     assert canonical_model_type("dscarnet") == "dscarnet"
@@ -53,7 +52,7 @@ def test_catalog_has_exactly_ten_ui_models_and_keeps_hidden_models_callable() ->
     catalog = response.json()["models"]
     assert [item["id"] for item in catalog if item["ui_visible"]] == visible
     hidden = {item["id"]: item for item in catalog if not item["ui_visible"]}
-    assert set(hidden) == {"cnn1d_se", "resnet1d", "inception1d", "tcn1d", "cnn_transformer1d", "cnn_mamba1d", "dscarnet"}
+    assert set(hidden) == {"spls_da", "pca_lda", "pca_svm", "pca_mlp", "cnn1d_se", "resnet1d", "inception1d", "tcn1d", "cnn_transformer1d", "cnn_mamba1d", "dscarnet"}
     assert all(item["visibility_reason"] == "temporarily_hidden_from_ui" for item in hidden.values())
     assert all("explainability_method" not in item for item in catalog)
 
@@ -147,10 +146,10 @@ def test_batch_status_partial_failure_and_cancel_are_aggregated(tmp_path: Path) 
     before_stop = repository.list_batch_runs_scoped(batch.batch_id, principal=Principal())
     assert aggregate_batch_state(before_stop) == "queued"
     cancelled = repository.cancel_batch_scoped(batch.batch_id, now=now, principal=Principal())
-    assert aggregate_batch_state(cancelled) == "partial"
-    assert sum(record.state == "cancelled" for record in cancelled) == 4
-    assert sum(record.state == "succeeded" for record in cancelled) == 1
-    assert sum(record.state == "failed" for record in cancelled) == 1
+    assert aggregate_batch_state(cancelled) == "cancelled"
+    assert sum(record.state == "cancelled" for record in cancelled) == len(records)
+    assert sum(record.state == "succeeded" for record in cancelled) == 0
+    assert sum(record.state == "failed" for record in cancelled) == 0
 
 
 def _write_comparison_artifacts(run_dir: Path, run_id: str, *, score: float, sample_suffix: str, second_label: str = "B") -> None:
@@ -175,6 +174,22 @@ def _write_comparison_artifacts(run_dir: Path, run_id: str, *, score: float, sam
     }])
     writer.write_json("label_map.json", {"0": "A", "1": second_label})
     writer.finalize(run_id=run_id)
+
+
+def test_historical_comparison_uses_single_runs_instead_of_summed_matrix(tmp_path: Path) -> None:
+    from dataclasses import replace
+    repository = _repository(tmp_path)
+    batch, records = _batch(repository)
+    successful = []
+    for record in records:
+        _write_comparison_artifacts(tmp_path / record.run_id, record.run_id, score=.8, sample_suffix='same')
+        successful.append(replace(record, state='succeeded'))
+    result = project_model_comparison(batch_id=batch.batch_id, records=successful, run_dir_for=lambda rid: tmp_path / rid)
+    assert result['comparable']
+    assert all(sum(map(sum, m['confusion_matrix'])) == 4 for m in result['confusion_matrices'])
+    assert all(len(runs) == 2 for runs in result['run_comparisons'].values())
+    assert all(len(m['run_ids']) == 1 for m in result['models'])
+    assert all(m['experiment'] is None for m in result['models'])
 
 
 def test_comparison_is_adaptive_and_does_not_fabricate_missing_values(tmp_path: Path) -> None:

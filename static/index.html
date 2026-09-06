@@ -1480,6 +1480,7 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="/static/js/comparison-page.css?v=1" />
   </head>
   <body>
     <!-- 页头：平台标题、使用说明入口、认证状态徽章（authStatus/authButton，
@@ -1791,7 +1792,7 @@
             <summary>模型比较说明</summary>
             <ol>
               <li>一个所选模型对应一个独立 Run；本页只比较成功且完整的真实结果。</li>
-              <li>2–5 个模型显示四指标分组柱图，更多模型自动切换为热力表。</li>
+              <li>四项指标统一排序；混淆矩阵、类别 Recall 和样品正误分别展示，可保存和下载。</li>
               <li>普通划分使用直接 Test，留一交叉验证使用 pooled OOF，独立测试集使用 direct external Test。</li>
             </ol>
           </details>
@@ -1906,6 +1907,7 @@
          就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
+    <script type="module" src="/static/js/comparison-page.js?v=1"></script>
     <script type="module" src="/static/js/run-results.js?v=20260820-compact-visualization-v3"></script>
     <script>
       /*
@@ -1942,6 +1944,8 @@
       let trainingRequestInFlight = false;
       let batchPollTimer = null;
       let batchPollController = null;
+      let batchComparisonTimer = null;
+      let batchComparisonController = null;
       let batchPollGeneration = 0;
       let batchPollRetryCount = 0;
       let batchLastComparisonSignature = "";
@@ -2206,8 +2210,7 @@
         loadHealth();
         healthPollTimer = window.setInterval(loadHealth, 30000);
         loadModelCatalog().catch(() => undefined);
-        restoreCurrentRun().catch(() => undefined);
-        restoreCurrentBatch().catch(() => undefined);
+        restoreCurrentTraining().catch(() => undefined);
       }
       window.addEventListener("specautoai:modules-ready", initializeApiBackedUi, { once: true });
       window.addEventListener("DOMContentLoaded", () => {
@@ -2762,9 +2765,11 @@
       /** 重置"当前训练"面板：取消上一次训练的自动跳转与轮询，
        *  清空旧指标/图表/下载区，显示"正在创建新的训练任务"加载提示。 */
       function resetTrainingPanel(message = "模型正在训练") {
+        try { window.sessionStorage.removeItem("specautoai.training.idleAfterStop"); } catch (_) {}
         window.SpecAutoAIResults?.cancelAutoRedirect();
         window.SpecAutoAIResults?.stopTrainingWatch();
         stopBatchWatch({ clearIdentity: true });
+        rememberCurrentRun(null);
         $("runStatus").textContent = "准备开始";
         $("runStatus").className = "status pending";
         $("stopTrain").classList.add("hidden");
@@ -3066,79 +3071,10 @@
       }
 
       function renderBatchComparison(batchId, comparison) {
-        const target = $("batchComparisonPage");
-        if (!target) return;
-        if (!comparison?.comparable) {
-          target.replaceChildren(currentRunNotice("warning", "暂不可比较", comparison?.reason || "等待至少一个完整成功的模型结果。"));
-          return;
-        }
-        const models = comparisonModels(comparison);
-        const content = document.createDocumentFragment();
-
-        const overall = document.createElement("section");
-        overall.className = "comparison-section";
-        const overallTitle = document.createElement("h3");
-        overallTitle.textContent = "总体指标比较";
-        const overview = document.createElement("div");
-        overview.className = "comparison-overview-grid";
-        overview.append(createAccuracyRanking(models));
-        const allMetricsPresent = models.length > 0 && models.every((model) => COMPARISON_METRICS.every(([key]) => Number.isFinite(Number(model.metrics?.[key]?.mean))));
-        if (models.length <= 5 && allMetricsPresent) {
-          overview.append(createGroupedMetricChart(models));
-        } else {
-          const heatCard = document.createElement("div");
-          heatCard.className = "comparison-card";
-          const heatTitle = document.createElement("h4");
-          heatTitle.textContent = models.length > 5 ? "四项测试指标热力表" : "四项测试指标明细";
-          heatCard.append(heatTitle, createComparisonTable(
-            ["模型", ...COMPARISON_METRICS.map(([, label]) => label)],
-            models.map((model) => [model.model_type, ...COMPARISON_METRICS.map(([key]) => model.metrics?.[key]?.mean)]),
-            { heat: true },
-          ));
-          overview.append(heatCard);
-        }
-        overall.append(overallTitle, overview, createComparisonTable(
-          ["模型", ...COMPARISON_METRICS.map(([, label]) => label)],
-          models.map((model) => [
-            model.model_type,
-            ...COMPARISON_METRICS.map(([key]) => model.metrics?.[key]?.mean),
-          ]),
-        ));
-        content.append(overall);
-
-        const heatGrid = document.createElement("div");
-        heatGrid.className = "comparison-heat-grid";
-        const correctness = comparison.sample_correctness || {};
-        if (correctness.status === "ready") {
-          heatGrid.append(createCorrectnessHeatSection(correctness, models));
-        }
-        const recall = comparison.class_recall || {};
-        if (recall.status === "ready") {
-          const recallSection = createComparisonHeatSection(
-            "按类别 Recall / Sensitivity",
-            "模型 / 类别",
-            recall.labels || [],
-            recall.rows || [],
-            (row, _column, index) => row.values?.[index]?.mean ?? null,
-          );
-          const hint = document.createElement("p");
-          hint.className = "hint";
-          hint.textContent = "Recall = TP / (TP + FN)，按测试集预测记录统计。";
-          recallSection.insertBefore(hint, recallSection.children[1] || null);
-          heatGrid.append(recallSection);
-        }
-        if (heatGrid.childElementCount) content.append(heatGrid);
-
-        const matrixSection = document.createElement("section");
-        matrixSection.className = "comparison-section";
-        const matrixTitle = document.createElement("h4");
-        matrixTitle.textContent = "各模型混淆矩阵";
-        const matrixGrid = document.createElement("div");
-        matrixGrid.className = "comparison-matrix-grid";
-        (comparison.confusion_matrices || []).forEach((item) => matrixGrid.append(createComparisonMatrixCard(item)));
-        matrixSection.append(matrixTitle, matrixGrid.childElementCount ? matrixGrid : currentRunNotice("warning", "暂无矩阵", "当前没有可显示的混淆矩阵。"));
-        content.append(matrixSection);
-        target.replaceChildren(content);
+        if (window.SpecAutoAIComparison) window.SpecAutoAIComparison.render(batchId, comparison);
+        else window.addEventListener("specautoai:comparison-ready", () => {
+          if (currentBatchId === batchId) window.SpecAutoAIComparison.render(batchId, comparison);
+        }, { once: true });
       }
 
       function stopBatchWatch({ clearIdentity = false } = {}) {
@@ -3147,6 +3083,10 @@
         batchPollTimer = null;
         batchPollController?.abort();
         batchPollController = null;
+        if (batchComparisonTimer != null) window.clearTimeout(batchComparisonTimer);
+        batchComparisonTimer = null;
+        batchComparisonController?.abort();
+        batchComparisonController = null;
         batchPollRetryCount = 0;
         if (clearIdentity) {
           currentBatchId = null;
@@ -3162,13 +3102,18 @@
       }
 
       async function stopTrainingBatch(batchId) {
-        if (!batchId || !window.confirm(`确定停止整个批次 ${batchId} 吗？`)) return;
+        if (!batchId) return;
         await api(`/api/training/batches/${encodeURIComponent(batchId)}/stop`, { method: "POST" });
-        watchBatchComparison(batchId);
+        if (currentBatchId === batchId) resetStoppedTrainingPanel();
       }
 
       function renderBatchSnapshot(batchId, status, comparison) {
+        if (currentBatchId !== batchId) return;
         const state = String(status?.state || "queued").toLowerCase();
+        if (state === "cancelled" && currentBatchId === batchId) {
+          resetStoppedTrainingPanel();
+          return;
+        }
         const stateLabels = { queued: "已排队", running: "训练中", succeeded: "已完成", partial: "部分完成", failed: "失败", cancelled: "已停止" };
         const stateLabel = stateLabels[state] || state;
         const statusClass = state === "succeeded" ? "success" : state === "failed" ? "failed" : ["partial", "cancelled"].includes(state) ? "warning" : state === "running" ? "running" : "pending";
@@ -3190,11 +3135,56 @@
           actions.push(stop);
         }
         const noticeKind = state === "succeeded" ? "success" : state === "failed" ? "error" : ["partial", "cancelled"].includes(state) ? "warning" : "loading";
-        $("trainingProgress").replaceChildren(currentRunNotice(noticeKind, `批次${stateLabel}`, countText, actions));
+        $("stopTrain").classList.add("hidden");
+        let panel = $("trainingProgress").querySelector("[data-training-batch]");
+        if (panel?.dataset.trainingBatch !== batchId) {
+          panel = document.createElement("div");
+          panel.dataset.trainingBatch = batchId;
+          const summary = document.createElement("div");
+          summary.id = "batchTrainingSummary";
+          const warning = document.createElement("div");
+          warning.id = "batchTrainingWarning";
+          warning.setAttribute("role", "status");
+          const scroll = document.createElement("div");
+          scroll.style.overflowX = "auto";
+          const table = document.createElement("table");
+          const head = document.createElement("thead");
+          const headings = document.createElement("tr");
+          ["模型", "状态", "实时进度"].forEach((label) => {
+            const cell = document.createElement("th");
+            cell.textContent = label;
+            headings.append(cell);
+          });
+          head.append(headings);
+          const body = document.createElement("tbody");
+          body.id = "batchTrainingRows";
+          table.append(head, body);
+          scroll.append(table);
+          panel.append(summary, warning, scroll);
+          $("trainingProgress").replaceChildren(panel);
+        }
+        $("batchTrainingSummary").replaceChildren(currentRunNotice(noticeKind, `批次${stateLabel}`, countText, actions));
+        $("batchTrainingWarning").textContent = "";
+        const rows = $("batchTrainingRows");
+        const runIds = new Set();
+        (status.runs || []).forEach((run) => {
+          runIds.add(run.run_id);
+          let row = Array.from(rows.children).find((item) => item.dataset.runId === run.run_id);
+          if (!row) {
+            row = document.createElement("tr");
+            row.dataset.runId = run.run_id;
+            for (let index = 0; index < 3; index += 1) row.append(document.createElement("td"));
+            rows.append(row);
+          }
+          row.children[0].textContent = window.SpecAutoAIModelMeta?.(run.model_type)?.displayName || run.model_type;
+          row.children[1].textContent = stateLabels[run.state] || run.state;
+          row.children[2].textContent = batchRunProgressText(run);
+        });
+        Array.from(rows.children).forEach((row) => { if (!runIds.has(row.dataset.runId)) row.remove(); });
         $("batchComparison").replaceChildren();
 
         const route = window.SpecAutoAIResults?.parseHash?.(window.location.hash);
-        if (route?.view === "comparison" && String(route.batchId || "") === batchId) {
+        if (comparison && route?.view === "comparison" && String(route.batchId || "") === batchId) {
           const signature = JSON.stringify(comparison);
           if (signature !== batchLastComparisonSignature || !$("batchComparisonPage").childElementCount) {
             renderBatchComparison(batchId, comparison);
@@ -3205,6 +3195,7 @@
       }
 
       function renderBatchPollingError(batchId, error) {
+        if (currentBatchId !== batchId) return;
         const message = `批次状态暂时无法刷新：${error?.message || "网络异常"}。已保留上一次结果，将自动重试。`;
         $("runStatus").textContent = `批次 ${batchId} 连接中断`;
         $("runStatus").className = "status warning";
@@ -3212,7 +3203,9 @@
         link.className = "secondary";
         link.href = `#/comparison?batch_id=${encodeURIComponent(batchId)}`;
         link.textContent = "查看上一次模型对比";
-        $("trainingProgress").replaceChildren(currentRunNotice("warning", "连接暂时中断", message, [link]));
+        const warning = $("batchTrainingWarning");
+        if (warning) warning.textContent = message;
+        else $("trainingProgress").replaceChildren(currentRunNotice("warning", "连接暂时中断", message, [link]));
         const errorTarget = $("batchComparisonError");
         if (errorTarget) errorTarget.textContent = message;
       }
@@ -3221,6 +3214,9 @@
         const normalized = String(batchId || "").trim();
         if (!normalized) return;
         stopBatchWatch();
+        window.SpecAutoAIResults?.stopTrainingWatch();
+        rememberCurrentRun(null);
+        clearCurrentRunDetails();
         rememberCurrentBatch(normalized);
         batchLastComparisonSignature = "";
         const generation = ++batchPollGeneration;
@@ -3233,15 +3229,11 @@
           if (generation !== batchPollGeneration) return;
           batchPollController = new AbortController();
           try {
-            const [status, comparison] = await Promise.all([
-              api(`/api/training/batches/${encodeURIComponent(normalized)}`, { signal: batchPollController.signal }),
-              api(`/api/training/batches/${encodeURIComponent(normalized)}/comparison`, { signal: batchPollController.signal }),
-            ]);
+            const status = await requestTrainingSnapshot(`/api/training/batches/${encodeURIComponent(normalized)}`, batchPollController.signal);
             if (generation !== batchPollGeneration) return;
             batchPollRetryCount = 0;
-            const errorTarget = $("batchComparisonError");
-            if (errorTarget) errorTarget.textContent = "";
-            renderBatchSnapshot(normalized, status, comparison);
+            renderBatchSnapshot(normalized, status);
+            if (generation !== batchPollGeneration) return;
             if (["queued", "running"].includes(String(status.state || ""))) {
               batchPollTimer = window.setTimeout(poll, 3000);
             }
@@ -3255,15 +3247,87 @@
             if (generation === batchPollGeneration) batchPollController = null;
           }
         };
+        // Result construction must never block live training status updates.
+        const pollComparison = async () => {
+          if (generation !== batchPollGeneration) return;
+          batchComparisonController = new AbortController();
+          let retry = true;
+          try {
+            const comparison = await requestTrainingSnapshot(`/api/training/batches/${encodeURIComponent(normalized)}/comparison`, batchComparisonController.signal);
+            if (generation !== batchPollGeneration) return;
+            const signature = JSON.stringify(comparison);
+            if (signature !== batchLastComparisonSignature || !pageTarget?.childElementCount) {
+              renderBatchComparison(normalized, comparison);
+              batchLastComparisonSignature = signature;
+            }
+            retry = ["queued", "running"].includes(comparison.state);
+            if ($("batchComparisonError")) $("batchComparisonError").textContent = "";
+          } catch (error) {
+            if (generation !== batchPollGeneration) return;
+            if ($("batchComparisonError")) $("batchComparisonError").textContent = `对比结果暂时无法刷新：${error.message}，将自动重试。`;
+          } finally {
+            if (generation === batchPollGeneration) {
+              batchComparisonController = null;
+              if (retry) batchComparisonTimer = window.setTimeout(pollComparison, 3000);
+            }
+          }
+        };
         poll();
+        if (window.SpecAutoAIResults?.parseHash?.(window.location.hash)?.view === "comparison") pollComparison();
       }
 
       async function restoreCurrentBatch() {
         let savedBatchId = null;
+        try { if (window.sessionStorage.getItem("specautoai.training.idleAfterStop")) return; } catch (_) {}
         try { savedBatchId = window.sessionStorage.getItem(CURRENT_BATCH_STORAGE_KEY); } catch (_) {}
-        if (!savedBatchId) return;
         const route = window.SpecAutoAIResults?.parseHash?.(window.location.hash);
+        if (route?.view === "comparison" && route.batchId) savedBatchId = route.batchId;
+        if (!savedBatchId) return false;
+        rememberCurrentBatch(savedBatchId);
         if (["modeling", "comparison"].includes(route?.view)) watchBatchComparison(savedBatchId);
+        return true;
+      }
+
+      async function restoreCurrentTraining() {
+        if (await restoreCurrentBatch()) return;
+        await restoreCurrentRun();
+      }
+
+      function batchRunProgressText(run) {
+        if (run.state === "queued") return "等待可用 Worker";
+        if (run.state === "succeeded") return "训练完成";
+        if (run.state === "cancelled") return "已停止";
+        if (run.state === "failed") return String(run.error?.message || run.error || "训练失败");
+        const progress = run.progress || {};
+        const parts = [];
+        if (progress.feature_scheme) parts.push(progress.feature_scheme);
+        else if (progress.training_stage_label) parts.push(progress.training_stage_label);
+        else if (progress.search_total == null && progress.current_epoch == null) {
+          parts.push(isTraditionalModel(run.model_type)
+            ? "参数搜索与模型拟合中（未提供细分进度）"
+            : "训练中（未提供细分进度）");
+        }
+        if (progress.current_fold != null) parts.push(`当前折 ${progress.current_fold}`);
+        if (progress.search_total > 0) parts.push(`参数搜索 ${progress.search_completed ?? 0}/${progress.search_total}`);
+        if (progress.current_epoch != null) parts.push(`Epoch ${progress.current_epoch}`);
+        return parts.join(" · ") || "正在初始化训练";
+      }
+
+      async function requestTrainingSnapshot(url, signal) {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+        const timer = window.setTimeout(abort, 15000);
+        try {
+          return await api(url, { signal: controller.signal });
+        } catch (error) {
+          if (error?.name === "AbortError" && !signal.aborted) throw new Error("请求超时（15 秒）");
+          throw error;
+        } finally {
+          window.clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+        }
       }
 
       /**
@@ -3327,6 +3391,22 @@
           .forEach((id) => $(id).replaceChildren());
       }
 
+      function resetStoppedTrainingPanel() {
+        window.SpecAutoAIResults?.cancelAutoRedirect();
+        window.SpecAutoAIResults?.stopTrainingWatch();
+        stopBatchWatch({ clearIdentity: true });
+        rememberCurrentRun(null);
+        try { window.sessionStorage.setItem("specautoai.training.idleAfterStop", "1"); } catch (_) {}
+        $("runStatus").textContent = "尚未开始";
+        $("runStatus").className = "status";
+        $("stopTrain").classList.add("hidden");
+        $("stopTrain").disabled = false;
+        $("trainingProgress").replaceChildren();
+        $("batchComparison").replaceChildren();
+        $("batchComparisonPage")?.replaceChildren();
+        clearCurrentRunDetails();
+      }
+
       /**
        * 构造一条通知条 DOM（notice-<kind>）。
        * @param {string} kind "loading"|"success"|"error"|"warning"，决定配色；
@@ -3388,6 +3468,7 @@
        * @param {object} run 后端返回的 Run 对象
        */
       function renderRun(run) {
+        if (currentBatchId || trainingRequestInFlight) return;
         if (!run || String(run.run_id || "") !== String(currentRunId || "")) return;
         const canonicalState = String(run.state || run.status || "pending").toLowerCase();
         const statusText = ["succeeded", "success"].includes(canonicalState)
@@ -3419,6 +3500,7 @@
           const detailText = `${run.model_type || run.config?.model_type || "分类模型"} · ${trainingDetail} · 训练时间 ${liveTrainingTime}`;
           const activeState = $("trainingProgress").querySelector("[data-active-training-run]");
           if (activeState?.dataset.activeTrainingRun === String(run.run_id || "")) {
+            activeState.querySelector("strong").textContent = canonicalState === "running" ? "模型正在训练" : "任务正在排队";
             activeState.querySelector("span").textContent = detailText;
           } else {
             const state = document.createElement("div");
@@ -3487,7 +3569,7 @@
        * 模块未加载时退化为单次 pollCurrentRun。
        */
       function watchCurrentRun() {
-        if (!currentRunId) return;
+        if (!currentRunId || currentBatchId) return;
         if (window.SpecAutoAIResults?.watchTrainingRun) {
           window.SpecAutoAIResults.watchTrainingRun(
             currentRunId,
@@ -3504,7 +3586,10 @@
 
       /** 刷新页面后恢复当前标签页正在跟踪的 Run，并继续轮询。 */
       async function restoreCurrentRun() {
+        if (currentBatchId || trainingRequestInFlight) return;
+        const generation = batchPollGeneration;
         let savedRunId = null;
+        try { if (window.sessionStorage.getItem("specautoai.training.idleAfterStop")) return; } catch (_) {}
         try { savedRunId = window.sessionStorage.getItem(CURRENT_RUN_STORAGE_KEY); } catch (_) {}
         if (!savedRunId) {
           // 升级前页面没有写 sessionStorage；刷新后从当前 Principal 最近的活跃
@@ -3519,14 +3604,27 @@
           savedRunId = recovered?.run_id || null;
         }
         if (!savedRunId) return;
+        if (generation !== batchPollGeneration || currentBatchId || trainingRequestInFlight) return;
+        // A STOP may have completed while the restore request was in flight.
+        try { if (window.sessionStorage.getItem("specautoai.training.idleAfterStop")) return; } catch (_) {}
         rememberCurrentRun(savedRunId);
         try {
           const run = await fetchRun(savedRunId);
-          if (currentRunId !== savedRunId) return;
+          if (generation !== batchPollGeneration || currentBatchId || currentRunId !== savedRunId) return;
+          const batchId = run.batch_id || run.config?.batch_id;
+          if (batchId) {
+            watchBatchComparison(batchId);
+            return;
+          }
+          if (String(run.state || run.status || "").toLowerCase() === "cancelled") {
+            resetStoppedTrainingPanel();
+            return;
+          }
           renderRun(run);
           const state = String(run.state || run.status || "").toLowerCase();
           if (["queued", "pending", "running"].includes(state)) watchCurrentRun();
         } catch (error) {
+          if (generation !== batchPollGeneration || currentBatchId || currentRunId !== savedRunId) return;
           clearRememberedCurrentRun();
           if (currentRunId === savedRunId) currentRunId = null;
           $("trainingProgress").replaceChildren(currentRunNotice("warning", "训练状态恢复失败", error.message));
@@ -3536,12 +3634,10 @@
       /** 用户主动 STOP；后端终止 worker、清理本次产物，只保留历史状态。 */
       async function stopTrainingRun(runId) {
         if (!runId) return;
-        if (!window.confirm(`确定停止训练 ${runId} 吗？\n本次模型、指标和中间产物都不会保留。`)) return;
         if (currentRunId === runId) $("stopTrain").disabled = true;
         try {
-          const stopped = await stopRun(runId);
-          window.SpecAutoAIResults?.stopTrainingWatch();
-          if (currentRunId === runId) renderRun(stopped);
+          await stopRun(runId);
+          if (currentRunId === runId) resetStoppedTrainingPanel();
           await loadRuns();
         } catch (error) {
           window.alert(`停止失败：${error.message}`);
@@ -3990,6 +4086,13 @@
           deleteButton.title = terminal ? "永久删除该训练记录及产物" : "排队中或运行中的任务不能删除";
           if (terminal) deleteButton.addEventListener("click", () => window.deleteRun(run.run_id));
           actionWrap.append(viewButton, copy, stopButton, deleteButton);
+          if (run.batch_id && !stopped) {
+            const comparisonLink = document.createElement("a");
+            comparisonLink.className = "secondary";
+            comparisonLink.textContent = "查看所属对比";
+            comparisonLink.href = `#/comparison?batch_id=${encodeURIComponent(run.batch_id)}`;
+            actionWrap.append(comparisonLink);
+          }
           actionCell.append(actionWrap);
           row.append(actionCell);
           body.append(row);
@@ -4125,6 +4228,7 @@
 
       function showView(viewName, route = {}) {
         const targetView = $(`view-${viewName}`) ? viewName : "raman";
+        if (targetView !== "comparison") window.SpecAutoAIComparison?.dispose();
         document.querySelectorAll("nav button").forEach((item) => {
           item.classList.remove("active");
           item.removeAttribute("aria-current");
@@ -4141,7 +4245,7 @@
         if (targetView === "comparison") {
           const batchId = route.batchId || currentBatchId;
           if (batchId) watchBatchComparison(batchId);
-          else $("batchComparisonPage").replaceChildren(currentRunNotice("warning", "缺少 Batch ID", "请从多模型训练完成提示进入比较页。"));
+          else window.SpecAutoAIComparison?.history();
         } else if (targetView === "modeling" && currentBatchId) {
           watchBatchComparison(currentBatchId);
         } else if (targetView !== "modeling") {

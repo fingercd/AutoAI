@@ -12,6 +12,7 @@ numpy>=1.26,<3
 pandas>=2.1,<4
 scipy>=1.11,<2
 joblib>=1.3,<2
+matplotlib>=3.8,<4
 
 # Classical and deep-learning models
 scikit-learn>=1.4,<2

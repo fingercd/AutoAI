@@ -684,6 +684,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
         },
         # TEMPORARILY_HIDDEN: new and historic artifacts are deliberately not
         # projected to clients while the product surface is disabled.
+        'experiment': _without_paths(_read_json_object(run_dir / 'feature_experiments.json', warnings)) if is_succeeded and any(d.get('name') == 'feature_experiments.json' and d.get('integrity') == 'ok' for d in descriptors) else None,
         'explainability': {'status': 'temporarily_hidden'},
         'artifacts': descriptors,
         'warnings': list(dict.fromkeys(warnings)),

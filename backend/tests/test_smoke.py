@@ -1587,13 +1587,17 @@ def test_main_ui_hides_explainability_and_uses_batch_model_selection():
 
 def test_classic_batch_comparison_renders_required_figures_without_metadata_banner():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    comparison = (ROOT / "static" / "js" / "comparison-page.js").read_text(encoding="utf-8")
 
     assert "Batch ${batchId} · 主指标口径" not in content
     assert "历史重复批次兼容展示" not in content
     assert "Sample_ID × 模型预测正确/错误" in content
     assert "createCorrectnessHeatSection" in content
     assert "createComparisonMatrixCard" in content
-    assert "各模型混淆矩阵" in content
+    assert "SpecAutoAIComparison.render(batchId, comparison)" in content
+    assert "混淆矩阵" in comparison
+    assert "Sample_ID × 模型预测正误" in comparison
+    assert "特征工程 × 模型" in comparison
     assert 'text.setAttribute("font-size", "14")' in content
     assert 'text.setAttribute("font-weight", "600")' in content
 
