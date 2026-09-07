@@ -1,5 +1,13 @@
 # SpecAutoAI
 
+## Word 0904 新版训练入口（2026-09-07）
+
+经典 AI 建模入口已接通六模型特征方案比较：传统模型在 Train+Valid 内按 Sample_ID 分层五折搜索，全特征、Binning 5/10/20、PCA 90/95/99% 独立比较；CNN 只比较全特征与三种 Binning，按 validation loss 选择。每模型一个 Run，不增加重复次数。
+
+有独立 Test、无独立 Test、留一法及留一法加独立 Test 均支持自定义比例（合计 10）；每个模式单独记住比例。结果页/对比页提供可展开的最佳配置、逐折参数与实际划分数量。特征工程热图使用指标切换器，PNG/SVG/CSV/ZIP 与页面同源；旧结果没有特征产物时不会补造或重训。
+
+更新代码后，需让 Web 与 Worker 都加载新代码，再刷新页面。不要在训练进行中强制重启。`/api/models` 的 `training_scheme` 字段表示当前 Web 的新版能力；未声明方案版本的 API 请求继续兼容旧行为。
+
 当前训练入口仅支持分类。`cnn_mamba1d` 在依赖不可用时返回 unavailable，不使用替代网络。
 
 SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。

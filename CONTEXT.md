@@ -39,9 +39,9 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 模型与可解释性
 
-2026-09-05 临时调整：新增七/四种特征方案比较暂时停用。后端 `feature_policy.FEATURE_ENGINEERING_ENABLED=False` 阻止新版训练入口及特征方案绘图，普通训练和标准化不变；经典对比页隐藏整个特征工程区块。算法代码与历史文件保留。混淆矩阵放大宽度上限 640px，弹窗按视口宽高约束，不再接近全屏。
+2026-09-07：按 Word 第 3、6、10.5 节恢复并接通六模型特征方案训练。`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，不再强制取消外部测试下的 CV 或覆盖自定义比例。混淆矩阵放大宽度上限仍为 640px，本次没有修改图表配色与其他页面布局。
 
-后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。后端接受 experiment_version=word-0904，架构版本 docx-classification-v4-0904；经典表单在前端回退后未默认声明该版本，未声明版本的请求保留原训练行为。本轮对比图重做不改变训练请求。
+后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求；v2 不改。
 
 新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，v2/单模型结果页不变。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
 
