@@ -243,7 +243,7 @@ def health(request: Request) -> dict[str, object]:
 
 
 @router.get('/api/models')
-def get_models_catalog() -> dict[str, list[dict[str, object]]]:
+def get_models_catalog() -> dict[str, object]:
     """返回完整后端模型目录及当前 capability，不启动训练。"""
 
     models: list[dict[str, object]] = []
@@ -262,7 +262,8 @@ def get_models_catalog() -> dict[str, list[dict[str, object]]]:
                 "visibility_reason": None if ui_visible else "temporarily_hidden_from_ui",
             }
         )
-    return {"models": models}
+    from ..feature_policy import training_scheme
+    return {"models": models, "training_scheme": training_scheme()}
 
 
 @router.get('/api/sample/summary')

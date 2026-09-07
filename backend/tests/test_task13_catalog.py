@@ -28,7 +28,8 @@ def _catalog_models() -> list[dict[str, object]]:
     response = TestClient(app).get("/api/models")
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload) == {"models"}
+    assert set(payload) == {"models", "training_scheme"}
+    assert payload['training_scheme']['version'] == 'word-0904'
     return payload["models"]
 
 

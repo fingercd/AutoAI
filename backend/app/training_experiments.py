@@ -79,6 +79,22 @@ def eval_probabilities(prob, y, indices, labels, predictions=None):
     return {**t._classification_metrics_payload(true, pred, labels), 'true': true.tolist(), 'pred': pred.tolist(), 'probabilities': np.asarray(prob).tolist()}
 
 
+def grouped_experiment_folds(y, groups, pool, seed, labels):
+    """Stratify independent Sample_IDs, not their uneven measurement counts."""
+    from sklearn.model_selection import StratifiedKFold
+    from . import training as t
+    pool = np.asarray(pool, dtype=int)
+    mapping = t._group_label_map(y[pool], groups[pool])
+    ids = np.asarray(list(mapping))
+    targets = np.asarray([mapping[sid] for sid in ids])
+    insufficient = [f'{name}（{int(sum(targets == i))} 个 Sample_ID）' for i, name in enumerate(labels) if sum(targets == i) < 5]
+    if insufficient:
+        raise ValueError('传统模型 5 折分组搜索要求每类至少 5 个 Sample_ID；当前不足：'+'、'.join(insufficient))
+    splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+    return [(pool[np.isin(groups[pool], ids[train])], pool[np.isin(groups[pool], ids[valid])])
+            for train, valid in splitter.split(ids, targets)]
+
+
 def train_cnn(config, x, y, splits, groups, labels, cancel, progress, *, fixed_epochs=None):
     profile = cnn_profile(len(set(groups[splits['train']])), x.shape[1])
     if x.shape[1] < math.prod(profile['pools']):
@@ -137,7 +153,7 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
     from . import training as t
     traditional = model_type != 'cnn1d'
     pool = sorted(set(splits['train']) | set(splits['valid']))
-    inner = t._grouped_inner_cv_indices(y=y, sample_id=groups, candidate_indices=pool, split_seed=config.split_seed, label_names=labels) if traditional else []
+    inner = grouped_experiment_folds(y, groups, pool, config.split_seed, labels) if traditional else []
     results, search, winner = [], [], None
     for scheme_index, (scheme, name) in enumerate(SCHEMES):
         cancel()
@@ -179,15 +195,25 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
                     for key in ('train','valid'):
                         evaluations[key]=eval_probabilities(t._traditional_probabilities(audit,audit_transform.transform(x_raw[splits[key]])),y,splits[key],labels,audit.predict(audit_transform.transform(x_raw[splits[key]])))
                 score,metric,params,history,profile=best_score,'mean_balanced_accuracy_grouped_5fold',t._traditional_params(best_candidate,model_type),[],None
+                if model_type == 'logistic_regression':
+                    params.update(penalty='elasticnet', solver='saga')
             else:
                 transform=FeatureTransform(scheme,config.normalization).fit(x_raw[splits['train']]); x=transform.transform(x_raw)
                 model,predict,history,loss,best_epoch,profile=train_cnn(config,x,y,splits,groups,labels,cancel,lambda epoch:update(current_epoch=epoch))
-                score,metric,params=-loss,'validation_loss',{'best_epoch':best_epoch,**profile}
+                score,metric,params=-loss,'validation_loss',{'best_epoch':best_epoch,**profile,
+                    'optimizer':'AdamW','loss':'CrossEntropyLoss','batch_size':config.batch_size,
+                    'learning_rate':config.learning_rate,'weight_decay':config.weight_decay,
+                    'max_epochs':config.epochs,'scheduler':'ReduceLROnPlateau',
+                    'scheduler_factor':config.scheduler_factor,'scheduler_patience':config.scheduler_patience,
+                    'min_learning_rate':config.min_learning_rate,'early_stopping_patience':config.early_stopping_patience,
+                    'seed':config.model_seed}
                 if external_final:
                     # Fix both scheme score and epoch before refitting on all primary records.
                     transform=FeatureTransform(scheme,config.normalization).fit(x_raw[pool]); x=transform.transform(x_raw)
                     final_splits={**splits,'train':pool}
                     model,predict,_,_,_,profile=train_cnn(config,x,y,final_splits,groups,labels,cancel,lambda epoch:update(current_epoch=epoch),fixed_epochs=best_epoch)
+                    params['selection_sample_count'] = params['N']
+                    params.update(profile)  # Audit the actual all-primary refit architecture.
                 evaluations={key:eval_probabilities(predict(indices),y,indices,labels) for key,indices in splits.items() if indices}
             item.update({'selection_score':-score if metric=='validation_loss' else score,'selection_metric':metric,'params':params,'transform':transform.metadata(),'metrics':t._metrics_from_eval(evaluations['test'],labels)})
             result={**item,'evals':evaluations,'model':model,'transformer':transform,'history':history,'profile':profile}
@@ -207,7 +233,7 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
 def summarize_experiments(folds, labels, *, external_final=None):
     from . import training as t
     def config(r):
-        return {k:r.get(k) for k in ('fold_index','scheme_id','scheme_name','selection_metric','selection_score','params','transform')}
+        return {k:r.get(k) for k in ('fold_index','test_sample_ids','split_summary','requested_ratio','scheme_id','scheme_name','selection_metric','selection_score','params','transform')}
     source=[external_final] if external_final else folds
     schemes=[]
     for scheme,name in SCHEMES:
