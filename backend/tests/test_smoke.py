@@ -1604,10 +1604,10 @@ def test_classic_batch_comparison_renders_required_figures_without_metadata_bann
 
 def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-
-    assert 'if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10)' in content
-    assert 'if (!hasExternalTest && !cvEnabled && splitTrain + splitValid + splitTest !== 10)' not in content
-    assert "训练、验证、测试比例相加必须等于 10" in content
+    policy = (ROOT / "static/js/classic-training-policy.js").read_text(encoding="utf-8")
+    assert 'SpecAutoAITrainingPolicy.payload' in content
+    assert 'train+valid+(three?test:0)!==10' in policy
+    assert "训练、验证、测试比例必须为正整数且相加为 10" in policy
     assert "trainingRequestInFlight" in content
     assert "trainingRequestInFlight = true" in content
     assert "trainingRequestInFlight = false" in content
@@ -1623,7 +1623,8 @@ def test_main_ui_external_dataset_supports_optional_cv_audit():
     assert 'id="splitTestField"' in content
     assert '$("cvOptions").classList.remove("hidden")' in content
     assert 'leave_one_sample_id_cv_with_external_test' in content
-    assert 'applySplitPreset("external")' in content
+    assert 'applySplitPreset(window.SpecAutoAITrainingPolicy.mode(hasExternalTest,cvEnabled))' in content
+    assert '$("cvEnabled").checked = false' not in content
 
 
 def test_main_ui_uses_documented_deep_training_defaults():
@@ -1660,11 +1661,11 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert '["数据量", summary.samples]' in content
     assert '["样本数", sampleIds.group_count]' in content
     assert '["样品种类",' not in content
-    assert 'const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);' in content
-    assert 'const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);' in content
-    assert 'const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);' in content
-    assert 'const cvEnabled = $("cvEnabled").checked;' in content
-    assert 'split_mode: hasExternalTest ? splitMode : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),' in content
+    assert 'SpecAutoAITrainingPolicy.payload' in content
+    assert 'rememberSplitPreferences();' in content
+    assert "readSplitNumber('splitTrain',8)" in content
+    assert 'let cvEnabled = $("cvEnabled").checked;' in content
+    assert 'trainingScheme = payload.training_scheme || null;' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content

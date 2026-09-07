@@ -31,6 +31,7 @@
  *   - 所有文本节点均通过 `element()` 的 text 属性写入，用户/后端数据不进入 HTML。
  */
 import { downloadFile, request } from './api-client.js';
+import { experimentDetails } from './experiment-details.js';
 import { element, formatMetric, formatTime, replaceChildren } from './ui-utils.js';
 import { downloadConfusionMatrixPng } from './confusion-matrix-download.js?v=20260820-compact-visualization-v3';
 
@@ -1041,6 +1042,12 @@ function auditParamsTable(params) {
  * 两者都没有（老 Run 未生成审计数据）返回 null。
  */
 function renderTrainingAudit(result) {
+  if (result.experiment) {
+    const card=element('details',{className:'result-card wide-card audit-details'},
+      element('summary',{text:'最佳配置与逐折参数'}));
+    card.append(experimentDetails(result.experiment));
+    return card;
+  }
   const audit = result.analysis?.training_audit;
   if (!audit || typeof audit !== 'object') return null;
   const traditional = audit.traditional;

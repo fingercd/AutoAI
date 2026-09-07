@@ -1,5 +1,15 @@
 # 模型比较接口契约（model-comparison-v1）
 
+## 2026-09-07 特征方案接通
+
+经典对比页移除总体性能“排序”下拉框和“选择历史对比”入口。四项总体指标图与数值表统一沿用默认 Balanced Accuracy 降序；下载、归档和图表放大保留。历史结果从训练记录的“查看所属对比”进入，未指定批次的对比页提供训练记录链接，不再请求批次列表。
+
+按《AutoAI_model要求_0904》第 6 节保留网页最优参数及留一法逐轮最优参数展示。对比页删除“不适用与缺失说明”和“配置与审计详情”两个折叠区块；底层缺失值仍保留为 null。特征热图标题、方案名称与指标选项使用中文，PCA/F1 和模型缩写保留；绘图版本升级为 comparison-figures-v2，PNG/SVG/CSV 归档按已有结果更新，不重新训练。
+
+经典页面按 `/api/models.training_scheme.enabled` 恢复特征热图，不保留独立的前端开关。七方案为行，模型为列，默认 Balanced Accuracy，可切换四指标；只显示 ready 的真实指标。not_applicable、partial、failed 和历史缺失保留原因，不能填 0。最佳星号只来自 selected_configuration，普通留一法没有全局星号。最佳参数及 fold_configurations 以可读、按需展开的参数表展示。
+
+归档状态新增 outdated：绘图版本不符或应有图集缺失时，按已有产物幂等补建，不创建训练。归档使用批次目录内不可变 `gen-*` 代次和原子 `current.json` 指针发布；历史平铺归档可读。旧代次保留供并发读取，停止/删除批次时整组清理。下载仍只允许 Manifest 列出的公开文件，指针与服务器路径不开放。默认 ZIP 包含四项 features 指标的 SVG、PNG 和 CSV。
+
 `GET /api/training/batches/{batch_id}/comparison` 仅返回当前 Principal 可读取 Batch 的比较投影。它从 Manifest SHA-256/大小校验通过的成功子 Run 读取指标、预测、标签映射和划分审计；响应不包含服务器路径、模型文件或 traceback。
 
 比较前必须一致：主/独立数据快照、评估策略和主聚合口径、`split.json` digest、Test/OOF `Sample_ID` 集合和 `label_map.json`。任何一项不一致时返回 `comparable=false` 及原因，不生成排行或热图。

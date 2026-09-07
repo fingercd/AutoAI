@@ -1,5 +1,7 @@
 # 建模结果接口契约（run-result-v1）
 
+2026-09-07：新版 experiment 的配置审计增加可选 test_sample_ids、split_summary（每分区 sample_count / measurement_count）、requested_ratio。经典结果页在原参数审计区域展示最佳特征方案、完整参数、CV/validation-loss 选择得分及实际划分数量；普通留一法仅展示逐折最优配置。旧结果缺少这些字段时明确标记未记录，不推断或补造。
+
 0904 增量：可选顶层 experiment 只读取 Manifest 完整性校验通过的 feature_experiments.json；未生成时为 null。包含最佳特征方案、参数、选择指标与分数、逐折配置和七种方案的测试指标。feature_experiments.json/csv 加入公开 artifact 目录，拟合变换 joblib 与模型文件仍为私有。CNN0904 采用多类别 CrossEntropyLoss，包括二分类；旧模型契约不改写。
 
 > 最近核对：2026-08-22。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。

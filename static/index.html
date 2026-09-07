@@ -1905,6 +1905,7 @@
          下方经典脚本之前按顺序执行）：向 window 注入 SpecAutoAIUI /
          SpecAutoAITrainingStore / SpecAutoAIResults 等命名空间。
          就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
+    <script src="/static/js/classic-training-policy.js"></script>
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
     <script type="module" src="/static/js/comparison-page.js?v=1"></script>
@@ -2198,7 +2199,9 @@
           const payload = await apiWithTimeout("/api/models", 30000);
           const models = Array.isArray(payload) ? payload : payload?.models;
           if (!Array.isArray(models)) throw new Error("模型目录响应格式无效");
+          trainingScheme = payload.training_scheme || null;
           renderModelCatalog(models);
+          applyTrainingSchemeControls();
         } catch (error) {
           renderModelCatalogFallback(error);
         }
@@ -2614,91 +2617,58 @@
 
       /**
        * 按评估口径写入划分比例预设：
-       *  - "external"：有独立测试集，主数据固定 8:2（test=0，测试集独立），
-       *    同时强制关闭交叉验证（两种口径互斥）；
-       *  - "loo"：留一样本交叉验证，每折内部按 8:2 划分 train/valid；
-       *  - 其他（holdout）：默认 8:1:1 单次分层划分。
-       * 这些只是表单预设，最终校验在 configPayload() 和后端。
+       * 四模式分别记住用户比例；external/loo/external_loo 初始 8:2，
+       * holdout 初始 8:1:1。独立测试集不取消留一法，重复渲染不重置输入。
+       * 默认值与校验在 classic-training-policy；后端仍执行独立校验。
        */
-      function applySplitPreset(mode) {
-        if (mode === "external") {
-          $("cvEnabled").checked = false;
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-          return;
-        }
-        if (mode === "loo") {
-          $("splitTrain").value = "8";
-          $("splitValid").value = "2";
-          $("splitTest").value = "0";
-          return;
-        }
-        $("splitTrain").value = "8";
-        $("splitValid").value = "1";
-        $("splitTest").value = "1";
+      let trainingScheme = null;
+      const splitPreferences = window.SpecAutoAITrainingPolicy.createPreferences(window.sessionStorage);
+      let displayedSplitMode = null;
+      $("cvEnabled").checked = splitPreferences.getCv();
+
+      function rememberSplitPreferences() {
+        if (displayedSplitMode) splitPreferences.set(displayedSplitMode, [readSplitNumber('splitTrain',8),readSplitNumber('splitValid',2),readSplitNumber('splitTest',0)]);
+        splitPreferences.setCv($("cvEnabled").checked);
       }
 
-      // 将表单转换成后端 TrainConfig。三种评估模式在这里先做互斥和比例校验，
+      function applySplitPreset(mode) {
+        if (displayedSplitMode === mode) return;
+        rememberSplitPreferences();
+        displayedSplitMode = mode;
+        const values = splitPreferences.get(mode);
+        ['splitTrain','splitValid','splitTest'].forEach((id,i)=>{$(id).value=String(values[i]);});
+      }
+
+      function applyTrainingSchemeControls() {
+        if (!trainingScheme?.enabled) return;
+        const d=trainingScheme.defaults;
+        const fixed={epochs:d.epochs,batchSize:d.batch_size,learningRate:d.learning_rate,earlyStoppingPatience:d.early_stopping_patience,seed:d.seed};
+        Object.entries(fixed).forEach(([id,value])=>{if($(id))$(id).value=String(value);});
+        [...Object.keys(fixed),'dropout','hiddenSize','transformerHeads','rfEstimators','rfSearchIterations','svmC','svmGamma','xgbEstimators','xgbMaxDepth','xgbLearningRate','xgbSubsample','xgbColsample','xgbRegLambda','classBalance'].forEach(id=>{if($(id)){$(id).disabled=true;$(id).title='Word 0904 方案自动搜索或使用固定训练策略';}});
+        [...$("normalization").options].forEach(option=>{option.disabled=!['zscore','minmax'].includes(option.value);});
+        if (!['zscore','minmax'].includes($("normalization").value)) $("normalization").value='zscore';
+        $("modelCatalogHint").textContent += ' · 已启用特征方案比较：传统模型分组五折选优，CNN 按验证损失选优；每模型一个 Run。';
+      }
+
+      // 将表单转换成后端 TrainConfig。四种评估模式在这里先做比例校验，
       // 后端 classification_policy 会再次校验，前端校验不能替代服务端约束。
       /**
        * 把整个训练配置表单组装成后端 TrainConfig JSON。
        * 评估口径推导规则（与 AGENTS.md 契约一致）：
-       *  - 有独立测试集 → external_test_holdout，比例强制 8/2/0；
+       *  - 有独立测试集 → external_test_holdout；开启留一时保留外部 Test；
        *  - 开启交叉验证 → leave_one_sample_id_cv（每折留 1 个 Sample_ID）；
        *  - 否则 → stratified_holdout，三项比例之和必须等于 10。
-       * 校验：无外部测试集时 train+valid+test==10；train 必须 >0；
-       * 外部测试或 CV 时 valid 必须 >0（CV 需要 valid 做早停/选参）。
+       * 两段模式 train+valid==10，不提交 split_test；其他为三段正整数比。
        * TEMPORARILY_HIDDEN：解释性配置不随训练请求发送。
        * @returns {object} TrainConfig
        * @throws {Error} 比例不满足约束时抛出中文错误（调用方 alert）
        */
       function configPayload() {
-        const dropoutValue = $("dropout").value.trim();
-        const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
-        const cvEnabled = $("cvEnabled").checked;
-        const splitMode = hasExternalTest ? (cvEnabled ? "leave_one_sample_id_cv_with_external_test" : "external_test_holdout") : "stratified_holdout";
-        const splitTrain = hasExternalTest ? 8 : readSplitNumber("splitTrain", 8);
-        const splitValid = hasExternalTest ? 2 : readSplitNumber("splitValid", 1);
-        const splitTest = hasExternalTest ? 0 : readSplitNumber("splitTest", 1);
-        if (!hasExternalTest && splitTrain + splitValid + splitTest !== 10) {
-          throw new Error("训练、验证、测试比例相加必须等于 10");
-        }
-        if (splitTrain <= 0) {
-          throw new Error("训练集比例必须大于 0");
-        }
-        if ((hasExternalTest || cvEnabled) && splitValid <= 0) {
-          throw new Error("验证集比例必须大于 0");
-        }
-        const payload = {
-          epochs: Number($("epochs").value),
-          batch_size: Number($("batchSize").value),
-          learning_rate: Number($("learningRate").value),
-          normalization: $("normalization").value,
-          split_mode: hasExternalTest ? splitMode : (cvEnabled ? "leave_one_sample_id_cv" : splitMode),
-          split_train: splitTrain,
-          split_valid: splitValid,
-          split_test: splitTest,
-          class_balance: $("classBalance").value,
-          model_type: $("modelType").value,
-          early_stopping_patience: Number($("earlyStoppingPatience").value),
-          dropout: dropoutValue ? Number(dropoutValue) : null,
-          hidden_size: Number($("hiddenSize").value),
-          transformer_heads: Number($("transformerHeads").value),
-          dscarnet_input_mode: $("dscarnetInputMode").value,
-          random_forest_n_estimators: Number($("rfEstimators").value),
-          random_forest_search_iterations: Number($("rfSearchIterations").value),
-          svm_c: Number($("svmC").value),
-          svm_gamma: textNumberOrKeyword("svmGamma"),
-          xgboost_n_estimators: Number($("xgbEstimators").value),
-          xgboost_max_depth: Number($("xgbMaxDepth").value),
-          xgboost_learning_rate: Number($("xgbLearningRate").value),
-          xgboost_subsample: Number($("xgbSubsample").value),
-          xgboost_colsample_bytree: Number($("xgbColsample").value),
-          xgboost_reg_lambda: Number($("xgbRegLambda").value),
-          seed: Number($("seed").value),
-        };
-        return payload;
+        rememberSplitPreferences();
+        return window.SpecAutoAITrainingPolicy.payload(trainingScheme,
+          window.SpecAutoAITrainingPolicy.mode(Boolean(testDatasetId || testDatasetPath),$("cvEnabled").checked),
+          [readSplitNumber('splitTrain',8),readSplitNumber('splitValid',1),readSplitNumber('splitTest',1)],
+          $("normalization").value,$("modelType").value);
       }
 
       /**
@@ -4204,23 +4174,18 @@
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
         let cvEnabled = $("cvEnabled").checked;
-        if (hasExternalTest) {
-          applySplitPreset("external");
-        } else if (cvEnabled) {
-          applySplitPreset("loo");
-        } else {
-          applySplitPreset("holdout");
-        }
+        applySplitPreset(window.SpecAutoAITrainingPolicy.mode(hasExternalTest,cvEnabled));
         $("cvOptions").classList.remove("hidden");
         $("splitTestField").classList.toggle("hidden", hasExternalTest || cvEnabled);
+        $("customSplitLabel").textContent = hasExternalTest || cvEnabled ? "训练 / 验证比例（总和为 10）" : "训练 / 验证 / 测试比例（总和为 10）";
         $("splitTest").disabled = hasExternalTest || cvEnabled;
         $("customSplitOptions").setAttribute("aria-hidden", "false");
         if (hasExternalTest) {
           $("splitModeHint").textContent = cvEnabled
             ? "已加载独立测试集：主数据按 Sample_ID 留一交叉验证作审计，并在全部主数据拟合后对独立测试集做最终评估。"
-            : "已加载独立测试集：主数据固定按 8:2 训练/验证，独立测试集作为唯一最终测试集。";
+            : "已加载独立测试集：主数据默认 8:2 训练/验证，可自定义；独立测试集作为唯一最终测试集。";
         } else if (cvEnabled) {
-          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余固定按 8:2 训练/验证。";
+          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余默认 8:2 训练/验证，可自定义。";
         } else {
           $("splitModeHint").textContent = "默认以 8:1:1 单次划分；Valid/Test 至少各包含每类 1 个样品，三项比例相加必须等于 10。";
         }
@@ -4295,6 +4260,7 @@
       });
       $("modelType").addEventListener("change", updateModelOptionVisibility);
       $("cvEnabled").addEventListener("change", updateSplitOptionVisibility);
+      ['splitTrain','splitValid','splitTest'].forEach(id=>$(id).addEventListener('input',rememberSplitPreferences));
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");
       });

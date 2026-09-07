@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+import uuid
 
 from .batch_projection import project_model_comparison
 from .comparison_figures import DRAWING_VERSION, METRICS, figure_data, figure_specs, render_figure
@@ -38,6 +39,25 @@ def archive_root(repository):
 
 
 def archive_dir(repository, batch_id):
+    container = _archive_container(repository, batch_id)
+    pointer = container / 'current.json'
+    if not pointer.exists():
+        return container  # Historical flat archives remain readable.
+    try:
+        if pointer.is_symlink():
+            raise ValueError('symlink pointer')
+        generation = json.loads(pointer.read_text(encoding='utf-8'))['generation']
+        if not isinstance(generation, str) or not re.fullmatch(r'gen-[a-f0-9]{32}', generation):
+            raise ValueError('invalid generation')
+        directory = container / generation
+        if directory.is_symlink() or directory.resolve().parent != container.resolve():
+            raise ValueError('invalid generation path')
+        return directory
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ArchiveUnavailable('归档索引损坏') from exc
+
+
+def _archive_container(repository, batch_id):
     if not _SAFE_ID.fullmatch(batch_id):
         raise ArchiveUnavailable('无效批次标识')
     root = archive_root(repository).resolve()
@@ -48,7 +68,7 @@ def archive_dir(repository, batch_id):
 
 
 def discard_batch_archive(repository, batch_id):
-    path = archive_dir(repository, batch_id)
+    path = _archive_container(repository, batch_id)
     if path.exists():
         shutil.rmtree(path)
 
@@ -146,7 +166,10 @@ def archive_status(repository, batch_id, principal):
     try:
         manifest = _manifest(directory, batch_id)
         # The comparison document is required; downloadable images verify on access.
-        _read_file(directory, manifest, 'comparison.json')
+        comparison = json.loads(_read_file(directory, manifest, 'comparison.json'))
+        expected = {spec['id'] + '.' + fmt for spec in figure_specs(comparison) for fmt in ('csv', 'svg', 'png')}
+        if manifest.get('drawing_version') != DRAWING_VERSION or not expected.issubset(manifest['files']):
+            return {'state': 'outdated', 'message': '对比归档需更新，将按现存结果补建图像，不重新训练'}
         return {'state': 'ready', 'created_at': manifest['created_at'], 'drawing_version': manifest['drawing_version'], 'files': list(manifest['files'])}
     except ArchiveUnavailable:
         state = 'failed' if (directory / 'error.json').exists() or (directory / 'manifest.json').exists() else 'missing'
@@ -222,9 +245,15 @@ def ensure_archive(repository, batch_id, principal, run_dir_for, *, force=False)
                 current = connection.execute('SELECT state FROM runs WHERE batch_id=?', (batch_id,)).fetchall()
                 if not current or any(row['state'] not in {'succeeded', 'failed'} for row in current):
                     raise ArchiveUnavailable('批次已停止、删除或尚未结束')
-                if directory.exists():
-                    shutil.rmtree(directory)
-                os.replace(staging, directory)
+                # Publish a new immutable generation, then atomically switch a tiny
+                # pointer. Existing readers keep their complete previous generation.
+                container = _archive_container(repository, batch_id)
+                container.mkdir(parents=True, exist_ok=True)
+                generation = 'gen-' + uuid.uuid4().hex
+                os.replace(staging, container / generation)
+                pointer = container / ('current-' + uuid.uuid4().hex + '.tmp')
+                pointer.write_bytes(_json({'generation': generation}))
+                os.replace(pointer, container / 'current.json')
                 connection.commit()
             return archive_status(repository, batch_id, principal)
         except Exception:
