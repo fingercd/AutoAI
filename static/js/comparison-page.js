@@ -1,10 +1,13 @@
 /** Classic comparison only. No training/STOP/store mutation and no v2 imports. */
 import { request, downloadFile } from './api-client.js';
+import { experimentDetails } from './experiment-details.js';
 
 const metrics = [['accuracy','Accuracy'],['balanced_accuracy','Balanced Accuracy'],['macro_f1','Macro-F1'],['weighted_f1','Weighted-F1']];
+const featureMetrics = [['accuracy','准确率'],['balanced_accuracy','平衡准确率'],['macro_f1','宏平均 F1'],['weighted_f1','加权 F1']];
 const names = {pls_da:'PLS-DA',logistic_regression:'Elastic Net',svm:'SVM',random_forest:'Random Forest',xgboost:'XGBoost',cnn1d:'1D-CNN'};
-// 暂停特征工程展示，保留下面的实现以便恢复；与后端 feature_policy 对应。
-const FEATURE_ENGINEERING_ENABLED = false;
+// 新版能力只从后端目录获取，不设置另一个独立的前端开关。
+let trainingScheme = null;
+let capabilityRequest = null;
 const modelName = id => names[id] || id;
 const element = (tag, text='', cls='') => { const node=document.createElement(tag);node.textContent=text;if(cls)node.className=cls;return node; };
 const button = (text, action) => {const node=element('button',text,'secondary');node.type='button';node.addEventListener('click',action);return node;};
@@ -78,14 +81,6 @@ function chart(title, options, tasks, {sample=false, zoom=true}={}) {
   return card;
 }
 
-async function historyControls(host) {
-  const selected=select([['','选择历史对比']], '', id=>{if(id)window.location.hash=`#/comparison?batch_id=${encodeURIComponent(id)}`;});
-  selected.setAttribute('aria-label','选择历史对比');
-  const more=button('更多',()=>load()),note=element('span','','cmp-note');let cursor=null;
-  async function load(){more.disabled=true;try{const data=await request(`/api/training/batches?limit=20${cursor?'&cursor='+encodeURIComponent(cursor):''}`);if(!host.isConnected)return;data.items.forEach(item=>{const time=new Date(item.created_at).toLocaleString('zh-CN',{hour12:false});const label={succeeded:'已完成',partial:'部分完成',failed:'失败',cancelled:'已停止',running:'训练中',queued:'排队中'}[item.state]||item.state;const option=element('option',`${time} · ${item.dataset_name||'数据集'} · ${item.model_types.length} 模型 · ${label}`);option.value=item.batch_id;selected.append(option);});cursor=data.next_cursor;more.hidden=!cursor;note.textContent='';}catch(error){note.textContent=error.message;}finally{more.disabled=false;}}
-  host.append(selected,more,note);await load();
-}
-
 async function ensureSaved(force=false) {
   if(!state||['queued','running','cancelled'].includes(state.data.state))return;
   const current=state;
@@ -112,12 +107,11 @@ function paint() {
   const agg=evaluation.primary_aggregation==='pooled_oof'?'合并留一法预测（OOF）':evaluation.primary_aggregation==='direct_external_test'?'独立测试集':'Test';
   top.append(element('p',`${meta.dataset_name||state.datasetName||'当前数据集'} · ${agg} · ${models.length} 个可比较模型`,'cmp-note'));
   const controls=element('div','','cmp-toolbar'),actions=element('div','','cmp-actions');
-  actions.append(labeled('排序',select(metrics,state.sort,value=>{state.sort=value;paint();})));
   const all=button('下载全部',async()=>{try{all.disabled=true;const file=await downloadFile(`/api/training/batches/${encodeURIComponent(state.id)}/archive/files/all.zip`);saveBlob(file.blob,`comparison-${state.id.slice(0,8)}.zip`);}catch(error){state.saveText=error.message;state.saved=false;}finally{updateSaveText();}});all.dataset.downloadAll='';all.disabled=!state.saved;
   const retry=button('重试保存',()=>ensureSaved(true));retry.hidden=state.saved;retry.dataset.retrySave='';
   const note=element('span',state.saveText||'训练结束后自动保存','cmp-note');note.dataset.saveNote='';
-  actions.append(all,retry,note);const history=element('div','','cmp-actions');controls.append(actions,history);top.append(controls);
-  root.replaceChildren(top);historyControls(history);
+  actions.append(all,retry,note);controls.append(actions);top.append(controls);
+  root.replaceChildren(top);
   if(!data.comparable){root.append(element('p',data.reason||'暂无完整可比较结果','cmp-note'));return;}
   const overall=section('总体性能'),grid=element('div','','cmp-grid');
   metrics.forEach(([metric,title])=>grid.append(chart(title,{kind:'overall',metric},tasks)));overall.append(grid);
@@ -143,13 +137,17 @@ function paint() {
     const pager=element('div','','cmp-actions'),prev=button('上一页',()=>{state.page--;paint();}),next=button('下一页',()=>{state.page++;paint();});prev.disabled=state.page===0;next.disabled=state.page>=pages-1;pager.append(prev,element('span',`${state.page+1}/${pages} 页 · ${filtered.length} 个样品`),next);sample.append(pager);
     sample.append(details('当前页样品详情',table(['模型','Sample_ID','真实类别','预测类别','测量条数','汇总方法'],models.flatMap(row=>{const entry=data.sample_correctness.values.find(item=>item.model_type===row.model_type);return filtered.slice(state.page*50,(state.page+1)*50).map(({id,index})=>{const detail=entry?.details?.[index]||{};return[modelName(row.model_type),id,detail.true_label,detail.pred_label,detail.measurement_count,detail.aggregation];});}))));root.append(sample);
   }
-  if(FEATURE_ENGINEERING_ENABLED){
-    const feature=section('特征工程 × 模型',[labeled('指标',select(metrics,state.featureMetric,value=>{state.featureMetric=value;paint();}))]);
-    if(models.some(row=>row.experiment)){feature.append(chart('特征方案比较',{kind:'features',metric:state.featureMetric},tasks));feature.append(element('p','* 表示验证/CV 选定的方案，不按测试分数选优；留一法逐折配置见详情。','cmp-note'));}
+  const configurations=section('最佳配置与逐折参数');
+  models.forEach(row=>configurations.append(details(modelName(row.model_type),experimentDetails(row.experiment))));
+  root.append(configurations);
+  if(trainingScheme?.enabled){
+    const feature=section('特征工程 × 模型',[labeled('指标',select(featureMetrics,state.featureMetric,value=>{state.featureMetric=value;paint();}))]);
+    if(models.some(row=>row.experiment?.schemes?.some(scheme=>scheme.status==='ready'))){
+      feature.append(chart('特征方案比较',{kind:'features',metric:state.featureMetric},tasks));
+      feature.append(element('p','* 表示验证/CV 选定的方案，不按测试分数选优；普通留一法无全局最佳标记，逐折配置见上方。','cmp-note'));
+    }
     else feature.append(element('p','这批历史结果未记录特征工程比较数据。','cmp-note'));root.append(feature);
   }
-  const audit=element('pre');audit.textContent=JSON.stringify({batch_id:state.id,evaluation,archive:meta,models:models.map(row=>({model:modelName(row.model_type),configuration:FEATURE_ENGINEERING_ENABLED?(row.experiment||null):undefined}))},null,2);
-  root.append(details('配置与审计详情',audit));
   const excluded=(meta.runs||[]).filter(run=>!models.some(model=>model.run_ids?.includes(run.run_id)));
   if(excluded.length)root.append(element('p',`未参与比较：${excluded.map(run=>`${modelName(run.model_type)}（${run.state}）`).join('、')}`,'cmp-note'));
   root.querySelectorAll('details').forEach(node=>{node.open=openDetails.has(node.querySelector('summary')?.textContent);});
@@ -160,8 +158,8 @@ function paint() {
 }
 
 function mount(){const host=document.getElementById('batchComparisonPage');if(root?.isConnected)return;root=element('div','','cmp');host.replaceChildren(root);let width=0;observer?.disconnect();observer=new ResizeObserver(entries=>{const next=Math.floor(entries[0].contentRect.width);if(next===width)return;width=next;clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(state&&root.isConnected)paint();},200);});observer.observe(root);}
-export function render(batchId,data){mount();const signature=JSON.stringify(data);if(!state||state.id!==batchId){imageCache.clear();state={id:batchId,data,signature,sort:'balanced_accuracy',matrixMode:'percent',featureMetric:'balanced_accuracy',page:0,search:'',errors:false,saved:false,saving:false,attempted:false};}else{if(state.signature!==signature)imageCache.clear();state.signature=signature;state.data=data;}paint();if(!state.attempted&&!['queued','running','cancelled'].includes(data.state)){state.attempted=true;ensureSaved();}}
+export function render(batchId,data){mount();const signature=JSON.stringify(data);if(!state||state.id!==batchId){imageCache.clear();state={id:batchId,data,signature,sort:'balanced_accuracy',matrixMode:'percent',featureMetric:'balanced_accuracy',page:0,search:'',errors:false,saved:false,saving:false,attempted:false};}else{if(state.signature!==signature)imageCache.clear();state.signature=signature;state.data=data;}paint();if(!capabilityRequest){capabilityRequest=request('/api/models').then(result=>{trainingScheme=result.training_scheme;if(root?.isConnected)paint();}).catch(()=>{capabilityRequest=null;});}if(!state.attempted&&!['queued','running','cancelled'].includes(data.state)){state.attempted=true;ensureSaved();}}
 export function dispose(){release();observer?.disconnect();observer=null;clearTimeout(resizeTimer);root=null;document.querySelectorAll('#view-comparison dialog').forEach(dialog=>dialog.remove());}
-export function history(){dispose();state=null;mount();root.append(element('p','选择已保存的多模型比较，或从训练记录进入。'));const controls=element('div','','cmp-actions');root.append(controls);historyControls(controls);}
+export function history(){dispose();state=null;mount();const link=element('a','前往训练记录','secondary');link.href='#/runs';root.append(element('p','请从训练记录中点击“查看所属对比”打开模型对比结果。'),link);}
 window.SpecAutoAIComparison={render,dispose,history};
 window.dispatchEvent(new Event('specautoai:comparison-ready'));

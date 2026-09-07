@@ -65,7 +65,10 @@ def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
     assert '<option value="sar">SAR</option>' in content
     assert '<option value="car">CAR</option>' in content
     assert '<option value="dual">SAR + CAR</option>' in content
-    assert 'dscarnet_input_mode: $("dscarnetInputMode").value' in content
+    # Hidden legacy controls remain, but the six-model Word request cannot
+    # accidentally carry hidden DSCARNet parameters.
+    assert 'dscarnet_input_mode: $("dscarnetInputMode").value' not in content
+    assert 'SpecAutoAITrainingPolicy.payload' in content
     assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content
 
 
@@ -101,7 +104,8 @@ def test_official_ui_exposes_oob_random_forest_budget_and_terminal_run_delete():
 
     assert 'id="rfEstimators" type="number" value="200"' in content
     assert 'id="rfSearchIterations" type="number" value="10"' in content
-    assert 'random_forest_search_iterations: Number($("rfSearchIterations").value)' in content
+    assert 'random_forest_search_iterations: Number($("rfSearchIterations").value)' not in content
+    assert "'rfSearchIterations'" in content
     assert 'id="rfMaxDepth"' not in content
     assert 'id="rfMinSamplesLeaf"' not in content
     assert 'window.deleteRun = async (runId)' in content

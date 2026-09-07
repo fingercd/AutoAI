@@ -1,5 +1,7 @@
 # SpecAutoAI 前后端接口契约
 
+2026-09-07 增量：`GET /api/models` 增加 `training_scheme`，含 enabled、version、传统/CNN 方案数量及训练 defaults；models 数组保持兼容。经典页面从该能力组装 `experiment_version=word-0904` 新请求；旧版无版本 API 和 v2 不变。两段划分不发送 split_test，由服务端规范化为 0；默认比例 8:2，可自定义，外部 Test 与留一法可以同时启用。传统模型采用完整五折网格；经典新版表单不提交旧手动搜索预算，CNN 使用文档默认固定训练参数。
+
 2026-09-05 增量：经典多模型对比页新增批次历史、归档与绘图接口，详见 `docs/model_comparison_contract.md` 的“经典对比页与持久归档”。Run summary 新增可空 batch_id；原 Run/Batch 契约、v2 和单模型结果页保持兼容。本轮没有改动训练请求和算法。
 
 当前建模入口仅支持分类，具体六模型与 0904 特征工程见第六节。

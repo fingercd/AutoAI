@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {test} from 'node:test';
 
-const source=readFileSync(new URL('../../static/js/comparison-page.js',import.meta.url),'utf8').replace(/^import .*;$/m,'').replaceAll('export function ','function ');
+const source=readFileSync(new URL('../../static/js/comparison-page.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replaceAll('export function ','function ');
 const context=vm.createContext({window:{dispatchEvent(){}},Event,Map,Set,console});
 vm.runInContext(source,context);
 

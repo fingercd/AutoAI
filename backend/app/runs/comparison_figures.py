@@ -16,12 +16,13 @@ from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
 
-DRAWING_VERSION = 'comparison-figures-v1'
+DRAWING_VERSION = 'comparison-figures-v2'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
+FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
 PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f']
 MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'], PALETTE))
-SCHEMES = [('full', 'Full features'), ('bin_5', 'Binning 5'), ('bin_10', 'Binning 10'), ('bin_20', 'Binning 20'), ('pca_90', 'PCA 90%'), ('pca_95', 'PCA 95%'), ('pca_99', 'PCA 99%')]
+SCHEMES = [('full', '全部特征'), ('bin_5', '分箱（宽度 5）'), ('bin_10', '分箱（宽度 10）'), ('bin_20', '分箱（宽度 20）'), ('pca_90', 'PCA（90%）'), ('pca_95', 'PCA（95%）'), ('pca_99', 'PCA（99%）')]
 _LOCK = RLock()
 _FONT_NAMES = {font.name for font in font_manager.fontManager.ttflist}
 _FONTS = [name for name in ['Microsoft YaHei', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei'] if name in _FONT_NAMES] + ['DejaVu Sans']
@@ -194,7 +195,7 @@ def render_figure(data, *, format='svg', width=360, **options):
                 bar = fig.colorbar(image, cax=cax, ticks=[0, vmax / 2, vmax])
                 bar.ax.set_yticklabels([f'{v:g}' if count_view else f'{v * 100:.0f}%' for v in [0, vmax / 2, vmax]])
                 bar.ax.tick_params(length=0, labelsize=9.75); bar.outline.set_visible(False)
-        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else 'Recall / Sensitivity' if kind == 'recall' else 'Sample_ID × Models' if kind == 'samples' else 'Feature schemes · ' + METRICS[options.get('metric', 'balanced_accuracy')]
+        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else 'Recall / Sensitivity' if kind == 'recall' else 'Sample_ID × Models' if kind == 'samples' else '特征方案 · ' + FEATURE_METRICS[options.get('metric', 'balanced_accuracy')]
         fig.text(10 / width, 1 - 8 / height, title, fontsize=12, weight='semibold', va='top', color='#25382f')
         output = BytesIO()
         fig.savefig(output, format=format, dpi=192 if format == 'png' else 96, metadata={'Creator': DRAWING_VERSION} if format == 'svg' else {'Software': DRAWING_VERSION})
