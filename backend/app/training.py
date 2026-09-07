@@ -2021,6 +2021,12 @@ def _run_legacy_training(
             fold_final_fit_indices = np.asarray(sorted(set(splits['train']) | set(splits['valid']))) if model_type != 'cnn1d' else np.asarray(splits['train'])
             best_search_rows.extend(winner['search_rows'])
             history_rows.extend({**row, 'fold_index': fold_index, 'feature_scheme': winner['scheme_id']} for row in winner['history'])
+            winner['test_sample_ids'] = fold.get('test_sample_ids') or ([fold['test_sample_id']] if fold.get('test_sample_id') is not None else [])
+            winner['split_summary'] = {
+                key: {'sample_count': len(set((np.concatenate([sample_id, test_sample_id]) if test_dataset is not None and evaluation_strategy != 'leave_one_sample_id_cv_with_external_test' else sample_id)[indices])),
+                      'measurement_count': len(indices)} for key, indices in splits.items()
+            }
+            winner['requested_ratio'] = {'train': config.split_train, 'valid': config.split_valid, 'test': config.split_test}
             experiment_folds.append({k: v for k, v in winner.items() if k not in {'model', 'transformer', 'history', 'search_rows', 'evals'}})
             if model_type == 'cnn1d':
                 import joblib
@@ -2256,18 +2262,21 @@ def _run_legacy_training(
         final_fold_index = len(folds) + 1
 
         if modern:
-            if model_type == 'cnn1d':
-                selection_config = _clone_config(config, split_mode='external_test_holdout', split_train=8, split_valid=2, split_test=0)
-                selection_splits = _split_indices(y, sample_id, selection_config, label_names)
-                selection_splits['test'] = external_indices
-            else:
-                selection_splits = final_splits
+            selection_config = _clone_config(config, split_mode='external_test_holdout', split_test=0)
+            selection_splits = _split_indices(y, sample_id, selection_config, label_names)
+            selection_splits['test'] = external_indices
             external_experiment = fit_experiment_fold(
                 config, model_type, final_x_raw, final_y, final_sample_id,
                 selection_splits, label_names, 'external_final', check_run_active,
                 lambda extra: write_progress(len(folds), len(folds), folds[-1], extra=extra), external_final=True,
             )
             last_model = external_experiment['model']
+            external_experiment['test_sample_ids'] = sorted(set(external_test_sample_id))
+            external_experiment['requested_ratio'] = {'train': config.split_train, 'valid': config.split_valid, 'test': 0}
+            external_experiment['split_summary'] = {
+                key: {'sample_count': len(set(final_sample_id[indices])), 'measurement_count': len(indices)}
+                for key, indices in selection_splits.items()
+            }
             final_normalizer = external_experiment['transform']
             final_train_eval, external_test_eval = (external_experiment['evals'][name] for name in ('train', 'test'))
             external_best_params = {'feature_scheme': external_experiment['scheme_id'], **external_experiment['params']}

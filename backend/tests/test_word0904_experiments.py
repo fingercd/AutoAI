@@ -11,7 +11,7 @@ from backend.app import training as t
 
 @pytest.fixture(autouse=True)
 def enable_retained_experiment_for_regression(monkeypatch):
-    """Test retained algorithms explicitly; product/default entry remains disabled."""
+    """Keep algorithm regression independent of an operator disabling the feature."""
     from backend.app import feature_policy
     monkeypatch.setattr(feature_policy, 'FEATURE_ENGINEERING_ENABLED', True)
 
@@ -70,7 +70,7 @@ def _small_frame(count=12, offset=0, length=160):
     return frame
 
 
-@pytest.mark.parametrize('strategy',['leave_one_sample_id_cv','external_test_holdout','leave_one_sample_id_cv_with_external_test'])
+@pytest.mark.parametrize('strategy',['stratified_holdout','leave_one_sample_id_cv','external_test_holdout','leave_one_sample_id_cv_with_external_test'])
 def test_new_evaluation_paths(tmp_path,monkeypatch,strategy):
     import json
     from backend.app import training_experiments as e
@@ -85,9 +85,9 @@ def test_new_evaluation_paths(tmp_path,monkeypatch,strategy):
     result=t.train_model(path,config,run_id='check')
     experiment=json.loads((Path(result['run_dir'])/'feature_experiments.json').read_text(encoding='utf-8'))
     assert all(s['status']=='ready' for s in experiment['schemes'])
-    assert sum(map(sum,result['metrics']['test']['confusion_matrix']))==(4 if 'external' in strategy else 12)
+    assert sum(map(sum,result['metrics']['test']['confusion_matrix']))==(4 if 'external' in strategy else 2 if strategy=='stratified_holdout' else 12)
     assert (experiment['selected_configuration'] is None)==(strategy=='leave_one_sample_id_cv')
-    assert len(experiment['fold_configurations'])==(1 if strategy=='external_test_holdout' else 12)
+    assert len(experiment['fold_configurations'])==(12 if 'leave_one' in strategy else 1)
     splits=json.loads((Path(result['run_dir'])/'split.json').read_text(encoding='utf-8'))
     for fold in splits:
         assert set(fold['train_sample_ids']).isdisjoint(fold['test_sample_ids'])
@@ -130,10 +130,15 @@ def test_cnn_external_loso_refits_selected_epochs(tmp_path,monkeypatch):
     path=tmp_path/'main.csv';_small_frame().to_csv(path,index=False)
     ext=tmp_path/'external.csv';_small_frame(4,100).to_csv(ext,index=False)
     monkeypatch.setattr(t,'RUNS_DIR',tmp_path/'runs')
-    result=t.train_model(path,{'model_type':'cnn1d','experiment_version':'word-0904','epochs':1,'split_mode':'leave_one_sample_id_cv_with_external_test','test_data_path':str(ext)},run_id='cnn')
+    result=t.train_model(path,{'model_type':'cnn1d','experiment_version':'word-0904','epochs':1,'split_mode':'leave_one_sample_id_cv_with_external_test','split_train':7,'split_valid':3,'test_data_path':str(ext)},run_id='cnn')
     experiment=json.loads((Path(result['run_dir'])/'feature_experiments.json').read_text(encoding='utf-8'))
     assert len(experiment['fold_configurations'])==12
     assert experiment['selected_configuration']['params']['best_epoch']==1
+    selected=experiment['selected_configuration']
+    assert selected['requested_ratio']=={'train':7,'valid':3,'test':0}
+    assert selected['params']['N']==12
+    assert selected['params']['selection_sample_count']==selected['split_summary']['train']['sample_count']
+    assert selected['split_summary']['train']['sample_count']+selected['split_summary']['valid']['sample_count']==12
     assert sum(s['status']=='ready' for s in experiment['schemes'])==4
     assert sum(map(sum,result['metrics']['test']['confusion_matrix']))==4
     assert result['model_metadata']['loss_function']=='CrossEntropyLoss'
@@ -153,7 +158,7 @@ def test_six_model_experiment(tmp_path, monkeypatch, model):
     frame.insert(0,'Index',np.arange(1,61))
     path=tmp_path/'fixture.csv';frame.to_csv(path,index=False)
     monkeypatch.setattr(t,'RUNS_DIR',tmp_path/'runs')
-    result=t.train_model(path,{'model_type':model,'experiment_version':'word-0904','epochs':2,'seed':42},run_id=model)
+    result=t.train_model(path,{'model_type':model,'experiment_version':'word-0904','epochs':200,'seed':42},run_id=model)
     root=Path(result['run_dir'])
     experiment=json.loads((root/'feature_experiments.json').read_text(encoding='utf-8'))
     assert experiment['selected_configuration']
