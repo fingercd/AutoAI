@@ -84,12 +84,13 @@ def _project_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def selection_context(*, task: dict[str, Any], models: list[str], session_id: str,
-                      client_request_id: str) -> dict[str, Any]:
+                      client_request_id: str, model_configs: dict | None = None) -> dict[str, Any]:
     allowed = set(task['allowed_models'])
     candidates = [model for model in models if model in allowed]
-    return SelectionContext.model_validate({
-        'context_version': CONTEXT_VERSION, 'phase': 'submit', 'task': _project_task(task),
-        'capabilities': {'models': candidates}, 'allowed_actions': ['submit_ml_experiment'],
+    context_type = SelectionContext if model_configs is None else SelectionContextV2
+    return context_type.model_validate({
+        'context_version': CONTEXT_VERSION if model_configs is None else 'agent-context-step2-v1', 'phase': 'submit', 'task': _project_task(task),
+        'capabilities': {'models': candidates, **({'fixed_model_params':{m:model_configs[m] for m in candidates}} if model_configs is not None else {})}, 'allowed_actions': ['submit_ml_experiment'],
         'bindings': {'session_id': session_id, 'client_request_id': client_request_id,
                      'normalization': 'zscore', 'class_balance': 'none'},
     }).model_dump(mode='json')
@@ -97,7 +98,7 @@ def selection_context(*, task: dict[str, Any], models: list[str], session_id: st
 
 def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
                          validation: dict[str, Any], validation_score: float,
-                         allowed_actions: list[str]) -> dict[str, Any]:
+                         allowed_actions: list[str], context_version: str = CONTEXT_VERSION) -> dict[str, Any]:
     if 'finalize_ml_session' not in allowed_actions:
         raise ValueError('finalize is not allowed')
     if 'status' in validation and validation['status'] != 'ready':
@@ -107,8 +108,9 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
     checked = ValidationMetrics.model_validate(projected_metrics).model_dump(exclude_none=True)
     if checked.get(task['selection_metric']) != validation_score:
         raise ValueError('candidate selection metric mismatch')
-    return FinalizationContext.model_validate({
-        'context_version': CONTEXT_VERSION, 'phase': 'finalize', 'task': _project_task(task),
+    context_type = FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2
+    return context_type.model_validate({
+        'context_version': context_version, 'phase': 'finalize', 'task': _project_task(task),
         'allowed_actions': ['finalize_ml_session'],
         'bindings': {'session_id': session_id, 'selected_run_id': run_id},
         'validation': checked,
@@ -117,10 +119,33 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
 
 
 def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
-    model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
+    if context.get('context_version') == 'agent-context-step2-v1':
+        model = {'submit': SelectionContextV2, 'finalize': FinalizationContextV2}.get(phase)
+    else:
+        model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
     if model is None:
         raise ValueError('unknown decision phase')
     checked = model.model_validate(context).model_dump(mode='json', exclude_none=True)
     if checked['phase'] != phase or len(checked['allowed_actions']) != 1:
         raise ValueError('invalid allowed action')
     return checked
+
+
+class ProjectedCapabilitiesV2(ProjectedCapabilities):
+    models: Annotated[list[Identifier],Field(min_length=1)]
+    fixed_model_params: dict[Identifier,dict[Identifier,int | float | str]]
+
+    @model_validator(mode='after')
+    def bindings_complete(self):
+        if set(self.models)!=set(self.fixed_model_params):
+            raise ValueError('missing fixed model configuration')
+        return self
+
+
+class SelectionContextV2(SelectionContext):
+    context_version: Literal['agent-context-step2-v1']
+    capabilities: ProjectedCapabilitiesV2
+
+
+class FinalizationContextV2(FinalizationContext):
+    context_version: Literal['agent-context-step2-v1']
