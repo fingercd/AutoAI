@@ -6,6 +6,8 @@ Agent API 是 LLM/Orchestrator 与稳定训练引擎之间的有限适配层。�
 
 成功响应均含 `contract_version="agent-session-v1"`；实验反馈另含 `observation_version="agent-observation-v1"`。
 
+元数据增量使用 `metadata_version="agent-metadata-v1"`；Session/Observation 主版本保持不变，六个工具请求不增加客户端可写指纹字段。
+
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/api/agent/health` | 能力、模型与模块状态 |
@@ -19,6 +21,50 @@ Agent API 是 LLM/Orchestrator 与稳定训练引擎之间的有限适配层。�
 请求模型全部 `additionalProperties=false`。Session 固定 `dataset_id`、`seed`、8:1:1 分组评估、允许模型和 `max_runs`；Experiment 只能选择 `model_type`、`normalization`、`class_balance`、同 Session 的父 Run 和简短理由。请求体不接受 owner、tenant、路径或独立测试集字段。
 
 当前 Agent 模型集为 `logistic_regression`、`svm`、`random_forest`。可选 `client_request_id` 长度为 1–128，仅允许字母、数字、点、下划线、冒号和连字符。
+
+## 冻结数据与安全有效配置
+
+新 Session 通过当前 Principal 的 `DatasetRepository.resolve` 和 `verify_integrity` 取得 SHA-256，与 Session 一起持久化。创建响应及检查响应的 `locked_config` 新增：
+
+```json
+{
+  "metadata_version": "agent-metadata-v1",
+  "dataset_sha256": "64位小写十六进制 SHA-256",
+  "dataset_fingerprint_status": "ready"
+}
+```
+
+已有 DB 只新增可空列，不回填历史指纹。历史 Session 明确返回 `dataset_sha256=null,dataset_fingerprint_status="unavailable"`；不会以当前文件内容冒充创建时冻结内容。同一 Session 创建 request 重放优先读取原持久化记录，即使源文件后来不再可用也返回原冻结元数据，内容冲突仍拒绝。
+
+新 Session 的实验提交把冻结摘要作为内部 `expected_dataset_sha256` 传给共享 Run Submission Service；它对实际准备写入 Run 的 Dataset 快照执行比较，在创建 queued Run 前拒绝不一致。此内部字段不接受 HTTP 客户端写入。已绑定 Run 的提交重放、Session 检查、Observation 和 Finalize 也会核对持久 Run 的 Dataset ID 与摘要；源数据变动不会刷新 Session 指纹，也不会产生不同数据的新 Run。
+
+实验提交（含重放）、`Session.experiments[]` 和 Observation 同级新增相同投影：
+
+```json
+{
+  "metadata_version": "agent-metadata-v1",
+  "dataset_sha256": "64位小写十六进制 SHA-256，缺失时为 null",
+  "dataset_fingerprint_status": "ready",
+  "effective_config_status": "ready",
+  "effective_config": {
+    "model_type": "logistic_regression",
+    "normalization": "zscore",
+    "class_balance": "none",
+    "seed": 42,
+    "feature_selection_enabled": false,
+    "evaluation_config": {
+      "mode": "stratified_holdout",
+      "train_weight": 8,
+      "validation_weight": 1,
+      "heldout_weight": 1
+    }
+  }
+}
+```
+
+该配置只从已校验并持久化的 `RunRecord.config` 白名单投影，不按 `effective_action` 再次推导，不直接透传 legacy 配置。摘要来自该 Run 的快照；它与历史 Session 是否曾冻结摘要是两个事实。未绑定 reservation 的配置为 `pending/null`；没有可用 Run 配置的旧记录为 `unavailable/null`。完整类型由 `backend/app/agent/metadata.py` 定义，值不符合枚举或比例约束时不公开不可信配置。路径、展示文件名、内部划分字段、预测和产物均不进入投影。
+
+本增量不公开内部 reservation/submission key、多维成本或真实分组划分指纹。编排器可对确认的安全 evaluation 配置求 `evaluation_config_fingerprint`；实际 `split_fingerprint` 保持 null 和 unavailable，不能把比例与 seed 的摘要当作 Sample_ID 分配摘要。
 
 ## 状态机
 
@@ -98,6 +144,8 @@ Finalize 要求 Run 属于当前 Principal 与 Session、状态成功、Manifest
 | 409 | `agent_request_released` | 同 request id 的历史尝试已结束，禁止静默重放 |
 | 409 | `agent_submission_key_conflict` | durable submission key 内容或作用域冲突 |
 | 409 | `agent_submission_mapping_invalid` | durable mapping 目标不完整 |
+| 409 | `agent_dataset_fingerprint_mismatch` | 实际 Run 快照与冻结 Session 不一致，拒绝提交或确认 |
+| 409 | `agent_metadata_invalid` | 数据指纹格式或 Session 元数据版本不兼容，需要核对 |
 | 422 | `agent_module_unavailable` | 请求了不可用模块 |
 | 422 | `agent_invalid_action` | 动作不符合 Session/Run 状态 |
 | 503 | `worker_contract_mismatch` | 活跃 Worker 契约不兼容 |

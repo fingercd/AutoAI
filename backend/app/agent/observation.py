@@ -10,6 +10,7 @@ from typing import Any
 from ..runs.artifacts import ArtifactIntegrityError, ManifestCorruptError, RunArtifactWriter
 from ..runs.contracts import RunRecord, public_error_message
 from .contracts import AGENT_API_CONTRACT_VERSION, AGENT_OBSERVATION_VERSION
+from .metadata import run_metadata
 
 
 VALIDATION_METRICS = (
@@ -114,6 +115,7 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         'attempt': attempt,
         'state': record.state,
         'effective_action': effective_action,
+        **run_metadata(record),
         'selection_metric': selection_metric,
         'progress': safe_progress(record),
         'validation': {'status': validation_status, 'metrics': metrics},

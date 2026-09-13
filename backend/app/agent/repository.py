@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -86,6 +87,8 @@ class AgentSessionRecord:
     finalized_at: str | None
     owner_id: str | None
     tenant_id: str | None
+    dataset_sha256: str | None = None
+    metadata_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,16 +123,30 @@ class AgentSessionRepository:
     def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
         connection.row_factory = sqlite3.Row
-        connection.execute('PRAGMA journal_mode=WAL')
         try:
+            # Concurrent first opens can race while converting an empty DB to
+            # WAL. SQLite does not always invoke its busy handler for this PRAGMA.
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    connection.execute('PRAGMA journal_mode=WAL')
+                    break
+                except sqlite3.OperationalError as error:
+                    if error.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
             yield connection
         finally:
             connection.close()
 
     def initialize(self) -> None:
         with self._connection() as connection:
+            # executescript commits any earlier transaction. Start the write
+            # transaction inside the script and retain it through schema rereads,
+            # conditional ALTERs and legacy copies until the explicit commit.
             connection.executescript(
                 '''
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS agent_sessions_v1 (
                     session_id TEXT PRIMARY KEY,
                     state TEXT NOT NULL CHECK(state IN ('open','finalized')),
@@ -185,6 +202,12 @@ class AgentSessionRepository:
                 ) WHERE client_request_id IS NOT NULL;
                 '''
             )
+            session_columns = {
+                str(row['name']) for row in connection.execute('PRAGMA table_info(agent_sessions_v1)')
+            }
+            for column in ('dataset_sha256', 'metadata_version'):
+                if column not in session_columns:
+                    connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
             reservation_columns = {
                 str(row['name'])
                 for row in connection.execute(
@@ -238,6 +261,7 @@ class AgentSessionRepository:
                        rationale,config_hash,created_at,created_at,owner_id,tenant_id
                        FROM agent_experiments'''
                 )
+            connection.commit()
 
     @staticmethod
     def _scope(principal: Principal) -> tuple[str | None, str | None]:
@@ -254,6 +278,7 @@ class AgentSessionRepository:
             context_policy=dict(_decode(row['context_policy_json'], {})),
             selected_run_id=row['selected_run_id'], created_at=row['created_at'],
             finalized_at=row['finalized_at'], owner_id=row['owner_id'], tenant_id=row['tenant_id'],
+            dataset_sha256=row['dataset_sha256'], metadata_version=row['metadata_version'],
         )
 
     @staticmethod
@@ -275,7 +300,8 @@ class AgentSessionRepository:
                        max_runs: int, seed: int, evaluation_config: dict[str, Any],
                        modules: list[str], context_policy: dict[str, Any],
                        client_request_id: str | None, payload_hash: str,
-                       principal: Principal) -> tuple[AgentSessionRecord, bool]:
+                       principal: Principal, dataset_sha256: str | None = None,
+                       metadata_version: str | None = None) -> tuple[AgentSessionRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -293,15 +319,30 @@ class AgentSessionRepository:
                 '''INSERT INTO agent_sessions_v1(
                     session_id,state,dataset_id,selection_metric,allowed_models_json,max_runs,seed,
                     evaluation_config_json,modules_json,context_policy_json,client_request_id,payload_hash,
-                    created_at,owner_id,tenant_id
-                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version
+                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (session_id, dataset_id, selection_metric, _json(allowed_models), max_runs, seed,
                  _json(evaluation_config), _json(modules), _json(context_policy), client_request_id,
-                 payload_hash, now, owner, tenant),
+                 payload_hash, now, owner, tenant, dataset_sha256, metadata_version),
             )
             row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?', (session_id,)).fetchone()
             connection.commit()
         return self._session(row), True
+
+    def find_session_request_scoped(self, client_request_id: str, *, payload_hash: str,
+                                    principal: Principal) -> AgentSessionRecord | None:
+        """Recover an existing creation operation without refreezing mutable Dataset metadata."""
+        owner, tenant = self._scope(principal)
+        with self._connection() as connection:
+            row = connection.execute(
+                '''SELECT * FROM agent_sessions_v1 WHERE client_request_id=?
+                   AND owner_id IS ? AND tenant_id IS ?''', (client_request_id, owner, tenant),
+            ).fetchone()
+        if row is None:
+            return None
+        if row['payload_hash'] != payload_hash:
+            raise AgentIdempotencyConflict()
+        return self._session(row)
 
     def get_session_scoped(self, session_id: str, *, principal: Principal) -> AgentSessionRecord:
         owner, tenant = self._scope(principal)
