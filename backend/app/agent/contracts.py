@@ -13,7 +13,7 @@ AGENT_OBSERVATION_VERSION = 'agent-observation-v1'
 AGENT_RESERVATION_PROTOCOL_VERSION = 'agent-reservation-reconciliation-v1'
 AGENT_METADATA_VERSION = 'agent-metadata-v1'
 
-AGENT_ALLOWED_MODELS = ('logistic_regression', 'svm', 'random_forest')
+from ..model_catalog import LEGACY_AGENT_MODELS as AGENT_ALLOWED_MODELS
 AGENT_SELECTION_METRICS = ('macro_f1', 'balanced_accuracy')
 AGENT_NORMALIZATIONS = ('zscore', 'minmax', 'area', 'none')
 AGENT_CLASS_BALANCES = ('none', 'class_weight')

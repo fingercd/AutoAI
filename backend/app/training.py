@@ -52,6 +52,7 @@ from sklearn.model_selection import ParameterSampler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .model_config import TRADITIONAL_TRAINING_DEFAULTS, DSCARNET_INPUT_MODE_DEFAULT
 from .classification_policy import DEEP_TRAINING_DEFAULTS, EvaluationPolicy, resolve_evaluation_policy
 from .dscarnet_mapping import DSCARNetMappedInputs, fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
 from .feature_selection import (
@@ -113,7 +114,7 @@ class TrainConfig:
     dscarnet_inception_blocks: int = 1
     dscarnet_pca_components: int = 30
     dscarnet_cluster_channels: int = 9
-    dscarnet_input_mode: str = "dual"
+    dscarnet_input_mode: str = DSCARNET_INPUT_MODE_DEFAULT
     # ── 运行时解析字段：每折真实参与建模的 N/L，由训练循环回填，不信任客户端传值 ──
     resolved_train_sample_count: int = 100
     resolved_feature_count: int = 1000
@@ -122,8 +123,8 @@ class TrainConfig:
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
     knn_p: int = 2
-    random_forest_n_estimators: int = 200
-    random_forest_search_iterations: int = 10
+    random_forest_n_estimators: int = TRADITIONAL_TRAINING_DEFAULTS.random_forest_n_estimators
+    random_forest_search_iterations: int = TRADITIONAL_TRAINING_DEFAULTS.random_forest_search_iterations
     random_forest_max_depth: int | None = 3
     random_forest_min_samples_leaf: int = 2
     svm_c: float = 1.0
@@ -141,7 +142,7 @@ class TrainConfig:
     random_forest_max_features: str | float = "sqrt"
     random_forest_oob_score: bool = False
     xgboost_min_child_weight: float = 1.0
-    xgboost_gamma: float = 0.0
+    xgboost_gamma: float = TRADITIONAL_TRAINING_DEFAULTS.xgboost_gamma
     # ── 可解释性（特征区间识别）配置：窗口数、top_k、重复次数与评估集合 ──
     feature_selection_enabled: bool = True
     feature_window_count: int = 100
@@ -2239,6 +2240,8 @@ def _run_legacy_training(
             or explainability
         ),
     }
+    parameter = next(last_model.parameters(), None) if last_model_family == "deep_learning" else None
+    model_metadata["execution_device"] = (str(parameter.device) if parameter is not None else None) if last_model_family == "deep_learning" else "cpu"
     if last_model_family == "deep_learning":
         model_metadata.update(
             {

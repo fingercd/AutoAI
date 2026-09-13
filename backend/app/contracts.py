@@ -42,30 +42,13 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'xgboost_colsample_bytree', 'xgboost_reg_lambda', 'pls_components',
         'pca_components', 'logistic_c', 'svm_kernel', 'random_forest_max_features',
         'random_forest_oob_score', 'xgboost_min_child_weight', 'xgboost_gamma',
+        'agent_config_policy_version', 'agent_config_policy_digest',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
     }
 )
 
-_MODEL_ALIASES = {
-    'pls': 'pls_da', 'pls-da': 'pls_da', 'pls_da': 'pls_da',
-    'pca_lda': 'pca_lda',
-    'logistic_regression': 'logistic_regression', 'logistic-regression': 'logistic_regression',
-    'logreg': 'logistic_regression',
-    'svm': 'svm', 'support_vector_machine': 'svm',
-    'random_forest': 'random_forest', 'random-forest': 'random_forest', 'rf': 'random_forest',
-    'xgboost': 'xgboost', 'xgb': 'xgboost',
-    'pca_mlp': 'pca_mlp',
-    '1d-cnn': 'cnn1d', '1dcnn': 'cnn1d', 'cnn1d': 'cnn1d',
-    'cnn1d_se': 'cnn1d_se', 'cnn-se': 'cnn1d_se',
-    'resnet1d': 'resnet1d', '1d-resnet': 'resnet1d',
-    'inception1d': 'inception1d', '1d-inception': 'inception1d',
-    'tcn1d': 'tcn1d', '1d-tcn': 'tcn1d',
-    'transformer': 'cnn_transformer1d', 'transformer1d': 'cnn_transformer1d',
-    '1d-transformer': 'cnn_transformer1d', 'cnn_transformer1d': 'cnn_transformer1d',
-    'cnn_mamba1d': 'cnn_mamba1d',
-    'dscarnet': 'dscarnet', 'dscar_net': 'dscarnet',
-}
+from .model_catalog import MODEL_ALIASES as _MODEL_ALIASES
 
 
 def _finite_number(value: Any, *, field: str) -> float:
@@ -164,12 +147,18 @@ class TrainingSpec:
                     raise TrainingConfigValidationError(f'{field} 必须大于 0')
                 values[field] = number
 
-        for field in ('xgboost_subsample', 'xgboost_colsample_bytree', 'scheduler_factor'):
+        for field in ('xgboost_subsample', 'xgboost_colsample_bytree'):
             if field in values:
                 number = _finite_number(values[field], field=field)
                 if not 0 < number <= 1:
                     raise TrainingConfigValidationError(f'{field} 必须大于 0 且不超过 1')
                 values[field] = number
+
+        if 'scheduler_factor' in values:
+            factor = _finite_number(values['scheduler_factor'], field='scheduler_factor')
+            if not 0 < factor < 1:
+                raise TrainingConfigValidationError('scheduler_factor must be greater than 0 and less than 1')
+            values['scheduler_factor'] = factor
 
         for field in ('weight_decay', 'xgboost_gamma'):
             if field in values:

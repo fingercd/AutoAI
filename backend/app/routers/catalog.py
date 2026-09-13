@@ -45,104 +45,35 @@ from ..version import WEB_CONTRACTS, WORKER_CONTRACT_VERSION
 
 router = APIRouter()
 
-# 顺序同时决定前端目录的稳定展示顺序；新增模型需同步 registry 与契约测试。
-# 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族) 三元组。
-_MODEL_CATALOG: tuple[tuple[str, str, str], ...] = (
-    ("pls_da", "PLS-DA", "traditional_ml"),
-    ("pca_lda", "PCA-LDA", "traditional_ml"),
-    ("logistic_regression", "Logistic Regression", "traditional_ml"),
-    ("svm", "SVM", "traditional_ml"),
-    ("random_forest", "Random Forest", "traditional_ml"),
-    ("xgboost", "XGBoost", "traditional_ml"),
-    ("pca_mlp", "PCA-MLP", "basic_deep"),
-    ("cnn1d", "1D CNN", "basic_deep"),
-    ("cnn1d_se", "1D CNN-SE", "convolutional"),
-    ("resnet1d", "1D ResNet", "convolutional"),
-    ("inception1d", "1D Inception", "convolutional"),
-    ("tcn1d", "1D TCN", "convolutional"),
-    ("cnn_transformer1d", "CNN-Transformer", "long_range"),
-    ("cnn_mamba1d", "CNN-Mamba", "long_range"),
-    ("dscarnet", "DSCARNet", "two_dimensional_mapping"),
-)
+from ..model_catalog import MODEL_DECLARATIONS, model_availability
 
-# 各模型对应的内部实现模块路径，用于“模块文件是否存在”的廉价探测；
-# cnn_mamba1d 与 dscarnet 不在此表——它们走专属的可选依赖探测函数。
-_MODEL_MODULES = {
-    "pls_da": "backend.app.models.pls_da",
-    "pca_lda": "backend.app.models.pca_lda",
-    "logistic_regression": "backend.app.models.logistic_regression",
-    "svm": "backend.app.models.svm",
-    "random_forest": "backend.app.models.random_forest",
-    "xgboost": "backend.app.models.xgboost",
-    "pca_mlp": "backend.app.models.pca_mlp",
-    "cnn1d": "backend.app.models.cnn1d",
-    "cnn1d_se": "backend.app.models.cnn_se1d",
-    "resnet1d": "backend.app.models.resnet1d",
-    "inception1d": "backend.app.models.inception1d",
-    "tcn1d": "backend.app.models.tcn1d",
-    "cnn_transformer1d": "backend.app.models.cnn_transformer1d",
-}
-# backend/app/models 目录的绝对路径，供文件存在性检查使用。
-_MODEL_ROOT = Path(__file__).resolve().parents[1] / "models"
-
-
-def _import_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
-    """通用 capability 探测：仅检查模型实现 .py 文件是否存在。
-
-    返回 (available, unavailable_reason)。故意不做真正的 import，
-    保证 /api/models 在 Web 请求路径上保持毫秒级响应。
-    """
-    module_name = _MODEL_MODULES[model_type]
-    module_file = _MODEL_ROOT / f"{module_name.rsplit('.', 1)[-1]}.py"
-    if not module_file.is_file():
-        return False, f"{display_name} 不可用：缺少内部模型模块 {module_name}"
-    return True, None
-
-
-def _mamba_capability() -> tuple[bool, str | None]:
-    """cnn_mamba1d 的 capability 探测：可选依赖 mamba-ssm 是否可导入。
-
-    mamba-ssm 与 PyTorch/CUDA 版本强耦合，很多环境无法安装；缺失时返回
-    available=false 与人类可读的安装提示，而不是拖到训练时才报错。
-    """
-    # find_spec 只解析不执行模块，代价远低于真正 import mamba_ssm。
-    if importlib.util.find_spec("mamba_ssm") is None:
-        return False, (
-            "CNN-Mamba 需要可选依赖 mamba-ssm（Python 导入名为 mamba_ssm）；"
-            "请安装与当前 PyTorch/CUDA 匹配的官方兼容版本。"
-        )
-    return True, None
-
-
-def _dscarnet_capability() -> tuple[bool, str | None]:
-    """dscarnet 的 capability 探测：内部模块文件 + aggmap 依赖双重检查。
-
-    注意这里故意不 import aggmap：它会连带拉起 UMAP/Numba 并触发第三方
-    代码编译，在 Web 请求里可能卡数分钟。真正权威的导入与兼容性 patch
-    由 Worker 在 DSCARNet Run 实际启动时完成（见下方英文注释）。
-    """
-    if not (_MODEL_ROOT / "dscarnet.py").is_file():
-        return False, "DSCARNet/AggMap 不可用：缺少内部 DSCARNet 模块"
-    if importlib.util.find_spec("aggmap") is None:
-        return False, "DSCARNet/AggMap 不可用：缺少 aggmap"
-    # Capability discovery runs in the Web request path. Importing AggMap
-    # here also imports UMAP/Numba and can spend minutes compiling third-party
-    # code. The Worker performs the authoritative import and compatibility
-    # patch when a DSCARNet Run actually starts.
-    return True, None
+# Historical helper names remain available; all identity and probes are shared.
+_MODEL_CATALOG = tuple((m.id, m.display_name, m.family) for m in MODEL_DECLARATIONS)
 
 
 def _model_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
-    """按模型类型分派到对应 capability 探测函数的统一入口。
-
-    两个特殊模型（cnn_mamba1d、dscarnet）走可选依赖探测，
-    其余 13 个走通用的“模块文件存在性”探测。
-    """
     if model_type == "cnn_mamba1d":
         return _mamba_capability()
     if model_type == "dscarnet":
         return _dscarnet_capability()
     return _import_capability(model_type, display_name)
+
+
+def _probe_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
+    available, reason = model_availability(model_type)
+    return available, None if available else f"{display_name} unavailable: {reason}"
+
+
+def _import_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
+    return _probe_capability(model_type, display_name)
+
+
+def _mamba_capability() -> tuple[bool, str | None]:
+    return _probe_capability('cnn_mamba1d', 'CNN-Mamba')
+
+
+def _dscarnet_capability() -> tuple[bool, str | None]:
+    return _probe_capability('dscarnet', 'DSCARNet/AggMap')
 
 
 def _curve_intensity_summary(curves: list[dict[str, object]]) -> list[dict[str, object]]:
