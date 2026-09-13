@@ -8,19 +8,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..datasets.repository import DatasetRepository
+from ..datasets.repository import DatasetIntegrityError, DatasetRepository
 from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import InvalidRunTransition, RunNotFound, RunRepository
 from ..runs.submission import RunSubmissionError, RunSubmissionRequest, RunSubmissionService
 from .capabilities import module_catalog
 from .contracts import (
     AGENT_API_CONTRACT_VERSION,
+    AGENT_METADATA_VERSION,
     AGENT_RESERVATION_PROTOCOL_VERSION,
     AgentDomainError,
     CreateAgentExperimentRequest,
     CreateAgentSessionRequest,
 )
 from .observation import build_observation, validation_from_manifest
+from .metadata import dataset_metadata, run_metadata
 from .repository import (
     AgentExperimentRecord,
     AgentSessionClosed,
@@ -59,8 +61,11 @@ def _training_config(session: AgentSessionRecord, action: dict[str, Any]) -> dic
 
 def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
     evaluation = session.evaluation_config
+    if session.metadata_version not in (None, AGENT_METADATA_VERSION):
+        raise AgentDomainError('agent_metadata_invalid', 'Session 元数据版本不兼容', status_code=409)
     return {
         'dataset_id': session.dataset_id,
+        **dataset_metadata(session.dataset_sha256),
         'selection_metric': session.selection_metric,
         'allowed_models': list(session.allowed_models),
         'max_runs': session.max_runs,
@@ -98,11 +103,19 @@ class AgentService:
             raise AgentDomainError(
                 'agent_module_unavailable', 'case_memory 不可用，不能启用 case_write', status_code=422
             )
-        try:
-            self.datasets.resolve(payload.dataset_id, principal=principal)
-        except (FileNotFoundError, PermissionError):
-            raise AgentDomainError('dataset_unavailable', '数据集不存在或当前调用者无权访问', status_code=404) from None
         body = payload.model_dump(mode='json')
+        body_hash = _hash_payload(body)
+        if payload.client_request_id:
+            existing = self.sessions.find_session_request_scoped(
+                payload.client_request_id, payload_hash=body_hash, principal=principal,
+            )
+            if existing is not None:
+                return self._session_creation_response(existing, created=False, principal=principal)
+        try:
+            dataset = self.datasets.resolve(payload.dataset_id, principal=principal)
+            digest = self.datasets.verify_integrity(dataset)
+        except (FileNotFoundError, PermissionError, DatasetIntegrityError):
+            raise AgentDomainError('dataset_unavailable', '数据集不存在或当前调用者无权访问', status_code=404) from None
         session, created = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -113,9 +126,15 @@ class AgentService:
             modules=list(payload.modules),
             context_policy=payload.context_policy.model_dump(mode='json'),
             client_request_id=payload.client_request_id,
-            payload_hash=_hash_payload(body),
+            payload_hash=body_hash,
             principal=principal,
+            dataset_sha256=digest,
+            metadata_version=AGENT_METADATA_VERSION,
         )
+        return self._session_creation_response(session, created=created, principal=principal)
+
+    def _session_creation_response(self, session: AgentSessionRecord, *, created: bool,
+                                   principal: Principal) -> dict[str, Any]:
         return {
             'contract_version': AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
@@ -164,7 +183,7 @@ class AgentService:
         )
         if not created and reservation.state == 'bound' and reservation.run_id:
             record = self._run(reservation.run_id, principal)
-            return self._experiment_response(session_id, reservation, record, replay=True)
+            return self._experiment_response(session, reservation, record, replay=True)
         if not created and reservation.state == 'compensation_required':
             raise AgentDomainError(
                 'agent_compensation_required', '先前提交需要人工核对，当前预算继续保留',
@@ -188,6 +207,7 @@ class AgentService:
                 principal=principal,
                 submission_source='agent',
                 submission_key=reservation.experiment_id,
+                expected_dataset_sha256=session.dataset_sha256,
             ))
         except RunSubmissionError as exc:
             if exc.code in {'agent_submission_key_conflict', 'agent_submission_mapping_invalid'}:
@@ -251,7 +271,7 @@ class AgentService:
                 )
                 if current.state == 'bound' and current.run_id == record.run_id:
                     return self._experiment_response(
-                        session_id, current, record, replay=(not created)
+                        session, current, record, replay=(not created)
                     )
             except Exception:
                 pass
@@ -278,14 +298,28 @@ class AgentService:
                 'agent_experiment_binding_failed', '实验绑定失败，已执行安全补偿',
                 status_code=503, retryable=False,
             ) from exc
-        return self._experiment_response(session_id, bound, record, replay=(not created))
+        return self._experiment_response(session, bound, record, replay=(not created))
 
     @staticmethod
-    def _experiment_response(session_id: str, experiment: AgentExperimentRecord,
+    def _verify_run_metadata(session: AgentSessionRecord, record: RunRecord) -> None:
+        if session.dataset_sha256 is not None and (
+            record.dataset_id != session.dataset_id
+            or record.dataset_snapshot.get('dataset_id') != session.dataset_id
+            or record.dataset_snapshot.get('sha256') != session.dataset_sha256
+        ):
+            raise AgentDomainError(
+                'agent_dataset_fingerprint_mismatch',
+                '训练快照与冻结 Session 不一致，需要人工核对', status_code=409,
+            )
+
+    @classmethod
+    def _experiment_response(cls, session: AgentSessionRecord, experiment: AgentExperimentRecord,
                              record: RunRecord, *, replay: bool) -> dict[str, Any]:
+        cls._verify_run_metadata(session, record)
         return {
             'contract_version': AGENT_API_CONTRACT_VERSION,
-            'session_id': session_id,
+            'session_id': session.session_id,
+            **run_metadata(record),
             'run_id': record.run_id,
             'attempt': experiment.attempt,
             'config_hash': experiment.config_hash,
@@ -299,6 +333,7 @@ class AgentService:
         session = self.sessions.get_session_scoped(session_id, principal=principal)
         experiment = self.sessions.get_experiment_scoped(session_id, run_id, principal=principal)
         record = self._run(run_id, principal)
+        self._verify_run_metadata(session, record)
         remaining = max(0, session.max_runs - self.sessions.count_budget_scoped(
             session_id=session_id, principal=principal
         ))
@@ -325,10 +360,13 @@ class AgentService:
                 'config_hash': item.config_hash, 'failure_code': item.failure_code,
                 'created_at': item.created_at, 'state': 'binding_failed' if not item.run_id else 'missing',
                 'validation_score': None,
+                **run_metadata(None, pending=item.state == 'reserved'),
             }
             if item.run_id:
                 try:
                     record = self._run(item.run_id, principal)
+                    self._verify_run_metadata(session, record)
+                    entry.update(run_metadata(record))
                     entry['state'] = record.state
                     if record.state == 'succeeded':
                         status, metrics, _ = validation_from_manifest(
@@ -338,8 +376,9 @@ class AgentService:
                         if value is not None:
                             entry['validation_score'] = value
                             scores.append((value, -item.attempt, item.run_id))
-                except AgentDomainError:
-                    pass
+                except AgentDomainError as exc:
+                    if exc.code != 'agent_experiment_not_found':
+                        raise
             summaries.append(entry)
         best_run_id = max(scores)[2] if scores else None
         used = sum(1 for item in experiments if item.state != 'released')
@@ -363,6 +402,7 @@ class AgentService:
             session_id, selected_run_id, principal=principal
         )
         record = self._run(selected_run_id, principal)
+        self._verify_run_metadata(session, record)
         if record.state != 'succeeded':
             raise AgentDomainError(
                 'agent_invalid_action', f'只能 finalize 已成功且结果完整的 Run，state={record.state}', status_code=422

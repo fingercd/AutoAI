@@ -83,6 +83,7 @@ class RunSubmissionRequest:
     principal: Principal
     submission_source: SubmissionSource
     submission_key: str | None = None
+    expected_dataset_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,7 @@ class RunSubmissionService:
             principal=request.principal,
             submission_source=request.submission_source,
             submission_key=request.submission_key,
+            expected_dataset_sha256=request.expected_dataset_sha256,
         )
 
     def submit_prepared(
@@ -171,6 +173,7 @@ class RunSubmissionService:
         submission_source: SubmissionSource,
         submission_key: str | None = None,
         snapshot_provider: Callable[..., dict[str, Any]] | None = None,
+        expected_dataset_sha256: str | None = None,
     ) -> RunSubmissionResult:
         """提交已由 HTTP 兼容层解析的数据引用，供旧路由保持注入点兼容。"""
         if submission_key is not None and submission_source != 'agent':
@@ -210,6 +213,12 @@ class RunSubmissionService:
         dataset_snapshot = snapshot(
             reference.dataset_id, reference.legacy_path, reference.dataset_name
         )
+        if (expected_dataset_sha256 is not None
+                and dataset_snapshot.get('sha256') != expected_dataset_sha256):
+            raise RunSubmissionError(
+                'agent_dataset_fingerprint_mismatch',
+                '数据指纹与冻结 Session 不一致，未创建训练任务', status_code=409,
+            )
         effective_training_config = spec.to_legacy_dict()
         test_snapshot: dict[str, Any] | None = None
         if has_external_test:

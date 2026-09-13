@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 AGENT_API_CONTRACT_VERSION = 'agent-session-v1'
 AGENT_OBSERVATION_VERSION = 'agent-observation-v1'
 AGENT_RESERVATION_PROTOCOL_VERSION = 'agent-reservation-reconciliation-v1'
+AGENT_METADATA_VERSION = 'agent-metadata-v1'
 
 AGENT_ALLOWED_MODELS = ('logistic_regression', 'svm', 'random_forest')
 AGENT_SELECTION_METRICS = ('macro_f1', 'balanced_accuracy')
