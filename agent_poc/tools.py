@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import math
 
 
 MODELS = ['logistic_regression', 'svm', 'random_forest']
@@ -53,7 +54,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
-def validate_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def validate_tool_arguments(name: str, arguments: dict[str, Any], schemas: dict | None = None) -> dict[str, Any]:
     """Validate the finite JSON Schema subset used by these six tools.
 
     No dynamic getattr target or arbitrary JSON schema implementation is exposed.
@@ -61,8 +62,14 @@ def validate_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, A
     """
     from agent_poc.clients.autoai_client import AgentContractError, validate_identifier
 
+    schemas = TOOL_SCHEMAS if schemas is None else schemas
+
     def check(schema: dict[str, Any], value: Any) -> None:
         kind = schema['type']
+        if isinstance(kind, list):
+            if value is None and 'null' in kind:
+                return
+            kind = next(k for k in kind if k != 'null')
         if kind == 'object':
             if type(value) is not dict or set(value) - set(schema['properties']):
                 raise ValueError
@@ -83,6 +90,17 @@ def validate_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, A
         elif kind == 'integer':
             if type(value) is not int or not schema.get('minimum', 0) <= value <= schema.get('maximum', 2**63 - 1):
                 raise ValueError
+        elif kind == 'number':
+            if type(value) not in (int,float) or not math.isfinite(value):
+                raise ValueError
+            if 'minimum' in schema and value < schema['minimum']:
+                raise ValueError
+            if 'maximum' in schema and value > schema['maximum']:
+                raise ValueError
+            if 'exclusiveMaximum' in schema and value >= schema['exclusiveMaximum']:
+                raise ValueError
+            if 'exclusiveMinimum' in schema and value <= schema['exclusiveMinimum']:
+                raise ValueError
         elif kind == 'boolean':
             if type(value) is not bool:
                 raise ValueError
@@ -92,9 +110,9 @@ def validate_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, A
             raise ValueError
 
     try:
-        if name not in TOOL_SCHEMAS:
+        if name not in schemas:
             raise ValueError
-        check(TOOL_SCHEMAS[name], arguments)
+        check(schemas[name], arguments)
         for key in ('session_id', 'run_id', 'selected_run_id', 'parent_run_id',
                     'dataset_id', 'client_request_id'):
             if key in arguments:
@@ -118,5 +136,35 @@ class ToolDispatcher:
         }
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        validated = validate_tool_arguments(name, arguments)
+        validated = validate_tool_arguments(name, arguments, self.client.tool_schemas if getattr(self.client, 'api_version', 'v1') == 'v2' else None)
         return self._calls[name](**validated)
+
+
+def build_tool_schemas(capabilities: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return independent schemas from a validated v2 server capability snapshot."""
+    from copy import deepcopy
+    from agent_poc.clients.contracts_v2 import HealthResponse
+    health = HealthResponse.model_validate(capabilities)
+    models = [m for m in health.models if m.available]
+    ids = [m.id for m in models]
+    schemas = deepcopy(TOOL_SCHEMAS)
+    start = schemas['start_ml_session']['properties']
+    submit = schemas['submit_ml_experiment']['properties']
+    start['allowed_models']['items']['enum'] = ids
+    start['max_runs'] = {'type':'integer','minimum':1,'maximum':1}
+    def parameter_schema(p):
+        value={'type':p.value_type}
+        for source,target in [('minimum','minimum'),('maximum','maximum'),('exclusive_minimum','exclusiveMinimum'),('exclusive_maximum','exclusiveMaximum'),('choices','enum')]:
+            item=getattr(p,source)
+            if item is not None:
+                value[target]=item
+        if p.nullable:
+            value['type']=[p.value_type,'null']
+        return value
+    per_model={m.id:{p.name:parameter_schema(p) for p in m.parameters if p.role=='operator_fixed'} for m in models}
+    start['model_configs']=_schema({name:_schema(params,[]) for name,params in per_model.items()},[])
+    submit['model_type']['enum']=ids
+    submit['normalization']['enum']=['zscore']
+    submit['class_balance']['enum']=['none']
+    submit['model_params']=_schema({key:value for params in per_model.values() for key,value in params.items()},[])
+    return schemas

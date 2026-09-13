@@ -24,7 +24,7 @@ _KNOWN_ERRORS = frozenset({
     'agent_experiment_binding_failed', 'agent_manifest_incomplete', 'agent_manifest_missing',
     'agent_manifest_invalid', 'agent_validation_unavailable', 'agent_run_failed',
     'agent_run_cancelled', 'agent_dataset_changed', 'agent_dataset_fingerprint_mismatch',
-    'agent_metadata_invalid',
+    'agent_metadata_invalid', 'agent_model_unavailable', 'agent_capability_changed', 'agent_version_incompatible',
 })
 
 
@@ -116,8 +116,15 @@ class AutoAIClient:
     timeout: float = 10.0
     max_retries: int = 2
     transport: Transport | None = None
+    api_version: str = "v1"
 
     def __post_init__(self) -> None:
+        if self.api_version not in ('v1','v2'):
+            raise ValueError('Unknown API version')
+        from copy import deepcopy
+        from agent_poc.tools import TOOL_SCHEMAS
+        self.tool_schemas = deepcopy(TOOL_SCHEMAS)
+        self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 5:
             raise ValueError('max_retries 必须在 0..5')
@@ -132,6 +139,8 @@ class AutoAIClient:
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
                  *, operation: str, idempotent: bool = False,
                  bound_ids: dict[str, str] | None = None) -> dict[str, Any]:
+        if self.api_version == 'v2':
+            path = path.replace('/api/agent/', '/api/agent/v2/', 1)
         headers = {'Accept': 'application/json'}
         if body is not None:
             headers['Content-Type'] = 'application/json'
@@ -166,14 +175,46 @@ class AutoAIClient:
                                  code=safe_error_code(detail.code), retryable=detail.retryable,
                                  allowed_actions=list(detail.allowed_actions)) from None
         try:
-            result = RESPONSE_MODELS[operation].model_validate(payload).model_dump(
+            response_models = RESPONSE_MODELS
+            if self.api_version == 'v2':
+                from .contracts_v2 import RESPONSE_MODELS as response_models
+            result = response_models[operation].model_validate(payload).model_dump(
                 mode='json', exclude_unset=True)
             for key, value in (bound_ids or {}).items():
                 if result.get(key) != value:
                     raise ValueError
         except Exception:
             raise AgentContractError('Agent API/Observation 版本或响应结构不符合契约') from None
+        if self.api_version == 'v2':
+            if operation == 'inspect_ml_capabilities':
+                from agent_poc.tools import build_tool_schemas
+                self.tool_schemas = build_tool_schemas(result)
+            if 'locked_config' in result:
+                self._sessions[result['session_id']] = result['locked_config']
+            if 'effective_action' in result:
+                self._check_frozen_response(result)
         return _sanitize_response(result)
+
+    def restore_frozen_session(self, session_id, snapshot):
+        """Restore validated local bindings without performing any HTTP request."""
+        from .contracts_v2 import FrozenSnapshot
+        if self.api_version != 'v2':
+            raise AgentContractError('Frozen capabilities require v2')
+        validate_identifier(session_id)
+        frozen = FrozenSnapshot.model_validate(snapshot).model_dump(mode='json')
+        self._sessions[session_id] = {'capability_snapshot': frozen}
+
+    def _check_frozen_response(self, result):
+        locked = self._sessions.get(result['session_id'])
+        if locked is None:
+            return
+        action = result['effective_action']
+        frozen = locked['capability_snapshot']['model_configs']
+        if action['model_type'] not in frozen or action['model_params'] != frozen[action['model_type']]:
+            raise AgentContractError('Response differs from frozen Session')
+        config = result.get('effective_config')
+        if config is not None and (config['model_type'] != action['model_type'] or config['model_params'] != action['model_params']):
+            raise AgentContractError('Execution differs from frozen decision')
 
     def inspect_ml_capabilities(self) -> dict[str, Any]:
         return self._request('GET', '/api/agent/health', operation='inspect_ml_capabilities')
@@ -183,7 +224,8 @@ class AutoAIClient:
                          evaluation: dict[str, Any] | None = None,
                          modules: list[str] | None = None,
                          context_policy: dict[str, Any] | None = None,
-                         client_request_id: str | None = None) -> dict[str, Any]:
+                         client_request_id: str | None = None,
+                         model_configs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         validate_identifier(dataset_id)
         if client_request_id is not None:
             validate_identifier(client_request_id)
@@ -198,6 +240,10 @@ class AutoAIClient:
         }
         if client_request_id is not None:
             body['client_request_id'] = client_request_id
+        if model_configs is not None:
+            if self.api_version != 'v2':
+                raise AgentContractError('Model configurations require v2')
+            body['model_configs'] = model_configs
         return self._request('POST', '/api/agent/sessions', body,
                              operation='start_ml_session', idempotent=bool(client_request_id))
 
@@ -209,7 +255,8 @@ class AutoAIClient:
     def submit_ml_experiment(self, session_id: str, *, model_type: str,
                              normalization: str = 'zscore', class_balance: str = 'none',
                              parent_run_id: str | None = None, rationale: str | None = None,
-                             client_request_id: str | None = None) -> dict[str, Any]:
+                             client_request_id: str | None = None,
+                             model_params: dict[str, Any] | None = None) -> dict[str, Any]:
         validate_identifier(session_id)
         for value in (parent_run_id, client_request_id):
             if value is not None:
@@ -220,6 +267,25 @@ class AutoAIClient:
                            ('client_request_id', client_request_id)):
             if value is not None:
                 body[key] = value
+        if self.api_version == 'v2':
+            if session_id not in self._sessions:
+                raise AgentContractError('Inspect or restore the frozen Session before submission')
+            from .contracts_v2 import FrozenSnapshot, validate_params
+            frozen = FrozenSnapshot.model_validate(self._sessions[session_id]['capability_snapshot'])
+            model = next((m for m in frozen.models if m.id == model_type), None)
+            try:
+                if model_type not in frozen.model_configs or model is None:
+                    raise ValueError
+                expected = frozen.model_configs[model_type]
+                if model_params is not None and validate_params(model, model_params, complete=True) != expected:
+                    raise ValueError
+                if normalization != 'zscore' or class_balance != 'none' or parent_run_id is not None:
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise AgentContractError('Experiment differs from frozen Session') from None
+            body['model_params'] = dict(expected)
+        elif model_params is not None:
+            raise AgentContractError('Model parameters require v2')
         return self._request('POST', f'/api/agent/sessions/{session_id}/experiments', body,
                              operation='submit_ml_experiment', idempotent=bool(client_request_id),
                              bound_ids={'session_id': session_id})
