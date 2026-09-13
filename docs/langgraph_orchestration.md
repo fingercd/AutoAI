@@ -1,3 +1,5 @@
+> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认 v2；新增字段、参数冻结和恢复分派见 [第二步契约](agent_step2_contract.md)。
+
 # LangGraph 编排节点与恢复契约
 
 本文件描述 `agent_poc/orchestration/graph.py` 的实际第一步实现，图名为

@@ -1,3 +1,5 @@
+> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认 v2；新增字段、参数冻结和恢复分派见 [第二步契约](agent_step2_contract.md)。
+
 # LangGraph 任务 State 契约
 
 第一步协议：`agent-state-v1`，图协议：`agent-single-experiment-v1`。实现位于
