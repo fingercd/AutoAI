@@ -1,0 +1,1456 @@
+{
+  "catalog_version": "agent-model-catalog-v1",
+  "catalog_digest": "1749270b369efedf8cef7d7aefac4c76822ffd65aab57c2b840bd98c0f07860f",
+  "availability_digest": "bf2fd885d2447d301f47fece72853fd9d7728c27173a7ef3440ce5381f1226be",
+  "models": [
+    {
+      "id": "pls_da",
+      "display_name": "PLS-DA",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {},
+      "parameters": [],
+      "compatibility_rules": [
+        "pls_da-train-bounded-validation-search-v2"
+      ],
+      "config_policy_digest": "d61eec2706ee17bcd51fdf0b65c64173572b816486fc41d2cd8a1cfb9f1f5f90",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "pca_lda",
+      "display_name": "PCA-LDA",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {},
+      "parameters": [],
+      "compatibility_rules": [
+        "pca_lda-train-bounded-validation-search-v2"
+      ],
+      "config_policy_digest": "a1401f299658b206de51a56048b438149e6d6c0947ff38b69abfa310ad5b1745",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "logistic_regression",
+      "display_name": "Logistic Regression",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {},
+      "parameters": [],
+      "compatibility_rules": [
+        "logistic_regression-train-bounded-validation-search-v2"
+      ],
+      "config_policy_digest": "ce210703ca9f739cc509267d2d5e61e6a958e09b5b156a6616705780328aa41c",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "svm",
+      "display_name": "SVM",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {},
+      "parameters": [],
+      "compatibility_rules": [
+        "svm-train-bounded-validation-search-v2"
+      ],
+      "config_policy_digest": "65de47a13c82eeb90aa140ca8583367d37f576638a3af1c0d078fa61f0c163e5",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "random_forest",
+      "display_name": "Random Forest",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "random_forest_n_estimators": 200,
+        "random_forest_search_iterations": 10
+      },
+      "parameters": [
+        {
+          "name": "random_forest_n_estimators",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 50,
+          "maximum": 1000,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "random_forest"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "random_forest_search_iterations",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 18,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "random_forest"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "rf-oob-balanced-accuracy-accuracy-stable-order-v1"
+      ],
+      "config_policy_digest": "b785c56ea4789b9f0c94702b9ac9ceabf3fcb8359663607b6c4f3d5b3eecdc93",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "xgboost",
+      "display_name": "XGBoost",
+      "family": "traditional_ml",
+      "execution_family": "traditional_ml",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "xgboost_gamma": 0.0
+      },
+      "parameters": [
+        {
+          "name": "xgboost_gamma",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "xgboost"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "xgboost-twelve-candidate-validation-search-v2"
+      ],
+      "config_policy_digest": "56d98a8cdca5cd44793debd78c6b82898540482997094a29759c898070771b79",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "pca_mlp",
+      "display_name": "PCA-MLP",
+      "family": "basic_deep",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "pca_mlp"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "4e09c407f1d05a264a7259d5a00fe4105deb6bf31848bc9b339d3627dbf659c6",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "cnn1d",
+      "display_name": "1D CNN",
+      "family": "basic_deep",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "dcf63af55711c2cdfbc549f3cdb0f4289f25611feb9607898ad7079f37baba60",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "cnn1d_se",
+      "display_name": "1D CNN-SE",
+      "family": "convolutional",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn1d_se"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "42f75f6bfe2170012197782ba1b7006b8ff45868e9e08f9d30038e60af7d14a6",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "resnet1d",
+      "display_name": "1D ResNet",
+      "family": "convolutional",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "resnet1d"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "db7a2fdcab8bbab45b3d5518ee517dd42b848ec73bf47d5046726ca1ce9e150b",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "inception1d",
+      "display_name": "1D Inception",
+      "family": "convolutional",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "inception1d"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "100c41041afdf1f5ed54d79d9fc9fba88505405fe6e1ccd7f6be279a4ffc4634",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "tcn1d",
+      "display_name": "1D TCN",
+      "family": "convolutional",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "tcn1d"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "c138404b286e1512bfd5581007bbf38e8fa15de6dea29886ba7ab7ba18b5a4f8",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "cnn_transformer1d",
+      "display_name": "CNN-Transformer",
+      "family": "long_range",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "cnn_transformer1d"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2"
+      ],
+      "config_policy_digest": "6bfba576a28fb118951c8e7322f565e609d57fdb82b2b5312a819042a32aa8c8",
+      "available": true,
+      "reason_code": null,
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "cnn_mamba1d",
+      "display_name": "CNN-Mamba",
+      "family": "long_range",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": false,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {},
+      "parameters": [],
+      "compatibility_rules": [],
+      "config_policy_digest": "c32488c2cdbfcb77e814493c5387e6b34750d917af5552aa780318ff4c8cd992",
+      "available": false,
+      "reason_code": "not_implemented_for_version",
+      "availability_basis": "declaration-module-dependency-probe"
+    },
+    {
+      "id": "dscarnet",
+      "display_name": "DSCARNet",
+      "family": "two_dimensional_mapping",
+      "execution_family": "deep_learning",
+      "architecture_version": "docx-classification-v2",
+      "implemented": true,
+      "config_policy_version": "agent-model-config-v1",
+      "fixed_execution_defaults": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "scheduler_factor": 0.5,
+        "scheduler_patience": 10,
+        "min_learning_rate": 1e-06,
+        "early_stopping_patience": 20,
+        "dscarnet_input_mode": "dual"
+      },
+      "parameters": [
+        {
+          "name": "epochs",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 200,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "batch_size",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 8,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.001,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "weight_decay",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.0001,
+          "minimum": 0,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_factor",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 0.5,
+          "minimum": null,
+          "maximum": 1,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "scheduler_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 10,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "min_learning_rate",
+          "value_type": "number",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 1e-06,
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": 0,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "early_stopping_patience",
+          "value_type": "integer",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": 20,
+          "minimum": 1,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": null,
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        },
+        {
+          "name": "dscarnet_input_mode",
+          "value_type": "string",
+          "nullable": false,
+          "default_status": "fixed",
+          "default": "dual",
+          "minimum": null,
+          "maximum": null,
+          "exclusive_minimum": null,
+          "choices": [
+            "sar",
+            "car",
+            "dual"
+          ],
+          "role": "operator_fixed",
+          "applies_to": [
+            "dscarnet"
+          ],
+          "condition_refs": []
+        }
+      ],
+      "compatibility_rules": [
+        "train-only-profile-v2",
+        "dscarnet-train-only-aggmap-pca-mode-v2"
+      ],
+      "config_policy_digest": "6fa238774a40d60fedbaa72597ecd55216c2e54f55b7aa32aa875e1ec4747604",
+      "available": false,
+      "reason_code": "dependency_missing_aggmap",
+      "availability_basis": "declaration-module-dependency-probe"
+    }
+  ]
+}
