@@ -13,6 +13,8 @@ from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import InvalidRunTransition, RunNotFound, RunRepository
 from ..runs.submission import RunSubmissionError, RunSubmissionRequest, RunSubmissionService
 from .capabilities import module_catalog
+from .contracts_v2 import V2
+from . import policy_v2
 from .contracts import (
     AGENT_API_CONTRACT_VERSION,
     AGENT_METADATA_VERSION,
@@ -25,6 +27,7 @@ from .observation import build_observation, validation_from_manifest
 from .metadata import dataset_metadata, run_metadata
 from .repository import (
     AgentExperimentRecord,
+    AgentExperimentNotFound,
     AgentSessionClosed,
     AgentSessionRecord,
     AgentSessionRepository,
@@ -61,11 +64,12 @@ def _training_config(session: AgentSessionRecord, action: dict[str, Any]) -> dic
 
 def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
     evaluation = session.evaluation_config
-    if session.metadata_version not in (None, AGENT_METADATA_VERSION):
+    if session.metadata_version not in (None, AGENT_METADATA_VERSION, 'agent-metadata-v2'):
         raise AgentDomainError('agent_metadata_invalid', 'Session 元数据版本不兼容', status_code=409)
     return {
+        **({'capability_snapshot': session.capability_snapshot} if session.contract_version == V2 else {}),
         'dataset_id': session.dataset_id,
-        **dataset_metadata(session.dataset_sha256),
+        **dataset_metadata(session.dataset_sha256, version=session.contract_version or AGENT_API_CONTRACT_VERSION),
         'selection_metric': session.selection_metric,
         'allowed_models': list(session.allowed_models),
         'max_runs': session.max_runs,
@@ -84,7 +88,9 @@ def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
 class AgentService:
     def __init__(self, *, session_repository: AgentSessionRepository,
                  run_repository: RunRepository, dataset_repository: DatasetRepository,
-                 submission_service: RunSubmissionService, run_root: Path) -> None:
+                 submission_service: RunSubmissionService, run_root: Path,
+                 contract_version: str = AGENT_API_CONTRACT_VERSION) -> None:
+        self.contract_version = contract_version
         self.sessions = session_repository
         self.runs = run_repository
         self.datasets = dataset_repository
@@ -104,6 +110,13 @@ class AgentService:
                 'agent_module_unavailable', 'case_memory 不可用，不能启用 case_write', status_code=422
             )
         body = payload.model_dump(mode='json')
+        snapshot = None
+        if self.contract_version == V2:
+            previous = self.sessions.find_session_request_scoped(payload.client_request_id, payload_hash=None, principal=principal) if payload.client_request_id else None
+            if previous is not None:
+                policy_v2.require_version(previous, self.contract_version)
+            snapshot = policy_v2.freeze_session(payload, previous.capability_snapshot if previous else None)
+            body.update(contract_version=V2, model_configs=snapshot['model_configs'])
         body_hash = _hash_payload(body)
         if payload.client_request_id:
             existing = self.sessions.find_session_request_scoped(
@@ -129,14 +142,15 @@ class AgentService:
             payload_hash=body_hash,
             principal=principal,
             dataset_sha256=digest,
-            metadata_version=AGENT_METADATA_VERSION,
+            metadata_version='agent-metadata-v2' if self.contract_version == V2 else AGENT_METADATA_VERSION,
+            contract_version=V2 if self.contract_version == V2 else None, capability_snapshot=snapshot,
         )
         return self._session_creation_response(session, created=created, principal=principal)
 
     def _session_creation_response(self, session: AgentSessionRecord, *, created: bool,
                                    principal: Principal) -> dict[str, Any]:
         return {
-            'contract_version': AGENT_API_CONTRACT_VERSION,
+            'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
             'state': session.state,
             'remaining_runs': max(0, session.max_runs - self.sessions.count_budget_scoped(
@@ -150,7 +164,7 @@ class AgentService:
     def create_experiment(self, *, session_id: str, payload: CreateAgentExperimentRequest,
                           principal: Principal) -> dict[str, Any]:
         payload.validate_business()
-        session = self.sessions.get_session_scoped(session_id, principal=principal)
+        session = self._session(session_id, principal)
         if session.state != 'open':
             raise AgentSessionClosed()
         if payload.model_type not in session.allowed_models:
@@ -164,7 +178,42 @@ class AgentService:
             'class_balance': payload.class_balance,
             'parent_run_id': payload.parent_run_id,
         }
-        config_hash = _compute_config_hash(session=session, action=action)
+        prepared = None
+        full_digest = None
+        replay_reservation = None
+        if self.contract_version == V2:
+            action = policy_v2.frozen_action(session, payload)
+            body.update(contract_version=V2, model_params=action['model_params'])
+            if payload.client_request_id:
+                replay_reservation = self.sessions.find_experiment_request_scoped(
+                    session_id, payload.client_request_id, payload_hash=_hash_payload(body), principal=principal)
+            if replay_reservation is not None and replay_reservation.state == 'bound' and replay_reservation.run_id:
+                return self._experiment_response(session, replay_reservation, self._run(replay_reservation.run_id, principal), replay=True)
+            # A durable mapping wins over capability drift after a lost bind.
+            mapping_exists = False
+            if replay_reservation is not None and replay_reservation.state in ('reserved', 'compensation_required'):
+                mapping = self.runs.lookup_submission_mapping(replay_reservation.experiment_id, principal=principal)
+                mapping_exists = mapping.status != 'missing'
+                if mapping.status == 'found' and mapping.submission_source == 'agent' and mapping.run_id and replay_reservation.state == 'reserved':
+                    record = self._run(mapping.run_id, principal)
+                    expected = replay_reservation.compiled_config
+                    if expected is None or any(record.config.get(k) != v for k,v in expected.items()):
+                        raise AgentDomainError('agent_submission_mapping_invalid', 'Mapped submission configuration differs', status_code=409)
+                    try:
+                        bound = self.sessions.bind_experiment(replay_reservation.experiment_id, run_id=record.run_id, principal=principal)
+                    except AgentExperimentNotFound:
+                        current = self.sessions.get_reservation_scoped(replay_reservation.experiment_id, principal=principal)
+                        if current.state != 'bound' or current.run_id != record.run_id:
+                            raise
+                        bound = current
+                    return self._experiment_response(session, bound, record, replay=True)
+            if not mapping_exists:
+                policy_v2.admit_action(session, action)
+            prepared = (replay_reservation.compiled_config if replay_reservation else None)
+            if prepared is None:
+                prepared = policy_v2.compiled_config(session, action, _training_config(session, action))
+            full_digest = policy_v2.scientific_digest(session, action)
+        config_hash = full_digest[:16] if full_digest else _compute_config_hash(session=session, action=action)
         existing = self.sessions.list_experiments_scoped(session_id, principal=principal)
         bound_ids = [item.run_id for item in existing if item.run_id]
         states = collect_run_states(self.runs, bound_ids)
@@ -180,6 +229,7 @@ class AgentService:
             active_run_ids=active,
             principal=principal,
             protocol_version=AGENT_RESERVATION_PROTOCOL_VERSION,
+            compiled_config=prepared, scientific_digest=full_digest,
         )
         if not created and reservation.state == 'bound' and reservation.run_id:
             record = self._run(reservation.run_id, principal)
@@ -203,7 +253,7 @@ class AgentService:
                 legacy_data_path=None,
                 test_dataset_id=None,
                 test_legacy_data_path=None,
-                raw_config=_training_config(session, action),
+                raw_config=reservation.compiled_config if self.contract_version == V2 else _training_config(session, action),
                 principal=principal,
                 submission_source='agent',
                 submission_key=reservation.experiment_id,
@@ -317,9 +367,9 @@ class AgentService:
                              record: RunRecord, *, replay: bool) -> dict[str, Any]:
         cls._verify_run_metadata(session, record)
         return {
-            'contract_version': AGENT_API_CONTRACT_VERSION,
+            'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
-            **run_metadata(record),
+            **run_metadata(record, version=session.contract_version or AGENT_API_CONTRACT_VERSION, snapshot=session.capability_snapshot),
             'run_id': record.run_id,
             'attempt': experiment.attempt,
             'config_hash': experiment.config_hash,
@@ -330,7 +380,7 @@ class AgentService:
         }
 
     def get_feedback(self, *, session_id: str, run_id: str, principal: Principal) -> dict[str, Any]:
-        session = self.sessions.get_session_scoped(session_id, principal=principal)
+        session = self._session(session_id, principal)
         experiment = self.sessions.get_experiment_scoped(session_id, run_id, principal=principal)
         record = self._run(run_id, principal)
         self._verify_run_metadata(session, record)
@@ -346,10 +396,12 @@ class AgentService:
             attempt=experiment.attempt,
             effective_action=experiment.action_json,
             remaining_runs=remaining,
+            contract_version=session.contract_version or AGENT_API_CONTRACT_VERSION,
+            capability_snapshot=session.capability_snapshot,
         )
 
     def get_session(self, *, session_id: str, principal: Principal) -> dict[str, Any]:
-        session = self.sessions.get_session_scoped(session_id, principal=principal)
+        session = self._session(session_id, principal)
         experiments = self.sessions.list_experiments_scoped(session_id, principal=principal)
         summaries: list[dict[str, Any]] = []
         scores: list[tuple[float, int, str]] = []
@@ -360,13 +412,13 @@ class AgentService:
                 'config_hash': item.config_hash, 'failure_code': item.failure_code,
                 'created_at': item.created_at, 'state': 'binding_failed' if not item.run_id else 'missing',
                 'validation_score': None,
-                **run_metadata(None, pending=item.state == 'reserved'),
+                **run_metadata(None, pending=item.state == 'reserved', version=session.contract_version or AGENT_API_CONTRACT_VERSION, snapshot=session.capability_snapshot),
             }
             if item.run_id:
                 try:
                     record = self._run(item.run_id, principal)
                     self._verify_run_metadata(session, record)
-                    entry.update(run_metadata(record))
+                    entry.update(run_metadata(record, version=session.contract_version or AGENT_API_CONTRACT_VERSION, snapshot=session.capability_snapshot))
                     entry['state'] = record.state
                     if record.state == 'succeeded':
                         status, metrics, _ = validation_from_manifest(
@@ -383,7 +435,7 @@ class AgentService:
         best_run_id = max(scores)[2] if scores else None
         used = sum(1 for item in experiments if item.state != 'released')
         return {
-            'contract_version': AGENT_API_CONTRACT_VERSION,
+            'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
             'state': session.state,
             'locked_config': _locked_config(session),
@@ -397,7 +449,7 @@ class AgentService:
 
     def finalize_session(self, *, session_id: str, selected_run_id: str,
                          principal: Principal) -> dict[str, Any]:
-        session = self.sessions.get_session_scoped(session_id, principal=principal)
+        session = self._session(session_id, principal)
         experiment = self.sessions.get_experiment_scoped(
             session_id, selected_run_id, principal=principal
         )
@@ -416,7 +468,7 @@ class AgentService:
             session_id=session_id, selected_run_id=experiment.run_id or '', principal=principal
         )
         return {
-            'contract_version': AGENT_API_CONTRACT_VERSION,
+            'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': updated.session_id,
             'state': updated.state,
             'selected_run_id': updated.selected_run_id,
@@ -424,6 +476,11 @@ class AgentService:
             'final_result_url': f'/#/results?run_id={selected_run_id}',
             'finalized_at': updated.finalized_at,
         }
+
+    def _session(self, session_id, principal):
+        session = self.sessions.get_session_scoped(session_id, principal=principal)
+        policy_v2.require_version(session, self.contract_version)
+        return session
 
     def _run(self, run_id: str, principal: Principal) -> RunRecord:
         try:

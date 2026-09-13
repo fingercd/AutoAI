@@ -78,7 +78,7 @@ def allowed_actions(*, session_state: str, run_state: str, validation_status: st
 
 def build_observation(*, session_id: str, session_state: str, selection_metric: str,
                       run_dir: Path, record: RunRecord, attempt: int,
-                      effective_action: dict[str, Any], remaining_runs: int) -> dict[str, Any]:
+                      effective_action: dict[str, Any], remaining_runs: int, contract_version: str = AGENT_API_CONTRACT_VERSION, capability_snapshot: dict | None = None) -> dict[str, Any]:
     validation_status, metrics, validation_error = ('pending', {}, None)
     public_error: dict[str, Any] | None = None
     if record.state == 'succeeded':
@@ -108,14 +108,14 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         validation_status=validation_status, remaining_runs=remaining_runs,
     )
     response: dict[str, Any] = {
-        'contract_version': AGENT_API_CONTRACT_VERSION,
-        'observation_version': AGENT_OBSERVATION_VERSION,
+        'contract_version': contract_version,
+        'observation_version': 'agent-observation-v2' if contract_version == 'agent-session-v2' else AGENT_OBSERVATION_VERSION,
         'session_id': session_id,
         'run_id': record.run_id,
         'attempt': attempt,
         'state': record.state,
         'effective_action': effective_action,
-        **run_metadata(record),
+        **run_metadata(record, version=contract_version, snapshot=capability_snapshot),
         'selection_metric': selection_metric,
         'progress': safe_progress(record),
         'validation': {'status': validation_status, 'metrics': metrics},
@@ -124,6 +124,17 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         'error': public_error,
         'extensions': {},
     }
+    if contract_version == 'agent-session-v2':
+        from .metadata_v2 import resolved_execution
+        response['resolved_execution'] = resolved_execution(run_dir, record)
+        # Free progress/error prose is untrusted and never crosses the v2 boundary.
+        response['progress'] = {'stage': record.state}
+        for key in ('epoch', 'epochs'):
+            value = record.progress.get(key)
+            if type(value) is int and value >= 0:
+                response['progress'][key] = value
+        if response['error'] is not None:
+            response['error'] = {'code': 'agent_run_' + record.state, 'message': 'Run result unavailable', 'retryable': False}
     response['validation_score'] = metrics.get(selection_metric) if validation_status == 'ready' else None
     if record.state in {'queued', 'running'}:
         response['retry_after_seconds'] = 2

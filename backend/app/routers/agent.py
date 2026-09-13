@@ -45,7 +45,7 @@ from ..agent.reconciliation import AgentReconciliationService
 router = APIRouter()
 
 
-def _agent_service() -> AgentService:
+def _agent_service(contract_version: str = 'agent-session-v1') -> AgentService:
     """每次请求新建一个轻量服务实例，Repository 是 SQLite 句柄集合可以共享。
 
     与现有 ``get_run_repository`` 风格一致；Repository 本身不带跨请求状态。
@@ -66,7 +66,7 @@ def _agent_service() -> AgentService:
             run_dir=lambda run_id: RUNS_DIR / run_id,
             status_projector=project_status,
         ),
-        run_root=RUNS_DIR,
+        run_root=RUNS_DIR, contract_version=contract_version,
     )
 
 
@@ -200,6 +200,7 @@ def reconcile_session(
     """显式执行 Principal-scoped 对账；HTTP 不接受阈值、ID 或目标状态。"""
     del payload
     try:
+        _agent_service()._session(session_id, principal)
         service = _reconciliation_service()
         return service.reconcile_session(session_id=session_id, principal=principal)
     except AgentDomainError as exc:
