@@ -34,20 +34,23 @@ class SafeEffectiveConfig(BaseModel):
     evaluation_config: SafeEvaluationConfig
 
 
-def dataset_metadata(digest: str | None) -> dict[str, Any]:
+def dataset_metadata(digest: str | None, *, version: str = 'agent-session-v1') -> dict[str, Any]:
     if digest is not None and not _SHA256.fullmatch(digest):
         raise AgentDomainError(
             'agent_metadata_invalid', '数据指纹元数据不完整，需要核对', status_code=409,
         )
     return {
-        'metadata_version': AGENT_METADATA_VERSION,
+        'metadata_version': 'agent-metadata-v2' if version == 'agent-session-v2' else AGENT_METADATA_VERSION,
         'dataset_sha256': digest,
         'dataset_fingerprint_status': 'ready' if digest is not None else 'unavailable',
     }
 
 
-def run_metadata(record: RunRecord | None, *, pending: bool = False) -> dict[str, Any]:
+def run_metadata(record: RunRecord | None, *, pending: bool = False, version: str = 'agent-session-v1', snapshot: dict | None = None) -> dict[str, Any]:
     """Read the persisted Run snapshot, never reconstruct an effective config from actions."""
+    if version == 'agent-session-v2':
+        from .metadata_v2 import run_metadata_v2
+        return run_metadata_v2(record, pending=pending, snapshot=snapshot)
     digest = record.dataset_snapshot.get('sha256') if record is not None else None
     if digest is not None and not isinstance(digest, str):
         raise AgentDomainError('agent_metadata_invalid', '数据指纹元数据不完整，需要核对', status_code=409)

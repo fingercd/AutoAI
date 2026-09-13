@@ -89,6 +89,8 @@ class AgentSessionRecord:
     tenant_id: str | None
     dataset_sha256: str | None = None
     metadata_version: str | None = None
+    contract_version: str | None = None
+    capability_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,8 @@ class AgentExperimentRecord:
     failure_code: str | None
     created_at: str | None
     updated_at: str | None
+    compiled_config: dict[str, Any] | None
+    scientific_digest: str | None
     protocol_version: str | None
     last_reconciled_at: str | None
     reconcile_attempt_count: int
@@ -205,9 +209,13 @@ class AgentSessionRepository:
             session_columns = {
                 str(row['name']) for row in connection.execute('PRAGMA table_info(agent_sessions_v1)')
             }
-            for column in ('dataset_sha256', 'metadata_version'):
+            for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
+            for column in ('compiled_config_json', 'scientific_digest'):
+                existing = {str(row['name']) for row in connection.execute('PRAGMA table_info(agent_experiment_reservations_v1)')}
+                if column not in existing:
+                    connection.execute(f'ALTER TABLE agent_experiment_reservations_v1 ADD COLUMN {column} TEXT')
             reservation_columns = {
                 str(row['name'])
                 for row in connection.execute(
@@ -279,6 +287,7 @@ class AgentSessionRepository:
             selected_run_id=row['selected_run_id'], created_at=row['created_at'],
             finalized_at=row['finalized_at'], owner_id=row['owner_id'], tenant_id=row['tenant_id'],
             dataset_sha256=row['dataset_sha256'], metadata_version=row['metadata_version'],
+            contract_version=row['contract_version'], capability_snapshot=_decode(row['capability_snapshot_json'], None),
         )
 
     @staticmethod
@@ -290,6 +299,7 @@ class AgentSessionRepository:
             config_hash=row['config_hash'], client_request_id=row['client_request_id'],
             failure_code=row['failure_code'], created_at=row['created_at'],
             updated_at=row['updated_at'], protocol_version=row['protocol_version'],
+            compiled_config=_decode(row['compiled_config_json'], None), scientific_digest=row['scientific_digest'],
             last_reconciled_at=row['last_reconciled_at'],
             reconcile_attempt_count=int(row['reconcile_attempt_count'] or 0),
             resolution_code=row['resolution_code'],
@@ -301,7 +311,8 @@ class AgentSessionRepository:
                        modules: list[str], context_policy: dict[str, Any],
                        client_request_id: str | None, payload_hash: str,
                        principal: Principal, dataset_sha256: str | None = None,
-                       metadata_version: str | None = None) -> tuple[AgentSessionRecord, bool]:
+                       metadata_version: str | None = None, contract_version: str | None = None,
+                       capability_snapshot: dict[str, Any] | None = None) -> tuple[AgentSessionRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -319,17 +330,18 @@ class AgentSessionRepository:
                 '''INSERT INTO agent_sessions_v1(
                     session_id,state,dataset_id,selection_metric,allowed_models_json,max_runs,seed,
                     evaluation_config_json,modules_json,context_policy_json,client_request_id,payload_hash,
-                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version
-                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version,contract_version,capability_snapshot_json
+                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (session_id, dataset_id, selection_metric, _json(allowed_models), max_runs, seed,
                  _json(evaluation_config), _json(modules), _json(context_policy), client_request_id,
-                 payload_hash, now, owner, tenant, dataset_sha256, metadata_version),
+                 payload_hash, now, owner, tenant, dataset_sha256, metadata_version, contract_version,
+                 _json(capability_snapshot) if capability_snapshot is not None else None),
             )
             row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?', (session_id,)).fetchone()
             connection.commit()
         return self._session(row), True
 
-    def find_session_request_scoped(self, client_request_id: str, *, payload_hash: str,
+    def find_session_request_scoped(self, client_request_id: str, *, payload_hash: str | None,
                                     principal: Principal) -> AgentSessionRecord | None:
         """Recover an existing creation operation without refreezing mutable Dataset metadata."""
         owner, tenant = self._scope(principal)
@@ -340,7 +352,7 @@ class AgentSessionRepository:
             ).fetchone()
         if row is None:
             return None
-        if row['payload_hash'] != payload_hash:
+        if payload_hash is not None and row['payload_hash'] != payload_hash:
             raise AgentIdempotencyConflict()
         return self._session(row)
 
@@ -377,10 +389,26 @@ class AgentSessionRepository:
         if row is None: raise AgentExperimentNotFound()
         return self._experiment(row)
 
+    def find_experiment_request_scoped(self, session_id: str, client_request_id: str, *, payload_hash: str,
+                                       principal: Principal) -> AgentExperimentRecord | None:
+        owner, tenant = self._scope(principal)
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_experiment_reservations_v1 WHERE session_id=? AND client_request_id=? AND owner_id IS ? AND tenant_id IS ?",
+                (session_id, client_request_id, owner, tenant),
+            ).fetchone()
+        if row is None:
+            return None
+        if row['payload_hash'] != payload_hash:
+            raise AgentIdempotencyConflict()
+        return self._experiment(row)
+
     def reserve_experiment(self, *, session_id: str, action_json: dict[str, Any], rationale: str | None,
                            parent_run_id: str | None, config_hash: str, client_request_id: str | None,
                            payload_hash: str, active_run_ids: set[str], principal: Principal,
                            protocol_version: str | None = None,
+                           compiled_config: dict[str, Any] | None = None,
+                           scientific_digest: str | None = None,
                            ) -> tuple[AgentExperimentRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
@@ -424,11 +452,11 @@ class AgentSessionRepository:
                 '''INSERT INTO agent_experiment_reservations_v1(
                    reservation_id,session_id,state,attempt,parent_run_id,action_json,rationale,
                    config_hash,client_request_id,payload_hash,created_at,updated_at,protocol_version,
-                   owner_id,tenant_id
-                   ) VALUES(?,?,'reserved',?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   owner_id,tenant_id,compiled_config_json,scientific_digest
+                   ) VALUES(?,?,'reserved',?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (reservation_id, session_id, attempt, parent_run_id, _json(action_json), rationale,
                  config_hash, client_request_id, payload_hash, now, now, protocol_version,
-                 owner, tenant),
+                 owner, tenant, _json(compiled_config) if compiled_config is not None else None, scientific_digest),
             )
             row = connection.execute(
                 'SELECT * FROM agent_experiment_reservations_v1 WHERE reservation_id=?', (reservation_id,)
