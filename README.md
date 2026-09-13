@@ -12,9 +12,13 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
-- 当前可用 14 个分类模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
+- 已实现 14 个分类模型（实际可用性取决于当前环境依赖）：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - Agent 接口适配层使用 `agent-session-v1` / `agent-observation-v1`：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
+
+## 第二步全模型 Agent
+
+新任务默认采用 Agent v2，支持按能力快照选择当前环境可执行的模型，并在 Session 创建时冻结模型参数。保留 v1 三模型客户端和旧检查点恢复。仍是 `max_runs=1` 的单实验流程，不启用第三步研究模块。协议、参数和命令见 [第二步契约](docs/agent_step2_contract.md)。
 
 ## LangGraph 单实验编排
 
@@ -191,7 +195,7 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 ## 分类模型 v2 契约
 
-当前能力目录公开 **15 个目标分类模型，其中 14 个可用**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 当前可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
+当前能力目录公开 **15 个目标分类模型**，每个模型按当前环境探测可用性：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 已实现，满足依赖后可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
 
 新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
 
