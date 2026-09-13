@@ -25,7 +25,7 @@ from .projection import selection_context, finalization_context
 from .state import (
     GraphState, StateModel, SessionRequest, ExperimentRequest, FinalizeRequest,
     Candidate, DecisionState, HistoryEvent, UsageRecord, OperationAttempts,
-    apply_patch, fingerprint,
+    apply_patch, fingerprint, validate_state,
 )
 
 
@@ -122,8 +122,22 @@ class Nodes:
                               'measurement_status': 'ready'}
         return apply_patch(state, {'budget': budget, 'recovery': {'attempts': list(attempts.values())}})
 
+    def restore_client_contract(self, state):
+        """Rehydrate only checkpointed facts, including when prepare is skipped."""
+        if state['versions']['api'] == 'agent-session-v2':
+            from agent_poc.tools import build_tool_schemas
+            source = state['capabilities']['frozen_snapshot'] or state['capabilities']['wire_snapshot']
+            if source is not None:
+                health = {k:v for k,v in source.items() if k != 'model_configs'}
+                health.update(contract_version='agent-session-v2',status='ready',modules={},capabilities=dict(create_session=True,create_experiment=True,read_session=True,read_feedback=True,finalize_session=True))
+                self.deps.client.tool_schemas = build_tool_schemas(health)
+            frozen = state['capabilities']['frozen_snapshot']
+            if frozen is not None and state['identity']['session_id'] is not None:
+                self.deps.client.restore_frozen_session(state['identity']['session_id'], frozen)
+
     def prepare(self, raw):
-        state = StateModel.model_validate(raw).model_dump(mode='json')
+        state = validate_state(raw).model_dump(mode='json')
+        self.restore_client_contract(state)
         state = self.account(state)
         action = state['lifecycle']['next_action']
         if action is None:
@@ -149,7 +163,12 @@ class Nodes:
             op_id = identity['session_operation_id'] or _key('session', identity['task_id'])
             request_id = identity['session_request_id'] or op_id
             identity_patch.update(session_operation_id=op_id, session_request_id=request_id)
-            content = SessionRequest(dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
+            request_type = SessionRequest
+            request_extra = {}
+            if state['versions']['api'] == 'agent-session-v2':
+                from .state_v2 import SessionRequest as request_type
+                request_extra['model_configs'] = {k:v for k,v in task['model_configs'].items() if k in state['capabilities']['eligible_models']}
+            content = request_type(**request_extra, dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
                 allowed_models=state['capabilities']['eligible_models'], seed=task['seed'],
                 client_request_id=request_id, context_policy=state['module_policy']['context_policy']).model_dump(mode='json')
         elif action == 'choose':
@@ -184,6 +203,7 @@ class Nodes:
             'lifecycle': {'status':'running', 'stage':action}})
 
     def call(self, state, name, arguments, *, suffix=''):
+        self.restore_client_contract(validate_state(state).model_dump(mode='json'))
         pending = state['recovery']['pending_operation']
         op_id = pending['operation_id'] + suffix
         call_id = self.deps.journal.begin(operation_id=op_id, kind='api', name=name,
@@ -236,7 +256,7 @@ class Nodes:
         return proposal
 
     def execute(self, action, raw):
-        state = StateModel.model_validate(raw).model_dump(mode='json')
+        state = validate_state(raw).model_dump(mode='json')
         operation_id = state['recovery']['pending_operation']['operation_id']
         confirmed = False
         try:
@@ -309,7 +329,17 @@ class Nodes:
 
     def capabilities(self, state):
         response = self.call(state, 'inspect_ml_capabilities', {})
-        models = response['models']
+        step2 = state['versions']['api'] == 'agent-session-v2'
+        if step2:
+            from agent_poc.clients.contracts_v2 import ModelCapability, validate_params
+            declared = {m['id']: ModelCapability.model_validate(m) for m in response['models']}
+            if set(state['task']['allowed_models']) - set(declared):
+                raise ValueError('unknown allowed model')
+            if set(state['task']['model_configs']) - set(state['task']['allowed_models']):
+                raise ValueError('model_configs keys must belong to allowed_models')
+            for name, params in state['task']['model_configs'].items():
+                validate_params(declared[name], params)
+        models = [m['id'] for m in response['models'] if m['available']] if step2 else response['models']
         eligible = [name for name in state['task']['allowed_models'] if name in models]
         if not eligible or not response['capabilities']['create_experiment']:
             return _stop(state, 'no_available_model', self.deps.clock())
@@ -320,6 +350,9 @@ class Nodes:
                      for name,available in response['capabilities'].items()],
             'modules':[{'name':name, 'available':item['available'], 'status':item['status'],
                         'version':item['schema_version']} for name,item in response['modules'].items()]}
+        if step2:
+            snapshot['wire_snapshot'] = {k:response[k] for k in ('catalog_version','catalog_digest','availability_digest','models')}
+            snapshot['excluded_models'] = {m['id']:m['reason_code'] for m in response['models'] if m['id'] in state['task']['allowed_models'] and not m['available']}
         snapshot['snapshot_fingerprint'] = fingerprint({key:value for key,value in snapshot.items() if key != 'observed_at'})
         state = apply_patch(state, {'capabilities':snapshot})
         return _next(state, 'session')
@@ -335,7 +368,18 @@ class Nodes:
             raise ValueError('locked configuration mismatch')
         if locked['dataset_fingerprint_status'] != 'ready' or not locked['dataset_sha256']:
             raise ValueError('dataset metadata unavailable')
-        state = apply_patch(state, {'task': {'dataset_fingerprint':locked['dataset_sha256'],
+        extra = {'capabilities':{'frozen_snapshot':locked['capability_snapshot']}} if state['versions']['api'] == 'agent-session-v2' else {}
+        if extra:
+            from agent_poc.clients.contracts_v2 import FrozenSnapshot, validate_params
+            frozen = FrozenSnapshot.model_validate(locked['capability_snapshot'])
+            for name, overrides in task['model_configs'].items():
+                if name in frozen.model_configs:
+                    model = next(m for m in frozen.models if m.id == name)
+                    resolved = {**model.fixed_execution_defaults, **validate_params(model,overrides)}
+                    if resolved != frozen.model_configs[name]:
+                        raise ValueError('operator parameters changed')
+            self.deps.client.restore_frozen_session(response['session_id'], locked['capability_snapshot'])
+        state = apply_patch(state, {**extra, 'task': {'dataset_fingerprint':locked['dataset_sha256'],
             'dataset_fingerprint_status':'ready'}, 'identity':{'session_id':response['session_id']},
             'finalization':{'backend_session_state':response['state']},
             'recovery':{'last_confirmed_backend_state':{'session_state':response['state'],
@@ -351,7 +395,8 @@ class Nodes:
         return _next(state, 'inspect_session')
 
     def bind_execution(self, state, response):
-        action = {k:response['effective_action'][k] for k in ('model_type','normalization','class_balance')}
+        keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
+        action = {k:response['effective_action'][k] for k in keys}
         if action != {k:state['execution']['submission_content'][k] for k in action}:
             raise ValueError('backend action differs from submitted decision')
         if response['effective_config_status'] != 'ready' or response['dataset_fingerprint_status'] != 'ready':
@@ -359,6 +404,7 @@ class Nodes:
         if response['effective_config']['feature_selection_enabled']:
             raise ValueError('unexpected effective feature selection')
         return apply_patch(state, {'execution': {'run_id':response['run_id'],
+            **({'resolved_execution':response['resolved_execution']} if 'resolved_execution' in response else {}),
             'run_status':response['state'], 'effective_action':action,
             'effective_config':response['effective_config'], 'effective_config_status':'ready',
             'dataset_fingerprint':response['dataset_sha256'], 'dataset_fingerprint_status':'ready'},
@@ -385,17 +431,22 @@ class Nodes:
 
     def choose(self, state):
         context = selection_context(task=state['task'], models=state['capabilities']['eligible_models'],
-            session_id=state['identity']['session_id'], client_request_id=state['identity']['experiment_request_id'])
+            session_id=state['identity']['session_id'], client_request_id=state['identity']['experiment_request_id'],
+            model_configs=state['capabilities']['frozen_snapshot']['model_configs'] if state['versions']['api'] == 'agent-session-v2' else None)
         proposal = self.llm_call(state, 'submit', context)
         if proposal.tool_name != 'submit_ml_experiment':
             raise ValueError('wrong decision tool')
-        content = ExperimentRequest.model_validate(proposal.arguments).model_dump(mode='json')
+        request_type, decision_type = ExperimentRequest, DecisionState
+        if state['versions']['api'] == 'agent-session-v2':
+            from .state_v2 import ExperimentRequest as request_type, DecisionState as decision_type
+        content = request_type.model_validate(proposal.arguments).model_dump(mode='json')
         if any(content[k] != value for k,value in context['bindings'].items()):
             raise ValueError('decision binding mismatch')
         if content['model_type'] not in context['capabilities']['models']:
             raise ValueError('decision model not permitted')
-        action = {k:content[k] for k in ('model_type','normalization','class_balance')}
-        decision = DecisionState(status='ready', decision_id=_key('decision', state['identity']['task_id']),
+        keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
+        action = {k:content[k] for k in keys}
+        decision = decision_type(status='ready', decision_id=_key('decision', state['identity']['task_id']),
             kind='direct_action', action=action, rationale=proposal.rationale, validation_status='ready',
             tool_name=proposal.tool_name, tool_call_id=proposal.tool_call_id,
             response_id=proposal.response_id).model_dump(mode='json')
@@ -404,7 +455,7 @@ class Nodes:
                 'submission_request_id':content['client_request_id'], 'submission_content':content,
                 'submission_fingerprint':fingerprint(content)},
             'guard':{'checks':[{'check_id':'decision-action', 'phase':'pre', 'kind':'action',
-                'version':'agent-session-v1', 'status':'passed'}]}})
+                'version':state['versions']['api'], 'status':'passed'}]}})
         return _next(state, 'submit')
 
     def submit(self, state):
@@ -444,9 +495,9 @@ class Nodes:
             return _stop(state, f"run_{response['state']}", self.deps.clock(), status=response['state'])
         eligible = valid == 'ready' and response['validation_score'] is not None and 'finalize_ml_session' in response['allowed_actions']
         checks = [{'check_id':'manifest-validation', 'phase':'post', 'kind':'manifest',
-            'version':'agent-observation-v1', 'status':'passed' if valid == 'ready' else 'failed'},
+            'version':state['versions']['observation'], 'status':'passed' if valid == 'ready' else 'failed'},
             {'check_id':'selection-metric', 'phase':'post', 'kind':'selection_metric',
-             'version':'agent-observation-v1', 'status':'passed' if eligible else 'failed'}]
+             'version':state['versions']['observation'], 'status':'passed' if eligible else 'failed'}]
         state = apply_patch(state, {'guard':{'checks':checks, 'candidate_eligible':eligible}})
         if not eligible:
             return _stop(state, 'no_valid_candidate', self.deps.clock())
@@ -460,7 +511,8 @@ class Nodes:
     def finalize_decision(self, state):
         context = finalization_context(task=state['task'], session_id=state['identity']['session_id'],
             run_id=state['execution']['run_id'], validation=state['feedback']['validation_metrics'],
-            validation_score=state['feedback']['selection_score'], allowed_actions=state['feedback']['allowed_actions'])
+            validation_score=state['feedback']['selection_score'], allowed_actions=state['feedback']['allowed_actions'],
+            context_version=state['versions']['context_projection'])
         proposal = self.llm_call(state, 'finalize', context)
         if proposal.tool_name != 'finalize_ml_session' or proposal.arguments != context['bindings']:
             raise ValueError('invalid finalize decision')

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import hmac
 import json
@@ -25,7 +25,7 @@ from agent_poc.clients.autoai_client import AutoAIClient, validate_base_url, val
 from .llm import LLMAdapter, LLMConfig, LLM_CONFIG_VERSION, PROMPT_VERSION
 from .persistence import CallJournal, JSONSerializer, PersistenceError, thread_lock
 from .projection import CONTEXT_VERSION
-from .state import GraphState, StateModel, apply_patch, fingerprint, new_state
+from .state import GraphState, StateModel, apply_patch, fingerprint, new_state, validate_state
 
 
 DEFAULT_STORAGE = Path('storage') / 'orchestration'
@@ -153,30 +153,32 @@ def _state_from_checkpoint(saver: SqliteSaver, thread_id: str) -> GraphState | N
         # A process may stop after the input checkpoint but before START has
         # copied its input into the graph's declared channels.
         raw = channels.get('__start__', raw)
-    return StateModel.model_validate(raw).model_dump(mode='json')
+    return validate_state(raw).model_dump(mode='json')
 
 
 def _verify_binding(state: GraphState, config: RuntimeConfig, thread_id: str) -> None:
     identity, versions = state['identity'], state['versions']
+    llm_config = replace(config.llm_config, prompt_version=versions['prompt'])
+    context_version = llm_config.public_config()['context_version']
     expected = ((identity['thread_id'], thread_id),
                 (identity['backend_fingerprint'], config.backend_fingerprint()),
                 (identity['principal_fingerprint'], config.principal_fingerprint()),
                 (identity['runtime_config_fingerprint'], config.runtime_config_fingerprint()),
-                (versions['llm_config_fingerprint'], config.llm_config.fingerprint()),
-                (versions['prompt'], PROMPT_VERSION),
+                (versions['llm_config_fingerprint'], llm_config.fingerprint()),
+                (versions['prompt'], llm_config.prompt_version),
                 (versions['llm_config'], LLM_CONFIG_VERSION),
-                (versions['context_projection'], CONTEXT_VERSION))
+                (versions['context_projection'], context_version))
     if any(not hmac.compare_digest(str(actual), str(wanted)) for actual, wanted in expected):
         raise RuntimeErrorCode('resume_configuration_mismatch')
 
 
 def _build(config: RuntimeConfig, saver: SqliteSaver, journal: CallJournal, *,
            client=None, llm=None, clock: Callable[[], float] = time.time,
-           graph_factory=None):
+           graph_factory=None, api_version="v1"):
     from .graph import Dependencies, build_graph
     deps = Dependencies(client=client or AutoAIClient(config.backend_url, token=config.backend_token,
-                                                     timeout=config.api_timeout, max_retries=0),
-                        llm=llm or LLMAdapter(config.llm_config, token=config.llm_token),
+                                                     timeout=config.api_timeout, max_retries=0, api_version=api_version),
+                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION), token=config.llm_token),
                         journal=journal, clock=clock)
     return (graph_factory or build_graph)(deps, saver)
 
@@ -189,7 +191,7 @@ def _drive(graph, state: GraphState, *, initial: GraphState | None, wait: bool,
     for _tick in range(max_ticks):
         snapshot = graph.get_state(config)
         if initial is None and snapshot.values:
-            state = StateModel.model_validate(snapshot.values).model_dump(mode='json')
+            state = validate_state(snapshot.values).model_dump(mode='json')
         if state['lifecycle']['next_action'] is None:
             return state
         now = clock()
@@ -204,7 +206,7 @@ def _drive(graph, state: GraphState, *, initial: GraphState | None, wait: bool,
                 now = clock()
         if incoming is None:
             incoming = None if snapshot.next else {}
-        state = StateModel.model_validate(graph.invoke(incoming, config=config, durability='sync')).model_dump(mode='json')
+        state = validate_state(graph.invoke(incoming, config=config, durability='sync')).model_dump(mode='json')
         incoming = None
         initial = None
         if state['lifecycle']['next_action'] is None:
@@ -226,20 +228,33 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                max_api_calls: int = 60, max_operation_attempts: int = 3,
                max_repair_attempts: int = 2, timeout_seconds: float = 3600.0,
                source_role: str = 'development', client=None, llm=None,
+               api_version: str | None = None, model_configs: dict | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
     directory = Path(storage)
-    state = new_state(dataset_id=dataset_id, allowed_models=allowed_models,
+    api_version = api_version or (getattr(client, 'api_version', 'v1') if client is not None else 'v2')
+    if api_version not in ('v1','v2'):
+        raise RuntimeErrorCode('unknown_api_version')
+    factory = new_state
+    extra = {}
+    llm_config = config.llm_config
+    if api_version == 'v2':
+        from .state_v2 import new_state as factory
+        extra['model_configs'] = model_configs
+        llm_config = replace(llm_config, prompt_version='agent-decision-step2-v1')
+    elif model_configs is not None:
+        raise RuntimeErrorCode('model_configs_require_v2')
+    state = factory(**extra, dataset_id=dataset_id, allowed_models=allowed_models,
                       backend_fingerprint=config.backend_fingerprint(),
                       principal_fingerprint=config.principal_fingerprint(),
-                      llm_config_fingerprint=config.llm_config.fingerprint(),
+                      llm_config_fingerprint=llm_config.fingerprint(),
                       runtime_config_fingerprint=config.runtime_config_fingerprint(),
                       task_id=task_id, thread_id=thread_id, seed=seed, selection_metric=selection_metric,
                       max_llm_calls=max_llm_calls, max_api_calls=max_api_calls,
                       max_operation_attempts=max_operation_attempts,
                       max_repair_attempts=max_repair_attempts, timeout_seconds=timeout_seconds,
-                      now=clock(), prompt_version=PROMPT_VERSION,
+                      now=clock(), prompt_version=llm_config.prompt_version,
                       llm_config_version=LLM_CONFIG_VERSION, source_role=source_role)
     try:
         with thread_lock(directory / 'locks', thread_id), checkpoint_store(directory) as saver:
@@ -248,7 +263,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
                 graph = _build(config, saver, journal, client=client, llm=llm,
-                               clock=clock, graph_factory=graph_factory)
+                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'))
                 with tracing_context(enabled=False):
                     return _drive(graph, state, initial=state, wait=wait, clock=clock, sleep=sleep)
             finally:
@@ -276,7 +291,7 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
                 graph = _build(config, saver, journal, client=client, llm=llm,
-                               clock=clock, graph_factory=graph_factory)
+                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'))
                 with tracing_context(enabled=False):
                     return _drive(graph, state, initial=None, wait=wait, clock=clock, sleep=sleep)
             finally:
@@ -302,7 +317,7 @@ def read_status(*, storage: Path | str = DEFAULT_STORAGE, thread_id: str) -> Gra
 
 
 def state_summary(state: GraphState) -> dict:
-    state = StateModel.model_validate(state).model_dump(mode='json')
+    state = validate_state(state).model_dump(mode='json')
     return {'task_id': state['identity']['task_id'], 'thread_id': state['identity']['thread_id'],
             'session_id': state['identity']['session_id'], 'run_id': state['execution']['run_id'],
             'lifecycle': state['lifecycle'], 'run_status': state['execution']['run_status'],
@@ -344,7 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument('--wait', action='store_true')
         if name == 'start':
             command.add_argument('--dataset-id', required=True)
-            command.add_argument('--allowed-models', default='logistic_regression,svm,random_forest')
+            from agent_poc.tools import MODELS as legacy_default_models
+            command.add_argument('--allowed-models', default=','.join(legacy_default_models))
+            command.add_argument('--model-configs', type=json.loads, default={})
             command.add_argument('--seed', type=int, default=42)
             command.add_argument('--selection-metric', choices=('macro_f1', 'balanced_accuracy'), default='macro_f1')
             command.add_argument('--max-llm-calls', type=int, default=6)
@@ -401,7 +418,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    max_llm_calls=args.max_llm_calls, max_api_calls=args.max_api_calls,
                                    max_operation_attempts=args.max_operation_attempts,
                                    max_repair_attempts=args.max_repair_attempts,
-                                   timeout_seconds=args.timeout_seconds, source_role=args.source_role)
+                                   timeout_seconds=args.timeout_seconds, source_role=args.source_role, model_configs=args.model_configs)
             else:
                 state = resume_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait)
         print(json.dumps(state if args.full else state_summary(state), ensure_ascii=False, allow_nan=False))

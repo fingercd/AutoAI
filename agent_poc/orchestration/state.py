@@ -1085,9 +1085,13 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
     same-ID changes are monotonic operation counters, pending guard outcomes,
     and pending/unknown usage settlement. A new snapshot replaces its field.
     """
-    old = StateModel.model_validate(state).model_dump(mode='json')
+    old = validate_state(state).model_dump(mode='json')
     merged = _deep_merge(old, patch)
-    updated = StateModel.model_validate(merged).model_dump(mode='json')
+    updated = validate_state(merged).model_dump(mode='json')
+    if old['versions']['state'] == 'agent-state-v2':
+        frozen = old['capabilities']['frozen_snapshot']
+        if frozen is not None and frozen != updated['capabilities']['frozen_snapshot']:
+            raise ValueError('Session capability snapshot is frozen')
     for block in ('versions', 'module_policy'):
         if old[block] != updated[block]:
             raise ValueError(f'{block} is frozen')
@@ -1122,3 +1126,18 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
     if old['finalization']['status'] == 'confirmed' and old['finalization'] != updated['finalization']:
         raise ValueError('confirmed backend lock is immutable')
     return cast(GraphState, updated)
+
+
+def validate_state(raw):
+    """Select the frozen checkpoint version before parsing nested blocks."""
+    if isinstance(raw, StateModel):
+        raw = raw.model_dump(mode='json')
+    version = raw.get('versions', {}).get('state')
+    if version == 'agent-state-v1':
+        if raw.get('versions', {}).get('prompt') not in ('agent-decision-step1-v1','agent-decision-step1-v2'):
+            raise ValueError('unknown Prompt version')
+        return StateModel.model_validate(raw)
+    if version == 'agent-state-v2':
+        from .state_v2 import StateModel as StateModelV2
+        return StateModelV2.model_validate(raw)
+    raise ValueError('unknown State version')

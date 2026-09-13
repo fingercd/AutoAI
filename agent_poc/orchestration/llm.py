@@ -36,6 +36,7 @@ class LLMConfig:
     max_response_bytes: int = 32768
     temperature: float = 0.0
     top_p: float = 1.0
+    prompt_version: str = PROMPT_VERSION
 
     def __post_init__(self):
         object.__setattr__(self, 'base_url', validate_base_url(self.base_url))
@@ -44,6 +45,8 @@ class LLMConfig:
                 '://' in self.model or
                 self.model.lower().startswith('file:')):
             raise ValueError('LLM served model ID 无效')
+        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1'):
+            raise ValueError('Unknown Prompt version')
         if self.protocol not in ('json_action', 'native_tools'):
             raise ValueError('必须明确选择受支持的 LLM 协议')
         for value, lower, upper in ((self.timeout, 0.1, 600), (self.temperature, 0, 2), (self.top_p, 0.01, 1)):
@@ -66,7 +69,7 @@ class LLMConfig:
                 'timeout': self.timeout, 'max_tokens': self.max_tokens,
                 'max_response_bytes': self.max_response_bytes,
                 'temperature': self.temperature, 'top_p': self.top_p,
-                'prompt_version': PROMPT_VERSION, 'context_version': CONTEXT_VERSION}
+                'prompt_version': self.prompt_version, 'context_version': ('agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
 
     def fingerprint(self) -> str:
         # Endpoint binding is checked without putting a URL into durable State.
@@ -174,6 +177,9 @@ class LLMAdapter:
             projected = validate_context(phase, context)
         except Exception:
             raise LLMError('llm_context_invalid') from None
+        if projected['context_version'] != self.config.public_config()['context_version']:
+            raise LLMError('llm_context_invalid')
+        step2 = projected['context_version'] == 'agent-context-step2-v1'
         tool = projected['allowed_actions'][0]
         schema = json.loads(json.dumps(TOOL_SCHEMAS[tool]))
         if tool == 'submit_ml_experiment':
@@ -190,6 +196,8 @@ class LLMAdapter:
             'Use only the supplied candidates and validation evidence. Preserve every binding exactly. '
             'Give a brief decision rationale, without private reasoning or external references. '
         )
+        if step2:
+            system += 'Model parameters are fixed by the operator and shown in fixed_model_params. Select only the model; the runner binds its fixed parameters. '
         request: dict[str, Any] = {
             'model': self.config.model, 'temperature': self.config.temperature,
             'top_p': self.config.top_p, 'max_tokens': self.config.max_tokens, 'stream': False,
@@ -286,7 +294,7 @@ class LLMAdapter:
                 rationale = _rationale(message.get('content') or arguments.get('rationale'))
             if name != tool:
                 raise ValueError
-            arguments = validate_tool_arguments(name, arguments)
+            arguments = validate_tool_arguments(name, arguments, {tool:schema} if step2 else None)
             for key, expected in projected['bindings'].items():
                 if arguments.get(key) != expected:
                     raise ValueError
@@ -295,6 +303,8 @@ class LLMAdapter:
                     raise ValueError
                 if 'rationale' in arguments and _rationale(arguments['rationale']) != rationale:
                     raise ValueError
+                if step2:
+                    arguments['model_params'] = dict(projected['capabilities']['fixed_model_params'][arguments['model_type']])
                 arguments['rationale'] = rationale
             response_id = payload.get('id')
             if response_id is not None:
