@@ -1,0 +1,12 @@
+langgraph==1.1.3
+langgraph-prebuilt==1.0.8
+langgraph-sdk==0.3.9
+langgraph-checkpoint==4.2.0
+langgraph-checkpoint-sqlite==3.1.0
+langchain-core==1.2.23
+langsmith==0.7.14
+ormsgpack==1.12.2
+aiosqlite==0.22.1
+sqlite-vec==0.1.9
+httpx==0.28.1
+pydantic==2.12.5
