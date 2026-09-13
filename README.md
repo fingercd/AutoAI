@@ -16,6 +16,18 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - Agent 接口适配层使用 `agent-session-v1` / `agent-observation-v1`：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
 
+## LangGraph 单实验编排
+
+`agent_poc/orchestration/` 提供独立于网页的 `start / resume / status` 入口：
+真实 LLM 在 Agent 能力允许的模型中提出选择，HTTP 只提交 queued Run，独立 worker
+训练后，编排器仅读取 Validation 并由后端确认 Finalize。当前协议固定一次实验；
+后续 Evidence、配方、搜索、诊断和案例记忆模块保持未实现/关闭。
+
+Agent 依赖单独安装：`python -m pip install -r agent_poc/requirements.txt -c agent_poc/constraints-verified.txt`。
+完整 [State、配置与启动/恢复命令](docs/langgraph_state_contract.md) 和
+[节点及崩溃恢复契约](docs/langgraph_orchestration.md) 已独立记录。
+此入口使用本机 SQLite 检查点；LLM 推理服务须另行配置，`run_v2.py` 启动网站和训练 worker。
+
 ## 双前端入口
 
 仓库同时维护两个受测试保护的原生静态前端，它们共享同一套 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约：
