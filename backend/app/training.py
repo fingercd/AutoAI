@@ -233,123 +233,7 @@ def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
     return ((x - means) / np.maximum(stds, 1e-8)).astype(np.float32), {"mode": "zscore"}
 
 
-def _split_indices(
-    labels: np.ndarray,
-    sample_id: np.ndarray,
-    config: TrainConfig,
-    label_names: list[str] | None = None,
-) -> dict[str, list[int]]:
-    """按 Sample_ID 分组划分，并保证每个非空集合至少含每类一个样品组。"""
-    ratios = (int(config.split_train), int(config.split_valid), int(config.split_test))
-    if any(value < 0 for value in ratios):
-        raise ValueError("划分比例必须是非负整数")
-    ratio_total = sum(ratios)
-    if ratios[2] > 0 and ratio_total != 10:
-        raise ValueError("划分比例必须是非负整数，且训练、验证、测试三项相加必须等于 10")
-    if ratios[2] == 0 and ratios[0] + ratios[1] <= 0:
-        raise ValueError("训练/验证比例必须大于 0")
-    if ratios[0] <= 0:
-        raise ValueError("训练集比例必须大于 0")
-
-        # 以 Sample_ID 为不可拆分单位；natural_sort_key 让 XJ-2 排在 XJ-10 之前，结果可复现。
-    group_values = np.asarray(sorted(np.unique(sample_id).tolist(), key=natural_sort_key))
-    nonzero_splits = sum(1 for value in ratios if value > 0)
-    if len(group_values) < nonzero_splits:
-        raise ValueError(f"当前只有 {len(group_values)} 个 Sample_ID 分组，无法划分为 {nonzero_splits} 个非空集合")
-
-    group_to_label: dict[str, int] = {}
-    for group in group_values:
-        group_labels = np.unique(labels[sample_id == group])
-        if len(group_labels) != 1:
-            raise ValueError(f"Sample_ID={group} 内存在多个 Label，无法按组划分")
-        group_to_label[str(group)] = int(group_labels[0])
-
-    label_to_groups: dict[int, list[str]] = {}
-    for group, label in group_to_label.items():
-        label_to_groups.setdefault(label, []).append(group)
-    label_values = sorted(label_to_groups)
-    label_count = len(label_values)
-    insufficient = {
-        label: len(groups)
-        for label, groups in label_to_groups.items()
-        if len(groups) < nonzero_splits
-    }
-    if insufficient:
-        details = "、".join(
-            f"{label_names[label] if label_names and 0 <= label < len(label_names) else f'类别编码 {label}'}"
-            f"（{count} 个 Sample_ID）"
-            for label, count in sorted(insufficient.items())
-        )
-        split_names = "Train/Valid/Test" if ratios[2] > 0 else "Train/Valid"
-        raise ValueError(
-            f"要让 {split_names} 都包含全部类别，每个类别至少需要 {nonzero_splits} 个不同的 "
-            f"Sample_ID；当前不足：{details}"
-        )
-
-        # 计算各集合应含的“组数”：valid/test 的硬下限是类别数（保证类别完整），
-        # 再按比例目标向下取整；总数超界时优先从 test、其次 valid 回退，仍不够则拒绝。
-    ratio_denominator = ratios[0] + ratios[1] if ratios[2] == 0 else 10
-    valid_minimum = label_count if ratios[1] > 0 else 0
-    test_minimum = label_count if ratios[2] > 0 else 0
-    valid_count = max(valid_minimum, int(np.floor(len(group_values) * ratios[1] / ratio_denominator))) if ratios[1] > 0 else 0
-    test_count = max(test_minimum, int(np.floor(len(group_values) * ratios[2] / ratio_denominator))) if ratios[2] > 0 else 0
-    if valid_count + test_count >= len(group_values):
-        train_count = label_count
-        overflow = valid_count + test_count + train_count - len(group_values)
-        while overflow > 0 and test_count > test_minimum:
-            test_count -= 1
-            overflow -= 1
-        while overflow > 0 and valid_count > valid_minimum:
-            valid_count -= 1
-            overflow -= 1
-        if overflow > 0:
-            raise ValueError("Sample_ID 分组数量太少，无法让每个集合都包含全部类别")
-    train_count = len(group_values) - valid_count - test_count
-
-        # 固定种子打乱各类别内部的组顺序，使同一数据 + 同一种子的划分完全可复现。
-    rng = np.random.default_rng(config.seed)
-    for groups in label_to_groups.values():
-        rng.shuffle(groups)
-
-    def take_class_complete(count: int, *, reserve_per_label: int) -> set[str]:
-        if count == 0:
-            return set()
-        selected: set[str] = set()
-        # 先为每个类别固定拿 1 个 Sample_ID，形成评估集合的硬下限。
-        for label in label_values:
-            selected.add(label_to_groups[label].pop())
-        # 比例目标大于类别数时继续分层补足，但始终为后续集合保留每类样品。
-        while len(selected) < count:
-            labels_by_remaining = sorted(
-                (
-                    label
-                    for label in label_values
-                    if len(label_to_groups[label]) > reserve_per_label
-                ),
-                key=lambda label: (-len(label_to_groups[label]), label),
-            )
-            if not labels_by_remaining:
-                raise ValueError("无法在保留各集合类别完整性的同时完成当前比例划分")
-            for label in labels_by_remaining:
-                if len(selected) >= count:
-                    break
-                if len(label_to_groups[label]) > reserve_per_label:
-                    selected.add(label_to_groups[label].pop())
-        return selected
-
-        # 先取 test、再取 valid，剩余全部归 train；reserve_per_label 为后续集合
-        # 预留每类至少 1 组——这是“每类至少 3 个不同 Sample_ID”硬约束的执行点。
-    test_groups = take_class_complete(
-        test_count,
-        reserve_per_label=1 + (1 if valid_count > 0 else 0),
-    )
-    valid_groups = take_class_complete(valid_count, reserve_per_label=1)
-    train_groups = {group for groups in label_to_groups.values() for group in groups}
-    split_groups = {"train": train_groups, "valid": valid_groups, "test": test_groups}
-    return {
-        split: np.where(np.isin(sample_id, list(groups)))[0].tolist()
-        for split, groups in split_groups.items()
-    }
+from .evaluation_plan import split_indices as _split_indices
 
 
 def _validate_external_test_dataset(
@@ -1675,6 +1559,25 @@ def _run_legacy_training(
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     dataset = load_modeling_csv(data_path)
+    evaluation_plan = None
+    if raw_config.get('evaluation_plan_digest'):
+        from .evaluation_plan import DatasetView, validate_plan, evaluation_config
+        from .runs.contracts import Principal
+        if repository is None or record is None:
+            raise ValueError('evaluation plan requires a persisted scoped Run')
+        evaluation_plan = repository.get_evaluation_plan(raw_config['evaluation_plan_digest'],
+            principal=Principal(record.owner_id,record.tenant_id))
+        import hashlib
+        with Path(data_path).open('rb') as source:
+            actual_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+        if actual_sha256 != record.dataset_snapshot['sha256']:
+            raise ValueError('dataset changed before plan consumption')
+        view = DatasetView.loaded(dataset,actual_sha256)
+        validate_plan(evaluation_plan,view,evaluation_config(config.__dict__),config.seed)
+    if raw_config.get('execution_search_digest'):
+        from .model_config import search_strategy_binding
+        if search_strategy_binding(model_type)['digest'] != raw_config['execution_search_digest']:
+            raise ValueError('execution search policy mismatch')
     sample_count = int(len(dataset.labels))
     x_raw = np.asarray(dataset.intensity, dtype=np.float32)
     label_names = sorted(set(dataset.labels))
@@ -1716,7 +1619,8 @@ def _run_legacy_training(
         if evaluation_strategy == "leave_one_sample_id_cv":
             folds = _leave_one_sample_id_folds(y, sample_id, config)
         else:
-            splits = _split_indices(y, sample_id, config, label_names)
+            splits = ({k:list(v) for k,v in evaluation_plan.indices.items()} if evaluation_plan is not None
+                      else _split_indices(y, sample_id, config, label_names))
             _validate_required_splits(splits, y, label_names, ("train", "valid", "test"))
             folds = [_holdout_fold(splits, sample_id, strategy=evaluation_strategy)]
         metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
@@ -1953,6 +1857,7 @@ def _run_legacy_training(
                 "train_sample_ids": fold["train_sample_ids"],
                 "valid_sample_ids": fold["valid_sample_ids"],
                 "test_sample_ids": fold.get("test_sample_ids", []),
+                "partition_digest": evaluation_plan.partition_digest if evaluation_plan is not None else None,
                 "final_fit_indices": fold_final_fit_indices.tolist() if fold_final_fit_indices is not None else [],
                 "best_params": fold_best_params,
                 "selection_metric": fold_selection_metric,
@@ -2022,7 +1927,23 @@ def _run_legacy_training(
         train_sample_count=metadata_train_count,
         feature_count=x_raw.shape[1],
     )
+    execution_audit = None
+    if evaluation_plan is not None:
+        from .evaluation_plan import digest as plan_hash
+        consumed = {name:list(rows) for name,rows in folds[0]['splits'].items()}
+        groups = {name: sorted({str(sample_id[i]) for i in rows},key=natural_sort_key) for name,rows in consumed.items()}
+        partition_digest = plan_hash({'indices':consumed,'groups':groups})
+        if partition_digest != evaluation_plan.partition_digest:
+            raise ValueError('consumed evaluation partition mismatch')
+        from .model_config import search_strategy_binding
+        search_binding = search_strategy_binding(model_type)
+        if raw_config.get('execution_search_digest', search_binding['digest']) != search_binding['digest']:
+            raise ValueError('execution search policy mismatch')
+        execution_audit = dict(search_strategy=search_binding, evaluation_plan=evaluation_plan.safe_reference(),
+            partition_digest=partition_digest, initial_fit_scope='train',
+            final_fit_scope='train+valid' if last_model_family=='traditional_ml' else 'train')
     model_metadata = {
+        'execution_audit': execution_audit,
         "model_type": model_type,
         "model_family": last_model_family,
         "architecture_version": ARCHITECTURE_VERSION,

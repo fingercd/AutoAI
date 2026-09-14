@@ -91,6 +91,7 @@ class AgentSessionRecord:
     metadata_version: str | None = None
     contract_version: str | None = None
     capability_snapshot: dict[str, Any] | None = None
+    frozen_preparation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +210,7 @@ class AgentSessionRepository:
             session_columns = {
                 str(row['name']) for row in connection.execute('PRAGMA table_info(agent_sessions_v1)')
             }
-            for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json'):
+            for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json', 'frozen_preparation_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
             for column in ('compiled_config_json', 'scientific_digest'):
@@ -288,6 +289,7 @@ class AgentSessionRepository:
             finalized_at=row['finalized_at'], owner_id=row['owner_id'], tenant_id=row['tenant_id'],
             dataset_sha256=row['dataset_sha256'], metadata_version=row['metadata_version'],
             contract_version=row['contract_version'], capability_snapshot=_decode(row['capability_snapshot_json'], None),
+            frozen_preparation=_decode(row['frozen_preparation_json'], None),
         )
 
     @staticmethod
@@ -312,7 +314,8 @@ class AgentSessionRepository:
                        client_request_id: str | None, payload_hash: str,
                        principal: Principal, dataset_sha256: str | None = None,
                        metadata_version: str | None = None, contract_version: str | None = None,
-                       capability_snapshot: dict[str, Any] | None = None) -> tuple[AgentSessionRecord, bool]:
+                       capability_snapshot: dict[str, Any] | None = None,
+                       frozen_preparation: dict[str, Any] | None = None) -> tuple[AgentSessionRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -330,12 +333,13 @@ class AgentSessionRepository:
                 '''INSERT INTO agent_sessions_v1(
                     session_id,state,dataset_id,selection_metric,allowed_models_json,max_runs,seed,
                     evaluation_config_json,modules_json,context_policy_json,client_request_id,payload_hash,
-                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version,contract_version,capability_snapshot_json
-                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version,contract_version,capability_snapshot_json,frozen_preparation_json
+                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (session_id, dataset_id, selection_metric, _json(allowed_models), max_runs, seed,
                  _json(evaluation_config), _json(modules), _json(context_policy), client_request_id,
                  payload_hash, now, owner, tenant, dataset_sha256, metadata_version, contract_version,
-                 _json(capability_snapshot) if capability_snapshot is not None else None),
+                 _json(capability_snapshot) if capability_snapshot is not None else None,
+                 _json(frozen_preparation) if frozen_preparation is not None else None),
             )
             row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?', (session_id,)).fetchone()
             connection.commit()

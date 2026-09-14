@@ -59,6 +59,7 @@ def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
     if session.metadata_version not in (None, AGENT_METADATA_VERSION, 'agent-metadata-v2'):
         raise AgentDomainError('agent_metadata_invalid', 'Session 元数据版本不兼容', status_code=409)
     return {
+        **(session.frozen_preparation or {}),
         **({'capability_snapshot': session.capability_snapshot} if session.contract_version == V2 else {}),
         'dataset_id': session.dataset_id,
         **dataset_metadata(session.dataset_sha256, version=session.contract_version or AGENT_API_CONTRACT_VERSION),
@@ -92,7 +93,9 @@ class AgentService:
     def create_session(self, payload: CreateAgentSessionRequest, *, principal: Principal) -> dict[str, Any]:
         payload.validate_business()
         catalog = module_catalog()
-        unavailable = sorted({name for name in payload.modules if not catalog.get(name, {}).get('available')})
+        requested_profile = getattr(payload, 'execution_profile', None)
+        prepared_modules = {'train_evidence', 'legal_recipes'} if requested_profile else set()
+        unavailable = sorted({name for name in payload.modules if name not in prepared_modules and not catalog.get(name, {}).get('available')})
         if unavailable:
             raise AgentDomainError(
                 'agent_module_unavailable', f'请求的模块当前不可用：{", ".join(unavailable)}', status_code=422
@@ -102,6 +105,8 @@ class AgentService:
                 'agent_module_unavailable', 'case_memory 不可用，不能启用 case_write', status_code=422
             )
         body = payload.model_dump(mode='json')
+        if not requested_profile:
+            body.pop('execution_profile', None); body.pop('protocol_revision', None)
         snapshot = None
         if self.contract_version == V2:
             previous = self.sessions.find_session_request_scoped(payload.client_request_id, payload_hash=None, principal=principal) if payload.client_request_id else None
@@ -121,6 +126,30 @@ class AgentService:
             digest = self.datasets.verify_integrity(dataset)
         except (FileNotFoundError, PermissionError, DatasetIntegrityError):
             raise AgentDomainError('dataset_unavailable', '数据集不存在或当前调用者无权访问', status_code=404) from None
+        frozen_preparation = None
+        if requested_profile:
+            from ..evaluation_plan import PreparationLimits, PreparationResourceExhausted, select_train
+            from ..train_evidence import compute_train_evidence
+            from ..recipes import compile_recipe_catalog
+            limits = PreparationLimits.configured()
+            try:
+                view, plan = self.submissions.prepare_evaluation(dataset_id=payload.dataset_id,
+                    raw_config={**payload.evaluation.model_dump(), 'seed':payload.seed},
+                    principal=principal, expected_sha256=digest, limits=limits)
+                evidence = compute_train_evidence(select_train(view, plan), limits)
+                recipes = compile_recipe_catalog(body, snapshot, evidence, plan)
+                limits.check()
+            except PreparationResourceExhausted as exc:
+                raise AgentDomainError('preparation_resource_exhausted','Preparation resource limit exceeded',status_code=422) from exc
+            except RunSubmissionError as exc:
+                raise AgentDomainError(exc.code,exc.message,status_code=exc.status_code) from exc
+            except ValueError as exc:
+                raise AgentDomainError('agent_preparation_failed',
+                    'Preparation failed: invalid data, constraints or resource limit',status_code=422) from exc
+            frozen_preparation = dict(execution_profile=requested_profile,
+                protocol_revision=payload.protocol_revision,
+                preparation=dict(evaluation_plan=plan.safe_reference(),
+                    evidence=evidence.model_dump(mode='json'),catalog=recipes.model_dump(mode='json')))
         session, created = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -136,6 +165,7 @@ class AgentService:
             dataset_sha256=digest,
             metadata_version='agent-metadata-v2' if self.contract_version == V2 else AGENT_METADATA_VERSION,
             contract_version=V2 if self.contract_version == V2 else None, capability_snapshot=snapshot,
+            frozen_preparation=frozen_preparation,
         )
         return self._session_creation_response(session, created=created, principal=principal)
 
@@ -189,11 +219,20 @@ class AgentService:
                         bound = current
                     return self._experiment_response(session, bound, record, replay=True)
             if not mapping_exists:
-                policy_v2.admit_action(session, action)
+                policy_v2.admit_command(session, command)
             prepared = (replay_reservation.compiled_config if replay_reservation else None)
             if prepared is None:
                 prepared = policy_v2.compiled_config(session, action, _training_config(session, action))
-            full_digest = policy_v2.scientific_digest(session, action)
+                _, plan = self.submissions.prepare_evaluation(dataset_id=session.dataset_id,
+                    raw_config=prepared,principal=principal,expected_sha256=session.dataset_sha256)
+                prepared['evaluation_plan_digest'] = plan.plan_digest
+            if command.recipe is not None:
+                prepared.update(evaluation_plan_digest=session.frozen_preparation['preparation']['evaluation_plan']['plan_digest'],
+                    execution_recipe_digest=command.recipe['recipe_digest'],
+                    execution_catalog_digest=session.frozen_preparation['preparation']['catalog']['catalog_digest'],
+                    execution_evidence_digest=session.frozen_preparation['preparation']['evidence']['evidence_digest'],
+                    execution_search_digest=command.recipe['search_strategy_digest'])
+            full_digest = policy_v2.command_digest(session, command)
         if session.state != 'open':
             raise AgentSessionClosed()
         config_hash = full_digest[:16] if full_digest else _compute_config_hash(session=session, action=action)
@@ -230,6 +269,9 @@ class AgentService:
                 allowed_actions=('inspect_ml_session',),
             )
 
+        from ..evaluation_plan import PreparedEvaluation
+        compiled = reservation.compiled_config
+        prepared_evaluation = PreparedEvaluation(compiled['evaluation_plan_digest'],session.dataset_sha256) if compiled and compiled.get('evaluation_plan_digest') else None
         try:
             submitted = self.submissions.submit(RunSubmissionRequest(
                 dataset_id=session.dataset_id,
@@ -241,6 +283,7 @@ class AgentService:
                 submission_source='agent',
                 submission_key=reservation.experiment_id,
                 expected_dataset_sha256=session.dataset_sha256,
+                prepared_evaluation=prepared_evaluation,
             ))
         except RunSubmissionError as exc:
             if exc.code in {'agent_submission_key_conflict', 'agent_submission_mapping_invalid'}:
@@ -344,6 +387,16 @@ class AgentService:
                 'agent_dataset_fingerprint_mismatch',
                 '训练快照与冻结 Session 不一致，需要人工核对', status_code=409,
             )
+        if session.frozen_preparation is not None:
+            prepared=session.frozen_preparation['preparation']
+            catalog=prepared['catalog']
+            recipe=next((r for r in catalog['recipes'] if r['recipe_digest']==record.config.get('execution_recipe_digest')),None)
+            if (recipe is None or any(record.config.get(k)!=v for k,v in recipe['fixed_execution_config'].items())
+                    or record.config.get('evaluation_plan_digest')!=prepared['evaluation_plan']['plan_digest']
+                    or record.config.get('execution_catalog_digest')!=catalog['catalog_digest']
+                    or record.config.get('execution_evidence_digest')!=prepared['evidence']['evidence_digest']
+                    or record.config.get('execution_search_digest')!=recipe['search_strategy_digest']):
+                raise AgentDomainError('agent_metadata_invalid','Run differs from frozen execution recipe',status_code=409)
 
     @classmethod
     def _experiment_response(cls, session: AgentSessionRecord, experiment: AgentExperimentRecord,

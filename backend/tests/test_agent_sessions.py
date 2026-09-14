@@ -354,31 +354,25 @@ def test_finalize_is_idempotent_and_blocks_run_swap(client, uploaded_dataset):
 def test_real_logistic_regression_run_feedback_exposes_only_validation(client, uploaded_dataset):
     """走 ``train_model`` 真实跑一次 logistic_regression，写 metrics.json，然后
     通过 AgentFeedback 验证只暴露 validation 标量，不含 test/artifact 等敏感键。"""
-    from backend.app.training import train_model
-    from backend.app.paths import UPLOADS_DIR
-
     session = _create_session(client, uploaded_dataset).json()
     experiment = client.post(
         f"/api/agent/sessions/{session['session_id']}/experiments",
         json={"model_type": "logistic_regression", "normalization": "zscore", "class_balance": "none"},
     ).json()
 
-    record = repo_get(experiment["run_id"])
-    config = dict(record.config)
-    config["feature_selection_enabled"] = False
-
-    # train_model 需要 data_path。RunRecord.config.dataset_name 与
-    # DatasetRepository.resolve_system 可找回数据路径；最直接：用 RecordDataset 路径。
-    from backend.app.datasets.repository import DatasetRepository
-    from backend.app.paths import DATASETS_DATABASE, STORAGE_DIR
-    ds_repo = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
-    ds_repo.initialize()
-    dataset = ds_repo.resolve_system(uploaded_dataset, legacy_path=None)
-    train_model(dataset.path, config, run_id=experiment["run_id"])
-
-    repo = RunRepository(RUNS_DATABASE)
-    repo.initialize()
-    _claim_and_finish(repo, experiment["run_id"])
+    from backend.app.runs.execution import execute_claimed_run
+    from backend.app.runs.worker import RunWorker
+    from backend.app.runs.status_projection import project_status
+    from backend.app.paths import RUNS_DIR
+    repo=RunRepository(RUNS_DATABASE);repo.initialize()
+    worker=RunWorker(repository=repo,worker_id='feedback-worker',
+        execute=lambda record:execute_claimed_run(record,repository=repo),
+        now=lambda:datetime.now(timezone.utc),heartbeat_seconds=60,
+        project_status=lambda record:project_status(RUNS_DIR/record.run_id,record))
+    for _ in range(100):
+        if repo.get(experiment['run_id']).state in ('succeeded','failed','cancelled'):break
+        assert worker.run_once()
+    assert repo.get(experiment['run_id']).state=='succeeded'
 
     feedback = client.get(
         f"/api/agent/sessions/{session['session_id']}"

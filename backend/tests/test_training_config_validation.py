@@ -139,24 +139,23 @@ def test_external_test_payload_is_normalized_to_eight_two_zero() -> None:
 def _patch_create_run_dependencies(monkeypatch, tmp_path) -> RunRepository:
     repository = RunRepository(tmp_path / 'runs.sqlite3')
     repository.initialize()
-    reference = TrainingDataReference(
-        dataset_id='dataset-1',
-        legacy_path=None,
-        dataset_name='teacher-data.csv',
-        test_dataset_id=None,
-        test_legacy_path=None,
-        test_dataset_name=None,
-    )
-    monkeypatch.setattr(runs_router, 'resolve_training_data_reference', lambda payload, principal: reference)
-    monkeypatch.setattr(
-        runs_router,
-        '_dataset_snapshot_for_reference',
-        lambda **kwargs: {
-            'dataset_id': 'dataset-1',
-            'name': 'teacher-data.csv',
-            'sha256': 'a' * 64,
-        },
-    )
+    from backend.tests.modeling_data_factory import write_grouped_classification_csv
+    from backend.app.datasets.repository import DatasetRepository
+    from backend.app.runs.contracts import Principal
+    from backend.app.runs.submission import RunSubmissionService
+    source=tmp_path/'teacher-data.csv'
+    write_grouped_classification_csv(source,groups_per_class=3,repeats=2,feature_count=16)
+    datasets=DatasetRepository(tmp_path/'datasets.sqlite3',storage_root=tmp_path);datasets.initialize()
+    dataset=datasets.register(source,original_name=source.name,principal=Principal())
+    reference=TrainingDataReference(dataset_id=dataset.dataset_id,legacy_path=None,dataset_name=source.name,test_dataset_id=None,test_legacy_path=None,test_dataset_name=None)
+    monkeypatch.setattr(runs_router,'resolve_training_data_reference',lambda payload,principal:reference)
+    monkeypatch.setattr(runs_router,'_dataset_snapshot_for_reference',lambda **kwargs: {
+        'dataset_id':dataset.dataset_id,'name':source.name,'sha256':dataset.sha256})
+    original=RunSubmissionService.prepare_evaluation
+    def prepared(self,**kwargs):
+        self.datasets=datasets
+        return original(self,**kwargs)
+    monkeypatch.setattr(RunSubmissionService,'prepare_evaluation',prepared)
     monkeypatch.setattr(runs_router, 'get_run_repository', lambda: repository)
     monkeypatch.setattr(runs_router, 'get_run_dir', lambda run_id: tmp_path / 'runs' / run_id)
     return repository
