@@ -15,8 +15,8 @@ _PLANNED_MODULES = (
 )
 
 
-def module_catalog() -> dict[str, dict[str, Any]]:
-    return {
+def module_catalog(revision: str | None = None) -> dict[str, dict[str, Any]]:
+    result = {
         name: {
             'available': False,
             'status': 'unavailable',
@@ -25,6 +25,9 @@ def module_catalog() -> dict[str, dict[str, Any]]:
         }
         for name in _PLANNED_MODULES
     }
+    if revision == 'agent-recipes-revision-v2':
+        result['knowledge'] = dict(available=True, status='ready', schema_version='knowledge-snapshot-v1', reason=None)
+    return result
 
 
 def health_payload(*, worker_available: bool, worker_compatible: bool) -> dict[str, Any]:

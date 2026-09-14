@@ -10,7 +10,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..knowledge import KnowledgeDecision
 
 from ..runs.contracts import Principal
 from ..runs.repository import RunNotFound, RunRepository
@@ -117,6 +119,7 @@ class AgentExperimentRecord:
     resolution_code: str | None
     owner_id: str | None
     tenant_id: str | None
+    decision_metadata: KnowledgeDecision | None = None
 
 
 class AgentSessionRepository:
@@ -213,7 +216,7 @@ class AgentSessionRepository:
             for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json', 'frozen_preparation_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
-            for column in ('compiled_config_json', 'scientific_digest'):
+            for column in ('compiled_config_json', 'scientific_digest', 'decision_metadata_json'):
                 existing = {str(row['name']) for row in connection.execute('PRAGMA table_info(agent_experiment_reservations_v1)')}
                 if column not in existing:
                     connection.execute(f'ALTER TABLE agent_experiment_reservations_v1 ADD COLUMN {column} TEXT')
@@ -278,7 +281,7 @@ class AgentSessionRepository:
 
     @staticmethod
     def _session(row: sqlite3.Row) -> AgentSessionRecord:
-        return AgentSessionRecord(
+        record = AgentSessionRecord(
             session_id=row['session_id'], state=row['state'], dataset_id=row['dataset_id'],
             selection_metric=row['selection_metric'],
             allowed_models=tuple(_decode(row['allowed_models_json'], [])), max_runs=int(row['max_runs']),
@@ -289,12 +292,21 @@ class AgentSessionRepository:
             finalized_at=row['finalized_at'], owner_id=row['owner_id'], tenant_id=row['tenant_id'],
             dataset_sha256=row['dataset_sha256'], metadata_version=row['metadata_version'],
             contract_version=row['contract_version'], capability_snapshot=_decode(row['capability_snapshot_json'], None),
-            frozen_preparation=_decode(row['frozen_preparation_json'], None),
+            frozen_preparation=_decode_preparation(row['frozen_preparation_json']),
         )
+        frozen = record.frozen_preparation
+        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v2':
+            from ..knowledge import KnowledgeError
+            snapshot = frozen['preparation']['knowledge']
+            if ('knowledge' in record.modules) != (snapshot.status == 'ready'):
+                raise KnowledgeError('stored knowledge switch mismatch')
+            if snapshot.status == 'ready' and (snapshot.projection_policy.evidence != record.context_policy['evidence']
+                    or snapshot.projection_policy.risks != record.context_policy['risks']):
+                raise KnowledgeError('stored knowledge context policy mismatch')
+        return record
 
-    @staticmethod
-    def _experiment(row: sqlite3.Row) -> AgentExperimentRecord:
-        return AgentExperimentRecord(
+    def _experiment(self, row: sqlite3.Row) -> AgentExperimentRecord:
+        record = AgentExperimentRecord(
             experiment_id=row['reservation_id'], session_id=row['session_id'], run_id=row['run_id'],
             attempt=int(row['attempt']), state=row['state'], parent_run_id=row['parent_run_id'],
             action_json=dict(_decode(row['action_json'], {})), rationale=row['rationale'],
@@ -302,11 +314,31 @@ class AgentSessionRepository:
             failure_code=row['failure_code'], created_at=row['created_at'],
             updated_at=row['updated_at'], protocol_version=row['protocol_version'],
             compiled_config=_decode(row['compiled_config_json'], None), scientific_digest=row['scientific_digest'],
+            decision_metadata=_decode_decision(row['decision_metadata_json']),
             last_reconciled_at=row['last_reconciled_at'],
             reconcile_attempt_count=int(row['reconcile_attempt_count'] or 0),
             resolution_code=row['resolution_code'],
             owner_id=row['owner_id'], tenant_id=row['tenant_id'],
         )
+        with self._connection() as connection:
+            session_row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?',
+                                             (record.session_id,)).fetchone()
+        if session_row is None:
+            raise AgentSessionNotFound()
+        session = self._session(session_row)
+        frozen = session.frozen_preparation
+        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v2':
+            from ..knowledge import KnowledgeError, resolve_decision
+            metadata = record.decision_metadata
+            if metadata is None:
+                raise KnowledgeError('stored decision metadata missing')
+            try:
+                expected = resolve_decision(frozen['preparation']['knowledge'], [r.entry_id for r in metadata.references])
+            except ValueError as exc:
+                raise KnowledgeError('stored decision references invalid') from exc
+            if expected != metadata:
+                raise KnowledgeError('stored decision binding mismatch')
+        return record
 
     def create_session(self, *, dataset_id: str, selection_metric: str, allowed_models: list[str],
                        max_runs: int, seed: int, evaluation_config: dict[str, Any],
@@ -413,6 +445,7 @@ class AgentSessionRepository:
                            protocol_version: str | None = None,
                            compiled_config: dict[str, Any] | None = None,
                            scientific_digest: str | None = None,
+                           decision_metadata: KnowledgeDecision | None = None,
                            ) -> tuple[AgentExperimentRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
@@ -456,11 +489,12 @@ class AgentSessionRepository:
                 '''INSERT INTO agent_experiment_reservations_v1(
                    reservation_id,session_id,state,attempt,parent_run_id,action_json,rationale,
                    config_hash,client_request_id,payload_hash,created_at,updated_at,protocol_version,
-                   owner_id,tenant_id,compiled_config_json,scientific_digest
-                   ) VALUES(?,?,'reserved',?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                   owner_id,tenant_id,compiled_config_json,scientific_digest,decision_metadata_json
+                   ) VALUES(?,?,'reserved',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (reservation_id, session_id, attempt, parent_run_id, _json(action_json), rationale,
                  config_hash, client_request_id, payload_hash, now, now, protocol_version,
-                 owner, tenant, _json(compiled_config) if compiled_config is not None else None, scientific_digest),
+                 owner, tenant, _json(compiled_config) if compiled_config is not None else None, scientific_digest,
+                 _json(decision_metadata.model_dump(mode='json')) if decision_metadata is not None else None),
             )
             row = connection.execute(
                 'SELECT * FROM agent_experiment_reservations_v1 WHERE reservation_id=?', (reservation_id,)
@@ -603,3 +637,38 @@ def collect_run_states(repository: RunRepository, run_ids: list[str]) -> dict[st
         try: states[run_id] = repository.get(run_id).state
         except RunNotFound: states[run_id] = 'missing'
     return states
+
+
+def _decode_preparation(raw):
+    frozen = _decode(raw, None)
+    if frozen is None:
+        return None
+    revision = frozen['protocol_revision']
+    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+        raise AgentDomainError('agent_version_incompatible', 'Unknown frozen revision', status_code=409)
+    if revision == 'agent-recipes-revision-v2':
+        from ..knowledge import decode_snapshot, KnowledgeError
+        prepared = frozen['preparation']
+        if 'knowledge' not in prepared:
+            raise KnowledgeError('stored knowledge snapshot missing')
+        snapshot = decode_snapshot(prepared['knowledge'])
+        if snapshot.status == 'ready':
+            binding = snapshot.provenance
+            if (binding.dataset_sha256 != prepared['evidence']['dataset_sha256'] or
+                binding.evidence_digest != prepared['evidence']['evidence_digest'] or
+                binding.plan_digest != prepared['evaluation_plan']['plan_digest'] or
+                binding.catalog_digest != prepared['catalog']['catalog_digest']):
+                raise KnowledgeError('stored knowledge preparation binding mismatch')
+        prepared['knowledge'] = snapshot
+    return frozen
+
+
+def _decode_decision(raw):
+    if raw is None:
+        return None
+    from ..knowledge import KnowledgeDecision, KnowledgeError
+    from pydantic import ValidationError
+    try:
+        return KnowledgeDecision.model_validate_json(raw)
+    except ValidationError as exc:
+        raise KnowledgeError('stored knowledge decision invalid') from exc

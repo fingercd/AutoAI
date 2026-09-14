@@ -59,7 +59,7 @@ def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
     if session.metadata_version not in (None, AGENT_METADATA_VERSION, 'agent-metadata-v2'):
         raise AgentDomainError('agent_metadata_invalid', 'Session 元数据版本不兼容', status_code=409)
     return {
-        **(session.frozen_preparation or {}),
+        **_preparation_wire(session),
         **({'capability_snapshot': session.capability_snapshot} if session.contract_version == V2 else {}),
         'dataset_id': session.dataset_id,
         **dataset_metadata(session.dataset_sha256, version=session.contract_version or AGENT_API_CONTRACT_VERSION),
@@ -92,18 +92,10 @@ class AgentService:
 
     def create_session(self, payload: CreateAgentSessionRequest, *, principal: Principal) -> dict[str, Any]:
         payload.validate_business()
-        catalog = module_catalog()
+        catalog = module_catalog(getattr(payload, 'protocol_revision', None))
         requested_profile = getattr(payload, 'execution_profile', None)
         prepared_modules = {'train_evidence', 'legal_recipes'} if requested_profile else set()
         unavailable = sorted({name for name in payload.modules if name not in prepared_modules and not catalog.get(name, {}).get('available')})
-        if unavailable:
-            raise AgentDomainError(
-                'agent_module_unavailable', f'请求的模块当前不可用：{", ".join(unavailable)}', status_code=422
-            )
-        if payload.context_policy.case_write:
-            raise AgentDomainError(
-                'agent_module_unavailable', 'case_memory 不可用，不能启用 case_write', status_code=422
-            )
         body = payload.model_dump(mode='json')
         if not requested_profile:
             body.pop('execution_profile', None); body.pop('protocol_revision', None)
@@ -121,6 +113,10 @@ class AgentService:
             )
             if existing is not None:
                 return self._session_creation_response(existing, created=False, principal=principal)
+        if unavailable:
+            raise AgentDomainError('agent_module_unavailable', f'请求的模块当前不可用：{", ".join(unavailable)}', status_code=422)
+        if payload.context_policy.case_write:
+            raise AgentDomainError('agent_module_unavailable', 'case_memory 不可用，不能启用 case_write', status_code=422)
         try:
             dataset = self.datasets.resolve(payload.dataset_id, principal=principal)
             digest = self.datasets.verify_integrity(dataset)
@@ -150,6 +146,14 @@ class AgentService:
                 protocol_revision=payload.protocol_revision,
                 preparation=dict(evaluation_plan=plan.safe_reference(),
                     evidence=evidence.model_dump(mode='json'),catalog=recipes.model_dump(mode='json')))
+        if requested_profile and payload.protocol_revision == 'agent-recipes-revision-v2':
+            from ..knowledge import freeze_knowledge, KnowledgeError
+            try:
+                knowledge = freeze_knowledge(enabled='knowledge' in payload.modules, evidence=evidence, catalog=recipes,
+                    evidence_context=payload.context_policy.evidence, risk_context=payload.context_policy.risks)
+            except KnowledgeError as exc:
+                raise AgentDomainError('agent_knowledge_unavailable', 'Knowledge publication unavailable', status_code=503) from exc
+            frozen_preparation['preparation']['knowledge'] = knowledge.model_dump(mode='json', exclude_unset=True)
         session, created = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -251,7 +255,7 @@ class AgentService:
             active_run_ids=active,
             principal=principal,
             protocol_version=AGENT_RESERVATION_PROTOCOL_VERSION,
-            compiled_config=prepared, scientific_digest=full_digest,
+            compiled_config=prepared, scientific_digest=full_digest, decision_metadata=command.decision_metadata,
         )
         if not created and reservation.state == 'bound' and reservation.run_id:
             record = self._run(reservation.run_id, principal)
@@ -402,7 +406,9 @@ class AgentService:
     def _experiment_response(cls, session: AgentSessionRecord, experiment: AgentExperimentRecord,
                              record: RunRecord, *, replay: bool) -> dict[str, Any]:
         cls._verify_run_metadata(session, record)
+        metadata = _decision_wire(session, experiment)
         return {
+            **metadata,
             'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
             **run_metadata(record, version=session.contract_version or AGENT_API_CONTRACT_VERSION, snapshot=session.capability_snapshot),
@@ -525,3 +531,21 @@ class AgentService:
             raise AgentDomainError(
                 'agent_experiment_not_found', 'agent experiment 不存在', status_code=404
             ) from None
+
+
+def _preparation_wire(session):
+    frozen = session.frozen_preparation
+    if frozen is None:
+        return {}
+    prepared = frozen['preparation']
+    wire = {key: prepared[key] for key in ('evaluation_plan','evidence','catalog')}
+    if frozen['protocol_revision'] == 'agent-recipes-revision-v2':
+        wire['knowledge'] = prepared['knowledge'].wire()
+    return dict(execution_profile=frozen['execution_profile'], protocol_revision=frozen['protocol_revision'], preparation=wire)
+
+
+def _decision_wire(session, experiment):
+    frozen = session.frozen_preparation
+    if frozen is None or frozen['protocol_revision'] != 'agent-recipes-revision-v2':
+        return {}
+    return dict(decision_metadata=experiment.decision_metadata.model_dump(mode='json'))

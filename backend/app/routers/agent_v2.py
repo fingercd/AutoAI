@@ -5,7 +5,7 @@ from . import agent
 from .deps import get_agent_service
 from ..http.principal import Principal, get_principal
 from ..agent.contracts import AgentDomainError, FinalizeAgentSessionRequest, ReconcileAgentSessionRequest
-from ..agent.contracts_v2 import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2, CreateRecipeExperimentRequest
+from ..agent.contracts_v2 import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2, CreateRecipeExperimentRequest, CreateKnowledgeExperimentRequest
 from ..agent.capabilities import health_payload
 from ..model_config import model_capability_snapshot
 from ..contracts import TrainingConfigValidationError
@@ -20,7 +20,8 @@ def revision_header(x_autoai_agent_revision: str | None = Header(None)):
 def require_negotiation(service, principal, revision, session_id=None, payload=None):
     profile = (service._session(session_id, principal).frozen_preparation if session_id else
                getattr(payload, 'execution_profile', None))
-    if profile and revision != 'agent-recipes-revision-v1':
+    expected = (profile['protocol_revision'] if session_id and profile else getattr(payload, 'protocol_revision', None))
+    if profile and revision != expected:
         raise AgentDomainError('agent_version_incompatible', 'Recipe protocol negotiation required', status_code=409)
 
 
@@ -41,8 +42,11 @@ def health(revision: str | None = Depends(revision_header)):
     result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
     if not any(m['available'] for m in snapshot['models']):
         result['status'] = 'unavailable'
-    if revision == 'agent-recipes-revision-v1':
+    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
         result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
+    if revision == 'agent-recipes-revision-v2':
+        from ..agent.capabilities import module_catalog
+        result['modules'] = module_catalog(revision)
     return result
 
 
@@ -57,7 +61,7 @@ def get_session(session_id: str, principal: Principal = Depends(get_principal), 
 
 
 @router.post('/sessions/{session_id}/experiments', status_code=202)
-def create_experiment(session_id: str, payload: CreateAgentExperimentRequestV2 | CreateRecipeExperimentRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+def create_experiment(session_id: str, payload: CreateKnowledgeExperimentRequest | CreateAgentExperimentRequestV2 | CreateRecipeExperimentRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
     return call('create_experiment', principal, revision=revision, session_id=session_id, payload=payload)
 
 
