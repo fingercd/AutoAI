@@ -1,0 +1,270 @@
+{
+  "schema_version": "knowledge-entry-v1",
+  "knowledge_set_version": "common-modeling-v1",
+  "entries": [
+    {
+      "schema_version": "knowledge-entry-v1",
+      "entry_id": "km_pls_high_dimension",
+      "entry_version": "1",
+      "conditions": [
+        {
+          "kind": "task_eq",
+          "condition_id": "classification",
+          "field": "task_type",
+          "op": "eq",
+          "value": "classification"
+        },
+        {
+          "kind": "legal_model_any",
+          "condition_id": "legal_models",
+          "op": "any",
+          "models": [
+            "pls_da"
+          ]
+        },
+        {
+          "kind": "field_compare",
+          "condition_id": "high_dimension",
+          "field": "feature_count",
+          "op": "gt",
+          "other_field": "sample_group_count"
+        }
+      ],
+      "related_models": [
+        "pls_da"
+      ],
+      "advice": "可考虑已有 PLS-DA 潜变量分类配方。",
+      "basis": "PLS 构造与目标有关的潜变量，官方资料讨论高维与共线预测量下的用途。",
+      "limitations": "按独立组数触发是保守工程规则，不证明共线性。来源讨论 PLS；映射到本项目 one-hot PLS-DA 是工程推论，不保证分类最优或 softmax 概率校准。",
+      "stance": "consider",
+      "presentation_priority": 20,
+      "conflict_group": null,
+      "sources": [
+        {
+          "source_id": "S1",
+          "title": "scikit-learn 1.5.2: Cross decomposition",
+          "publisher": "scikit-learn developers",
+          "url": "https://scikit-learn.org/1.5/modules/cross_decomposition.html",
+          "locator": "PLS overview",
+          "supported_claim": "PLS 构造与目标有关的潜变量，官方资料讨论高维与共线预测量下的用途。",
+          "applicability_limit": "按独立组数触发是保守工程规则，不证明共线性。来源讨论 PLS；映射到本项目 one-hot PLS-DA 是工程推论，不保证分类最优或 softmax 概率校准。"
+        }
+      ]
+    },
+    {
+      "schema_version": "knowledge-entry-v1",
+      "entry_id": "km_svm_high_dimension",
+      "entry_version": "1",
+      "conditions": [
+        {
+          "kind": "task_eq",
+          "condition_id": "classification",
+          "field": "task_type",
+          "op": "eq",
+          "value": "classification"
+        },
+        {
+          "kind": "legal_model_any",
+          "condition_id": "legal_models",
+          "op": "any",
+          "models": [
+            "svm"
+          ]
+        },
+        {
+          "kind": "field_compare",
+          "condition_id": "high_dimension",
+          "field": "feature_count",
+          "op": "gt",
+          "other_field": "sample_group_count"
+        }
+      ],
+      "related_models": [
+        "svm"
+      ],
+      "advice": "可考虑现有 SVM 配方参与比较。",
+      "basis": "官方资料说明 SVM 可用于高维，维度高于样本数时仍可工作。",
+      "limitations": "核与正则选择仍重要，高维不保证效果。独立组数是本项目保守触发口径。只使用冻结搜索，不修改 C/gamma 或新增核。",
+      "stance": "consider",
+      "presentation_priority": 20,
+      "conflict_group": null,
+      "sources": [
+        {
+          "source_id": "S2",
+          "title": "scikit-learn 1.5.2: Support Vector Machines",
+          "publisher": "scikit-learn developers",
+          "url": "https://scikit-learn.org/1.5/modules/svm.html",
+          "locator": "Advantages and disadvantages",
+          "supported_claim": "官方资料说明 SVM 可用于高维，维度高于样本数时仍可工作。",
+          "applicability_limit": "核与正则选择仍重要，高维不保证效果。独立组数是本项目保守触发口径。只使用冻结搜索，不修改 C/gamma 或新增核。"
+        }
+      ]
+    },
+    {
+      "schema_version": "knowledge-entry-v1",
+      "entry_id": "km_lr_regularized_baseline",
+      "entry_version": "1",
+      "conditions": [
+        {
+          "kind": "task_eq",
+          "condition_id": "classification",
+          "field": "task_type",
+          "op": "eq",
+          "value": "classification"
+        },
+        {
+          "kind": "legal_model_any",
+          "condition_id": "legal_models",
+          "op": "any",
+          "models": [
+            "logistic_regression"
+          ]
+        }
+      ],
+      "related_models": [
+        "logistic_regression"
+      ],
+      "advice": "可将已有正则化逻辑回归作为分类比较基线。",
+      "basis": "逻辑回归的正则项约束系数。",
+      "limitations": "正则化不证明线性边界适合本任务；作为基线是本项目比较策略，不是文献证明最佳。保留既有 lbfgs/C 搜索和多分类实现。",
+      "stance": "consider",
+      "presentation_priority": 30,
+      "conflict_group": null,
+      "sources": [
+        {
+          "source_id": "S3",
+          "title": "scikit-learn 1.5.2: Logistic regression",
+          "publisher": "scikit-learn developers",
+          "url": "https://scikit-learn.org/1.5/modules/linear_model.html#logistic-regression",
+          "locator": "Logistic regression",
+          "supported_claim": "逻辑回归的正则项约束系数。",
+          "applicability_limit": "正则化不证明线性边界适合本任务；作为基线是本项目比较策略，不是文献证明最佳。保留既有 lbfgs/C 搜索和多分类实现。"
+        }
+      ]
+    },
+    {
+      "schema_version": "knowledge-entry-v1",
+      "entry_id": "km_pca_label_blindness",
+      "entry_version": "1",
+      "conditions": [
+        {
+          "kind": "task_eq",
+          "condition_id": "classification",
+          "field": "task_type",
+          "op": "eq",
+          "value": "classification"
+        },
+        {
+          "kind": "legal_model_any",
+          "condition_id": "legal_models",
+          "op": "any",
+          "models": [
+            "pca_lda",
+            "pca_mlp"
+          ]
+        },
+        {
+          "kind": "field_compare",
+          "condition_id": "high_dimension",
+          "field": "feature_count",
+          "op": "gt",
+          "other_field": "sample_group_count"
+        }
+      ],
+      "related_models": [
+        "pca_lda",
+        "pca_mlp"
+      ],
+      "advice": "选择含 PCA 的配方时，不把高解释方差当成类别信息充分的证明。",
+      "basis": "PCA 拟合不使用标签；低方差方向也可能含有目标信息。",
+      "limitations": "官方示例是回归反例，只迁移 PCA 不使用标签的性质，不能断言本任务丢失判别信息、淘汰 PCA 或证明 PLS-DA 更优。",
+      "stance": "caution",
+      "presentation_priority": 10,
+      "conflict_group": null,
+      "sources": [
+        {
+          "source_id": "S4",
+          "title": "scikit-learn 1.5.2: Principal Component Regression vs Partial Least Squares Regression",
+          "publisher": "scikit-learn developers",
+          "url": "https://scikit-learn.org/1.5/auto_examples/cross_decomposition/plot_pcr_vs_pls.html",
+          "locator": "Introduction and example interpretation",
+          "supported_claim": "PCA 拟合不使用标签；低方差方向也可能含有目标信息。",
+          "applicability_limit": "官方示例是回归反例，只迁移 PCA 不使用标签的性质，不能断言本任务丢失判别信息、淘汰 PCA 或证明 PLS-DA 更优。"
+        }
+      ]
+    },
+    {
+      "schema_version": "knowledge-entry-v1",
+      "entry_id": "km_grouped_repeats",
+      "entry_version": "1",
+      "conditions": [
+        {
+          "kind": "task_eq",
+          "condition_id": "classification",
+          "field": "task_type",
+          "op": "eq",
+          "value": "classification"
+        },
+        {
+          "kind": "legal_model_any",
+          "condition_id": "legal_models",
+          "op": "any",
+          "models": [
+            "pls_da",
+            "pca_lda",
+            "logistic_regression",
+            "svm",
+            "random_forest",
+            "xgboost",
+            "pca_mlp",
+            "cnn1d",
+            "cnn1d_se",
+            "resnet1d",
+            "inception1d",
+            "tcn1d",
+            "cnn_transformer1d"
+          ]
+        },
+        {
+          "kind": "int_compare",
+          "condition_id": "repeated_groups",
+          "field": "repeated_measurement_group_count",
+          "op": "gt",
+          "value": 0
+        }
+      ],
+      "related_models": [
+        "pls_da",
+        "pca_lda",
+        "logistic_regression",
+        "svm",
+        "random_forest",
+        "xgboost",
+        "pca_mlp",
+        "cnn1d",
+        "cnn1d_se",
+        "resnet1d",
+        "inception1d",
+        "tcn1d",
+        "cnn_transformer1d"
+      ],
+      "advice": "重复测量不增加同等数量独立样品；选择理由应参考独立组数，沿用冻结分组评估。",
+      "basis": "组内相关可破坏独立同分布假设，验证时应隔离相关组。",
+      "limitations": "Sample_ID 是否代表真实独立单位依赖数据定义正确。本条不推荐获胜模型，不改变划分，也不新增交叉验证。",
+      "stance": "caution",
+      "presentation_priority": 10,
+      "conflict_group": null,
+      "sources": [
+        {
+          "source_id": "S5",
+          "title": "scikit-learn 1.5.2: Cross-validation iterators for grouped data",
+          "publisher": "scikit-learn developers",
+          "url": "https://scikit-learn.org/1.5/modules/cross_validation.html#cross-validation-iterators-for-grouped-data",
+          "locator": "Grouped data",
+          "supported_claim": "组内相关可破坏独立同分布假设，验证时应隔离相关组。",
+          "applicability_limit": "Sample_ID 是否代表真实独立单位依赖数据定义正确。本条不推荐获胜模型，不改变划分，也不新增交叉验证。"
+        }
+      ]
+    }
+  ]
+}
