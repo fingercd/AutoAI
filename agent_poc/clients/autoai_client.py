@@ -14,7 +14,7 @@ CONTRACT_VERSION = 'agent-session-v1'
 OBSERVATION_VERSION = 'agent-observation-v1'
 _IDENTIFIER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 _KNOWN_ERRORS = frozenset({
-    'model_retired',
+    'model_retired','agent_recipe_invalid','agent_preparation_failed','evaluation_plan_invalid','preparation_resource_exhausted',
     'agent_session_not_found', 'agent_experiment_not_found', 'dataset_unavailable',
     'agent_session_finalized', 'agent_duplicate_config', 'agent_active_run_exists',
     'agent_run_budget_exhausted', 'agent_idempotency_conflict', 'agent_request_released',
@@ -118,6 +118,7 @@ class AutoAIClient:
     max_retries: int = 2
     transport: Transport | None = None
     api_version: str = "v1"
+    execution_profile: str | None = None
 
     def __post_init__(self) -> None:
         if self.api_version not in ('v1','v2'):
@@ -128,6 +129,11 @@ class AutoAIClient:
         from .contracts_v2 import RESPONSE_MODELS as V2_RESPONSES
         self.response_models = V2_RESPONSES if self.api_version == 'v2' else RESPONSE_MODELS
         self.route_prefix = '/api/agent/v2/' if self.api_version == 'v2' else '/api/agent/'
+        if self.execution_profile is not None:
+            if self.execution_profile != 'train-evidence-recipes-v1' or self.api_version != 'v2':
+                raise ValueError('Recipe profile requires v2')
+            from .contracts_v2 import RECIPE_RESPONSE_MODELS
+            self.response_models = RECIPE_RESPONSE_MODELS
         self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 5:
@@ -145,6 +151,8 @@ class AutoAIClient:
                  bound_ids: dict[str, str] | None = None) -> dict[str, Any]:
         path = path.replace('/api/agent/', self.route_prefix, 1)
         headers = {'Accept': 'application/json'}
+        if self.execution_profile:
+            headers['X-AutoAI-Agent-Revision'] = 'agent-recipes-revision-v1'
         if body is not None:
             headers['Content-Type'] = 'application/json'
         if self.token:
@@ -188,14 +196,16 @@ class AutoAIClient:
         if self.api_version == 'v2':
             if operation == 'inspect_ml_capabilities':
                 from agent_poc.tools import build_tool_schemas
-                self.tool_schemas = build_tool_schemas(result)
+                self.tool_schemas = build_tool_schemas({k:v for k,v in result.items() if k not in ('protocol_revision','execution_profiles')})
+                if self.execution_profile:
+                    self._recipe_tools()
             if 'locked_config' in result:
                 self._sessions[result['session_id']] = result['locked_config']
             if 'effective_action' in result:
                 self._check_frozen_response(result)
         return _sanitize_response(result)
 
-    def restore_frozen_session(self, session_id, snapshot):
+    def restore_frozen_session(self, session_id, snapshot, preparation=None):
         """Restore validated local bindings without performing any HTTP request."""
         from .contracts_v2 import FrozenSnapshot
         if self.api_version != 'v2':
@@ -203,6 +213,19 @@ class AutoAIClient:
         validate_identifier(session_id)
         frozen = FrozenSnapshot.model_validate(snapshot).model_dump(mode='json')
         self._sessions[session_id] = {'capability_snapshot': frozen}
+        if self.execution_profile:
+            from .contracts_v2 import Preparation
+            bound = Preparation.model_validate(preparation).model_dump(mode='json')
+            self._sessions[session_id]['preparation'] = bound
+            self._recipe_tools()
+
+    def _recipe_tools(self):
+        self.tool_schemas['submit_ml_experiment'] = dict(type='object',additionalProperties=False,
+            properties={'session_id':{'type':'string'},'recipe_id':{'type':'string','pattern':'^recipe_[a-f0-9]{64}$'},
+                        'rationale':{'type':'string','maxLength':2000},'client_request_id':{'type':'string'}},
+            required=['session_id','recipe_id','rationale','client_request_id'])
+        context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
+        context.update(evidence={'type':'boolean'},risks={'type':'boolean'})
 
     def _check_frozen_response(self, result):
         locked = self._sessions.get(result['session_id'])
@@ -238,6 +261,11 @@ class AutoAIClient:
             'context_policy': context_policy if context_policy is not None else {
                 'source_role': 'development', 'case_write': False},
         }
+        if self.execution_profile:
+            body.update(execution_profile=self.execution_profile,protocol_revision='agent-recipes-revision-v1',
+                        modules=['train_evidence','legal_recipes'])
+            body['context_policy'].setdefault('evidence', True)
+            body['context_policy'].setdefault('risks', True)
         if client_request_id is not None:
             body['client_request_id'] = client_request_id
         if model_configs is not None:
@@ -252,15 +280,30 @@ class AutoAIClient:
         return self._request('GET', f'/api/agent/sessions/{session_id}',
                              operation='inspect_ml_session', bound_ids={'session_id': session_id})
 
-    def submit_ml_experiment(self, session_id: str, *, model_type: str,
+    def submit_ml_experiment(self, session_id: str, *, model_type: str | None = None,
                              normalization: str = 'zscore', class_balance: str = 'none',
                              parent_run_id: str | None = None, rationale: str | None = None,
                              client_request_id: str | None = None,
-                             model_params: dict[str, Any] | None = None) -> dict[str, Any]:
+                             model_params: dict[str, Any] | None = None,
+                             recipe_id: str | None = None) -> dict[str, Any]:
         validate_identifier(session_id)
         for value in (parent_run_id, client_request_id):
             if value is not None:
                 validate_identifier(value)
+        if self.execution_profile:
+            if model_type is not None or model_params is not None or parent_run_id is not None or normalization!='zscore' or class_balance!='none':
+                raise AgentContractError('Recipe selection cannot contain free execution configuration')
+            locked=self._sessions.get(session_id)
+            catalog=locked.get('preparation',{}).get('catalog') if locked else None
+            recipe=next((r for r in catalog['recipes'] if r['recipe_id']==recipe_id),None) if catalog else None
+            if recipe is None:
+                raise AgentContractError('Restore frozen recipe catalog before selection')
+            body=dict(recipe_id=recipe_id,recipe_digest=recipe['recipe_digest'],
+                catalog_digest=catalog['catalog_digest'],rationale=rationale,client_request_id=client_request_id)
+            return self._request('POST',f'/api/agent/sessions/{session_id}/experiments',body,
+                operation='submit_ml_experiment',idempotent=bool(client_request_id),bound_ids={'session_id':session_id})
+        if recipe_id is not None:
+            raise AgentContractError('Recipe requires negotiated profile')
         body: dict[str, Any] = {'model_type': model_type, 'normalization': normalization,
                                 'class_balance': class_balance}
         for key, value in (('parent_run_id', parent_run_id), ('rationale', rationale),

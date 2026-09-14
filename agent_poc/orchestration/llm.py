@@ -45,7 +45,7 @@ class LLMConfig:
                 '://' in self.model or
                 self.model.lower().startswith('file:')):
             raise ValueError('LLM served model ID 无效')
-        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1'):
+        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1'):
             raise ValueError('Unknown Prompt version')
         if self.protocol not in ('json_action', 'native_tools'):
             raise ValueError('必须明确选择受支持的 LLM 协议')
@@ -69,7 +69,7 @@ class LLMConfig:
                 'timeout': self.timeout, 'max_tokens': self.max_tokens,
                 'max_response_bytes': self.max_response_bytes,
                 'temperature': self.temperature, 'top_p': self.top_p,
-                'prompt_version': self.prompt_version, 'context_version': ('agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
+                'prompt_version': self.prompt_version, 'context_version': ('agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
 
     def fingerprint(self) -> str:
         # Endpoint binding is checked without putting a URL into durable State.
@@ -179,10 +179,15 @@ class LLMAdapter:
             raise LLMError('llm_context_invalid') from None
         if projected['context_version'] != self.config.public_config()['context_version']:
             raise LLMError('llm_context_invalid')
+        recipe_profile = projected['context_version']=='agent-context-recipes-v1'
         step2 = projected['context_version'] == 'agent-context-step2-v1'
         tool = projected['allowed_actions'][0]
         schema = json.loads(json.dumps(TOOL_SCHEMAS[tool]))
-        if tool == 'submit_ml_experiment':
+        if recipe_profile and tool=='submit_ml_experiment':
+            schema=dict(type='object',additionalProperties=False,properties={
+                'session_id':{'type':'string'},'recipe_id':{'type':'string','enum':[r['recipe_id'] for r in projected['recipes']]},
+                'rationale':{'type':'string','maxLength':2000}},required=['session_id','recipe_id'])
+        elif tool == 'submit_ml_experiment':
             schema['properties'].pop('parent_run_id', None)
             schema['properties']['model_type']['enum'] = projected['capabilities']['models']
         for key, value in projected['bindings'].items():
@@ -196,6 +201,8 @@ class LLMAdapter:
             'Use only the supplied candidates and validation evidence. Preserve every binding exactly. '
             'Give a brief decision rationale, without private reasoning or external references. '
         )
+        if recipe_profile:
+            system += 'Select exactly one frozen recipe_id. Train statistics and risk flags, when present, are advisory. Do not invent metrics or change execution parameters. '
         if step2:
             system += 'Model parameters are fixed by the operator and shown in fixed_model_params. Select only the model; the runner binds its fixed parameters. '
         request: dict[str, Any] = {
@@ -294,12 +301,12 @@ class LLMAdapter:
                 rationale = _rationale(message.get('content') or arguments.get('rationale'))
             if name != tool:
                 raise ValueError
-            arguments = validate_tool_arguments(name, arguments, {tool:schema} if step2 else None)
+            arguments = validate_tool_arguments(name, arguments, {tool:schema} if step2 or recipe_profile else None)
             for key, expected in projected['bindings'].items():
                 if arguments.get(key) != expected:
                     raise ValueError
             if phase == 'submit':
-                if arguments['model_type'] not in projected['capabilities']['models'] or 'parent_run_id' in arguments:
+                if not recipe_profile and (arguments['model_type'] not in projected['capabilities']['models'] or 'parent_run_id' in arguments):
                     raise ValueError
                 if 'rationale' in arguments and _rationale(arguments['rationale']) != rationale:
                     raise ValueError
