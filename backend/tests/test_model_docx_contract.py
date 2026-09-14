@@ -142,30 +142,3 @@ def test_word_resnet_has_only_three_document_pools_and_plain_projection_shortcut
     assert len(pools) == 3
     assert model.blocks[-1].pool.__class__ is nn.Identity
     assert isinstance(model.blocks[1].shortcut, nn.Conv1d)
-
-
-def test_word_dscarnet_profile_and_mode_contract_is_available():
-    from backend.app.models import profiles
-
-    assert hasattr(profiles, "build_dscarnet_profile")
-    profile = profiles.build_dscarnet_profile(train_sample_count=100, feature_count=3000)
-    expected_n = math.ceil((math.sqrt(8 * (0.8**2) * 3000 + 1) - 1) / 2)
-    assert profile["pca_components"] == min(expected_n, 99, 3000)
-    assert profile["cluster_channels"] == 7
-    assert profile["conv1_kernel_size"] == 19
-    assert profile["filter_number"] == 16
-    assert profile["n_inception"] == 1
-    assert profile["dense_layers"] == [32]
-
-    from backend.app.training import TrainConfig
-
-    assert TrainConfig().dscarnet_input_mode == "dual"
-
-
-@pytest.mark.parametrize("mode", ["sar", "car", "dual"])
-def test_word_dscarnet_mapping_accepts_all_three_modes(mode):
-    from inspect import signature
-
-    from backend.app.dscarnet_mapping import fit_dscarnet_2d_mapping
-
-    assert "mode" in signature(fit_dscarnet_2d_mapping).parameters

@@ -25,51 +25,25 @@ def test_model_catalog_matches_supported_training_models():
     assert all(set(model) == required for model in models)
 
 
-def test_missing_dscarnet_dependency_does_not_break_catalog(monkeypatch):
-    from backend.app.routers import catalog
-
-    original_find_spec = catalog.importlib.util.find_spec
-
-    def fake_find_spec(name, *args, **kwargs):
-        if name == 'aggmap':
-            return None
-        return original_find_spec(name, *args, **kwargs)
-
-    monkeypatch.setattr(catalog.importlib.util, 'find_spec', fake_find_spec)
+def test_retired_dependency_is_not_probed(monkeypatch):
+    from backend.app import model_catalog
+    original = model_catalog.importlib.util.find_spec
+    def probe(name, *args, **kwargs):
+        assert name != 'aggmap'
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(model_catalog.importlib.util, 'find_spec', probe)
     response = TestClient(app).get('/api/models')
-
     assert response.status_code == 200
-    by_id = {model['id']: model for model in response.json()['models']}
-    assert by_id['dscarnet']['available'] is False
-    assert 'aggmap' in by_id['dscarnet']['unavailable_reason']
-    assert all(model['available'] for model_id, model in by_id.items() if model_id not in {'dscarnet', 'cnn_mamba1d'})
-    assert by_id['cnn_mamba1d']['available'] is False
+    assert 'dscarnet' not in {m['id'] for m in response.json()['models']}
 
 
-def test_dscarnet_catalog_does_not_import_heavy_aggmap_runtime(monkeypatch):
-    from backend.app import dscarnet_mapping
+def test_catalog_does_not_import_model_runtime(monkeypatch):
     from backend.app.routers import catalog
-
-    original_find_spec = catalog.importlib.util.find_spec
-
-    def fake_find_spec(name, *args, **kwargs):
-        if name == 'aggmap':
-            return object()
-        return original_find_spec(name, *args, **kwargs)
-
-    monkeypatch.setattr(catalog.importlib.util, 'find_spec', fake_find_spec)
-    monkeypatch.setattr(
-        catalog.importlib,
-        'import_module',
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('catalog must not import model runtimes')),
-    )
-    monkeypatch.setattr(
-        dscarnet_mapping,
-        '_load_aggmap_class',
-        lambda: (_ for _ in ()).throw(AssertionError('catalog must not import AggMap')),
-    )
-
-    assert catalog._dscarnet_capability() == (True, None)
+    monkeypatch.setattr(catalog.importlib, 'import_module',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('runtime import')))
+    response = TestClient(app).get('/api/models')
+    assert response.status_code == 200
+    assert 'dscarnet' not in {m['id'] for m in response.json()['models']}
 
 
 def test_model_catalog_initialization_has_module_and_dom_ready_paths():

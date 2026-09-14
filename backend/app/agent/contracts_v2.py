@@ -3,7 +3,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import ConfigDict, Field
 from .contracts import (CreateAgentSessionRequest, CreateAgentExperimentRequest,
                         AGENT_SELECTION_METRICS, AgentDomainError)
-from ..model_catalog import MODELS_BY_ID
+from ..model_catalog import MODELS_BY_ID, RETIRED_MODEL_ALIASES
 
 V2 = 'agent-session-v2'
 
@@ -26,7 +26,7 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
             raise invalid('Unknown selection metric')
         if len(set(self.allowed_models)) != len(self.allowed_models):
             raise invalid('Duplicate model ID')
-        if set(self.allowed_models) - MODELS_BY_ID.keys():
+        if set(self.allowed_models) - (MODELS_BY_ID.keys() | RETIRED_MODEL_ALIASES.keys()):
             raise invalid('Unknown canonical model ID')
         if set(self.model_configs) - set(self.allowed_models):
             raise invalid('Model configuration outside allowed set')
@@ -42,7 +42,7 @@ class CreateAgentExperimentRequestV2(CreateAgentExperimentRequest):
     model_params: dict[str, Any] = Field(default_factory=dict)
 
     def validate_business(self):
-        if self.model_type not in MODELS_BY_ID:
+        if self.model_type not in MODELS_BY_ID and self.model_type not in RETIRED_MODEL_ALIASES:
             raise invalid('Unknown canonical model ID')
         if self.parent_run_id is not None:
             raise invalid('Second step has no parent experiment')

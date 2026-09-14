@@ -6,7 +6,7 @@ import pytest
 from backend.tests.modeling_data_factory import write_grouped_classification_csv
 
 
-def test_registry_contains_exactly_fifteen_docx_classifiers():
+def test_registry_contains_exactly_fourteen_docx_classifiers():
     from backend.app.models.registry import (
         DEEP_MODEL_TYPES,
         TARGET_DEEP_MODEL_TYPES,
@@ -31,8 +31,7 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
         "tcn1d",
         "cnn_transformer1d",
         "cnn_mamba1d",
-        "dscarnet",
-    }
+        }
     assert TRADITIONAL_MODEL_TYPES == {
         "pls_da",
         "pca_lda",
@@ -49,8 +48,7 @@ def test_registry_contains_exactly_fifteen_docx_classifiers():
         "inception1d",
         "tcn1d",
         "cnn_transformer1d",
-        "dscarnet",
-    }
+        }
 
 
 @pytest.mark.parametrize(

@@ -377,7 +377,7 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 ## 6. 分类模型与评估契约
 
-能力目录固定公开 **15 个目标分类模型**。当前仅支持分类；`Label` 即使为数字也按类别处理。
+能力目录固定公开 **14 个目标分类模型**。当前仅支持分类；`Label` 即使为数字也按类别处理。
 
 当前通常可训练 14 项；`cnn_mamba1d` 因依赖不可用返回 `available=false`，不得静默替换。新 Run 使用 `architecture_version="docx-classification-v2"`。
 
@@ -395,7 +395,7 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 - 六个传统模型、`pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡。
 - `cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM-like，并保留输入梯度 sanity check。
-- `dscarnet` 使用 SAR/CAR 双通路 2D 映射和 2D Grad-CAM 回投。
+- `dscarnet` / `dscar_net` 已退役，不出现在新建模目录；历史 SAR/CAR 结果仍按 Manifest 只读展示。
 
 ## 7. 结果页数据能力
 
@@ -425,7 +425,7 @@ GET /api/training/runs/{run_id}/artifact/{name}
 | `history.csv` | 深度模型训练过程，适用时 |
 | `hyperparameter_search.csv` | 传统模型参数搜索，适用时 |
 | `sample_feature_importance.json/csv` | 单样品解释结果，适用时 |
-| `dscarnet_mapping.json` | DSCARNet 映射说明，适用时 |
+| `dscarnet_mapping.json` | 历史 DSCARNet 映射说明，适用时 |
 | `config.json` | 已移除服务器路径的训练配置；只在内容审查通过时公开 |
 | `model_metadata.json` | 模型元数据 |
 | `label_map.json` | 类别映射 |

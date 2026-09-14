@@ -103,37 +103,6 @@ def _write_feature_signal_csv(path: Path, group_count: int = 12, repeats: int = 
     ).to_csv(path, index=False, encoding="utf-8")
 
 
-class _FakeAggMap:
-    instances: list["_FakeAggMap"] = []
-
-    def __init__(self, dfx, metric="correlation"):
-        self.metric = metric
-        self.alist = list(dfx.columns)
-        self.fit_input_shape = dfx.shape
-        self.fit_kwargs = {}
-        self.isfit = False
-        _FakeAggMap.instances.append(self)
-
-    def fit(self, **kwargs):
-        self.fit_kwargs = kwargs
-        self.isfit = True
-        feature_count = len(self.alist)
-        side = max(5, int(np.ceil(np.sqrt(max(1, feature_count)))))
-        rows = []
-        for idx, name in enumerate(self.alist):
-            rows.append({"x": idx % side, "y": idx // side, "v": name})
-        self.fmap_shape = (side, side)
-        self.feature_names_reshape = [row["v"] for row in rows]
-        self.df_grid = pd.DataFrame(rows)
-        return self
-
-    def batch_transform(self, array_2d, scale=True, scale_method="minmax", n_jobs=4, fillnan=0):
-        values = np.asarray(array_2d, dtype=np.float32)
-        side_h, side_w = self.fmap_shape
-        output = np.zeros((values.shape[0], side_h, side_w, 1), dtype=np.float32)
-        for feature_idx in range(min(values.shape[1], len(self.alist))):
-            output[:, feature_idx // side_w, feature_idx % side_w, 0] = values[:, feature_idx]
-        return output
 
 
 def test_build_feature_windows_uses_nearest_equal_width_divisor():
@@ -424,29 +393,6 @@ def test_deep_gradcam_records_sample_axis_and_auxiliary_sanity():
     assert sample["primary_segment"] == sample["top_segments"][0]
 
 
-def test_dscarnet_registry_uses_dual_2d_builder():
-    import torch
-    from backend.app.models.dscarnet import DSCARNet1D, DualDSCARNet2D
-    from backend.app.models.registry import build_deep_model, build_dscarnet_model
-    from backend.app.training import TrainConfig
-
-    config = TrainConfig(model_type="dscarnet", dscarnet_inception_blocks=1)
-
-    with pytest.raises(ValueError, match="2D"):
-        build_deep_model(config, input_length=40, class_count=2, sample_count=8)
-
-    model = build_dscarnet_model(
-        config,
-        input_shape1=(5, 5, 1),
-        input_shape2=(5, 5, 1),
-        class_count=2,
-    )
-
-    assert isinstance(model, DualDSCARNet2D)
-    assert not isinstance(model, DSCARNet1D)
-    assert model.last_avf is None
-    logits = model(torch.ones(2, 1, 5, 5), torch.ones(2, 1, 5, 5))
-    assert logits.shape == (2, 1)
 
 
 def test_registry_allows_only_current_active_classification_models():
@@ -468,7 +414,6 @@ def test_registry_allows_only_current_active_classification_models():
         "inception1d",
         "tcn1d",
         "cnn_transformer1d",
-        "dscarnet",
     }
     assert canonical_model_type("PLS-DA") == "pls_da"
     assert canonical_model_type("1D-Transformer") == "cnn_transformer1d"
@@ -499,128 +444,10 @@ def test_deep_model_architectures_accept_dimension_bands(input_length, model_typ
     assert logits.shape == (2, 3)
 
 
-def test_dscarnet_aggmap_mapping_fits_train_only_and_saves(tmp_path):
-    from backend.app.dscarnet_mapping import fit_dscarnet_2d_mapping, save_dscarnet_mapping_artifacts
-
-    _FakeAggMap.instances = []
-    x = np.arange(6 * 8, dtype=np.float32).reshape(6, 8)
-    stages = []
-    cancellation_checks = []
-
-    mapped = fit_dscarnet_2d_mapping(
-        x,
-        train_indices=[0, 1, 2, 3],
-        pca_components=3,
-        cluster_channels=9,
-        seed=7,
-        aggmap_factory=_FakeAggMap,
-        cancel_check=lambda: cancellation_checks.append(True),
-        progress_callback=lambda stage, label: stages.append((stage, label)),
-    )
-
-    assert len(_FakeAggMap.instances) == 2
-    assert _FakeAggMap.instances[0].fit_input_shape == (4, 8)
-    assert _FakeAggMap.instances[1].fit_input_shape == (4, 3)
-    assert _FakeAggMap.instances[0].fit_kwargs["cluster_channels"] == 9
-    assert mapped.x_sar.shape[0] == 6
-    assert mapped.x_car.shape[0] == 6
-    assert mapped.x_sar.shape[1:] == (1, 5, 5)
-    assert mapped.x_car.shape[1:] == (1, 5, 5)
-    assert mapped.metadata["fit_scope"] == "train"
-    assert mapped.metadata["pca_components"] == 3
-    assert "github.com/songlinlu/DSCAR" in mapped.metadata["source_url"]
-    assert [stage for stage, _label in stages] == [
-        "dscarnet_sar_layout",
-        "dscarnet_sar_transform",
-        "dscarnet_sar_ready",
-        "dscarnet_pca",
-        "dscarnet_car_layout",
-        "dscarnet_car_transform",
-        "dscarnet_car_ready",
-    ]
-    assert len(cancellation_checks) == len(stages)
-
-    save_dscarnet_mapping_artifacts(tmp_path, mapped)
-
-    payload = json.loads((tmp_path / "dscarnet_mapping.json").read_text(encoding="utf-8"))
-    assert payload["fit_scope"] == "train"
-    assert payload["input_shape_sar"] == [1, 5, 5]
-    assert payload["input_shape_car"] == [1, 5, 5]
-    assert (tmp_path / "dscarnet_pca.joblib").exists()
-    assert (tmp_path / "dscarnet_sar_aggmap.joblib").exists()
-    assert (tmp_path / "dscarnet_car_aggmap.joblib").exists()
 
 
-def test_dscarnet_lapjv_compat_uses_linear_assignment():
-    from backend.app.dscarnet_mapping import scipy_lapjv_compat
-
-    row_assign, col_assign, total_cost = scipy_lapjv_compat(
-        np.asarray(
-            [
-                [4.0, 1.0, 3.0],
-                [2.0, 0.0, 5.0],
-                [3.0, 2.0, 2.0],
-            ],
-            dtype=np.float64,
-        )
-    )
-
-    assert row_assign.tolist() == [1, 0, 2]
-    assert col_assign.tolist() == [1, 0, 2]
-    assert total_cost == pytest.approx(5.0)
 
 
-def test_dscarnet_training_uses_dual_2d_mapping_and_gradcam_artifacts(tmp_path, monkeypatch):
-    import backend.app.dscarnet_mapping as dscarnet_mapping
-    import backend.app.training as training
-
-    source = tmp_path / "feature_signal.csv"
-    _write_feature_signal_csv(source, group_count=12, repeats=2)
-    _FakeAggMap.instances = []
-    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
-
-    result = train_model(
-        source,
-        {
-            "model_type": "dscarnet",
-            "normalization": "none",
-            "epochs": 1,
-            "batch_size": 8,
-            "split_train": 6,
-            "split_valid": 2,
-            "split_test": 2,
-            "feature_top_k": 2,
-            "dscarnet_inception_blocks": 1,
-        },
-    )
-
-    run_dir = Path(result["run_dir"])
-    sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
-    mapping_payload = json.loads((run_dir / "dscarnet_mapping.json").read_text(encoding="utf-8"))
-
-    assert result["status"] == "success"
-    assert result["sample_feature_importance"]["method"] == "dscarnet_dual_2d_gradcam"
-    assert result["sample_feature_importance"]["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-    assert "feature_importance" not in result
-    assert not (run_dir / "feature_importance.json").exists()
-    assert not (run_dir / "feature_importance.csv").exists()
-    assert sample_payload["method"] == "dscarnet_dual_2d_gradcam"
-    assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-    assert sample_payload["window_count"] == 40
-    assert sample_payload["samples"]
-    assert all(sample["primary_segment"] for sample in sample_payload["samples"])
-    assert sample_payload["dscarnet_mapping"]["source_url"] == mapping_payload["source_url"]
-    assert all(len(sample["windows"]) == 40 for sample in sample_payload["samples"])
-    assert all("sar_top_segments" in sample and "car_top_segments" in sample for sample in sample_payload["samples"])
-    assert all(
-        0.0 <= window["normalized_importance"] <= 1.0
-        for sample in sample_payload["samples"]
-        for window in sample["windows"]
-    )
-    assert (run_dir / "dscarnet_pca.joblib").exists()
-    assert (run_dir / "dscarnet_sar_aggmap.joblib").exists()
-    assert (run_dir / "dscarnet_car_aggmap.joblib").exists()
 
 
 def test_sample_id_summary_and_incomplete_group_error(tmp_path):
@@ -940,17 +767,13 @@ def test_external_test_dataset_rejects_different_wide_feature_axis(tmp_path, mon
         )
 
 
-@pytest.mark.parametrize("model_type", ["pls_da", "svm", "random_forest", "xgboost", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d", "dscarnet"])
+@pytest.mark.parametrize("model_type", ["pls_da", "svm", "random_forest", "xgboost", "cnn1d", "transformer1d", "resnet1d", "inception1d", "tcn1d"])
 def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
-    import backend.app.dscarnet_mapping as dscarnet_mapping
     import backend.app.training as training
 
     source = tmp_path / f"{model_type}_grouped.csv"
     _write_grouped_modeling_csv(source, group_count=6, repeats=2, curve_length=40)
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
-    if model_type == "dscarnet":
-        _FakeAggMap.instances = []
-        monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
     result = train_model(
         source,
         {
@@ -991,7 +814,7 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
         assert result["sample_feature_importance"]["artifact"] == "sample_feature_importance.json"
         sample_payload = json.loads((run_dir / "sample_feature_importance.json").read_text(encoding="utf-8"))
         assert sample_payload["status"] == "ready"
-        assert sample_payload["method"] in {"gradcam_1d", "sample_occlusion_log_loss", "dscarnet_dual_2d_gradcam"}
+        assert sample_payload["method"] in {"gradcam_1d", "sample_occlusion_log_loss"}
         expected_window_count = 4 if sample_payload["method"] == "sample_occlusion_log_loss" else 40
         assert sample_payload["window_count"] == expected_window_count
         assert sample_payload["x_axis_warning"]["status"] in {"consistent", "inconsistent"}
@@ -1008,10 +831,6 @@ def test_all_model_types_train_one_epoch(tmp_path, monkeypatch, model_type):
                 "sanity_checks" in sample and "auxiliary_top_segments" in sample
                 for sample in sample_payload["samples"]
             )
-        if sample_payload["method"] == "dscarnet_dual_2d_gradcam":
-            assert sample_payload["importance_metric"] == "sar_gradcam_plus_car_pca_backprojection"
-            assert "dscarnet_mapping" in sample_payload
-            assert (run_dir / "dscarnet_mapping.json").exists()
         assert all(
             0.0 <= window["normalized_importance"] <= 1.0
             for sample in sample_payload["samples"]
@@ -1042,8 +861,6 @@ def test_cv_deep_sample_feature_importance_accumulates_all_fold_test_samples(tmp
                     "bad_epochs": 0,
                 }
             ],
-            None,
-            None,
         )
 
     source = tmp_path / "grouped.csv"
@@ -1175,15 +992,11 @@ def test_train_model_stops_when_status_is_replaced_mid_loop(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(not USER_RAMAN_CSV.exists(), reason="local user Raman CSV fixture is not available")
-@pytest.mark.parametrize("model_type", ["PLS-DA", "1D-ResNet", "DSCARNet"])
+@pytest.mark.parametrize("model_type", ["PLS-DA", "1D-ResNet"])
 def test_user_raman_csv_trains_new_model_choices(tmp_path, monkeypatch, model_type):
-    import backend.app.dscarnet_mapping as dscarnet_mapping
     import backend.app.training as training
 
     monkeypatch.setattr(training, "RUNS_DIR", tmp_path)
-    if str(model_type).lower() == "dscarnet":
-        _FakeAggMap.instances = []
-        monkeypatch.setattr(dscarnet_mapping, "_load_aggmap_class", lambda: _FakeAggMap)
     result = train_model(
         USER_RAMAN_CSV,
         {
@@ -1192,7 +1005,6 @@ def test_user_raman_csv_trains_new_model_choices(tmp_path, monkeypatch, model_ty
             "model_type": model_type,
             "early_stopping_patience": 5,
             "hidden_size": 32,
-            "dscarnet_inception_blocks": 1,
             "feature_selection_enabled": False,
         },
     )

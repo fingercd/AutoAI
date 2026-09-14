@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 from pydantic import Field, ValidationError
 from .metadata import SafeEffectiveConfig, dataset_metadata
-from ..model_catalog import MODELS_BY_ID
+from ..model_catalog import MODELS_BY_ID, RETIRED_MODEL_ALIASES
 from ..model_config import model_policy, resolve_model_params
 from ..runs.artifacts import RunArtifactWriter, ManifestCorruptError, ArtifactIntegrityError
 
@@ -24,10 +24,13 @@ class SafeEffectiveConfigV2(SafeEffectiveConfig):
 def run_metadata_v2(record, *, pending=False, snapshot=None):
     response = dataset_metadata(record.dataset_snapshot.get('sha256') if record else None, version='agent-session-v2')
     response.update(effective_config_status='pending' if pending else 'unavailable', effective_config=None)
-    if record is None or record.config.get('model_type') not in MODELS_BY_ID:
+    if record is None:
+        return response
+    model_id = record.config.get('model_type')
+    if model_id not in MODELS_BY_ID and model_id not in RETIRED_MODEL_ALIASES:
         return response
     raw = record.config
-    policy = next((m for m in snapshot['models'] if m['id'] == raw['model_type']), None) if snapshot else model_policy(raw['model_type'])
+    policy = next((m for m in snapshot['models'] if m['id'] == raw['model_type']), None) if snapshot else (model_policy(model_id) if model_id in MODELS_BY_ID else None)
     if policy is None:
         return response
     if raw.get('agent_config_policy_digest') != policy['config_policy_digest']:
@@ -91,7 +94,8 @@ def resolved_execution(run_dir: Path, record):
             return empty
         params = _scalars(model)
         profile = model.get('model_profile')
-        if MODELS_BY_ID[record.config['model_type']].execution_family == 'deep_learning' and type(profile) is dict:
+        declaration = MODELS_BY_ID.get(record.config['model_type'])
+        if type(profile) is dict and ((declaration and declaration.execution_family == 'deep_learning') or record.config['model_type'] in RETIRED_MODEL_ALIASES):
             params.update(_scalars(profile))
             params.update(_scalars(profile.get('values')))
         folds = read('split.json')

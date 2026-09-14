@@ -16,7 +16,6 @@ CANONICAL_MODELS = {
     "tcn1d",
     "cnn_transformer1d",
     "cnn_mamba1d",
-    "dscarnet",
 }
 
 
@@ -30,11 +29,11 @@ def _catalog_models() -> list[dict[str, object]]:
     return payload["models"]
 
 
-def test_models_catalog_exposes_exactly_fifteen_canonical_models():
+def test_models_catalog_exposes_exactly_fourteen_canonical_models():
     models = _catalog_models()
 
     assert {item["id"] for item in models} == CANONICAL_MODELS
-    assert len(models) == 15
+    assert len(models) == 14
     assert len({item["id"] for item in models}) == len(models)
     for item in models:
         assert set(item) == {
@@ -56,7 +55,6 @@ def test_models_catalog_degrades_optional_dependencies_without_server_error(monk
     from backend.app.routers import catalog
 
     monkeypatch.setattr(catalog, "_mamba_capability", lambda: (False, "mamba test dependency missing"), raising=False)
-    monkeypatch.setattr(catalog, "_dscarnet_capability", lambda: (False, "aggmap test dependency missing"), raising=False)
 
     by_id = {item["id"]: item for item in _catalog_models()}
 
@@ -68,5 +66,4 @@ def test_models_catalog_degrades_optional_dependencies_without_server_error(monk
         "unavailable_reason": "mamba test dependency missing",
         "explainability_method": "window_occlusion_log_loss",
     }
-    assert by_id["dscarnet"]["available"] is False
-    assert by_id["dscarnet"]["unavailable_reason"] == "aggmap test dependency missing"
+    assert "dscarnet" not in by_id

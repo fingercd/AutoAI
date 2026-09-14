@@ -52,7 +52,6 @@ PROFILE_MODEL_TYPES = {
     "tcn1d",
     "cnn_transformer1d",
     "cnn_mamba1d",
-    "dscarnet",
 }
 
 # ---- 各类网络在各分档下的结构参数表（查找表，而非运行时计算）----
@@ -134,7 +133,7 @@ def build_model_profile(
     train_sample_count: int,
     feature_count: int,
 ) -> ModelProfile:
-    """解析非 DSCARNet 模型在当前训练折实际使用的 profile。
+    """解析模型在当前训练折实际使用的 profile。
 
     参数：
         model_type: 模型 ID（允许 "transformer"/"transformer1d" 别名，内部归一化
@@ -237,40 +236,6 @@ def build_model_profile(
     )
 
 
-def build_dscarnet_profile(*, train_sample_count: int, feature_count: int) -> dict[str, Any]:
-    """解析 DSCARNet 的 PCA 数量、聚类通道和网络容量。
-
-    返回 dict 而非 ModelProfile（历史接口）：包含 sample_band/feature_band、
-    pca_components（AggMap 映射前的 PCA 降维数）、cluster_channels（AggMap
-    聚类通道数，随 N/L 双分档增大）、conv1_kernel_size（首层卷积核随 L 增大）、
-    filter_number / n_inception / dense_layers（2D 网络容量随 N 分档）。
-    """
-    n = int(train_sample_count)
-    length = int(feature_count)
-    n_band = sample_band(n)
-    l_band = feature_band(length)
-    cluster_grid = {
-        "small": {"short": 3, "medium": 5, "long": 7},
-        "medium": {"short": 5, "medium": 7, "long": 9},
-        "large": {"short": 7, "medium": 9, "long": 11},
-    }
-    capacity = {
-        "small": {"filter_number": 16, "n_inception": 1, "dense_layers": [32]},
-        "medium": {"filter_number": 32, "n_inception": 1, "dense_layers": [64]},
-        "large": {"filter_number": 64, "n_inception": 2, "dense_layers": [128]},
-    }[n_band]
-    # n_target：把 L 个特征映射成近似正方形 2D 网格所需的边长——
-    # 解方程 n(n+1)/2 ≈ 0.8²·L（AggMap 映射约使用 0.8² 比例的有效面积），
-    # 反解二次方程取 ceil；最终 pca_components 还要受 N-1 与 L 钳制。
-    n_target = math.ceil((math.sqrt(8 * (0.8**2) * length + 1) - 1) / 2)
-    return {
-        "sample_band": n_band,
-        "feature_band": l_band,
-        "pca_components": min(n_target, n - 1, length),
-        "cluster_channels": cluster_grid[n_band][l_band],
-        "conv1_kernel_size": {"short": 7, "medium": 11, "long": 19}[l_band],
-        **capacity,
-    }
 
 
 def model_range_warnings(*, train_sample_count: int, feature_count: int) -> list[str]:

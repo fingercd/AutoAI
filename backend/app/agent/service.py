@@ -165,7 +165,7 @@ class AgentService:
                           principal: Principal) -> dict[str, Any]:
         payload.validate_business()
         session = self._session(session_id, principal)
-        if session.state != 'open':
+        if self.contract_version != V2 and session.state != 'open':
             raise AgentSessionClosed()
         if payload.model_type not in session.allowed_models:
             raise AgentDomainError(
@@ -213,6 +213,8 @@ class AgentService:
             if prepared is None:
                 prepared = policy_v2.compiled_config(session, action, _training_config(session, action))
             full_digest = policy_v2.scientific_digest(session, action)
+        if session.state != 'open':
+            raise AgentSessionClosed()
         config_hash = full_digest[:16] if full_digest else _compute_config_hash(session=session, action=action)
         existing = self.sessions.list_experiments_scoped(session_id, principal=principal)
         bound_ids = [item.run_id for item in existing if item.run_id]

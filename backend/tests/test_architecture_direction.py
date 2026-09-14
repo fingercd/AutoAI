@@ -18,7 +18,7 @@ def test_classification_v2_contract_is_documented_consistently():
         Path('docs/frontend_backend_handoff.md').read_text(encoding='utf-8'),
     ]
     required_phrases = (
-        '15 个目标分类模型',
+        '14 个目标分类模型',
         '仅支持分类',
         'Sample_ID',
         'external_test_holdout',

@@ -100,7 +100,6 @@ def test_current_frontend_payload_is_accepted_and_normalized() -> None:
         'dropout': None,
         'hidden_size': 64,
         'transformer_heads': 4,
-        'dscarnet_input_mode': 'dual',
         'random_forest_n_estimators': 200,
         'random_forest_search_iterations': 10,
         'svm_c': 1,

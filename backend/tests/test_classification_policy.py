@@ -323,7 +323,7 @@ def test_deep_training_uses_adamw_scheduler_and_lowest_validation_loss(monkeypat
     )
 
     config = training.TrainConfig(epochs=3, early_stopping_patience=0, model_type="cnn1d")
-    _, history, _, _ = training._fit_deep_fold(
+    _, history = training._fit_deep_fold(
         config=config,
         model_type="cnn1d",
         x=np.zeros((4, 6), dtype=np.float32),

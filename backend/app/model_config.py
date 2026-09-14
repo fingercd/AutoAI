@@ -23,7 +23,6 @@ class TraditionalTrainingDefaults:
 
 
 TRADITIONAL_TRAINING_DEFAULTS = TraditionalTrainingDefaults()
-DSCARNET_INPUT_MODE_DEFAULT = 'dual'
 CONFIG_POLICY_VERSION = 'agent-model-config-v1'
 CATALOG_VERSION = 'agent-model-catalog-v1'
 
@@ -65,9 +64,6 @@ def model_policy(model_id: str) -> dict[str, Any]:
         rules.append('xgboost-twelve-candidate-validation-search-v2')
     elif model.execution_family == 'traditional_ml':
         rules.append(model_id + '-train-bounded-validation-search-v2')
-    if model_id == 'dscarnet':
-        parameters.append(_parameter('dscarnet_input_mode', 'string', DSCARNET_INPUT_MODE_DEFAULT, choices=['sar','car','dual']))
-        rules.append('dscarnet-train-only-aggmap-pca-mode-v2')
     for parameter in parameters:
         parameter['applies_to'] = [model_id]
     policy = dict(config_policy_version='agent-model-config-v2' if model.implemented and model.execution_family == 'deep_learning' else CONFIG_POLICY_VERSION,

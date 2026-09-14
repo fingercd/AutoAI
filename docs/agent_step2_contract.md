@@ -10,7 +10,7 @@
 - Random Forest 开放树数 50–1000 与搜索次数 1–18，默认 200/10；保留 OOB 选参。
 - XGBoost 仅开放非负有限 gamma，默认 0；其余参数维持原 12 组候选。
 - 深度模型共享现有 epochs、batch size、learning rate、weight decay、scheduler 和 early stopping 参数；默认值复用原训练策略。
-- DSCARNet 额外开放 sar/car/dual，默认 dual；缺少 AggMap 时不可提交。CNN-Mamba 保持版本未实现，不因装包而开放。
+- DSCARNet 已退役；新任务返回 `model_retired`。历史冻结快照保留原参数和摘要，已绑定 Run / durable mapping 在验证原请求身份后回读；旧未提交任务不可继续。CNN-Mamba 保持版本未实现，不因装包而开放。
 - v2 只接受 canonical ID、严格类型及本模型字段；bool 不充当整数，null、非有限数与未知字段拒绝。
 
 Session 请求可包含 `model_configs: {model_id: {固定覆盖}}`。服务端解析默认值，冻结能力语义及每模型配置。`allowed_models` 是操作者上限；编排先与当前可用集合取交集，并记录排除原因。Session 内固定 zscore、none class balance、8:1:1 group holdout、关闭可解释性特征选择。

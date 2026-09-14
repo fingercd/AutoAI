@@ -12,12 +12,11 @@
 #   backend/app/training_explainability.py，与训练侧保持一致。
 #
 # 关键设计约束：
-#   - 模型目录固定返回 15 个目标 ID，前端不维护第二份硬编码清单；
-#     可选依赖（mamba-ssm、aggmap）缺失时只标 available=false，
+#   - 模型目录固定返回 当前活跃目标 ID，前端不维护第二份硬编码清单；
+#     可选依赖（mamba-ssm）缺失时只标 available=false，
 #     绝不用近似实现静默顶替。
 #   - capability 探测运行在 Web 请求路径上，必须廉价：只查文件存在性与
-#     importlib.util.find_spec，绝不真正 import 重依赖（AggMap/UMAP/Numba
-#     首次编译可能耗时数分钟）。
+#     importlib.util.find_spec，绝不真正 import 重依赖。
 #   - /health 对外不能泄露数据库路径或底层异常细节。
 #   - /api/files 只允许下载 uploads 与 preprocessed 两个目录内的文件，
 #     Run 产物（模型权重、status.json 等）不经过此接口。
@@ -25,7 +24,7 @@
 
 """首页、健康检查、本地样例摘要和模型能力目录路由。
 
-模型目录始终返回 15 个目标 ID，并用 capability 字段表达可选依赖是否可用；
+模型目录始终返回 当前活跃目标 ID，并用 capability 字段表达可选依赖是否可用；
 前端据此禁用模型，而不是维护另一份硬编码清单。
 """
 
@@ -54,8 +53,6 @@ _MODEL_CATALOG = tuple((m.id, m.display_name, m.family) for m in MODEL_DECLARATI
 def _model_capability(model_type: str, display_name: str) -> tuple[bool, str | None]:
     if model_type == "cnn_mamba1d":
         return _mamba_capability()
-    if model_type == "dscarnet":
-        return _dscarnet_capability()
     return _import_capability(model_type, display_name)
 
 
@@ -72,8 +69,6 @@ def _mamba_capability() -> tuple[bool, str | None]:
     return _probe_capability('cnn_mamba1d', 'CNN-Mamba')
 
 
-def _dscarnet_capability() -> tuple[bool, str | None]:
-    return _probe_capability('dscarnet', 'DSCARNet/AggMap')
 
 
 def _curve_intensity_summary(curves: list[dict[str, object]]) -> list[dict[str, object]]:

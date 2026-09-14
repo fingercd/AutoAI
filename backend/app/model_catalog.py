@@ -33,7 +33,6 @@ MODEL_DECLARATIONS = (
     ModelDeclaration('tcn1d', '1D TCN', 'convolutional', 'deep_learning', 'backend.app.models.tcn1d', ('tcn1d', '1d-tcn'), ('numpy', 'scipy', 'sklearn', 'torch'), True, False),
     ModelDeclaration('cnn_transformer1d', 'CNN-Transformer', 'long_range', 'deep_learning', 'backend.app.models.cnn_transformer1d', ('transformer', 'transformer1d', '1d-transformer', 'cnn_transformer1d'), ('numpy', 'scipy', 'sklearn', 'torch'), True, False),
     ModelDeclaration('cnn_mamba1d', 'CNN-Mamba', 'long_range', 'deep_learning', 'backend.app.models.cnn_mamba1d', ('cnn_mamba1d',), ('numpy', 'scipy', 'sklearn', 'torch', 'mamba_ssm'), False, False),
-    ModelDeclaration('dscarnet', 'DSCARNet', 'two_dimensional_mapping', 'deep_learning', 'backend.app.models.dscarnet', ('dscarnet', 'dscar_net'), ('numpy', 'scipy', 'sklearn', 'torch', 'aggmap'), True, False),
 )
 MODELS_BY_ID = {m.id: m for m in MODEL_DECLARATIONS}
 MODEL_ALIASES = {alias: m.id for m in MODEL_DECLARATIONS for alias in m.aliases}
@@ -45,6 +44,12 @@ SUPPORTED_MODEL_TYPES = {m.id for m in MODEL_DECLARATIONS if m.implemented}
 TRADITIONAL_MODEL_TYPES = TARGET_TRADITIONAL_MODEL_TYPES & SUPPORTED_MODEL_TYPES
 DEEP_MODEL_TYPES = TARGET_DEEP_MODEL_TYPES & SUPPORTED_MODEL_TYPES
 RETIRED_OR_REGRESSION_MODEL_TYPES = {'mlp_baseline', 'unet1d', 'k-nearest-neighbors', 'mlp', 'knn', 'plsr', 'svr', 'unet'}
+
+# Retired IDs are accepted only by persisted-record readers and replay codecs.
+RETIRED_MODEL_ALIASES = {'dscarnet': 'dscarnet', 'dscar_net': 'dscarnet'}
+
+class ModelRetiredError(ValueError):
+    pass
 
 class ModelNotImplementedForVersion(ValueError):
     pass
@@ -61,6 +66,8 @@ def canonical_model_type(model_type: str) -> str:
     """
     # 空 model_type 回落到 "cnn1d"：历史默认模型，保证旧调用不传参也能工作。
     key = str(model_type or "cnn1d").strip().lower()
+    if key in RETIRED_MODEL_ALIASES:
+        raise ModelRetiredError('model_retired: DSCARNet 已退役，不再接受新训练')
     if key in RETIRED_OR_REGRESSION_MODEL_TYPES:
         # “10 类模型”是旧客户端依赖的错误文本，契约测试暂时保持原样；实际
         # 能力集合必须读取 TARGET_MODEL_TYPES/SUPPORTED_MODEL_TYPES。
@@ -73,6 +80,8 @@ def canonical_model_type(model_type: str) -> str:
     return canonical
 
 def model_availability(model_id: str) -> tuple[bool, str | None]:
+    if model_id in RETIRED_MODEL_ALIASES:
+        return False, 'model_retired'
     model = MODELS_BY_ID[model_id]
     if not model.implemented:
         return False, "not_implemented_for_version"

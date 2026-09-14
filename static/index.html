@@ -1410,14 +1410,6 @@
                   <input id="hiddenSize" type="number" value="64" min="16" max="512" />
                   <label for="transformerHeads">Transformer heads</label>
                   <input id="transformerHeads" type="number" value="4" min="1" max="8" />
-                  <div id="dscarnetOptions" class="hidden">
-                    <label for="dscarnetInputMode">DSCARNet 输入模式</label>
-                    <select id="dscarnetInputMode">
-                      <option value="dual">SAR + CAR</option>
-                      <option value="sar">SAR</option>
-                      <option value="car">CAR</option>
-                    </select>
-                  </div>
                 </div>
                 <div id="traditionalOptions" class="hidden">
                   <div id="randomForestOptions" class="hidden">
@@ -2424,7 +2416,6 @@
           dropout: dropoutValue ? Number(dropoutValue) : null,
           hidden_size: Number($("hiddenSize").value),
           transformer_heads: Number($("transformerHeads").value),
-          dscarnet_input_mode: $("dscarnetInputMode").value,
           random_forest_n_estimators: Number($("rfEstimators").value),
           random_forest_search_iterations: Number($("rfSearchIterations").value),
           svm_c: Number($("svmC").value),
@@ -3327,7 +3318,6 @@
         $("randomForestOptions").classList.toggle("hidden", modelType !== "random_forest");
         $("svmOptions").classList.toggle("hidden", modelType !== "svm");
         $("xgboostOptions").classList.toggle("hidden", modelType !== "xgboost");
-        $("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet");
       }
 
       function updateSplitOptionVisibility() {
