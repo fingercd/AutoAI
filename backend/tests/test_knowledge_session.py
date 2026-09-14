@@ -20,6 +20,64 @@ def create(api, *, enabled=True, request='knowledge'):
     return response.json(),body
 
 
+@pytest.mark.parametrize('raw',[None,'null',''],ids=['sql-null','json-null','empty-string'])
+@pytest.mark.parametrize('revision,enabled',[
+    ('agent-recipes-revision-v1',False),
+    ('agent-recipes-revision-v2',False),
+    ('agent-recipes-revision-v2',True),
+],ids=['legacy-recipe','knowledge-off','knowledge-on'])
+def test_missing_preparation_rejects_reads_replay_and_direct_submission(api,raw,revision,enabled):
+    from backend.app.runs.repository import RunRepository
+    client,storage,dataset=api
+    headers={'X-AutoAI-Agent-Revision':revision}
+    body=dict(dataset_id=dataset,selection_metric='macro_f1',allowed_models=['logistic_regression'],max_runs=1,
+        execution_profile='train-evidence-recipes-v1',protocol_revision=revision,
+        modules=['train_evidence','legal_recipes']+(['knowledge'] if enabled else []),
+        client_request_id='missing-preparation')
+    created=client.post('/api/agent/v2/sessions',headers=headers,json=body)
+    assert created.status_code==201,created.text
+    session_id=created.json()['session_id']
+    path='/api/agent/v2/sessions/'+session_id
+    with sqlite3.connect(storage/'agent.sqlite3') as db:
+        db.execute('UPDATE agent_sessions_v1 SET frozen_preparation_json=? WHERE session_id=?',(raw,session_id))
+    responses=[client.get(path,headers=headers),
+        client.post('/api/agent/v2/sessions',headers=headers,json=body)]
+    for request_headers in (headers,{}):
+        responses.append(client.post(path+'/experiments',headers=request_headers,
+            json=dict(model_type='logistic_regression',client_request_id='direct-after-damage')))
+    for response in responses:
+        assert response.status_code==409,response.text
+        assert response.json()['detail']['code']=='agent_preparation_failed'
+    assert RunRepository(storage/'runs.sqlite3').list()==[]
+    with sqlite3.connect(storage/'agent.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM agent_experiment_reservations_v1').fetchone()[0]==0
+        assert db.execute('SELECT frozen_preparation_json FROM agent_sessions_v1 WHERE session_id=?',
+            (session_id,)).fetchone()[0]==raw
+
+
+@pytest.mark.parametrize('raw',[None,'null',''],ids=['sql-null','json-null','empty-string'])
+def test_old_direct_session_without_preparation_still_reads_replays_and_submits(api,raw):
+    from backend.app.runs.repository import RunRepository
+    client,storage,dataset=api
+    body=dict(dataset_id=dataset,selection_metric='macro_f1',allowed_models=['logistic_regression'],max_runs=1,
+        client_request_id='legacy-direct')
+    created=client.post('/api/agent/v2/sessions',json=body)
+    assert created.status_code==201,created.text
+    session_id=created.json()['session_id'];path='/api/agent/v2/sessions/'+session_id
+    with sqlite3.connect(storage/'agent.sqlite3') as db:
+        db.execute('UPDATE agent_sessions_v1 SET frozen_preparation_json=? WHERE session_id=?',(raw,session_id))
+    inspected=client.get(path)
+    assert inspected.status_code==200 and 'preparation' not in inspected.json()['locked_config']
+    replay=client.post('/api/agent/v2/sessions',json=body)
+    assert replay.status_code==201 and replay.json()['session_id']==session_id
+    request=dict(model_type='logistic_regression',client_request_id='direct-submission')
+    submitted=client.post(path+'/experiments',json=request)
+    assert submitted.status_code==202,submitted.text
+    replay=client.post(path+'/experiments',json=request)
+    assert replay.status_code==202 and replay.json()['run_id']==submitted.json()['run_id']
+    assert len(RunRepository(storage/'runs.sqlite3').list())==1
+
+
 def test_on_freezes_and_off_does_not_load(api,monkeypatch,tmp_path):
     on,body=create(api)
     prepared=on['locked_config']['preparation'];wire=prepared['knowledge']
