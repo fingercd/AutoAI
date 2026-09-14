@@ -14,7 +14,8 @@ from ..runs.repository import InvalidRunTransition, RunNotFound, RunRepository
 from ..runs.submission import RunSubmissionError, RunSubmissionRequest, RunSubmissionService
 from .capabilities import module_catalog
 from .contracts_v2 import V2
-from . import policy_v2
+from . import policy as policy_v2
+from .policy import base_training_config as _training_config
 from .contracts import (
     AGENT_API_CONTRACT_VERSION,
     AGENT_METADATA_VERSION,
@@ -51,15 +52,6 @@ def _compute_config_hash(*, session: AgentSessionRecord, action: dict[str, Any])
     })[:16]
 
 
-def _training_config(session: AgentSessionRecord, action: dict[str, Any]) -> dict[str, Any]:
-    return {
-        'model_type': action['model_type'],
-        'normalization': action.get('normalization', 'zscore'),
-        'class_balance': action.get('class_balance', 'none'),
-        'seed': session.seed,
-        'feature_selection_enabled': False,
-        **session.evaluation_config,
-    }
 
 
 def _locked_config(session: AgentSessionRecord) -> dict[str, Any]:
@@ -167,23 +159,12 @@ class AgentService:
         session = self._session(session_id, principal)
         if self.contract_version != V2 and session.state != 'open':
             raise AgentSessionClosed()
-        if payload.model_type not in session.allowed_models:
-            raise AgentDomainError(
-                'agent_invalid_action', 'model_type 不在 session 允许的模型集合内', status_code=422
-            )
-        body = payload.model_dump(mode='json')
-        action = {
-            'model_type': payload.model_type,
-            'normalization': payload.normalization,
-            'class_balance': payload.class_balance,
-            'parent_run_id': payload.parent_run_id,
-        }
+        command = policy_v2.normalize_experiment(session, payload)
+        action, body = command.action, command.request_body
         prepared = None
         full_digest = None
         replay_reservation = None
         if self.contract_version == V2:
-            action = policy_v2.frozen_action(session, payload)
-            body.update(contract_version=V2, model_params=action['model_params'])
             if payload.client_request_id:
                 replay_reservation = self.sessions.find_experiment_request_scoped(
                     session_id, payload.client_request_id, payload_hash=_hash_payload(body), principal=principal)
@@ -223,8 +204,8 @@ class AgentService:
         reservation, created = self.sessions.reserve_experiment(
             session_id=session_id,
             action_json=action,
-            rationale=payload.rationale,
-            parent_run_id=payload.parent_run_id,
+            rationale=command.rationale,
+            parent_run_id=action['parent_run_id'],
             config_hash=config_hash,
             client_request_id=payload.client_request_id,
             payload_hash=_hash_payload(body),

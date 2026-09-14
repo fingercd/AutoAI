@@ -937,6 +937,109 @@ def fingerprint(value: object) -> str:
                                      separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
+from agent_poc.clients.contracts_v2 import CapabilitySnapshot, FrozenSnapshot, ResolvedExecution, Scalar
+
+class TaskStateV2(TaskState):
+    model_configs: dict[Identifier,dict[Identifier,Scalar]] = Field(default_factory=dict)
+
+
+    @model_validator(mode='after')
+    def configured_models_are_allowed(self):
+        if set(self.model_configs) - set(self.allowed_models):
+            raise ValueError('model_configs keys must belong to allowed_models')
+        return self
+
+
+class VersionsStateV2(VersionsState):
+    state: Literal['agent-state-v2'] = 'agent-state-v2'
+    api: Literal['agent-session-v2'] = 'agent-session-v2'
+    observation: Literal['agent-observation-v2'] = 'agent-observation-v2'
+    metadata: Literal['agent-metadata-v2'] = 'agent-metadata-v2'
+    context_projection: Literal['agent-context-step2-v1'] = 'agent-context-step2-v1'
+    prompt: Literal['agent-decision-step2-v1'] = 'agent-decision-step2-v1'
+    capabilities: VersionRef = Field(default_factory=lambda:VersionRef(status='ready',version='agent-model-catalog-v1'))
+
+
+class ContextPolicyV2(ContextPolicy):
+    projection: Literal['agent-context-step2-v1'] = 'agent-context-step2-v1'
+
+
+class ModulePolicyStateV2(ModulePolicyState):
+    context_policy: ContextPolicyV2 = Field(default_factory=ContextPolicyV2)
+
+
+class CapabilitiesStateV2(CapabilitiesState):
+    wire_snapshot: CapabilitySnapshot | None = None
+    frozen_snapshot: FrozenSnapshot | None = None
+    excluded_models: dict[Identifier,Identifier] = Field(default_factory=dict)
+
+
+class DirectActionV2(DirectAction):
+    model_params: dict[Identifier,Scalar]
+
+
+class DecisionStateV2(DecisionState):
+    action: DirectActionV2 | None = None
+
+
+class EffectiveConfigV2(EffectiveConfig):
+    config_stage: Literal['submission']
+    config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2']
+    config_policy_digest: Digest
+    model_params: dict[Identifier,Scalar]
+
+
+class SessionRequestV2(SessionRequest):
+    context_policy: ContextPolicyV2 = Field(default_factory=ContextPolicyV2)
+    model_configs: dict[Identifier,dict[Identifier,Scalar]] = Field(default_factory=dict)
+
+
+class ExperimentRequestV2(ExperimentRequest):
+    model_params: dict[Identifier,Scalar]
+
+
+class ExecutionStateV2(ExecutionState):
+    submission_content: ExperimentRequestV2 | None = None
+    effective_action: DirectActionV2 | None = None
+    effective_config: EffectiveConfigV2 | None = None
+    metadata_version: Literal['agent-metadata-v2'] = 'agent-metadata-v2'
+    resolved_execution: ResolvedExecution = Field(default_factory=lambda:ResolvedExecution(status='pending',parameters=None))
+
+
+class PendingOperationV2(PendingOperation):
+    content: SessionRequestV2 | ExperimentRequestV2 | FinalizeRequest | None = None
+
+
+class RecoveryStateV2(RecoveryState):
+    pending_operation: PendingOperationV2 | None = None
+
+
+class FeedbackStateV2(FeedbackState):
+    observation_version: Literal['agent-observation-v2'] = 'agent-observation-v2'
+
+
+class StateModelV2(StateModel):
+    task: TaskStateV2
+    versions: VersionsStateV2
+    module_policy: ModulePolicyStateV2 = Field(default_factory=ModulePolicyStateV2)
+    capabilities: CapabilitiesStateV2 = Field(default_factory=CapabilitiesStateV2)
+    decision: DecisionStateV2 = Field(default_factory=DecisionStateV2)
+    execution: ExecutionStateV2 = Field(default_factory=ExecutionStateV2)
+    recovery: RecoveryStateV2 = Field(default_factory=RecoveryStateV2)
+    feedback: FeedbackStateV2 = Field(default_factory=FeedbackStateV2)
+
+    @model_validator(mode='after')
+    def frozen_parameters(self):
+        frozen=self.capabilities.frozen_snapshot
+        for action in (self.decision.action,self.execution.effective_action,self.execution.submission_content,self.execution.effective_config):
+            if action is None:
+                continue
+            if frozen is None or action.model_type not in frozen.model_configs or action.model_params != frozen.model_configs[action.model_type]:
+                raise ValueError('configuration differs from frozen Session')
+        return self
+
+
+
 def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint: str,
               principal_fingerprint: str, llm_config_fingerprint: str,
               runtime_config_fingerprint: str | None = None,
@@ -947,7 +1050,8 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               timeout_seconds: float = 3600.0, now: float | None = None,
               prompt_version: str = 'agent-decision-step1-v1',
               llm_config_version: str = 'agent-llm-http-v1',
-              source_role: Literal['development', 'benchmark', 'domain'] = 'development') -> GraphState:
+              source_role: Literal['development', 'benchmark', 'domain'] = 'development',
+              wire_version: str = 'agent-state-v1', model_configs: dict | None = None) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -955,13 +1059,24 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     for count in (max_llm_calls, max_api_calls, max_operation_attempts):
         if type(count) is not int or count < 1:
             raise ValueError('runtime call limits must be positive integers')
+    if wire_version not in ('agent-state-v1', 'agent-state-v2'):
+        raise ValueError('unknown State version')
+    modern = wire_version == 'agent-state-v2'
+    task_type = TaskStateV2 if modern else TaskState
+    version_type = VersionsStateV2 if modern else VersionsState
+    context_type = ContextPolicyV2 if modern else ContextPolicy
+    policy_type = ModulePolicyStateV2 if modern else ModulePolicyState
+    state_type = StateModelV2 if modern else StateModel
+    if not modern and model_configs:
+        raise ValueError('v1 does not accept model configurations')
     evaluation = EvaluationConfig()
-    task = TaskState(dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
+    task = task_type(dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
                      selection_metric=selection_metric,
+                     **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
-    versions = VersionsState(prompt=prompt_version, llm_config=llm_config_version,
+    versions = version_type(prompt='agent-decision-step2-v1' if modern else prompt_version, llm_config=llm_config_version,
                              llm_config_fingerprint=llm_config_fingerprint)
-    policy = ModulePolicyState(context_policy=ContextPolicy(source_role=source_role))
+    policy = policy_type(context_policy=context_type(source_role=source_role))
     budget = BudgetState(deadline_at=started_at + timeout_seconds,
                          max_operation_attempts=max_operation_attempts,
                          max_repair_attempts=max_repair_attempts,
@@ -971,7 +1086,7 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
                                      policy.model_dump(mode='json'), budget.model_dump(mode='json'),
                                      backend_fingerprint, principal_fingerprint,
                                      runtime_config_fingerprint or fingerprint({'api_timeout': 10.0}))
-    state = StateModel(identity=IdentityState(task_id=task_id or str(uuid.uuid4()),
+    state = state_type(identity=IdentityState(task_id=task_id or str(uuid.uuid4()),
                                              thread_id=thread_id or str(uuid.uuid4()),
                                              startup_config_fingerprint=fingerprint(frozen_config),
                                              backend_fingerprint=backend_fingerprint,
@@ -1138,6 +1253,5 @@ def validate_state(raw):
             raise ValueError('unknown Prompt version')
         return StateModel.model_validate(raw)
     if version == 'agent-state-v2':
-        from .state_v2 import StateModel as StateModelV2
         return StateModelV2.model_validate(raw)
     raise ValueError('unknown State version')
