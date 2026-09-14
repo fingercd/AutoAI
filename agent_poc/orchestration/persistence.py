@@ -79,7 +79,7 @@ class CallJournal:
     """Commits before network dispatch; unresolved crash windows remain unknown.
 
     This is basic runtime call accounting, not the future scientific cost ledger.
-    Only safe scalar metadata is stored; requests/responses are never logged here.
+    v4 also stores validated, bound proposals; raw provider responses are never logged.
     """
 
     def __init__(self, path: Path, thread_id: str):
@@ -99,7 +99,7 @@ class CallJournal:
             self.connection.execute('BEGIN IMMEDIATE')
             columns = {row[1] for row in self.connection.execute(
                 'PRAGMA table_info(orchestration_calls_v1)')}
-            for name, kind in (('total_tokens', 'INTEGER'), ('token_status', 'TEXT')):
+            for name, kind in (('total_tokens', 'INTEGER'), ('token_status', 'TEXT'), ('proposal_json','TEXT')):
                 if name not in columns:
                     self.connection.execute(f'ALTER TABLE orchestration_calls_v1 ADD COLUMN {name} {kind}')
 
@@ -127,14 +127,27 @@ class CallJournal:
 
     def finish(self, call_id: int, *, error_code: str | None = None,
                input_tokens: int | None = None, output_tokens: int | None = None,
-               total_tokens: int | None = None, token_status: str | None = None):
+               total_tokens: int | None = None, token_status: str | None = None,
+               proposal: dict | None = None):
         # A second completion notification cannot rewrite settled measurements.
         with self.connection:
             self.connection.execute('''UPDATE orchestration_calls_v1 SET status=?,ended_at=?,
-                input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?
+                input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?,proposal_json=?
                 WHERE id=? AND thread_id=? AND status='dispatched' ''',
                 ('failed' if error_code else 'confirmed', time.time(), input_tokens,
-                 output_tokens, total_tokens, token_status, error_code, call_id, self.thread_id))
+                 output_tokens, total_tokens, token_status, error_code,
+                 json.dumps(proposal,ensure_ascii=True,allow_nan=False) if proposal is not None else None,
+                 call_id, self.thread_id))
+
+    def proposal(self, operation_id: str) -> str | None:
+        row=self.connection.execute('''SELECT proposal_json FROM orchestration_calls_v1
+            WHERE thread_id=? AND operation_id=? AND kind='llm' AND status='confirmed'
+            ORDER BY id DESC LIMIT 1''',(self.thread_id,operation_id)).fetchone()
+        if row is None:
+            return None
+        if row[0] is None:
+            raise PersistenceError('journal_proposal_missing')
+        return row[0]
 
     def snapshot(self):
         rows = self.connection.execute('''SELECT id,operation_id,kind,name,status,started_at,

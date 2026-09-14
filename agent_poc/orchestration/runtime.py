@@ -174,11 +174,11 @@ def _verify_binding(state: GraphState, config: RuntimeConfig, thread_id: str) ->
 
 def _build(config: RuntimeConfig, saver: SqliteSaver, journal: CallJournal, *,
            client=None, llm=None, clock: Callable[[], float] = time.time,
-           graph_factory=None, api_version="v1", execution_profile=None):
+           graph_factory=None, api_version="v1", execution_profile=None, protocol_revision="agent-recipes-revision-v1"):
     from .graph import Dependencies, build_graph
     deps = Dependencies(client=client or AutoAIClient(config.backend_url, token=config.backend_token,
-                                                     timeout=config.api_timeout, max_retries=0, api_version=api_version,execution_profile=execution_profile),
-                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
+                                                     timeout=config.api_timeout, max_retries=0, api_version=api_version,execution_profile=execution_profile,protocol_revision=protocol_revision),
+                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
                         journal=journal, clock=clock)
     return (graph_factory or build_graph)(deps, saver)
 
@@ -229,7 +229,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                max_repair_attempts: int = 2, timeout_seconds: float = 3600.0,
                source_role: str = 'development', client=None, llm=None,
                api_version: str | None = None, model_configs: dict | None = None,
-               execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True,
+               execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True, knowledge: bool | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
@@ -242,6 +242,8 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
     if execution_profile=='direct_action':execution_profile=None
     if execution_profile not in (None,'train-evidence-recipes-v1') or (execution_profile and api_version!='v2'):
         raise RuntimeErrorCode('unknown_execution_profile')
+    if knowledge and not execution_profile:
+        raise RuntimeErrorCode('knowledge_requires_recipe_profile')
     factory = new_state
     extra = {}
     llm_config = config.llm_config
@@ -253,8 +255,9 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('model_configs_require_v2')
     if execution_profile:
         factory=new_state
-        extra.update(wire_version='agent-state-v3',evidence_context=evidence_context,risk_context=risk_context)
-        llm_config=replace(llm_config,prompt_version='agent-decision-recipes-v1')
+        modern = knowledge is not None or client is None
+        extra.update(wire_version='agent-state-v4' if modern else 'agent-state-v3',evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge))
+        llm_config=replace(llm_config,prompt_version='agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
     state = factory(**extra, dataset_id=dataset_id, allowed_models=allowed_models,
                       backend_fingerprint=config.backend_fingerprint(),
                       principal_fingerprint=config.principal_fingerprint(),
@@ -273,7 +276,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
                 graph = _build(config, saver, journal, client=client, llm=llm,
-                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'))
+                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'),protocol_revision=state['versions'].get('protocol_revision','agent-recipes-revision-v1'))
                 with tracing_context(enabled=False):
                     return _drive(graph, state, initial=state, wait=wait, clock=clock, sleep=sleep)
             finally:
@@ -301,7 +304,7 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
                 graph = _build(config, saver, journal, client=client, llm=llm,
-                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'))
+                               clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'),protocol_revision=state['versions'].get('protocol_revision','agent-recipes-revision-v1'))
                 with tracing_context(enabled=False):
                     return _drive(graph, state, initial=None, wait=wait, clock=clock, sleep=sleep)
             finally:
@@ -372,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
             from agent_poc.tools import MODELS as legacy_default_models
             command.add_argument('--allowed-models', default=','.join(legacy_default_models))
             command.add_argument('--execution-profile',choices=['train-evidence-recipes-v1','direct_action'],default='train-evidence-recipes-v1')
+            command.add_argument('--knowledge',choices=['on','off'],default='off')
             command.add_argument('--hide-evidence-context',action='store_true')
             command.add_argument('--hide-risk-context',action='store_true')
             command.add_argument('--model-configs', type=json.loads, default={})
@@ -432,7 +436,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    max_operation_attempts=args.max_operation_attempts,
                                    max_repair_attempts=args.max_repair_attempts,
                                    timeout_seconds=args.timeout_seconds, source_role=args.source_role, model_configs=args.model_configs,
-                                   execution_profile=args.execution_profile,evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context)
+                                   execution_profile=args.execution_profile,knowledge=args.knowledge=='on',evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context)
             else:
                 state = resume_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait)
         print(json.dumps(state if args.full else state_summary(state), ensure_ascii=False, allow_nan=False))
