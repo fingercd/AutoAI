@@ -119,6 +119,7 @@ class AutoAIClient:
     transport: Transport | None = None
     api_version: str = "v1"
     execution_profile: str | None = None
+    protocol_revision: str = 'agent-recipes-revision-v1'
 
     def __post_init__(self) -> None:
         if self.api_version not in ('v1','v2'):
@@ -133,7 +134,10 @@ class AutoAIClient:
             if self.execution_profile != 'train-evidence-recipes-v1' or self.api_version != 'v2':
                 raise ValueError('Recipe profile requires v2')
             from .contracts_v2 import RECIPE_RESPONSE_MODELS
-            self.response_models = RECIPE_RESPONSE_MODELS
+            if self.protocol_revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+                raise ValueError('Unknown recipe revision')
+            from .contracts_v2 import KNOWLEDGE_RESPONSE_MODELS
+            self.response_models = KNOWLEDGE_RESPONSE_MODELS if self.protocol_revision=='agent-recipes-revision-v2' else RECIPE_RESPONSE_MODELS
         self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 5:
@@ -152,7 +156,7 @@ class AutoAIClient:
         path = path.replace('/api/agent/', self.route_prefix, 1)
         headers = {'Accept': 'application/json'}
         if self.execution_profile:
-            headers['X-AutoAI-Agent-Revision'] = 'agent-recipes-revision-v1'
+            headers['X-AutoAI-Agent-Revision'] = self.protocol_revision
         if body is not None:
             headers['Content-Type'] = 'application/json'
         if self.token:
@@ -196,13 +200,15 @@ class AutoAIClient:
         if self.api_version == 'v2':
             if operation == 'inspect_ml_capabilities':
                 from agent_poc.tools import build_tool_schemas
-                self.tool_schemas = build_tool_schemas({k:v for k,v in result.items() if k not in ('protocol_revision','execution_profiles')})
+                model_capabilities = {k:v for k,v in result.items() if k not in ('protocol_revision','execution_profiles')}
+                model_capabilities['modules'] = {}
+                self.tool_schemas = build_tool_schemas(model_capabilities)
                 if self.execution_profile:
                     self._recipe_tools()
             if 'locked_config' in result:
                 self._sessions[result['session_id']] = result['locked_config']
             if 'effective_action' in result:
-                self._check_frozen_response(result)
+                self._check_frozen_response(result, request_body=body)
         return _sanitize_response(result)
 
     def restore_frozen_session(self, session_id, snapshot, preparation=None):
@@ -215,19 +221,35 @@ class AutoAIClient:
         self._sessions[session_id] = {'capability_snapshot': frozen}
         if self.execution_profile:
             from .contracts_v2 import Preparation
-            bound = Preparation.model_validate(preparation).model_dump(mode='json')
+            from .contracts_v2 import KnowledgePreparation
+            schema = KnowledgePreparation if self.protocol_revision=='agent-recipes-revision-v2' else Preparation
+            bound = schema.model_validate(preparation).model_dump(mode='json',exclude_unset=True)
             self._sessions[session_id]['preparation'] = bound
             self._recipe_tools()
+
+    def restore_recipe_revision(self, revision):
+        """Rebuild the negotiated client contract from a validated checkpoint."""
+        from .contracts_v2 import RECIPE_RESPONSE_MODELS, KNOWLEDGE_RESPONSE_MODELS
+        if self.api_version != 'v2' or revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+            raise AgentContractError('Invalid checkpoint recipe revision')
+        self.execution_profile='train-evidence-recipes-v1'
+        self.protocol_revision=revision
+        self.response_models=KNOWLEDGE_RESPONSE_MODELS if revision=='agent-recipes-revision-v2' else RECIPE_RESPONSE_MODELS
 
     def _recipe_tools(self):
         self.tool_schemas['submit_ml_experiment'] = dict(type='object',additionalProperties=False,
             properties={'session_id':{'type':'string'},'recipe_id':{'type':'string','pattern':'^recipe_[a-f0-9]{64}$'},
                         'rationale':{'type':'string','maxLength':2000},'client_request_id':{'type':'string'}},
             required=['session_id','recipe_id','rationale','client_request_id'])
+        if self.protocol_revision=='agent-recipes-revision-v2':
+            schema=self.tool_schemas['submit_ml_experiment']
+            schema['properties']['knowledge_refs']=dict(type='array',items={'type':'string'},maxItems=6,uniqueItems=True)
+            schema['required'].append('knowledge_refs')
+            self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge']
         context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
         context.update(evidence={'type':'boolean'},risks={'type':'boolean'})
 
-    def _check_frozen_response(self, result):
+    def _check_frozen_response(self, result, *, request_body=None):
         locked = self._sessions.get(result['session_id'])
         if locked is None:
             return
@@ -238,6 +260,13 @@ class AutoAIClient:
         config = result.get('effective_config')
         if config is not None and (config['model_type'] != action['model_type'] or config['model_params'] != action['model_params']):
             raise AgentContractError('Execution differs from frozen decision')
+        if self.execution_profile and self.protocol_revision=='agent-recipes-revision-v2' and request_body is not None and 'knowledge_refs' in request_body:
+            projection=locked['preparation']['knowledge']
+            entries={e['entry_id']:e['entry_version'] for e in projection['projection']['entries']}
+            metadata=result['decision_metadata']
+            expected=[dict(entry_id=key,entry_version=entries[key]) for key in sorted(request_body['knowledge_refs'])]
+            if metadata['projection_digest']!=projection['projection_digest'] or metadata['references']!=expected:
+                raise AgentContractError('Response knowledge differs from submitted decision')
 
     def inspect_ml_capabilities(self) -> dict[str, Any]:
         return self._request('GET', '/api/agent/health', operation='inspect_ml_capabilities')
@@ -262,8 +291,8 @@ class AutoAIClient:
                 'source_role': 'development', 'case_write': False},
         }
         if self.execution_profile:
-            body.update(execution_profile=self.execution_profile,protocol_revision='agent-recipes-revision-v1',
-                        modules=['train_evidence','legal_recipes'])
+            body.update(execution_profile=self.execution_profile,protocol_revision=self.protocol_revision,
+                        modules=(modules if self.protocol_revision=='agent-recipes-revision-v2' and modules is not None else ['train_evidence','legal_recipes']))
             body['context_policy'].setdefault('evidence', True)
             body['context_policy'].setdefault('risks', True)
         if client_request_id is not None:
@@ -285,7 +314,7 @@ class AutoAIClient:
                              parent_run_id: str | None = None, rationale: str | None = None,
                              client_request_id: str | None = None,
                              model_params: dict[str, Any] | None = None,
-                             recipe_id: str | None = None) -> dict[str, Any]:
+                             recipe_id: str | None = None, knowledge_refs: list[str] | None = None) -> dict[str, Any]:
         validate_identifier(session_id)
         for value in (parent_run_id, client_request_id):
             if value is not None:
@@ -300,6 +329,13 @@ class AutoAIClient:
                 raise AgentContractError('Restore frozen recipe catalog before selection')
             body=dict(recipe_id=recipe_id,recipe_digest=recipe['recipe_digest'],
                 catalog_digest=catalog['catalog_digest'],rationale=rationale,client_request_id=client_request_id)
+            if self.protocol_revision=='agent-recipes-revision-v2':
+                from .contracts_v2 import KnowledgeWire
+                if knowledge_refs is None:
+                    raise AgentContractError('knowledge_refs is required')
+                knowledge=KnowledgeWire.model_validate(self._sessions[session_id]['preparation']['knowledge'])
+                knowledge.validate_refs(knowledge_refs)
+                body['knowledge_refs']=knowledge_refs
             return self._request('POST',f'/api/agent/sessions/{session_id}/experiments',body,
                 operation='submit_ml_experiment',idempotent=bool(client_request_id),bound_ids={'session_id':session_id})
         if recipe_id is not None:
