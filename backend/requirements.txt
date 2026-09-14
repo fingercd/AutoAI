@@ -20,5 +20,3 @@ torch>=2.1,<3
 
 # Raman baseline correction
 rampy>=0.4.5,<1
-
-# DSCARNet/AggMap is deliberately optional. See requirements-dscarnet.txt.

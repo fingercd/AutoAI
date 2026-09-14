@@ -58,15 +58,11 @@ def test_official_ui_external_audit_never_renders_cv_or_fold_progress():
     assert 'const progressMarkup = isExternal' not in html
 
 
-def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
+def test_official_ui_removes_retired_dscarnet_controls():
     content = Path("static/index.html").read_text(encoding="utf-8")
-
-    assert 'id="dscarnetInputMode"' in content
-    assert '<option value="sar">SAR</option>' in content
-    assert '<option value="car">CAR</option>' in content
-    assert '<option value="dual">SAR + CAR</option>' in content
-    assert 'dscarnet_input_mode: $("dscarnetInputMode").value' in content
-    assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content
+    assert 'id="dscarnetInputMode"' not in content
+    assert 'id="dscarnetOptions"' not in content
+    assert 'dscarnet_input_mode:' not in content
 
 
 def test_official_ui_hides_mamba_and_traditional_epoch_progress():

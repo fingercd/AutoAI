@@ -5,7 +5,7 @@
 - 上层训练服务在收到用户选择的 model_type 后，先调用 canonical_model_type
   把各种历史别名（如 "rf"、"1d-cnn"、"transformer"）归一化为 v2 规范模型 ID；
 - 再按模型家族分别调用 build_traditional_model（sklearn 系）或
-  build_deep_model / build_dscarnet_model（PyTorch 系）真正实例化模型。
+  build_deep_model（PyTorch 系）真正实例化模型。
 
 【关键常量】
 `TARGET_MODEL_TYPES` 是 15 项能力目录（对外宣传“支持哪些模型”），
@@ -17,7 +17,7 @@
 【协作模块】
 - .profiles：按当前训练折的样本数 N / 特征长度 L 分档，给出网络宽度、卷积核、
   dropout 等超参数，本模块的构造器据此装配模型；
-- 各模型实现文件（cnn1d.py、resnet1d.py、dscarnet.py、pls_da.py 等）：
+- 各模型实现文件（cnn1d.py、resnet1d.py、pls_da.py 等）：
   真正的 nn.Module / sklearn 封装，本模块只做“选型和参数转发”，不写训练逻辑。
 """
 
@@ -32,13 +32,12 @@ from torch import nn
 from .cnn1d import CNN1DDocumentV2
 from .cnn_se1d import CNNSE1DDocumentV2
 from .cnn_transformer1d import CNNTransformer1D
-from .dscarnet import dual_dscarnet, single_dscarnet
 from .inception1d import Inception1DDocumentV2
 from .pls_da import build_pls_da
 from .logistic_regression import build_logistic_regression
 from .pca_lda import build_pca_lda
 from .pca_mlp import PCAMLPClassifier
-from .profiles import build_dscarnet_profile, build_model_profile
+from .profiles import build_model_profile
 from .random_forest import build_random_forest
 from .resnet1d import ResNet1DDocumentV2
 from .svm import build_svm
@@ -83,7 +82,6 @@ def build_deep_model(
             避免验证/测试信息泄漏进标准化与降维参数。
 
     返回：nn.Module。二分类时 output_dim=1（配合 BCEWithLogits），多分类为 class_count。
-    注意 dscarnet 不走这里：它需要 2D AggMap 输入，必须用 build_dscarnet_model。
     """
     model_type = canonical_model_type(config.model_type)
     output_dim = 1 if int(class_count) == 2 else int(class_count)
@@ -172,52 +170,9 @@ def build_deep_model(
             pool_sizes=tuple(int(item) for item in values["pools"]),
             dim_feedforward=int(values["ffn"]),
         )
-    if model_type == "dscarnet":
-        raise ValueError("DSCARNet requires 2D AggMap SAR/CAR inputs; use build_dscarnet_model instead")
     raise ValueError(f"Unsupported model_type: {config.model_type}")
 
 
-def build_dscarnet_model(
-    config: Any,
-    input_shape1: tuple[int, ...] | None,
-    input_shape2: tuple[int, ...] | None,
-    class_count: int,
-) -> nn.Module:
-    """按 sar/car/dual 模式和映射张量形状构造二维 DSCARNet。
-
-    与 build_deep_model 分开的原因：DSCARNet 的输入不是 1D 谱，而是 AggMap/PCA
-    SAR、CAR 双通路 2D 映射张量，形状只有在映射完成后才知道，因此需要独立的构造入口。
-    mode 取自 config.dscarnet_input_mode，默认 "dual"；缺对应输入形状时抛 ValueError。
-    """
-    output_dim = 1 if int(class_count) == 2 else int(class_count)
-    mode = str(getattr(config, "dscarnet_input_mode", "dual") or "dual").lower()
-    profile = build_dscarnet_profile(
-        train_sample_count=int(getattr(config, "resolved_train_sample_count", 100)),
-        feature_count=int(getattr(config, "resolved_feature_count", 1000)),
-    )
-    common = {
-        "filter_number": int(profile["filter_number"]),
-        "n_outputs": output_dim,
-        "conv1_kernel_size": int(profile["conv1_kernel_size"]),
-        "n_inception": int(profile["n_inception"]),
-        "dense_layers": tuple(int(item) for item in profile["dense_layers"]),
-        "last_avf": None,
-    }
-    if mode == "sar":
-        if input_shape1 is None:
-            raise ValueError("SAR 模式缺少 SAR 输入形状")
-        return single_dscarnet(input_shape1, **common)
-    if mode == "car":
-        if input_shape2 is None:
-            raise ValueError("CAR 模式缺少 CAR 输入形状")
-        return single_dscarnet(input_shape2, **common)
-    if mode != "dual" or input_shape1 is None or input_shape2 is None:
-        raise ValueError("DSCARNet dual 模式需要 SAR 和 CAR 输入形状")
-    return dual_dscarnet(
-        input_shape1,
-        input_shape2,
-        **common,
-    )
 
 
 def parse_optional_int(value: Any) -> int | None:

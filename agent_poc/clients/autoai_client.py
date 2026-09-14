@@ -14,6 +14,7 @@ CONTRACT_VERSION = 'agent-session-v1'
 OBSERVATION_VERSION = 'agent-observation-v1'
 _IDENTIFIER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 _KNOWN_ERRORS = frozenset({
+    'model_retired',
     'agent_session_not_found', 'agent_experiment_not_found', 'dataset_unavailable',
     'agent_session_finalized', 'agent_duplicate_config', 'agent_active_run_exists',
     'agent_run_budget_exhausted', 'agent_idempotency_conflict', 'agent_request_released',

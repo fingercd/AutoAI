@@ -3,19 +3,16 @@
 【模块职责与系统位置】
 本模块是训练流水线的“可解释性”层，在模型训练完成后对测试集每个样品计算
 “哪些谱段对预测最重要”，产出 sample_feature_importance.json/csv，
-供结果页的单样品高亮展示。按模型类型分三条技术路线：
+供结果页的单样品高亮展示。按模型类型分两条技术路线：
 - 传统模型与无卷积深度模型（pca_mlp、cnn_transformer1d 等）：
   sample_occlusion_importance——窗口遮挡 + 真实类别 Log-loss 增量；
 - 1D 卷积模型（cnn1d/resnet1d/inception1d/tcn1d 等）：
   sample_deep_attribution_importance——1D Grad-CAM，失败时回退输入梯度；
-- DSCARNet：sample_dscarnet_single/dual_2d_gradcam_importance——
-  在 SAR/CAR 二维分支上做 2D Grad-CAM，再经 AggMap/PCA 回投到一维特征。
 
 【关键算法约定】
 窗口遮挡把特征轴解析成最接近请求数量且能整除长度的等宽窗口，并用训练集均值
 替换窗口。重要性定义为真实类别 ``masked_loss - original_loss``，也就是
-``log(p_before / p_after)``。卷积模型走 1D Grad-CAM，DSCARNet 走二维分支
-归因后回投到原始一维特征。正值表示遮挡后真实类别置信度受损（该谱段重要）。
+``log(p_before / p_after)``。卷积模型走 1D Grad-CAM。正值表示遮挡后真实类别置信度受损（该谱段重要）。
 """
 
 from __future__ import annotations
@@ -429,7 +426,7 @@ def sample_occlusion_importance(
     }
 
 
-# 深度模型归因：1D 网络直接归因，DSCARNet 在二维分支生成 CAM 后回投。
+# 深度模型归因：1D 网络直接归因。
 def sample_deep_attribution_importance(
     model: nn.Module,
     x: np.ndarray,
@@ -581,224 +578,8 @@ def sample_deep_attribution_importance(
     return result
 
 
-def sample_dscarnet_single_2d_gradcam_importance(
-    model: nn.Module,
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    mapped_values: np.ndarray,
-    mapper: Any,
-    mode: str,
-    pca: Any | None,
-    mapping_metadata: dict[str, Any],
-    x_axis: np.ndarray | list[float],
-    splits: dict[str, list[int]],
-    label_names: list[str],
-    metadata: list[dict[str, Any]] | None = None,
-    top_k: int = 5,
-) -> dict[str, Any]:
-    """为 SAR 或 CAR 单分支生成 2D Grad-CAM，并回投到一维特征。
-
-    流程：对 mapped_values（AggMap 二维图）在模型的 inception 层做 2D
-    Grad-CAM → 用 mapper 的像素-特征对应关系把 CAM 平均回投到特征维度
-    （SAR：f_ 前缀，目标维度=特征数；CAR：pc_ 前缀，目标维度=主成分数）
-    → CAR 还需再乘 |PCA.components_| 从主成分空间反投影回原始特征。
-    mapped_values/mapper/pca/mapping_metadata 均来自 dscarnet_mapping 模块
-    在 train 上拟合并保存的对象。
-    """
-    x = np.asarray(x, dtype=np.float32)
-    y = np.asarray(y, dtype=np.int64)
-    mode = str(mode).lower()
-    method = explainability_method("dscarnet", dscarnet_mode=mode)
-    x_axis_array = _safe_x_axis(x_axis, x.shape[1])
-    baseline_curve = _mean_curve(x, splits.get("train", []))
-    ordered_items = _ordered_test_indices(splits)
-    if not ordered_items:
-        return {"status": "unavailable", "reason": "没有可解释的测试集样品", "method": method, "samples": []}
-    indices = [idx for _split, idx in ordered_items]
-    labels_array = y[indices]
-    cams, scores = _gradcam_2d_single_attributions(model, np.asarray(mapped_values)[indices], labels_array)
-    # AggMap 网格中的列名前缀决定回投空间：SAR 对应原始特征 f_*，
-    # CAR 对应 PCA 主成分 pc_*（之后还要再过一次 PCA 反投影）。
-    prefix = "f_" if mode == "sar" else "pc_"
-    target_count = x.shape[1] if mode == "sar" else int(pca.components_.shape[0])
-    # 把 (N,H,W) 的 CAM 按 mapper 中每个特征占据的像素位置取均值，
-    # 得到 (N, target_count) 的特征级归因。
-    mapped_attr = _aggmap_cam_to_feature_matrix(cams, mapper, target_count, prefix)
-    # CAR 分支的归因落在主成分空间，乘 |components_| 反投影回原始特征轴；
-    # 取绝对值是因为这里只关心贡献强度，不关心 PCA 载荷的正负号。
-    if mode == "car":
-        mapped_attr = mapped_attr[:, :target_count] @ np.abs(pca.components_[:target_count, :])
-    attributions = _normalize_rows(mapped_attr)
-    scores = _as_score_matrix(scores)
-    metadata = metadata or []
-    samples = []
-    for local_idx, ((split_name, source_idx), true_class) in enumerate(zip(ordered_items, labels_array)):
-        pred_class = int(np.argmax(scores[local_idx]))
-        sample_meta = metadata[source_idx] if source_idx < len(metadata) else {}
-        sample_axis = _sample_x_axis_array(sample_meta, x_axis_array)
-        rows, top_segments = _attribution_windows(attributions[local_idx], x_axis_array=sample_axis, top_k=max(1, int(top_k)))
-        samples.append({
-            "result_id": f"{split_name}:{source_idx}", "sample_id": str(sample_meta.get("sample_id", "")),
-            "dataset": split_name, "source_index": int(source_idx),
-            "index": sample_meta.get("index", int(source_idx)), "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-            "true_class_id": int(true_class),
-            "pred_class_id": pred_class, "true_label": _label_at(label_names, int(true_class)),
-            "pred_label": _label_at(label_names, pred_class), "correct": pred_class == int(true_class),
-            "true_probability": float(scores[local_idx, int(true_class)]), "pred_probability": float(scores[local_idx, pred_class]),
-            "curve": _float_list(x[source_idx]), "sample_x_axis": _float_list(sample_axis), "windows": rows,
-            "top_segments": top_segments, "primary_segment": primary_feature_segment(top_segments, rows),
-        })
-    return {
-        "status": "ready", "method": method, "baseline": "deep_attribution",
-        "importance_metric": "sar_gradcam_backprojection" if mode == "sar" else "car_gradcam_pca_backprojection",
-        "window_count": int(x.shape[1]), "top_k": max(1, int(top_k)), "x_axis": _float_list(x_axis_array),
-        "baseline_curve": _float_list(baseline_curve), "dscarnet_mapping": mapping_metadata, "samples": samples,
-    }
 
 
-def sample_dscarnet_dual_2d_gradcam_importance(
-    model: nn.Module,
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    x_sar: np.ndarray,
-    x_car: np.ndarray,
-    pca: Any,
-    sar_mapper: Any,
-    car_mapper: Any,
-    mapping_metadata: dict[str, Any],
-    x_axis: np.ndarray | list[float],
-    splits: dict[str, list[int]],
-    label_names: list[str],
-    metadata: list[dict[str, Any]] | None = None,
-    top_k: int = 5,
-) -> dict[str, Any]:
-    """Compute DSCARNet SAR/CAR dual-branch 2D Grad-CAM and project it to 1D features.
-
-    双通路归因：分别在 inception1(SAR)/inception2(CAR) 分支计算 2D Grad-CAM，
-    SAR 经 AggMap 直接回投到特征轴，CAR 经 AggMap→主成分→|PCA components|
-    两级回投到特征轴；两路各自做行归一化后等权平均得到 combined 归因。
-    输出同时保留 sar_top_segments/car_top_segments 与分支一致性 sanity，
-    用于判断两条通路是否“看到”了同一个谱段。
-    """
-    x = np.asarray(x, dtype=np.float32)
-    y = np.asarray(y, dtype=np.int64)
-    x_sar = np.asarray(x_sar, dtype=np.float32)
-    x_car = np.asarray(x_car, dtype=np.float32)
-    x_axis_array = _safe_x_axis(x_axis, x.shape[1] if x.ndim == 2 else 0)
-    baseline_curve = _mean_curve(x, splits.get("train", []))
-    metadata = metadata or []
-    method = explainability_method("dscarnet", dscarnet_mode="dual")
-
-    if x.ndim != 2 or x.shape[0] == 0 or x.shape[1] == 0:
-        return {
-            "status": "unavailable",
-            "reason": "特征矩阵为空，无法计算 DSCARNet 双通路重要区间",
-            "method": method,
-            "baseline": "deep_attribution",
-            "x_axis": _float_list(x_axis_array),
-            "baseline_curve": _float_list(baseline_curve),
-            "dscarnet_mapping": mapping_metadata,
-            "samples": [],
-        }
-
-    ordered_items = _ordered_test_indices(splits)
-    if not ordered_items:
-        return {
-            "status": "unavailable",
-            "reason": "没有可解释的测试集样品",
-            "method": method,
-            "baseline": "deep_attribution",
-            "x_axis": _float_list(x_axis_array),
-            "baseline_curve": _float_list(baseline_curve),
-            "dscarnet_mapping": mapping_metadata,
-            "samples": [],
-        }
-
-    sample_indices = [idx for _split, idx in ordered_items]
-    y_samples = y[sample_indices]
-    # 一次前向/反向分别拿到两个分支的 CAM；scores 是双通路模型的类别概率。
-    sar_cams, car_cams, scores = _dscarnet_dual_2d_gradcam_attributions(
-        model,
-        x_sar[sample_indices],
-        x_car[sample_indices],
-        y_samples,
-    )
-    sar_feature_attr = _aggmap_cam_to_feature_matrix(sar_cams, sar_mapper, x.shape[1], "f_")
-    car_component_attr = _aggmap_cam_to_feature_matrix(car_cams, car_mapper, pca.components_.shape[0], "pc_")
-    component_count = min(car_component_attr.shape[1], pca.components_.shape[0])
-    car_feature_attr = np.zeros_like(sar_feature_attr)
-    if component_count > 0:
-        # CAR 两级回投的第二级：主成分归因 × |PCA 载荷| → 原始特征空间。
-        car_feature_attr = car_component_attr[:, :component_count] @ np.abs(pca.components_[:component_count, :])
-    sar_norm = _normalize_rows(sar_feature_attr)
-    car_norm = _normalize_rows(car_feature_attr)
-    # 两路先各自 min-max 归一（量纲对齐），再等权平均，避免单通路尺度主导。
-    combined_attributions = _normalize_rows((sar_norm + car_norm) / 2.0)
-    scores = _as_score_matrix(scores)
-    top_limit = max(1, int(top_k))
-    samples = []
-
-    for local_idx, ((split_name, source_idx), true_class) in enumerate(zip(ordered_items, y_samples)):
-        true_class_id = int(true_class)
-        pred_class_id = int(np.argmax(scores[local_idx]))
-        sample_meta = metadata[source_idx] if 0 <= source_idx < len(metadata) else {}
-        sample_x_axis_array = _sample_x_axis_array(sample_meta, x_axis_array)
-        rows, top_segments = _attribution_windows(
-            combined_attributions[local_idx],
-            x_axis_array=sample_x_axis_array,
-            top_k=top_limit,
-        )
-        _sar_rows, sar_top_segments = _attribution_windows(
-            sar_norm[local_idx],
-            x_axis_array=sample_x_axis_array,
-            top_k=top_limit,
-        )
-        _car_rows, car_top_segments = _attribution_windows(
-            car_norm[local_idx],
-            x_axis_array=sample_x_axis_array,
-            top_k=top_limit,
-        )
-        samples.append(
-            {
-                "result_id": f"{split_name}:{source_idx}",
-                "sample_id": str(sample_meta.get("sample_id", "")),
-                "dataset": split_name,
-                "source_index": int(source_idx),
-                "index": sample_meta.get("index", int(source_idx)),
-                "name": str(sample_meta.get("name", f"sample_{source_idx}")),
-                "true_class_id": true_class_id,
-                "pred_class_id": pred_class_id,
-                "true_label": _label_at(label_names, true_class_id),
-                "pred_label": _label_at(label_names, pred_class_id),
-                "correct": bool(pred_class_id == true_class_id),
-                "true_probability": float(scores[local_idx, true_class_id]),
-                "pred_probability": float(scores[local_idx, pred_class_id]),
-                "curve": _float_list(x[source_idx]),
-                "sample_x_axis": _float_list(sample_x_axis_array),
-                "windows": rows,
-                "top_segments": top_segments,
-                "primary_segment": primary_feature_segment(top_segments, rows),
-                "sar_top_segments": sar_top_segments,
-                "car_top_segments": car_top_segments,
-                "sanity_checks": _dscarnet_branch_sanity(top_segments, sar_top_segments, car_top_segments),
-            }
-        )
-
-    return {
-        "status": "ready",
-        "method": method,
-        "baseline": "deep_attribution",
-        "importance_metric": "sar_gradcam_plus_car_pca_backprojection",
-        "window_count": int(x.shape[1]),
-        "top_k": top_limit,
-        "x_axis": _float_list(x_axis_array),
-        "baseline_curve": _float_list(baseline_curve),
-        "dscarnet_mapping": mapping_metadata,
-        "samples": samples,
-        "sanity_checks": _aggregate_dscarnet_branch_sanity(samples),
-    }
 
 
 def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[str, Any]) -> dict[str, Any]:
@@ -862,7 +643,7 @@ def write_sample_feature_importance_artifacts(run_dir: str | Path, result: dict[
     }
 
 
-# 以下辅助函数负责坐标防御、sanity check、AggMap 像素回投和 Grad-CAM hook。
+# 以下辅助函数负责坐标防御、sanity check和 Grad-CAM hook。
 # X 轴防御：外部传入的 x_axis 长度与特征数不符时回退为 0..n-1 的整数轴，
 # 保证后续 start_x/end_x 永远有值可取，不让脏轴数据中断解释性输出。
 def _safe_x_axis(x_axis: np.ndarray | list[float], n_features: int) -> np.ndarray:
@@ -1008,231 +789,6 @@ def _aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-# 逐行 min-max 归一化到 [0,1]；NaN/Inf 清零，恒定行（max≈min）整行置 0，
-# 避免“处处相等”的归因被归一化成虚假热点。
-def _normalize_rows(values: np.ndarray) -> np.ndarray:
-    arr = np.asarray(values, dtype=np.float64)
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    if arr.size == 0:
-        return arr
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    mins = arr.min(axis=1, keepdims=True)
-    maxs = arr.max(axis=1, keepdims=True)
-    spans = np.maximum(maxs - mins, 1e-12)
-    normalized = (arr - mins) / spans
-    flat_rows = (maxs <= mins + 1e-12).reshape(-1)
-    normalized[flat_rows, :] = 0.0
-    return normalized
-
-
-# 解析 'f_12' / 'pc_3' 这类带前缀列名中的整数下标；不匹配返回 None。
-def _parse_prefixed_index(value: Any, prefix: str) -> int | None:
-    text = str(value)
-    if not text.startswith(prefix):
-        return None
-    try:
-        return int(text[len(prefix) :])
-    except ValueError:
-        return None
-
-
-# 从 AggMap mapper 中提取“特征下标 → 二维图像素坐标列表”的映射。
-# 优先读 df_grid（含 x/y/v 的网格表），缺失时用 feature_names_reshape
-# 按 fmap_shape 行优先展开兜底；一个特征可能占多个像素，故是列表。
-def _aggmap_positions(mapper: Any, feature_count: int, prefix: str) -> list[list[tuple[int, int]]]:
-    positions: list[list[tuple[int, int]]] = [[] for _ in range(int(feature_count))]
-    grid = getattr(mapper, "df_grid", None)
-    if grid is not None and all(column in grid for column in ["x", "y", "v"]):
-        for _row_idx, row in grid.iterrows():
-            feature_idx = _parse_prefixed_index(row.get("v"), prefix)
-            if feature_idx is None or not (0 <= feature_idx < feature_count):
-                continue
-            positions[feature_idx].append((int(row.get("y", 0)), int(row.get("x", 0))))
-        return positions
-
-    names = list(getattr(mapper, "feature_names_reshape", []) or [])
-    fmap_shape = getattr(mapper, "fmap_shape", None)
-    width = int(fmap_shape[1]) if fmap_shape and len(fmap_shape) >= 2 else int(np.ceil(np.sqrt(max(1, len(names)))))
-    for flat_idx, name in enumerate(names):
-        feature_idx = _parse_prefixed_index(name, prefix)
-        if feature_idx is None or not (0 <= feature_idx < feature_count):
-            continue
-        positions[feature_idx].append((flat_idx // max(1, width), flat_idx % max(1, width)))
-    return positions
-
-
-# 把 (N,H,W) 的 2D CAM 回投为 (N,feature_count)：每个特征取其所有
-# 对应像素的 CAM 均值；没有有效像素的特征归因保持 0。
-def _aggmap_cam_to_feature_matrix(
-    cams: np.ndarray,
-    mapper: Any,
-    feature_count: int,
-    prefix: str,
-) -> np.ndarray:
-    cam_values = np.asarray(cams, dtype=np.float64)
-    if cam_values.ndim != 3:
-        raise ValueError(f"2D Grad-CAM 应为 (N,H,W)，实际 shape={cam_values.shape}")
-    output = np.zeros((cam_values.shape[0], int(feature_count)), dtype=np.float64)
-    positions = _aggmap_positions(mapper, int(feature_count), prefix)
-    height, width = cam_values.shape[1], cam_values.shape[2]
-    for feature_idx, coords in enumerate(positions):
-        valid = [(y, x) for y, x in coords if 0 <= y < height and 0 <= x < width]
-        if not valid:
-            continue
-        stacked = np.stack([cam_values[:, y, x] for y, x in valid], axis=1)
-        output[:, feature_idx] = stacked.mean(axis=1)
-    return output
-
-
-# DSCARNet 单通路 2D Grad-CAM：在 model.inception 输出上挂 forward hook
-# 捕获激活并对真实类别 logit 反传，通道维做全局平均池化得到权重，
-# ReLU(Σ w_k·A_k) 后双线性上采样回输入分辨率。二分类单 logit 与
-# 多分类 softmax 由 _selected_logits_and_scores 统一处理。
-def _gradcam_2d_single_attributions(
-    model: nn.Module,
-    mapped_samples: np.ndarray,
-    y_samples: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    target = getattr(model, "inception", None)
-    if target is None or not isinstance(target, nn.Module):
-        raise ValueError("DSCARNet 单通路模型缺少可用于 2D Grad-CAM 的 inception")
-    device = _model_device(model)
-    model.eval()
-    model.zero_grad(set_to_none=True)
-    captured: dict[str, torch.Tensor] = {}
-    def capture(_module: nn.Module, _inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
-        if output.requires_grad:
-            captured["activation"] = output
-            output.retain_grad()
-    handle = target.register_forward_hook(capture)
-    try:
-        inputs = torch.tensor(mapped_samples, dtype=torch.float32, device=device)
-        labels = torch.tensor(y_samples, dtype=torch.long, device=device)
-        logits = model(inputs)
-        activation = captured.get("activation")
-        if activation is None or activation.ndim != 4:
-            raise ValueError("DSCARNet 单通路 Grad-CAM 未捕获到四维激活")
-        selected, scores = _selected_logits_and_scores(logits, labels)
-        selected.backward()
-        gradients = activation.grad
-        if gradients is None:
-            raise ValueError("DSCARNet 单通路 Grad-CAM 未捕获到梯度")
-        # 通道权重 = 梯度在 H×W 上的全局平均池化（Grad-CAM 标准做法）。
-        weights = gradients.mean(dim=(2, 3), keepdim=True)
-        cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
-        cam = F.interpolate(cam, size=inputs.shape[-2:], mode="bilinear", align_corners=False).squeeze(1)
-        return cam.detach().cpu().numpy(), scores.cpu().numpy()
-    finally:
-        handle.remove()
-
-
-# 双通路包装：branch=1 取 SAR(inception1)，branch=2 取 CAR(inception2)，
-# scores 以 SAR 分支前向的类别概率为准（两分支共享同一组 logits）。
-def _dscarnet_dual_2d_gradcam_attributions(
-    model: nn.Module,
-    x_sar_samples: np.ndarray,
-    x_car_samples: np.ndarray,
-    y_samples: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    sar_cams, scores = _gradcam_2d_branch_attributions(
-        model,
-        x_sar_samples,
-        x_car_samples,
-        y_samples,
-        branch=1,
-    )
-    car_cams, _car_scores = _gradcam_2d_branch_attributions(
-        model,
-        x_sar_samples,
-        x_car_samples,
-        y_samples,
-        branch=2,
-    )
-    return sar_cams, car_cams, scores
-
-
-# 与单通路同理，但 hook 挂在 model.inception{branch} 上，
-# 前向输入是 (sar, car) 两个张量；CAM 上采样目标尺寸随分支不同而不同。
-def _gradcam_2d_branch_attributions(
-    model: nn.Module,
-    x_sar_samples: np.ndarray,
-    x_car_samples: np.ndarray,
-    y_samples: np.ndarray,
-    *,
-    branch: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    target = getattr(model, f"inception{branch}", None)
-    if target is None or not isinstance(target, nn.Module):
-        raise ValueError("DSCARNet 双通路模型缺少可用于 2D Grad-CAM 的 inception 分支")
-
-    device = _model_device(model)
-    model.eval()
-    model.zero_grad(set_to_none=True)
-    captured: dict[str, torch.Tensor] = {}
-
-    def capture_activation(_module: nn.Module, _inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
-        if isinstance(output, torch.Tensor) and output.requires_grad:
-            captured["activation"] = output
-            output.retain_grad()
-
-    handle = target.register_forward_hook(capture_activation)
-    try:
-        sar_inputs = torch.tensor(x_sar_samples, dtype=torch.float32, device=device)
-        car_inputs = torch.tensor(x_car_samples, dtype=torch.float32, device=device)
-        labels = torch.tensor(y_samples, dtype=torch.long, device=device)
-        logits = model(sar_inputs, car_inputs)
-        activation = captured.get("activation")
-        if activation is None or activation.ndim != 4:
-            raise ValueError("DSCARNet 2D Grad-CAM 未捕获到四维激活")
-        selected, scores = _selected_logits_and_scores(logits, labels)
-        selected.backward()
-        gradients = activation.grad
-        if gradients is None:
-            raise ValueError("DSCARNet 2D Grad-CAM 未捕获到梯度")
-        weights = gradients.mean(dim=(2, 3), keepdim=True)
-        cam = torch.relu((weights * activation.detach()).sum(dim=1, keepdim=True))
-        target_size = sar_inputs.shape[-2:] if branch == 1 else car_inputs.shape[-2:]
-        cam = F.interpolate(cam, size=target_size, mode="bilinear", align_corners=False).squeeze(1)
-        return cam.detach().cpu().numpy(), scores.cpu().numpy()
-    finally:
-        handle.remove()
-
-
-# DSCARNet 分支级 sanity：SAR 与 CAR 的第一重要区段是否重叠、
-# combined 区段是否与各分支一致，用于发现双通路“各看各的”的情况。
-def _dscarnet_branch_sanity(
-    combined_top_segments: list[dict[str, Any]],
-    sar_top_segments: list[dict[str, Any]],
-    car_top_segments: list[dict[str, Any]],
-) -> dict[str, Any]:
-    sar_top = sar_top_segments[0] if sar_top_segments else None
-    car_top = car_top_segments[0] if car_top_segments else None
-    combined_top = combined_top_segments[0] if combined_top_segments else None
-    return {
-        "auxiliary_method": "sar_car_branch_gradcam",
-        "sar_car_top_disagreement": bool(sar_top and car_top and not _segments_overlap(sar_top, car_top)),
-        "combined_overlaps_sar": _segments_overlap(combined_top, sar_top),
-        "combined_overlaps_car": _segments_overlap(combined_top, car_top),
-    }
-
-
-# 聚合全部样品的分支 sanity，给出 SAR/CAR 不一致样品数与中文警告。
-def _aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    checks = [sample.get("sanity_checks") for sample in samples if sample.get("sanity_checks")]
-    disagreement_count = sum(1 for item in checks if item.get("sar_car_top_disagreement"))
-    warnings = []
-    if disagreement_count:
-        warnings.append(f"{disagreement_count} 个测试样品的 SAR 与 CAR 第一重要位置不重叠")
-    return {
-        "status": "checked" if checks else "unavailable",
-        "auxiliary_method": "sar_car_branch_gradcam",
-        "sample_count": len(checks),
-        "sar_car_disagreement_sample_count": disagreement_count,
-        "warnings": warnings,
-    }
-
-
 def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
     """汇总普通深度模型归因的非零、边缘与重叠 sanity 指标。
 
@@ -1241,12 +797,6 @@ def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any
     return _aggregate_attribution_sanity(samples)
 
 
-def aggregate_dscarnet_branch_sanity(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总 DSCARNet SAR/CAR 分支是否实际产生有效归因。
-
-    对外公开入口（训练流水线调用），内部委托 _aggregate_dscarnet_branch_sanity。
-    """
-    return _aggregate_dscarnet_branch_sanity(samples)
 
 
 # 取模型所在设备；无参数模型（极端情况）回退 CPU。

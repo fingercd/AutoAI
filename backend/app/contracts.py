@@ -33,8 +33,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'scheduler_patience', 'min_learning_rate', 'seed', 'normalization', 'split_mode',
         'split_train', 'split_valid', 'split_test', 'class_balance', 'model_type',
         'early_stopping_patience', 'dropout', 'hidden_size', 'transformer_heads',
-        'unet_depth', 'dscarnet_inception_blocks', 'dscarnet_pca_components',
-        'dscarnet_cluster_channels', 'dscarnet_input_mode', 'knn_n_neighbors',
+        'unet_depth', 'knn_n_neighbors',
         'knn_weights', 'knn_metric', 'knn_p', 'random_forest_n_estimators',
         'random_forest_search_iterations', 'random_forest_max_depth',
         'random_forest_min_samples_leaf', 'svm_c', 'svm_gamma', 'xgboost_n_estimators',
@@ -48,7 +47,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
     }
 )
 
-from .model_catalog import MODEL_ALIASES as _MODEL_ALIASES
+from .model_catalog import MODEL_ALIASES as _MODEL_ALIASES, RETIRED_MODEL_ALIASES
 
 
 def _finite_number(value: Any, *, field: str) -> float:
@@ -86,6 +85,8 @@ class TrainingSpec:
 
         values = dict(self.values)
         raw_model = str(values.get('model_type') or 'cnn1d').strip().lower()
+        if raw_model in RETIRED_MODEL_ALIASES:
+            raise TrainingConfigValidationError('model_retired: DSCARNet 已退役，不再接受新训练')
         model_type = _MODEL_ALIASES.get(raw_model)
         if model_type is None:
             raise TrainingConfigValidationError(f'不支持的分类模型：{raw_model}')
@@ -101,11 +102,6 @@ class TrainingSpec:
             raise TrainingConfigValidationError('class_balance 必须是 none 或 class_weight')
         values['class_balance'] = class_balance
 
-        if model_type == 'dscarnet':
-            mode = str(values.get('dscarnet_input_mode') or 'dual').strip().lower()
-            if mode not in {'sar', 'car', 'dual'}:
-                raise TrainingConfigValidationError('dscarnet_input_mode 必须是 sar、car 或 dual')
-            values['dscarnet_input_mode'] = mode
 
         from .classification_policy import resolve_evaluation_policy
 
@@ -122,9 +118,7 @@ class TrainingSpec:
 
         positive_integer_fields = {
             'epochs', 'batch_size', 'scheduler_patience', 'early_stopping_patience',
-            'hidden_size', 'transformer_heads', 'dscarnet_inception_blocks',
-            'dscarnet_pca_components', 'dscarnet_cluster_channels',
-            'random_forest_n_estimators', 'random_forest_search_iterations',
+            'hidden_size', 'transformer_heads', 'random_forest_n_estimators', 'random_forest_search_iterations',
             'random_forest_min_samples_leaf', 'xgboost_n_estimators', 'xgboost_max_depth',
             'feature_window_count', 'feature_top_k', 'feature_n_repeats',
         }

@@ -2,7 +2,7 @@
 from typing import Any
 from ..contracts import TrainingSpec
 from ..model_config import model_capability_snapshot, model_policy, resolve_model_params, semantic_digest, compatible_frozen_policy
-from ..model_catalog import model_availability
+from ..model_catalog import model_availability, RETIRED_MODEL_ALIASES
 from .contracts import AgentDomainError
 from .contracts_v2 import V2
 
@@ -17,6 +17,8 @@ def freeze_session(payload, previous=None):
     policies = {m['id']: m for m in snapshot['models']}
     configs = {}
     for name in payload.allowed_models:
+        if previous is None and name in RETIRED_MODEL_ALIASES:
+            raise AgentDomainError('model_retired', 'DSCARNet has been retired', status_code=409)
         if name not in policies:
             raise AgentDomainError('agent_capability_changed', 'Frozen model policy unavailable', status_code=409)
         if previous is None and not policies[name]['available']:
@@ -41,6 +43,8 @@ def frozen_action(session, payload):
 
 def admit_action(session, action):
     model = action['model_type']
+    if model in RETIRED_MODEL_ALIASES:
+        raise AgentDomainError('model_retired', 'DSCARNet has been retired', status_code=409)
     policy = next(m for m in session.capability_snapshot['models'] if m['id'] == model)
     if not compatible_frozen_policy(model, policy, action['model_params'], current=model_policy(model)):
         raise AgentDomainError('agent_capability_changed', 'Model execution policy changed', status_code=409)

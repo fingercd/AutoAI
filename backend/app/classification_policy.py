@@ -35,7 +35,7 @@ class DeepTrainingDefaults:
     """文档版深度模型共享的、不可变训练默认值。
 
     frozen=True 表示实例创建后字段不可修改，保证所有深度模型
-    （cnn1d/resnet1d/dscarnet 等）在未被用户显式覆盖时使用完全一致的
+    （cnn1d/resnet1d 等）在未被用户显式覆盖时使用完全一致的
     超参数基线，避免不同代码路径各自散落一份默认值。
     """
     # 训练轮数上限；配合 early_stopping_patience 提前终止，通常不会跑满。

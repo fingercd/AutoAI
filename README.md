@@ -12,9 +12,11 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout。
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
-- 已实现 14 个分类模型（实际可用性取决于当前环境依赖）：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
+- 已实现 13 个分类模型（实际可用性取决于当前环境依赖）：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
 - Agent 接口适配层使用 `agent-session-v1` / `agent-observation-v1`：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
-- 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like；DSCARNet 使用 SAR/CAR 双通路映射和 2D Grad-CAM 回投。
+- 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like。
+
+DSCARNet 已退役，新训练请求及其 `dscar_net` 别名均被拒绝；历史 Run、Manifest 和结果仍按原权限与完整性规则只读访问。旧 Agent 同请求的已绑定 Run 或 durable mapping 优先回读；未提交的旧 DSCARNet 任务返回 `model_retired`。部署前须确认旧 queued/running 任务已终态，本次代码变更不切换生产 worker。
 
 ## 第二步全模型 Agent
 
@@ -46,7 +48,7 @@ v2 是正式纳入仓库的并行前端，不是历史 UI 画廊，也不会替�
 - 已验证：Python `3.12.12`。
 - CPU 环境可直接安装核心依赖。
 - NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- DSCARNet 额外依赖 AggMap；其余 13 个当前可用模型不要求 AggMap。目录中的 `cnn_mamba1d` 另需 `mamba-ssm`，当前 Windows Conda 环境不可用。
+- 当前模型不要求 AggMap。目录中的 `cnn_mamba1d` 另需 `mamba-ssm`，当前 Windows Conda 环境不可用。
 
 建议新建虚拟环境：
 
@@ -68,7 +70,7 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## 三种安装方式
+## 安装方式
 
 ### 核心运行环境
 
@@ -89,19 +91,6 @@ python -m pip install -r backend/requirements.txt -c backend/constraints-verifie
 ```bash
 python -m pip install -r backend/requirements-dev.txt -c backend/constraints-verified.txt
 ```
-
-### DSCARNet 可选环境
-
-AggMap 1.2.1 的 PyPI 元数据包含过时的 `tensorflow-gpu` 和 `lapjv` 依赖，必须分两步安装：
-
-```bash
-python -m pip install -r backend/requirements-dscarnet.txt -c backend/constraints-verified.txt
-python -m pip install aggmap==1.2.1 --no-deps
-```
-
-SpecAutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
-
-AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目不使用的 `tensorflow-gpu`、`lapjv` 和 `shap`。因此按上述方式安装后，`pip check` 仍会报告 AggMap 的已知元数据冲突；这不表示 SpecAutoAI 使用的 SAR/CAR 映射链路缺少依赖。核心环境不安装 AggMap 时不受此问题影响。
 
 ## 启动
 
@@ -195,13 +184,13 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 ## 分类模型 v2 契约
 
-当前能力目录公开 **15 个目标分类模型**，每个模型按当前环境探测可用性：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`dscarnet` 已实现，满足依赖后可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
+当前能力目录公开 **14 个目标分类模型**，每个模型按当前环境探测可用性：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d` 已实现，满足依赖后可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
 
-新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable；`dscarnet` 支持 SAR、CAR、dual 三种输入模式。
+新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable。
 
 评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
-解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check；`dscarnet` 使用模式对应的 2D Grad-CAM 回投。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
+解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
 ## 建模 CSV
 
@@ -240,7 +229,7 @@ Index,Label,Sample_ID,Name,0,0.0066675556740898788,...,50
 ```text
 backend/app/                 FastAPI、预处理、训练、Run 队列与模型
 backend/tests/               自动化测试
-backend/requirements*.txt    核心、开发、DSCARNet 依赖与验证约束
+backend/requirements*.txt    核心、开发依赖与验证约束
 static/index.html            经典前端入口（兼容基线）
 static/js/                   经典前端与共享 API 客户端
 static/v2/                   v2 独立工作台、组件和 Node 纯函数测试
@@ -303,12 +292,6 @@ curl http://127.0.0.1:8000/health
 ### 安装了 CUDA 驱动但 PyTorch 仍使用 CPU
 
 检查 `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`。若为 `False`，按 PyTorch 官方渠道重新安装与驱动/CUDA 匹配的 wheel，然后再安装 SpecAutoAI 其余依赖。
-
-### AggMap 安装时尝试拉取 tensorflow-gpu
-
-不要直接执行普通的 `pip install aggmap`。先安装 `requirements-dscarnet.txt`，再执行 `python -m pip install aggmap==1.2.1 --no-deps`。
-
-安装后执行 `pip check` 会按 AggMap 1.2.1 的旧元数据报告 `tensorflow-gpu`、`lapjv`、`shap` 和若干固定旧版本冲突，这是当前兼容安装方式的已知现象。SpecAutoAI 不调用 AggMap 的 TensorFlow AggModel，并为所用映射路径提供 SciPy `lapjv` 兼容层。
 
 ### pandas 提示 numexpr 版本过低
 

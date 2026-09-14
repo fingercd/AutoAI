@@ -18,7 +18,7 @@
 #      生成特征重要性热图，用于 cnn1d / resnet1d 等 1D 卷积类模型，
 #      并保留输入梯度 sanity check。
 #
-# 特例：DSCARNet 不在静态映射表里。它使用 AggMap/PCA 的 SAR/CAR 双通路 2D 映射，
+# 历史只读兼容：DSCARNet 已退役，旧结果的方法名称使用 AggMap/PCA 的 SAR/CAR 双通路 2D 映射，
 # 方法名必须编码当前实际启用的分支（sar / car / dual），因此在
 # explainability_method() 中按 dscarnet_mode 动态生成。
 #
@@ -67,8 +67,8 @@ def explainability_method(model_type: str, *, dscarnet_mode: str = "dual") -> st
     # 折叠到规范名 cnn_transformer1d，保证别名与正名行为完全一致。
     model_key = str(model_type or "").strip().lower()
     model_key = {"transformer": "cnn_transformer1d", "transformer1d": "cnn_transformer1d"}.get(model_key, model_key)
-    if model_key == "dscarnet":
-        # DSCARNet 是特例：其解释依赖 AggMap/PCA 的 SAR/CAR 2D 映射，
+    if model_key in ("dscarnet", "dscar_net"):
+        # 仅解释旧产物的方法标签，不提供训练或归因执行： AggMap/PCA 的 SAR/CAR 2D 映射，
         # 方法名必须反映实际启用的通路分支，因此不在静态表中，按 mode 动态返回。
         mode = str(dscarnet_mode or "dual").strip().lower()
         methods = {
