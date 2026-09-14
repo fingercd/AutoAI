@@ -80,3 +80,23 @@ python scripts/agent_step2_acceptance.py --recipes \
 ```
 
 准备限制由 `AUTOAI_PREPARATION_SECONDS`、`AUTOAI_PREPARATION_MAX_BYTES`、`AUTOAI_PREPARATION_BLOCK_SIZE` 控制。超时、资源不足、数据或计划不合法会显式失败，不将缺失证据记为零。验收驱动复用原 Web/worker 生命周期；`--backend-only` 场景不启动 Agent/LLM，原生请求不携带配方或计划引用，并强制检查 Agent 表无记录。另在新隔离目录完成真实 LLM 传统/深度/恢复场景，并用独立普通 HTTP 进程提交相同配方配置与计划；比较实际分区、执行审计和模型 profile，传统模型额外以固定容差比较指标与预测。普通提交不新增 Agent Session 或预约；worker 与普通请求进程阻断 Agent/LLM 导入。Web 仍托管原 Agent 路由。产物完整性、退出清理和运行版本均进入验收记录。
+
+
+## 第四步：静态知识与引用
+
+新 CLI 的配方任务使用 `agent-state-v4`，同一 v2 API 协商 `agent-recipes-revision-v2`。`--knowledge on|off` 映射唯一的 `module_policy.knowledge`，默认 off；直接动作模式不允许 on。开启请求按固定顺序发送 `modules=[train_evidence,legal_recipes,knowledge]`，关闭只发送前两个。旧 revision-v1 的请求、响应、请求 hash 和 checkpoint 不增字段。
+
+知识仅提供可质疑建议，不改变 recipe/catalog、搜索、训练或科学实验摘要。`backend/app/knowledge_data/common_modeling_v1.json` 冻结五条通用知识及 scikit-learn 1.5.2 来源；不从文件名或 source_role 猜测测量领域。条件仅使用 Train 统计、风险和合法模型集合，样本规模采用独立 Sample_ID 组数。匹配版本为 `knowledge-match-v1`，投影为 `knowledge-projection-v1`，快照为 `knowledge-snapshot-v1`。条目顺序规范化后计算 SHA-256；优先级只决定展示顺序，不是科学置信度。
+
+开启时 Session 同事务保存完整发布知识集、匹配、实际投影及 Evidence/plan/catalog/dataset 来源绑定。知识文件仅在创建新开启 Session 时装载；`AUTOAI_KNOWLEDGE_FILE` 是部署配置，HTTP 不接受知识路径。进程缓存不可变发布对象；更新发布使用新路径或显式清除加载缓存并重启部署进程，旧 Session 继续使用已存快照。关闭不装载文件；无匹配为 ready+空集合。装载失败显式报错；损坏/未知存储快照不能当作无匹配。
+
+响应只给安全知识摘要和投影，不返回完整发布知识集。最多展示6条、canonical JSON UTF-8最多16 KiB；按稳定顺序逐完整条目或完整冲突组选择，保留建议、依据与局限，记录省略计数。关闭直接 evidence/risks 展示时，知识不显示对应具体统计/风险码；条目本身仍可能间接传达 Train 信息，完全移除信息须同时关闭 knowledge。
+
+新 submit 参数必须含 `knowledge_refs` 数组，允许空、最多6个、不得重复，只能引用本次实际展示 ID。JSON action 顶层保持 tool_name/arguments/rationale，native tools 使用同一规则；Finalize 参数保持原样。引用版本由冻结投影解析，写入 decision.evidence_refs 并绑定 projection_digest。HTTP 服务再次校验，并将 `knowledge-decision-v1` 写入预约独立的 `decision_metadata_json`；不混入 effective_action/compiled_config/scientific_digest。客户端还核对提交回执的引用集合、版本和摘要与实际请求一致。
+
+```bash
+python -m agent_poc.orchestration start --dataset-id DATASET_ID   --allowed-models logistic_regression,svm --knowledge on --wait
+python scripts/agent_step2_acceptance.py --recipes --knowledge-ablation   --root /tmp/autoai-step4-UNIQUE --llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b
+```
+
+受控协议测试与真实 LLM 验收分开报告。知识消融驱动固定数据、种子和候选执行 on/off，要求真实 on 实际引用已展示知识；分别为选中配方运行普通后端配对，检查参数、实际划分、搜索审计、指标/预测容差及 Manifest。失败状态与调用计量保留，不能用脚本选择器冒充真实 LLM。

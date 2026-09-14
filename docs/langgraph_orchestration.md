@@ -1,4 +1,4 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认采用训练证据配方 profile 与 agent-state-v3；直接模型选择 v2 和旧 v1 检查点保持原版本。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
+> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v4，知识默认关闭；v1/v2/v3 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
 
 # LangGraph 编排节点与恢复契约
 
@@ -145,3 +145,12 @@ scope 与凭据的 HMAC 绑定、LLM 配置摘要、API timeout 摘要，以及�
 脚本化 provider 可验证 LLM HTTP 解析和真实后端链路，不能证明已访问用户服务器上部署
 的大模型。实际模型服务、served model ID、协议、token usage、数据来源及一次跨进程
 恢复的端到端验收必须另有真实联调记录；测试通过不代替该记录。
+
+
+## 知识选择及恢复
+
+v4 沿用相同节点与 HTTP Client。prepare/session 只绑定后端已冻结知识，choose 将实际短投影作为 user 结构化数据提供给 LLM；引用不编译训练参数。JSON/native 共享引用成员校验与有限修复预算，Finalize 不要求知识引用。
+
+每次恢复从已验证 checkpoint 重建 revision、模型目录和知识绑定；即使 pending 节点跳过 prepare 也先恢复 Client 契约。不增加知识刷新 HTTP。Session POST 丢响应以同请求 ID 回读冻结赢家，LLM 成功结果按 journal 回放，Run POST 丢响应按已有 durable mapping 恢复；保持原网络重试、调用上限和 deadline，不承诺网络 exactly-once。当前知识文件替换/缺失不得改变已冻结 Session 的恢复。
+
+新 v4 在调用 journal 的同一事务中保存计量与经校验的安全提案（proposal_json），不保存原始模型响应。checkpoint 尚未落盘时，以 operation_id 与完整选择上下文摘要校验后回放；已确认记录缺失或损坏提案时明确停为 needs_attention，不重复调用。旧 v1/v2/v3 的 journal 行不补写提案，恢复行为保持原样。

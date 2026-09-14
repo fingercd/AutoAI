@@ -26,7 +26,7 @@ def bind_storage(root: Path):
     """Called before any app/router/repository/worker import in each child."""
     import backend.app.paths as p
     root=root.resolve()
-    if root==(REPO/'storage').resolve() or not root.name.startswith(('autoai-step2-','autoai-step3-')):
+    if root==(REPO/'storage').resolve() or not root.name.startswith(('autoai-step2-','autoai-step3-','autoai-step4-')):
         raise ValueError('acceptance storage must be an explicitly isolated root')
     storage=root/'storage'
     for key,value in dict(STORAGE_DIR=storage,RUNS_DATABASE=storage/'runs.sqlite3',
@@ -46,7 +46,7 @@ def code_binding():
     names=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','--',
         'backend/app','agent_poc','scripts'],cwd=REPO,text=True).splitlines()
     sources={name:hashlib.sha256((REPO/name).read_bytes()).hexdigest()
-        for name in sorted(set(names)) if name.endswith('.py') and (REPO/name).is_file()}
+        for name in sorted(set(names)) if name.endswith(('.py','.json')) and (REPO/name).is_file()}
     return dict(head=head,dirty_diff_sha256=hashlib.sha256(diff).hexdigest(),
         source_digest=hashlib.sha256(json.dumps(sources,sort_keys=True).encode()).hexdigest(),sources=sources)
 
@@ -171,7 +171,7 @@ def run(args):
                         if table in tables:counts[table]=db.execute('SELECT count(*) FROM '+table).fetchone()[0]
             assert not any(counts.values())
             baseline['agent_table_counts']=counts
-            baseline['driver_forbidden_imports']=[m for m in sys.modules if m.startswith(('agent_poc','langgraph','backend.app.agent','openai'))]
+            baseline['driver_forbidden_imports']=[m for m in sys.modules if m.startswith(('agent_poc','langgraph','backend.app.agent','backend.app.knowledge','openai'))]
             assert baseline['driver_forbidden_imports']==[]
             report['native_backend']=baseline;report['completed']=True
             return 0
@@ -256,7 +256,7 @@ def reject_agent_imports():
     import importlib.abc
     class Forbidden(importlib.abc.MetaPathFinder):
         def find_spec(self,fullname,path=None,target=None):
-            if any(fullname==p or fullname.startswith(p+'.') for p in ('agent_poc','langgraph','backend.app.agent','openai')):
+            if any(fullname==p or fullname.startswith(p+'.') for p in ('agent_poc','langgraph','backend.app.agent','backend.app.knowledge','openai')):
                 raise ImportError('Agent dependency forbidden in ordinary execution')
     sys.meta_path.insert(0,Forbidden())
 
@@ -276,7 +276,7 @@ def baseline_http(args):
             if time.monotonic()>deadline:raise RuntimeError('baseline execution deadline')
             time.sleep(.2)
         if state!='succeeded':raise RuntimeError('baseline training failed')
-    forbidden=[m for m in sys.modules if m.startswith(('agent_poc','langgraph','backend.app.agent','openai'))]
+    forbidden=[m for m in sys.modules if m.startswith(('agent_poc','langgraph','backend.app.agent','backend.app.knowledge','openai'))]
     assert forbidden==[]
     save(args.root,args.request_file.stem+'-result.json',dict(run_id=run,state=state,forbidden_imports=forbidden))
 
@@ -291,13 +291,16 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
     from backend.app.runs.repository import RunRepository
     from backend.app.runs.artifacts import RunArtifactWriter
     repo=RunRepository(storage/'runs.sqlite3')
-    cfg=LLMConfig(args.llm_url,args.llm_model,timeout=180,max_tokens=1024,prompt_version='agent-decision-recipes-v1')
+    cfg=LLMConfig(args.llm_url,args.llm_model,timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1' if args.knowledge_ablation else 'agent-decision-recipes-v1')
     runtime=RuntimeConfig(base,'step3-acceptance',cfg,backend_token=token,api_timeout=30)
-    def client():return AutoAIClient(base,token=token,api_version='v2',execution_profile='train-evidence-recipes-v1',max_retries=0,timeout=30)
+    def client():return AutoAIClient(base,token=token,api_version='v2',execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2' if args.knowledge_ablation else 'agent-recipes-revision-v1',max_retries=0,timeout=30)
     scenarios=[('traditional',['logistic_regression','svm','random_forest'],True),
                ('deep',['cnn1d','cnn1d_se'],True),('recovery',['logistic_regression','svm'],False)]
+    if args.knowledge_ablation:
+        scenarios=[('knowledge-on',['logistic_regression','svm'],True),('knowledge-off',['logistic_regression','svm'],True)]
+    ablation_states=[]
     for scenario,allowed,expose in scenarios:
-        calls=[];thread='step3-'+scenario;checkpoint=root/'checkpoints'/thread
+        calls=[];thread=('step4-' if args.knowledge_ablation else 'step3-')+scenario;checkpoint=root/'checkpoints'/thread
         class AuditedLLM(LLMAdapter):
             def propose(self,phase,context,**kwargs):
                 proposal=super().propose(phase,context,**kwargs)
@@ -309,7 +312,7 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
         fixed={m:{'epochs':2} for m in allowed if m.startswith('cnn')}
         kwargs=dict(dataset_id=datasets[3],allowed_models=allowed,model_configs=fixed,storage=checkpoint,
             thread_id=thread,wait=True,client=client(),llm=llm,timeout_seconds=600,max_api_calls=180,
-            evidence_context=expose,risk_context=expose)
+            evidence_context=expose,risk_context=expose,**({'knowledge':scenario=='knowledge-on'} if args.knowledge_ablation else {}))
         if scenario=='recovery':
             original=Nodes.submit
             def interrupt(self,state):raise KeyboardInterrupt()
@@ -326,9 +329,25 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
             assert final['execution']['submission_content']==frozen
         else:final=start_task(runtime,**kwargs)
         save(root,thread+'-state.json',final)
-        assert final['lifecycle']['status']=='completed',final['lifecycle']
+        if final['lifecycle']['status']!='completed':
+            report['llm'].append(dict(scenario=scenario,status=final['lifecycle']['status'],lifecycle=final['lifecycle'],versions=final['versions'],budget=final['budget'],calls=calls))
+            save(root,'runtime_manifest.json',report)
+            raise RuntimeError('real LLM acceptance incomplete')
         assert len(calls)==2 and calls[0]['tool']=='submit_ml_experiment' and calls[1]['tool']=='finalize_ml_session'
         assert ('train_statistics' in calls[0]['context'])==expose
+        if args.knowledge_ablation:
+            refs=final['execution']['submission_content']['knowledge_refs']
+            assert bool(refs)==(scenario=='knowledge-on'),'real on must actually cite provided knowledge'
+            assert final['knowledge']['snapshot']['projection']==calls[0]['context']['knowledge']
+            ablation_states.append(final)
+            if len(ablation_states)==2:
+                on,off=ablation_states
+                assert on['evidence']==off['evidence']
+                assert on['recipes']['catalog']==off['recipes']['catalog']
+                assert on['recipes']['evaluation_plan']==off['recipes']['evaluation_plan']
+                report['knowledge_ablation']=dict(evidence_equal=True,catalog_equal=True,plan_equal=True,
+                    fixed_model_configs_equal=on['task']['model_configs']==off['task']['model_configs'],
+                    on_knowledge=on['knowledge'],off_knowledge=off['knowledge'])
         assert resume_task(runtime,storage=checkpoint,thread_id=thread,client=client(),llm=llm)==final
         run=repo.get(final['execution']['run_id']);catalog=final['recipes']['catalog']
         recipe=next(r for r in catalog['recipes'] if r['recipe_id']==final['execution']['submission_content']['recipe_id'])
@@ -378,7 +397,8 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
         sa,sb=read_artifact(run,'split.json'),read_artifact(other,'split.json')
         partition_fields=('fold_index','train_sample_ids','valid_sample_ids','test_sample_ids','partition_digest','final_fit_indices','best_params','selection_metric','preprocess','splits','external_test_indices')
         assert [{k:f[k] for k in partition_fields} for f in sa]==[{k:f[k] for k in partition_fields} for f in sb]
-        entry=dict(scenario=scenario,classes=3,run_id=run.run_id,baseline_run_id=other.run_id,
+        entry=dict(scenario=scenario,classes=3,session_id=final['identity']['session_id'],thread_id=thread,
+            knowledge=final['knowledge'] if args.knowledge_ablation else None,run_id=run.run_id,baseline_run_id=other.run_id,
             chosen_model=recipe['model_id'],recipe_id=recipe['recipe_id'],plan=final['recipes']['evaluation_plan'],
             agent_session_count_unchanged=True,baseline=baseline,paired_config_equal=True,paired_split_equal=True,
             paired_execution_audit_equal=True,execution_audit=a['execution_audit'],
@@ -393,11 +413,13 @@ def main():
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--port',type=int,default=18761)
     parser.add_argument('--recipes',action='store_true')
+    parser.add_argument('--knowledge-ablation',action='store_true')
     parser.add_argument('--backend-only',action='store_true')
     parser.add_argument('--request-file',type=Path)
     parser.add_argument('--llm-url')
     parser.add_argument('--llm-model',default='qwen3-4b')
     args=parser.parse_args()
+    if args.knowledge_ablation and not args.recipes:parser.error('knowledge ablation requires recipes')
     if args.backend_only:
         if args.recipes or args.llm_url:parser.error('backend-only cannot start Agent/LLM acceptance')
         reject_agent_imports()
