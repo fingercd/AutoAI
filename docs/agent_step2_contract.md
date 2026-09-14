@@ -90,6 +90,8 @@ python scripts/agent_step2_acceptance.py --recipes \
 
 开启时 Session 同事务保存完整发布知识集、匹配、实际投影及 Evidence/plan/catalog/dataset 来源绑定。知识文件仅在创建新开启 Session 时装载；`AUTOAI_KNOWLEDGE_FILE` 是部署配置，HTTP 不接受知识路径。进程缓存不可变发布对象；更新发布使用新路径或显式清除加载缓存并重启部署进程，旧 Session 继续使用已存快照。关闭不装载文件；无匹配为 ready+空集合。装载失败显式报错；损坏/未知存储快照不能当作无匹配。
 
+持久模块声明包含 train_evidence、legal_recipes 或 knowledge 时，记录解码必须存在冻结准备包。整包为 SQL NULL、JSON null 或空串时，读取、创建请求回放及实验提交统一返回不可重试的 409 / agent_preparation_failed，不降级 direct、不重建快照，也不新增预约或 Run。真正旧 direct Session 不含这些模块，继续兼容空准备包。
+
 响应只给安全知识摘要和投影，不返回完整发布知识集。最多展示6条、canonical JSON UTF-8最多16 KiB；按稳定顺序逐完整条目或完整冲突组选择，保留建议、依据与局限，记录省略计数。关闭直接 evidence/risks 展示时，知识不显示对应具体统计/风险码；条目本身仍可能间接传达 Train 信息，完全移除信息须同时关闭 knowledge。
 
 新 submit 参数必须含 `knowledge_refs` 数组，允许空、最多6个、不得重复，只能引用本次实际展示 ID。JSON action 顶层保持 tool_name/arguments/rationale，native tools 使用同一规则；Finalize 参数保持原样。引用版本由冻结投影解析，写入 decision.evidence_refs 并绑定 projection_digest。HTTP 服务再次校验，并将 `knowledge-decision-v1` 写入预约独立的 `decision_metadata_json`；不混入 effective_action/compiled_config/scientific_digest。客户端还核对提交回执的引用集合、版本和摘要与实际请求一致。

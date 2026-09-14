@@ -295,6 +295,9 @@ class AgentSessionRepository:
             frozen_preparation=_decode_preparation(row['frozen_preparation_json']),
         )
         frozen = record.frozen_preparation
+        if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):
+            raise AgentDomainError('agent_preparation_failed',
+                'session 冻结准备包缺失，无法恢复配方契约', status_code=409)
         if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v2':
             from ..knowledge import KnowledgeError
             snapshot = frozen['preparation']['knowledge']
