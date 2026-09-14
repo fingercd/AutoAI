@@ -125,6 +125,9 @@ class AutoAIClient:
         from copy import deepcopy
         from agent_poc.tools import TOOL_SCHEMAS
         self.tool_schemas = deepcopy(TOOL_SCHEMAS)
+        from .contracts_v2 import RESPONSE_MODELS as V2_RESPONSES
+        self.response_models = V2_RESPONSES if self.api_version == 'v2' else RESPONSE_MODELS
+        self.route_prefix = '/api/agent/v2/' if self.api_version == 'v2' else '/api/agent/'
         self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 5:
@@ -140,8 +143,7 @@ class AutoAIClient:
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
                  *, operation: str, idempotent: bool = False,
                  bound_ids: dict[str, str] | None = None) -> dict[str, Any]:
-        if self.api_version == 'v2':
-            path = path.replace('/api/agent/', '/api/agent/v2/', 1)
+        path = path.replace('/api/agent/', self.route_prefix, 1)
         headers = {'Accept': 'application/json'}
         if body is not None:
             headers['Content-Type'] = 'application/json'
@@ -176,10 +178,7 @@ class AutoAIClient:
                                  code=safe_error_code(detail.code), retryable=detail.retryable,
                                  allowed_actions=list(detail.allowed_actions)) from None
         try:
-            response_models = RESPONSE_MODELS
-            if self.api_version == 'v2':
-                from .contracts_v2 import RESPONSE_MODELS as response_models
-            result = response_models[operation].model_validate(payload).model_dump(
+            result = self.response_models[operation].model_validate(payload).model_dump(
                 mode='json', exclude_unset=True)
             for key, value in (bound_ids or {}).items():
                 if result.get(key) != value:

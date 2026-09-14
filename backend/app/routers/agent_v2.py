@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from . import agent
+from .deps import get_agent_service
 from ..http.principal import Principal, get_principal
 from ..agent.contracts import AgentDomainError, FinalizeAgentSessionRequest, ReconcileAgentSessionRequest
 from ..agent.contracts_v2 import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2
@@ -14,7 +15,7 @@ router = APIRouter(prefix='/api/agent/v2')
 
 def call(method, principal, **kwargs):
     try:
-        return getattr(agent._agent_service(V2), method)(principal=principal, **kwargs)
+        return getattr(get_agent_service(V2), method)(principal=principal, **kwargs)
     except (AgentDomainError, TrainingConfigValidationError, ValueError) as exc:
         raise agent._to_http_exception(exc) from exc
 
@@ -58,7 +59,7 @@ def finalize(session_id: str, payload: FinalizeAgentSessionRequest, principal: P
 @router.post('/sessions/{session_id}/reconcile')
 def reconcile(session_id: str, payload: ReconcileAgentSessionRequest, principal: Principal = Depends(get_principal)):
     try:
-        agent._agent_service(V2)._session(session_id, principal)
+        get_agent_service(V2)._session(session_id, principal)
         result = agent._reconciliation_service().reconcile_session(session_id=session_id, principal=principal)
         result['contract_version'] = V2
         return result

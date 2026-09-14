@@ -46,28 +46,10 @@ router = APIRouter()
 
 
 def _agent_service(contract_version: str = 'agent-session-v1') -> AgentService:
-    """每次请求新建一个轻量服务实例，Repository 是 SQLite 句柄集合可以共享。
-
-    与现有 ``get_run_repository`` 风格一致；Repository 本身不带跨请求状态。
-    """
-    sessions = AgentSessionRepository(AGENT_DATABASE)
-    sessions.initialize()
-    runs = RunRepository(RUNS_DATABASE)
-    runs.initialize()
-    datasets = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
-    datasets.initialize()
-    return AgentService(
-        session_repository=sessions,
-        run_repository=runs,
-        dataset_repository=datasets,
-        submission_service=RunSubmissionService(
-            run_repository=runs,
-            dataset_repository=datasets,
-            run_dir=lambda run_id: RUNS_DIR / run_id,
-            status_projector=project_status,
-        ),
-        run_root=RUNS_DIR, contract_version=contract_version,
-    )
+    """Legacy dependency seam, delegated to the shared factory."""
+    import sys
+    from .deps import get_agent_service
+    return get_agent_service(contract_version, storage=sys.modules[__name__])
 
 
 def _reconciliation_service() -> AgentReconciliationService:

@@ -211,3 +211,36 @@ def get_run_dir(run_id: str) -> Path:
     if not run_id or Path(run_id).name != run_id or run_id in {'.', '..'}:
         raise HTTPException(status_code=404, detail='run 不存在')
     return RUNS_DIR / run_id
+
+
+def get_agent_service(contract_version: str = 'agent-session-v1', *, storage=None) -> AgentService:
+    """每次请求新建一个轻量服务实例，Repository 是 SQLite 句柄集合可以共享。
+
+    与现有 ``get_run_repository`` 风格一致；Repository 本身不带跨请求状态。
+    """
+    from .. import paths
+    from ..agent.repository import AgentSessionRepository
+    from ..agent.service import AgentService
+    from ..runs.submission import RunSubmissionService
+    from ..runs.status_projection import project_status
+    source = storage if storage is not None else paths
+    AGENT_DATABASE, RUNS_DATABASE = source.AGENT_DATABASE, source.RUNS_DATABASE
+    DATASETS_DATABASE, STORAGE_DIR, RUNS_DIR = source.DATASETS_DATABASE, source.STORAGE_DIR, source.RUNS_DIR
+    sessions = AgentSessionRepository(AGENT_DATABASE)
+    sessions.initialize()
+    runs = RunRepository(RUNS_DATABASE)
+    runs.initialize()
+    datasets = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
+    datasets.initialize()
+    return AgentService(
+        session_repository=sessions,
+        run_repository=runs,
+        dataset_repository=datasets,
+        submission_service=RunSubmissionService(
+            run_repository=runs,
+            dataset_repository=datasets,
+            run_dir=lambda run_id: RUNS_DIR / run_id,
+            status_projector=project_status,
+        ),
+        run_root=RUNS_DIR, contract_version=contract_version,
+    )
