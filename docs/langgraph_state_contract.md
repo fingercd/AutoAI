@@ -1,4 +1,4 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认 v2；新增字段、参数冻结和恢复分派见 [第二步契约](agent_step2_contract.md)。
+> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认采用训练证据配方 profile 与 agent-state-v3；直接模型选择 v2 和旧 v1 检查点保持原版本。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
 
 # LangGraph 任务 State 契约
 

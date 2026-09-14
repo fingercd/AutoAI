@@ -1,6 +1,6 @@
-# 第二步：全模型单实验协议
+# 全模型单实验协议与训练证据配方
 
-新 CLI 任务默认使用 `/api/agent/v2`、`agent-session-v2`、`agent-observation-v2`、`agent-metadata-v2` 和 `agent-state-v2`。图仍为 `agent-single-experiment-v1`，每个 Session 只运行一次分类实验。旧客户端、旧检查点及人工训练保留原路径与语义；不新增第三步研究模块。
+第二步直接动作任务使用 `/api/agent/v2`、`agent-session-v2`、`agent-observation-v2`、`agent-metadata-v2` 和 `agent-state-v2`。图仍为 `agent-single-experiment-v1`，每个 Session 只运行一次分类实验。旧客户端、旧检查点及人工训练保留原路径与语义。第三步新任务默认协商下文的训练证据配方 profile。
 
 ## 模型与配置
 
@@ -29,7 +29,7 @@ v2 重放先校验冻结请求，再读取已绑定 Run。mapping 已存在而�
 
 ## 检查点与 Prompt
 
-`state_v2.py` 扩展现有 State 块，不复制 Graph。新版本使用 `agent-context-step2-v1` / `agent-decision-step2-v1`。读取检查点后选择版本类型和 LLM 摘要计算规则；旧 checkpoint 不被升级、补参数或刷新请求 ID。
+版本类型与初始化统一在 `state.py`；`state_v2.py` 仅保留旧导入的薄适配，不复制 Graph。新版本使用 `agent-context-step2-v1` / `agent-decision-step2-v1`。读取检查点后选择版本类型和 LLM 摘要计算规则；旧 checkpoint 不被升级、补参数或刷新请求 ID。
 
 Prompt 相对 `agent-decision-step1-v2` 只增加固定参数说明、候选投影及绑定逻辑，不改变模型偏好、推理策略或提供额外训练/测试证据。JSON action 与 native tools 使用同一候选和校验；真实本地 Qwen 验收使用 JSON action，native tools 只有协议测试证据。
 
@@ -43,7 +43,7 @@ python -m agent_poc.orchestration start --dataset-id DATASET_ID \
   --model-configs '{"cnn1d":{"epochs":2},"cnn_transformer1d":{"epochs":2}}' --wait
 ```
 
-CLI 省略 allowed-models 时保留旧三模型上限，以兼容既有命令；新任务协议仍为 v2。显式传入 v1 Client 的程序调用保留 v1 任务创建；普通新运行默认 v2。
+CLI 省略 allowed-models 时保留旧三模型上限。新任务默认采用下文配方 profile；第二步命令添加 `--execution-profile direct_action`。显式传入旧 Client 的程序调用保留相应版本任务创建。
 
 独立验收驱动为 `scripts/agent_step2_acceptance.py`。它要求新建隔离根目录，在所有业务导入前绑定 Web/worker 的全部路径，使用 loopback/server 模式及仅存于进程内存的随机 token。它不改变平台默认 storage 路径，不触碰历史数据库。报告含逐模型时间线、配置、Validation、Finalize、Manifest 和运行绑定。数据为工程合成夹具，不构成领域科研结论。
 
@@ -55,3 +55,28 @@ CLI 省略 allowed-models 时保留旧三模型上限，以兼容既有命令；
 - durable Run/mapping 已存在时，并发 bind 的条件更新失败会按 scope 重读；仅相同预约已绑定同一 Run 时返回幂等成功。
 - scheduler_factor 的合法区间为 `0 < factor < 1`。深度配置策略升级到 `agent-model-config-v2`，有限参数 Schema 增加 exclusive_maximum。旧 v1 快照保持原序列化与摘要；仅明确识别的旧调度边界策略、且固定值满足当前有效区间时允许继续未提交任务。已有 Run 的重放仍优先返回原 Run，不重建配置。
 - model_configs 的键必须属于 allowed_models，允许模型必须来自服务端目录；未知参数在排除不可用候选之前校验。已知不可用模型的合法配置仍按协议记录排除原因，拼写错误不会被过滤掉。
+
+
+## 第三步：冻结训练证据与有限配方
+
+沿用 `/api/agent/v2`，通过 `X-AutoAI-Agent-Revision: agent-recipes-revision-v1` 协商扩展。新 Session 请求同时提供 `execution_profile=train-evidence-recipes-v1`、`protocol_revision=agent-recipes-revision-v1` 和 `modules=[train_evidence, legal_recipes]`。新 profile 的读取、提交、观察、恢复和 Finalize 均需要该修订头；旧严格客户端访问时显式返回版本不兼容。旧行与旧响应不补入这些字段。
+
+准备入口属于普通后端。`evaluation_plan.py` 使用原分层分组算法生成不可变计划，按 Principal scope 存在 Run 数据库中；固定原文件 SHA-256、轴、种子、评估配置、分区及完整摘要。对外仅公开安全引用，不公开行号或样品分组。worker 在拟合之前再次核对文件、计划与配置，并消费保存的索引。新人工 grouped holdout 请求也经过同一准备入口；CV 和独立测试集保留原执行路径。
+
+`train_evidence.py` 仅接收原始 float32 TrainView，不能访问 Dataset、数据库或网络。统计包括观测数与样品组数、类别分布、重复测量、常量列、重复列、重复向量及标签冲突。重复项用哈希分桶后精确比较；汇总使用确定性规则。Validation/Test 值不参与统计。证据风险只作说明，不按风险筛模型；确实无法拟合的硬维度条件会留下明确排除原因。
+
+`recipes.py` 按冻结能力与固定参数为每个可执行允许模型编译一个配方，继续引用原有搜索策略，不复制搜索网格。配方包含预处理、结构版本、固定配置、模型策略与所选模型的执行依赖摘要；无关模型新增不使它失效。完整配方摘要排除 rationale、展示文本、请求/Session/Run ID 和路径。目录摘要绑定数据、计划、证据、允许模型及其冻结策略。当前源码绑定跟踪 Python AST 的静态符号及相对导入；新增动态导入或模块属性间接调用时必须同步扩展绑定并测试。
+
+Session 与准备结果原子冻结。Experiment 只接受 `recipe_id`、`recipe_digest`、`catalog_digest`、`rationale`、`client_request_id`；不能混入自由模型参数。普通人工请求不能伪造 `execution_recipe_digest`、`execution_catalog_digest`、`execution_evidence_digest`、`execution_search_digest`。已有 Run / durable mapping 仍优先幂等回读；没有执行记录时才检查当前模型可用性和搜索策略漂移。后端返回配置前核对持久 Run 与冻结配方的绑定。
+
+新检查点为 `agent-state-v3`，仍使用同一套 21 组 State、Graph、journal 和恢复入口；旧 v1/v2 序列化与历史摘要保持不变。Evidence/recipes 是已准备内容；LLM 只能看到安全统计、风险、有限配方及随后真实 Validation。JSON action 与 native tools 使用等价的 recipe_id 约束。`--hide-evidence-context` 和 `--hide-risk-context` 只隐藏 LLM 上下文，后端仍计算并冻结相同证据，不改变候选或后端行为。
+
+```bash
+python -m agent_poc.orchestration start --dataset-id DATASET_ID \
+  --allowed-models logistic_regression,svm,random_forest --wait
+python scripts/agent_step2_acceptance.py --backend-only --root /tmp/autoai-step3-native-UNIQUE
+python scripts/agent_step2_acceptance.py --recipes \
+  --root /tmp/autoai-step3-UNIQUE --llm-url http://127.0.0.1:18762/v1
+```
+
+准备限制由 `AUTOAI_PREPARATION_SECONDS`、`AUTOAI_PREPARATION_MAX_BYTES`、`AUTOAI_PREPARATION_BLOCK_SIZE` 控制。超时、资源不足、数据或计划不合法会显式失败，不将缺失证据记为零。验收驱动复用原 Web/worker 生命周期；`--backend-only` 场景不启动 Agent/LLM，原生请求不携带配方或计划引用，并强制检查 Agent 表无记录。另在新隔离目录完成真实 LLM 传统/深度/恢复场景，并用独立普通 HTTP 进程提交相同配方配置与计划；比较实际分区、执行审计和模型 profile，传统模型额外以固定容差比较指标与预测。普通提交不新增 Agent Session 或预约；worker 与普通请求进程阻断 Agent/LLM 导入。Web 仍托管原 Agent 路由。产物完整性、退出清理和运行版本均进入验收记录。

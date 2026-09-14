@@ -18,16 +18,16 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 
 DSCARNet 已退役，新训练请求及其 `dscar_net` 别名均被拒绝；历史 Run、Manifest 和结果仍按原权限与完整性规则只读访问。旧 Agent 同请求的已绑定 Run 或 durable mapping 优先回读；未提交的旧 DSCARNet 任务返回 `model_retired`。部署前须确认旧 queued/running 任务已终态，本次代码变更不切换生产 worker。
 
-## 第二步全模型 Agent
+## 全模型 Agent 与训练证据配方
 
-新任务默认采用 Agent v2，支持按能力快照选择当前环境可执行的模型，并在 Session 创建时冻结模型参数。保留 v1 三模型客户端和旧检查点恢复。仍是 `max_runs=1` 的单实验流程，不启用第三步研究模块。协议、参数和命令见 [第二步契约](docs/agent_step2_contract.md)。
+新 CLI 任务在 Agent v2 上协商 `train-evidence-recipes-v1`：Session 创建时冻结分组划分、只来自 Train 的证据及有限合法配方。LLM 只选择配方 ID 和说明，后端按冻结配置执行现有模型搜索。仍是 `max_runs=1` 的单实验流程。`--execution-profile direct_action` 保留第二步直接模型选择，旧 v1/v2 检查点按原版本恢复。协议、参数和命令见 [Agent 契约](docs/agent_step2_contract.md)。
 
 ## LangGraph 单实验编排
 
 `agent_poc/orchestration/` 提供独立于网页的 `start / resume / status` 入口：
-真实 LLM 在 Agent 能力允许的模型中提出选择，HTTP 只提交 queued Run，独立 worker
+真实 LLM 在冻结目录中选择执行配方，HTTP 只提交 queued Run，独立 worker
 训练后，编排器仅读取 Validation 并由后端确认 Finalize。当前协议固定一次实验；
-后续 Evidence、配方、搜索、诊断和案例记忆模块保持未实现/关闭。
+Train Evidence 与合法配方已启用；自适应搜索、诊断和案例记忆保持关闭。人工训练与 Agent 共用独立后端的划分准备和执行入口。
 
 Agent 依赖单独安装：`python -m pip install -r agent_poc/requirements.txt -c agent_poc/constraints-verified.txt`。
 完整 [State、配置与启动/恢复命令](docs/langgraph_state_contract.md) 和
