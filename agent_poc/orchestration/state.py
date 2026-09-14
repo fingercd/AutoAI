@@ -716,7 +716,7 @@ class PendingOperation(StrictModel):
 
     @model_validator(mode='after')
     def content_matches(self) -> 'PendingOperation':
-        types = {'session': SessionRequest, 'experiment': ExperimentRequest, 'finalize': FinalizeRequest}
+        types = {'session': SessionRequest, 'experiment': (ExperimentRequest, RecipeExperimentRequest), 'finalize': FinalizeRequest}
         tools = {'session': 'start_ml_session', 'experiment': 'submit_ml_experiment',
                  'finalize': 'finalize_ml_session'}
         if self.kind in types:
@@ -872,17 +872,18 @@ class StateModel(StrictModel):
                 raise ValueError('selection score requires ready validation')
             if self.feedback.selection_score != getattr(self.feedback.validation_metrics, self.task.selection_metric):
                 raise ValueError('selection score does not match the frozen metric')
-        for name in ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning'):
+        for name in (('knowledge', 'memory', 'diagnosis', 'replanning') if self.versions.state=='agent-state-v3' else ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning')):
             if getattr(self, name).status != 'disabled':
                 raise ValueError('unavailable research module cannot publish an enabled status')
-        if (self.evidence.algorithm_version is not None or self.evidence.risks or self.evidence.summary is not None
-                or self.evidence.references or self.evidence.validity != 'unavailable'
-                or self.evidence.statistics != TrainStatistics()):
-            raise ValueError('disabled evidence cannot publish fabricated outputs')
-        if (self.recipes.catalog_reference is not None or self.recipes.catalog_version is not None
-                or self.recipes.catalog_digest is not None or self.recipes.legal_recipes or self.recipes.uses
-                or self.recipes.selection_mode != 'direct_action'):
-            raise ValueError('disabled recipes cannot publish fabricated outputs')
+        if self.versions.state != 'agent-state-v3':
+            if (self.evidence.algorithm_version is not None or self.evidence.risks or self.evidence.summary is not None
+                    or self.evidence.references or self.evidence.validity != 'unavailable'
+                    or self.evidence.statistics != TrainStatistics()):
+                raise ValueError('disabled evidence cannot publish fabricated outputs')
+            if (self.recipes.catalog_reference is not None or self.recipes.catalog_version is not None
+                    or self.recipes.catalog_digest is not None or self.recipes.legal_recipes or self.recipes.uses
+                    or self.recipes.selection_mode != 'direct_action'):
+                raise ValueError('disabled recipes cannot publish fabricated outputs')
         if self.knowledge.prior_version is not None or self.knowledge.matches:
             raise ValueError('disabled knowledge cannot publish fabricated outputs')
         if (self.memory.snapshot_version is not None or self.memory.snapshot_digest is not None
@@ -1032,12 +1033,117 @@ class StateModelV2(StateModel):
     def frozen_parameters(self):
         frozen=self.capabilities.frozen_snapshot
         for action in (self.decision.action,self.execution.effective_action,self.execution.submission_content,self.execution.effective_config):
-            if action is None:
+            if action is None or isinstance(action, RecipeExperimentRequest):
                 continue
             if frozen is None or action.model_type not in frozen.model_configs or action.model_params != frozen.model_configs[action.model_type]:
                 raise ValueError('configuration differs from frozen Session')
         return self
 
+
+
+from agent_poc.clients.contracts_v2 import (Preparation, TrainEvidence as EvidenceContent,
+    RecipeCatalog as CatalogContent, EvaluationPlanReference)
+
+
+class RecipeTask(TaskStateV2):
+    execution_profile: Literal['train-evidence-recipes-v1']='train-evidence-recipes-v1'
+
+
+class RecipeVersions(VersionsStateV2):
+    state: Literal['agent-state-v3']='agent-state-v3'
+    protocol_revision: Literal['agent-recipes-revision-v1']='agent-recipes-revision-v1'
+    context_projection: Literal['agent-context-recipes-v1']='agent-context-recipes-v1'
+    prompt: Literal['agent-decision-recipes-v1']='agent-decision-recipes-v1'
+    evidence: VersionRef=Field(default_factory=lambda:VersionRef(status='ready',version='train-evidence-v1'))
+    recipes: VersionRef=Field(default_factory=lambda:VersionRef(status='ready',version='recipe-catalog-v1'))
+    search: VersionRef=Field(default_factory=lambda:VersionRef(status='ready',version='training-execution-policy-v1'))
+    rules: VersionRef=Field(default_factory=lambda:VersionRef(status='ready',version='train-risk-rules-v1'))
+
+
+class RecipeContext(ContextPolicyV2):
+    projection: Literal['agent-context-recipes-v1']='agent-context-recipes-v1'
+    evidence: bool=True
+    risks: bool=True
+
+
+class AvailableSwitch(StrictModel):
+    enabled: Literal[True]=True
+    implementation_status: Literal['ready']='ready'
+
+
+class RecipeModulePolicy(ModulePolicyStateV2):
+    context_policy: RecipeContext=Field(default_factory=RecipeContext)
+    evidence_card: AvailableSwitch=Field(default_factory=AvailableSwitch)
+    restricted_strategy_pool: AvailableSwitch=Field(default_factory=AvailableSwitch)
+
+
+class PreparedEvidenceState(StrictModel):
+    status: Literal['pending','ready']='pending'
+    content: EvidenceContent | None=None
+
+
+class PreparedRecipesState(StrictModel):
+    status: Literal['pending','ready']='pending'
+    selection_mode: Literal['recipe_selection']='recipe_selection'
+    catalog: CatalogContent | None=None
+    evaluation_plan: EvaluationPlanReference | None=None
+    uses: list[RecipeUse]=Field(default_factory=list)
+
+
+class RecipeExperimentRequest(StrictModel):
+    session_id: Identifier
+    recipe_id: Annotated[str,Field(pattern=r'^recipe_[a-f0-9]{64}$')]
+    rationale: SafeText
+    client_request_id: Identifier
+
+
+class RecipeSessionRequest(SessionRequestV2):
+    context_policy: RecipeContext=Field(default_factory=RecipeContext)
+
+
+class RecipeExecution(ExecutionStateV2):
+    submission_content: RecipeExperimentRequest | None=None
+
+
+class RecipePendingOperation(PendingOperationV2):
+    content: RecipeSessionRequest | RecipeExperimentRequest | FinalizeRequest | None=None
+
+
+class RecipeRecovery(RecoveryStateV2):
+    pending_operation: RecipePendingOperation | None=None
+
+
+class RecipeStateModel(StateModelV2):
+    task: RecipeTask
+    versions: RecipeVersions
+    module_policy: RecipeModulePolicy=Field(default_factory=RecipeModulePolicy)
+    evidence: PreparedEvidenceState=Field(default_factory=PreparedEvidenceState)
+    recipes: PreparedRecipesState=Field(default_factory=PreparedRecipesState)
+    execution: RecipeExecution=Field(default_factory=RecipeExecution)
+    recovery: RecipeRecovery=Field(default_factory=RecipeRecovery)
+
+    @model_validator(mode='after')
+    def prepared_bindings(self):
+        if self.evidence.content is None:
+            if self.evidence.status!='pending' or self.recipes.status!='pending' or self.recipes.catalog is not None:
+                raise ValueError('preparation is incomplete')
+        else:
+            if self.evidence.status!='ready' or self.recipes.status!='ready':
+                raise ValueError('preparation status inconsistent')
+            prepared=Preparation(evaluation_plan=self.recipes.evaluation_plan,
+                evidence=self.evidence.content,catalog=self.recipes.catalog)
+            if self.task.dataset_fingerprint!=prepared.catalog.dataset_sha256 or self.task.split_fingerprint!=prepared.evaluation_plan.partition_digest:
+                raise ValueError('task preparation mismatch')
+            from agent_poc.clients.contracts_v2 import validate_catalog_binding
+            validate_catalog_binding(prepared.catalog,self.capabilities.frozen_snapshot.model_dump(mode='json'))
+            content=self.execution.submission_content
+            if content is not None:
+                recipe=next((r for r in prepared.catalog.recipes if r.recipe_id==content.recipe_id),None)
+                if recipe is None or (self.decision.kind=='recipe_selection' and self.decision.recipe_id!=content.recipe_id):
+                    raise ValueError('decision outside frozen recipes')
+                if self.execution.effective_config is not None and self.execution.effective_config.model_type!=recipe.model_id:
+                    raise ValueError('effective recipe model mismatch')
+        return self
 
 
 def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint: str,
@@ -1051,7 +1157,8 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               prompt_version: str = 'agent-decision-step1-v1',
               llm_config_version: str = 'agent-llm-http-v1',
               source_role: Literal['development', 'benchmark', 'domain'] = 'development',
-              wire_version: str = 'agent-state-v1', model_configs: dict | None = None) -> GraphState:
+              wire_version: str = 'agent-state-v1', model_configs: dict | None = None,
+              evidence_context: bool = True, risk_context: bool = True) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -1059,14 +1166,17 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     for count in (max_llm_calls, max_api_calls, max_operation_attempts):
         if type(count) is not int or count < 1:
             raise ValueError('runtime call limits must be positive integers')
-    if wire_version not in ('agent-state-v1', 'agent-state-v2'):
+    if wire_version not in ('agent-state-v1', 'agent-state-v2','agent-state-v3'):
         raise ValueError('unknown State version')
-    modern = wire_version == 'agent-state-v2'
+    modern = wire_version != 'agent-state-v1'
+    recipes = wire_version == 'agent-state-v3'
     task_type = TaskStateV2 if modern else TaskState
     version_type = VersionsStateV2 if modern else VersionsState
     context_type = ContextPolicyV2 if modern else ContextPolicy
     policy_type = ModulePolicyStateV2 if modern else ModulePolicyState
     state_type = StateModelV2 if modern else StateModel
+    if recipes:
+        task_type,version_type,context_type,policy_type,state_type = RecipeTask,RecipeVersions,RecipeContext,RecipeModulePolicy,RecipeStateModel
     if not modern and model_configs:
         raise ValueError('v1 does not accept model configurations')
     evaluation = EvaluationConfig()
@@ -1074,9 +1184,9 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
                      selection_metric=selection_metric,
                      **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
-    versions = version_type(prompt='agent-decision-step2-v1' if modern else prompt_version, llm_config=llm_config_version,
+    versions = version_type(prompt='agent-decision-recipes-v1' if recipes else ('agent-decision-step2-v1' if modern else prompt_version), llm_config=llm_config_version,
                              llm_config_fingerprint=llm_config_fingerprint)
-    policy = policy_type(context_policy=context_type(source_role=source_role))
+    policy = policy_type(context_policy=context_type(source_role=source_role,**({'evidence':evidence_context,'risks':risk_context} if recipes else {})))
     budget = BudgetState(deadline_at=started_at + timeout_seconds,
                          max_operation_attempts=max_operation_attempts,
                          max_repair_attempts=max_repair_attempts,
@@ -1131,6 +1241,8 @@ def _startup_payload(task: dict, versions: dict, policy: dict, budget: dict,
     # Exclude only these two fields from the pre-request configuration digest.
     frozen_task = {key: value for key, value in task.items()
                    if key not in ('dataset_fingerprint', 'dataset_fingerprint_status')}
+    if task.get('execution_profile')=='train-evidence-recipes-v1':
+        frozen_task.pop('split_fingerprint',None);frozen_task.pop('split_fingerprint_status',None)
     return {'task': frozen_task, 'versions': versions, 'module_policy': policy,
             'budget': _frozen_budget(budget), 'backend_fingerprint': backend_fingerprint,
             'principal_fingerprint': principal_fingerprint,
@@ -1203,10 +1315,13 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
     old = validate_state(state).model_dump(mode='json')
     merged = _deep_merge(old, patch)
     updated = validate_state(merged).model_dump(mode='json')
-    if old['versions']['state'] == 'agent-state-v2':
+    if old['versions']['state'] in ('agent-state-v2','agent-state-v3'):
         frozen = old['capabilities']['frozen_snapshot']
         if frozen is not None and frozen != updated['capabilities']['frozen_snapshot']:
             raise ValueError('Session capability snapshot is frozen')
+    if old['versions']['state']=='agent-state-v3' and old['evidence']['content'] is not None:
+        if old['evidence']!=updated['evidence'] or any(old['recipes'][k]!=updated['recipes'][k] for k in ('status','catalog','evaluation_plan')):
+            raise ValueError('prepared evidence and catalog are frozen')
     for block in ('versions', 'module_policy'):
         if old[block] != updated[block]:
             raise ValueError(f'{block} is frozen')
@@ -1217,6 +1332,8 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
         if value is not None and value != updated['identity'][key]:
             raise ValueError('bound identity cannot be changed')
     for key, value in old['task'].items():
+        if old['versions']['state']=='agent-state-v3' and key in ('split_fingerprint','split_fingerprint_status') and old['task']['split_fingerprint_status']=='unavailable':
+            continue
         if key in ('dataset_fingerprint', 'dataset_fingerprint_status') and old['task']['dataset_fingerprint_status'] == 'pending':
             continue
         if value != updated['task'][key]:
@@ -1252,6 +1369,8 @@ def validate_state(raw):
         if raw.get('versions', {}).get('prompt') not in ('agent-decision-step1-v1','agent-decision-step1-v2'):
             raise ValueError('unknown Prompt version')
         return StateModel.model_validate(raw)
+    if version == 'agent-state-v3':
+        return RecipeStateModel.model_validate(raw)
     if version == 'agent-state-v2':
         return StateModelV2.model_validate(raw)
     raise ValueError('unknown State version')

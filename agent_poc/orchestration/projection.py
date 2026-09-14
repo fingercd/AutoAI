@@ -108,7 +108,8 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
     checked = ValidationMetrics.model_validate(projected_metrics).model_dump(exclude_none=True)
     if checked.get(task['selection_metric']) != validation_score:
         raise ValueError('candidate selection metric mismatch')
-    context_type = FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2
+    context_type = (RecipeFinalizationContext if context_version=='agent-context-recipes-v1' else
+                    FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2)
     return context_type.model_validate({
         'context_version': context_version, 'phase': 'finalize', 'task': _project_task(task),
         'allowed_actions': ['finalize_ml_session'],
@@ -119,7 +120,9 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
 
 
 def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
-    if context.get('context_version') == 'agent-context-step2-v1':
+    if context.get('context_version') == 'agent-context-recipes-v1':
+        model = {'submit':RecipeSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
+    elif context.get('context_version') == 'agent-context-step2-v1':
         model = {'submit': SelectionContextV2, 'finalize': FinalizationContextV2}.get(phase)
     else:
         model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
@@ -149,3 +152,37 @@ class SelectionContextV2(SelectionContext):
 
 class FinalizationContextV2(FinalizationContext):
     context_version: Literal['agent-context-step2-v1']
+
+
+from agent_poc.clients.contracts_v2 import Recipe, TrainStatistics, Risk, Preparation
+
+
+class RecipeSelectionBindings(ClosedModel):
+    session_id: Identifier
+
+
+class RecipeSelectionContext(ClosedModel):
+    context_version: Literal['agent-context-recipes-v1']
+    phase: Literal['submit']
+    task: ProjectedTask
+    recipes: Annotated[list[Recipe],Field(min_length=1)]
+    train_statistics: TrainStatistics | None=None
+    train_risks: list[Risk] | None=None
+    allowed_actions: list[Literal['submit_ml_experiment']]
+    bindings: RecipeSelectionBindings
+
+
+class RecipeFinalizationContext(FinalizationContext):
+    context_version: Literal['agent-context-recipes-v1']
+
+
+def recipe_selection_context(*,task,session_id,preparation,context_policy):
+    prepared=Preparation.model_validate(preparation)
+    payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
+        recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes],
+        allowed_actions=['submit_ml_experiment'],bindings={'session_id':session_id})
+    if context_policy['evidence']:
+        payload['train_statistics']=prepared.evidence.statistics.model_dump(mode='json')
+    if context_policy['risks']:
+        payload['train_risks']=[r.model_dump(mode='json') for r in prepared.evidence.risks]
+    return RecipeSelectionContext.model_validate(payload).model_dump(mode='json',exclude_none=True)
