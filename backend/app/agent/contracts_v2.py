@@ -24,7 +24,7 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     max_runs: int = Field(1, strict=True, ge=1, le=1)
     model_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     execution_profile: Literal['train-evidence-recipes-v1'] | None = None
-    protocol_revision: Literal['agent-recipes-revision-v1'] | None = None
+    protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2'] | None = None
     context_policy: AgentContextPolicy | RecipeContextPolicy = Field(default_factory=AgentContextPolicy)
 
     @model_validator(mode='after')
@@ -33,7 +33,12 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
             raise ValueError('profile requires negotiated protocol revision')
         if self.execution_profile:
             self.context_policy = RecipeContextPolicy.model_validate(self.context_policy.model_dump())
-            if set(self.modules) != {'train_evidence','legal_recipes'} or len(self.modules)!=2:
+            allowed = [['train_evidence','legal_recipes']]
+            if self.protocol_revision == 'agent-recipes-revision-v2':
+                allowed.append(['train_evidence','legal_recipes','knowledge'])
+            valid = (set(self.modules)=={'train_evidence','legal_recipes'} and len(self.modules)==2
+                     if self.protocol_revision=='agent-recipes-revision-v1' else self.modules in allowed)
+            if not valid:
                 raise ValueError('recipe profile requires evidence and recipe capabilities')
         elif isinstance(self.context_policy, RecipeContextPolicy):
             raise ValueError('evidence context requires recipe profile')
@@ -77,3 +82,13 @@ class CreateRecipeExperimentRequest(_IdempotentRequest):
 
     def validate_business(self):
         return None
+
+
+class CreateKnowledgeExperimentRequest(CreateRecipeExperimentRequest):
+    knowledge_refs: list[str] = Field(max_length=6)
+
+    @model_validator(mode='after')
+    def unique_refs(self):
+        if len(self.knowledge_refs) != len(set(self.knowledge_refs)):
+            raise ValueError('duplicate knowledge reference')
+        return self

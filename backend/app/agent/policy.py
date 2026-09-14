@@ -1,5 +1,8 @@
 """Frozen second-step semantics shared by Session creation and submission."""
-from typing import Any
+from __future__ import annotations
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..knowledge import KnowledgeDecision
 from ..contracts import TrainingSpec
 from ..model_config import model_capability_snapshot, model_policy, resolve_model_params, semantic_digest, compatible_frozen_policy
 from ..model_catalog import model_availability, RETIRED_MODEL_ALIASES
@@ -90,6 +93,7 @@ class ExperimentCommand:
     rationale: str
     client_request_id: str | None
     recipe: dict[str, Any] | None = None
+    decision_metadata: KnowledgeDecision | None = None
 
 
 def normalize_experiment(session, payload) -> ExperimentCommand:
@@ -106,7 +110,18 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
         action = frozen_action(session, canonical)
         body = payload.model_dump(mode='json')
         body.update(contract_version=V2,execution_profile=session.frozen_preparation['execution_profile'])
-        return ExperimentCommand(action, body, payload.rationale, payload.client_request_id, recipe)
+        from .contracts_v2 import CreateKnowledgeExperimentRequest
+        metadata = None
+        modern = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v2'
+        if modern != isinstance(payload, CreateKnowledgeExperimentRequest):
+            raise AgentDomainError('agent_version_incompatible', 'Knowledge request revision mismatch', status_code=409)
+        if modern:
+            from ..knowledge import resolve_decision
+            try:
+                metadata = resolve_decision(session.frozen_preparation['preparation']['knowledge'], payload.knowledge_refs)
+            except ValueError as exc:
+                raise AgentDomainError('agent_knowledge_reference_invalid', 'Reference not provided in frozen context', status_code=422) from exc
+        return ExperimentCommand(action, body, payload.rationale, payload.client_request_id, recipe, metadata)
     if isinstance(payload, CreateRecipeExperimentRequest):
         raise AgentDomainError('agent_version_incompatible', 'Recipe requires recipe profile', status_code=409)
     payload.validate_business()
