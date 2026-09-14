@@ -15,7 +15,7 @@ from backend.app.runs.submission import (
 
 def test_submission_creates_snapshot_and_queued_projection(tmp_path):
     storage = tmp_path / 'storage'; uploads = storage / 'uploads'; uploads.mkdir(parents=True)
-    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0\n1,A,S1,1\n', encoding='utf-8')
+    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,4,5\n5,B,B2,5,6\n6,B,B3,6,7\n', encoding='utf-8')
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage); datasets.initialize()
     dataset = datasets.register(source, original_name='teacher.csv', principal=Principal())
     runs = RunRepository(storage / 'runs.sqlite3'); runs.initialize()
@@ -38,7 +38,7 @@ def test_submission_creates_snapshot_and_queued_projection(tmp_path):
 
 def test_submission_hides_cross_principal_dataset_and_rejects_incompatible_worker(tmp_path):
     storage = tmp_path / 'storage'; uploads = storage / 'uploads'; uploads.mkdir(parents=True)
-    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0\n1,A,S1,1\n')
+    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,4,5\n5,B,B2,5,6\n6,B,B3,6,7\n')
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage); datasets.initialize()
     dataset = datasets.register(source, original_name='data.csv', principal=Principal('a', 'tenant'))
     runs = RunRepository(storage / 'runs.sqlite3'); runs.initialize()
@@ -64,7 +64,7 @@ def test_submission_hides_cross_principal_dataset_and_rejects_incompatible_worke
 
 def test_agent_submission_key_is_durable_and_payload_bound(tmp_path):
     storage = tmp_path / 'storage'; uploads = storage / 'uploads'; uploads.mkdir(parents=True)
-    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0\n1,A,S1,1\n')
+    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,4,5\n5,B,B2,5,6\n6,B,B3,6,7\n')
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage); datasets.initialize()
     dataset = datasets.register(source, original_name='display-only.csv', principal=Principal())
     runs = RunRepository(storage / 'runs.sqlite3'); runs.initialize()
@@ -98,7 +98,7 @@ def test_agent_submission_key_is_durable_and_payload_bound(tmp_path):
 
 def test_human_submission_does_not_write_agent_mapping(tmp_path):
     storage = tmp_path / 'storage'; uploads = storage / 'uploads'; uploads.mkdir(parents=True)
-    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0\n1,A,S1,1\n')
+    source = uploads / 'data.csv'; source.write_text('Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,4,5\n5,B,B2,5,6\n6,B,B3,6,7\n')
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage); datasets.initialize()
     dataset = datasets.register(source, original_name='data.csv', principal=Principal())
     runs = RunRepository(storage / 'runs.sqlite3'); runs.initialize()

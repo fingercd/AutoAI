@@ -11,7 +11,10 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..evaluation_plan import PreparedEvaluation
 
 from ..contracts import TrainingConfigValidationError, TrainingSpec
 from ..datasets.repository import DatasetIntegrityError, DatasetRepository
@@ -84,6 +87,7 @@ class RunSubmissionRequest:
     submission_source: SubmissionSource
     submission_key: str | None = None
     expected_dataset_sha256: str | None = None
+    prepared_evaluation: PreparedEvaluation | None = None
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,30 @@ class RunSubmissionService:
             test_dataset_name=test.original_name if test is not None else None,
         )
 
+    def prepare_evaluation(self, *, dataset_id, raw_config, principal, expected_sha256=None, legacy_path=None, limits=None):
+        from ..evaluation_plan import (build_evaluation_plan, load_dataset_view,
+            validate_plan, evaluation_config, PreparationResourceExhausted)
+        try:
+            dataset = (self.datasets.resolve(dataset_id, principal=principal) if dataset_id
+                else self.datasets.resolve_system(None, legacy_path=legacy_path))
+            sha = self.datasets.verify_integrity(dataset, expected_sha256=expected_sha256)
+            view = load_dataset_view(dataset.path,sha,limits)
+            evaluation = evaluation_config(raw_config)
+            seed = raw_config.get('seed',42)
+            if raw_config.get('evaluation_plan_digest'):
+                plan = self.runs.get_evaluation_plan(raw_config['evaluation_plan_digest'],principal=principal)
+                validate_plan(plan,view,evaluation,seed)
+            else:
+                plan = build_evaluation_plan(view,evaluation,seed)
+                self.runs.save_evaluation_plan(plan,principal=principal)
+            return view, plan
+        except PreparationResourceExhausted:
+            raise RunSubmissionError('preparation_resource_exhausted','Preparation resource limit exceeded',status_code=422) from None
+        except (FileNotFoundError, PermissionError, DatasetIntegrityError):
+            raise DatasetUnavailable() from None
+        except ValueError:
+            raise RunSubmissionError('evaluation_plan_invalid','Dataset or evaluation plan is invalid',status_code=422) from None
+
     def submit(self, request: RunSubmissionRequest) -> RunSubmissionResult:
         return self.submit_prepared(
             reference=self.resolve_reference(request),
@@ -162,6 +190,7 @@ class RunSubmissionService:
             submission_source=request.submission_source,
             submission_key=request.submission_key,
             expected_dataset_sha256=request.expected_dataset_sha256,
+            prepared_evaluation=request.prepared_evaluation,
         )
 
     def submit_prepared(
@@ -174,8 +203,16 @@ class RunSubmissionService:
         submission_key: str | None = None,
         snapshot_provider: Callable[..., dict[str, Any]] | None = None,
         expected_dataset_sha256: str | None = None,
+        prepared_evaluation: PreparedEvaluation | None = None,
     ) -> RunSubmissionResult:
         """提交已由 HTTP 兼容层解析的数据引用，供旧路由保持注入点兼容。"""
+        audit_fields={'execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest'}
+        if submission_source!='agent' and audit_fields.intersection(raw_config):
+            raise RunSubmissionError('invalid_training_config','Execution recipe audit is server-owned')
+        if prepared_evaluation is not None:
+            if (raw_config.get('evaluation_plan_digest')!=prepared_evaluation.plan_digest
+                    or expected_dataset_sha256!=prepared_evaluation.dataset_sha256):
+                raise RunSubmissionError('evaluation_plan_invalid','Prepared evaluation binding differs')
         if submission_key is not None and submission_source != 'agent':
             raise RunSubmissionError(
                 'invalid_submission_key', 'submission key 仅供 Agent 内部提交使用'
@@ -220,6 +257,14 @@ class RunSubmissionService:
                 '数据指纹与冻结 Session 不一致，未创建训练任务', status_code=409,
             )
         effective_training_config = spec.to_legacy_dict()
+        if not has_external_test and effective_training_config['split_mode'] == 'stratified_holdout':
+            _, plan = self.prepare_evaluation(dataset_id=reference.dataset_id,
+                raw_config=effective_training_config, principal=principal,
+                expected_sha256=dataset_snapshot['sha256'],legacy_path=reference.legacy_path)
+            effective_training_config['evaluation_plan_digest'] = plan.plan_digest
+            spec = TrainingSpec(effective_training_config,warnings=spec.warnings)
+        elif effective_training_config.get('evaluation_plan_digest'):
+            raise RunSubmissionError('evaluation_plan_invalid','Plans apply only to grouped holdout')
         test_snapshot: dict[str, Any] | None = None
         if has_external_test:
             test_snapshot = snapshot(

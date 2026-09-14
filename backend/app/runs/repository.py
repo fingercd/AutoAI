@@ -179,6 +179,9 @@ class RunRepository:
     # 按 Principal 的范围列表查询。
     def initialize(self) -> None:
         with self._connection() as connection:
+            connection.execute("""CREATE TABLE IF NOT EXISTS evaluation_plans_v1 (
+                scope_digest TEXT NOT NULL, plan_digest TEXT NOT NULL, plan_json TEXT NOT NULL,
+                PRIMARY KEY(scope_digest, plan_digest))""")
             connection.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS runs (
@@ -1141,3 +1144,32 @@ class RunRepository:
             connection.commit()
         assert row is not None
         return self._record(row)
+
+
+    def save_evaluation_plan(self, plan, *, principal: Principal):
+        from ..evaluation_plan import digest
+        scope = digest(list(self._scope_values(principal)))
+        body = plan.model_dump_json()
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT plan_json FROM evaluation_plans_v1 WHERE scope_digest=? AND plan_digest=?',
+                (scope, plan.plan_digest)).fetchone()
+            if row is not None and json.loads(row['plan_json']) != json.loads(body):
+                raise ValueError('evaluation_plan_conflict')
+            if row is None:
+                connection.execute('INSERT INTO evaluation_plans_v1 VALUES(?,?,?)',(scope,plan.plan_digest,body))
+            connection.commit()
+        return plan
+
+    def get_evaluation_plan(self, plan_digest: str, *, principal: Principal):
+        from ..evaluation_plan import digest, EvaluationPlan
+        scope = digest(list(self._scope_values(principal)))
+        with self._connection() as connection:
+            row = connection.execute('SELECT plan_json FROM evaluation_plans_v1 WHERE scope_digest=? AND plan_digest=?',
+                (scope,plan_digest)).fetchone()
+        if row is None:
+            raise ValueError('evaluation_plan_unavailable')
+        plan = EvaluationPlan.model_validate_json(row['plan_json'])
+        if plan.plan_digest != plan_digest:
+            raise ValueError('evaluation_plan_binding_mismatch')
+        return plan

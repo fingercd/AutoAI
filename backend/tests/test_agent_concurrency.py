@@ -44,7 +44,7 @@ class _FailedSubmission:
 
 def _service(tmp_path, submission=None):
     storage = tmp_path / 'storage'; uploads = storage / 'uploads'; uploads.mkdir(parents=True)
-    data = uploads / 'data.csv'; data.write_text('Index,Label,Sample_ID,0\n1,A,S1,1\n')
+    data = uploads / 'data.csv'; data.write_text('Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,4,5\n5,B,B2,5,6\n6,B,B3,6,7\n')
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage); datasets.initialize()
     dataset = datasets.register(data, original_name='data.csv', principal=Principal())
     sessions = AgentSessionRepository(storage / 'agent.sqlite3'); sessions.initialize()

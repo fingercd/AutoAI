@@ -34,7 +34,7 @@ def _environment(tmp_path, *, principal=Principal()):
     uploads.mkdir(parents=True)
     source = uploads / 'data.csv'
     source.write_text(
-        'Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,B,B1,2,1\n',
+        'Index,Label,Sample_ID,0,1\n1,A,A1,1,2\n2,A,A2,2,3\n3,A,A3,3,4\n4,B,B1,2,1\n5,B,B2,3,2\n6,B,B3,4,3\n',
         encoding='utf-8',
     )
     datasets = DatasetRepository(storage / 'datasets.sqlite3', storage_root=storage)

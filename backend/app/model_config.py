@@ -141,3 +141,135 @@ def compatible_frozen_policy(model_id, frozen, params, *, current=None):
         return resolve_model_params(model_id, params) == params
     except ValueError:
         return False
+
+
+def search_strategy_binding(model_id: str) -> dict[str, str]:
+    """Bind reachable execution code specialized to one canonical model.
+
+    Model dispatch branches are resolved before following local symbol imports.
+    Adding an unrelated model therefore cannot invalidate an existing recipe.
+    Unknown data-dependent branches stay in the digest conservatively.
+    """
+    import ast
+    import copy
+    from pathlib import Path
+    from . import model_catalog
+
+    model = MODELS_BY_ID[model_id]
+    root = Path(__file__).parent
+    model_sets = {name: value for name, value in vars(model_catalog).items()
+                  if name.endswith('MODEL_TYPES') and isinstance(value, set)}
+
+    class Specialize(ast.NodeTransformer):
+        def __init__(self, symbols):
+            self.model_sets = dict(model_sets)
+            for name, node in symbols.items():
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    try: value = ast.literal_eval(node.value)
+                    except (ValueError, TypeError): continue
+                    if isinstance(value, (set, tuple, list)) and all(isinstance(x, str) for x in value):
+                        self.model_sets[name] = value
+
+        @staticmethod
+        def model_value(node):
+            return ((isinstance(node, ast.Name) and node.id in ('model_type','model_key'))
+                    or (isinstance(node, ast.Attribute) and node.attr == 'model_type'))
+
+        def visit_Call(self, node):
+            if (isinstance(node.func, ast.Name) and node.func.id == 'canonical_model_type'
+                    and len(node.args) == 1 and self.model_value(node.args[0])):
+                return ast.copy_location(ast.Constant(model_id), node)
+            return self.generic_visit(node)
+
+        def truth(self, test):
+            if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+                return None
+            left = test.left
+            if not (self.model_value(left) or isinstance(left, ast.Constant) and left.value == model_id):
+                return None
+            right = test.comparators[0]
+            try:
+                value = self.model_sets[right.id] if isinstance(right, ast.Name) and right.id in self.model_sets else ast.literal_eval(right)
+            except (ValueError, TypeError):
+                return None
+            op = test.ops[0]
+            if isinstance(op, ast.Eq): return model_id == value
+            if isinstance(op, ast.NotEq): return model_id != value
+            if isinstance(op, ast.In): return model_id in value
+            if isinstance(op, ast.NotIn): return model_id not in value
+            return None
+
+        def visit_If(self, node):
+            node = self.generic_visit(node)
+            known = self.truth(node.test)
+            return node if known is None else (node.body if known else node.orelse)
+
+        def visit_IfExp(self, node):
+            node = self.generic_visit(node)
+            known = self.truth(node.test)
+            return node if known is None else (node.body if known else node.orelse)
+
+        def visit_FunctionDef(self, node):
+            node = self.generic_visit(node)
+            if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+                node.body = node.body[1:]
+            return node
+
+        visit_ClassDef = visit_FunctionDef
+
+    parsed = {}; bound = {}; visiting = set()
+
+    def source(path):
+        if path not in parsed:
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            symbols = {}; imports = {}
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                    symbols[node.name] = node
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        if isinstance(target, ast.Name): symbols[target.id] = node
+                elif isinstance(node, ast.ImportFrom) and node.level:
+                    parent = path.parent
+                    for _ in range(node.level - 1): parent = parent.parent
+                    module = parent.joinpath(*(node.module or '').split('.')).with_suffix('.py')
+                    if not module.is_file(): module = module.with_suffix('') / '__init__.py'
+                    if module.is_file() and module.is_relative_to(root):
+                        for alias in node.names: imports[alias.asname or alias.name] = (module, alias.name)
+            parsed[path] = symbols, imports
+        return parsed[path]
+
+    def follow(path, name):
+        key = (path, name)
+        if key in visiting: return
+        visiting.add(key)
+        symbols, imports = source(path)
+        if name not in symbols:
+            if name in imports: follow(*imports[name])
+            return
+        node = Specialize(symbols).visit(copy.deepcopy(symbols[name]))
+        bound[path.relative_to(root).as_posix() + ':' + name] = ast.dump(node, include_attributes=False)
+        for dependency in ast.walk(node):
+            if isinstance(dependency, ast.Name) and dependency.id != name:
+                follow(path, dependency.id)
+            elif isinstance(dependency, ast.ImportFrom) and dependency.level:
+                parent = path.parent
+                for _ in range(dependency.level - 1): parent = parent.parent
+                module = parent.joinpath(*(dependency.module or '').split('.')).with_suffix('.py')
+                if not module.is_file(): module = module.with_suffix('') / '__init__.py'
+                if module.is_file() and module.is_relative_to(root):
+                    for alias in dependency.names: follow(module, alias.name)
+
+    names = ({'_fit_deep_fold'} if model.execution_family == 'deep_learning' else
+        {'_traditional_candidate_configs', '_select_random_forest_config' if model_id == 'random_forest'
+         else '_select_traditional_config', '_fit_final_traditional_model'})
+    names.update(('_fit_x_normalizer', '_transform_x_with_normalizer'))
+    for name in sorted(names):
+        if name not in source(root / 'training.py')[0]: raise ValueError('search implementation unavailable')
+        follow(root / 'training.py', name)
+    if not any(key.startswith('models/') for key in bound):
+        raise ValueError('model construction binding unavailable')
+    rules = model_policy(model_id)['compatibility_rules']
+    return dict(ref=rules[-1], version='training-execution-policy-v1',
+                digest=semantic_digest(dict(revision='training-execution-policy-v1', implementation=bound)))

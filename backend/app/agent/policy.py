@@ -89,9 +89,26 @@ class ExperimentCommand:
     request_body: dict[str, Any]
     rationale: str
     client_request_id: str | None
+    recipe: dict[str, Any] | None = None
 
 
 def normalize_experiment(session, payload) -> ExperimentCommand:
+    from .contracts_v2 import CreateRecipeExperimentRequest, CreateAgentExperimentRequestV2
+    if session.frozen_preparation is not None:
+        if not isinstance(payload, CreateRecipeExperimentRequest):
+            raise AgentDomainError('agent_invalid_action', 'Recipe profile accepts only recipe selection', status_code=422)
+        from ..recipes import RecipeCatalog, validate_catalog_binding
+        catalog = validate_catalog_binding(RecipeCatalog.model_validate(session.frozen_preparation['preparation']['catalog']),session.capability_snapshot).model_dump(mode='json')
+        recipe = next((r for r in catalog['recipes'] if r['recipe_id']==payload.recipe_id), None)
+        if recipe is None or catalog['catalog_digest']!=payload.catalog_digest or recipe['recipe_digest']!=payload.recipe_digest:
+            raise AgentDomainError('agent_recipe_invalid', 'Recipe does not match frozen catalog', status_code=422)
+        canonical = CreateAgentExperimentRequestV2(model_type=recipe['model_id'])
+        action = frozen_action(session, canonical)
+        body = payload.model_dump(mode='json')
+        body.update(contract_version=V2,execution_profile=session.frozen_preparation['execution_profile'])
+        return ExperimentCommand(action, body, payload.rationale, payload.client_request_id, recipe)
+    if isinstance(payload, CreateRecipeExperimentRequest):
+        raise AgentDomainError('agent_version_incompatible', 'Recipe requires recipe profile', status_code=409)
     payload.validate_business()
     if payload.model_type not in session.allowed_models:
         raise AgentDomainError('agent_invalid_action', 'model_type 不在 session 允许的模型集合内', status_code=422)
@@ -103,3 +120,20 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
         action = {key: getattr(payload, key) for key in
                   ('model_type', 'normalization', 'class_balance', 'parent_run_id')}
     return ExperimentCommand(action, body, payload.rationale, payload.client_request_id)
+
+
+def admit_command(session, command):
+    admit_action(session, command.action)
+    if command.recipe is not None:
+        from ..model_config import search_strategy_binding
+        if search_strategy_binding(command.recipe['model_id'])['digest'] != command.recipe['search_strategy_digest']:
+            raise AgentDomainError('agent_capability_changed', 'Execution search policy changed', status_code=409)
+
+
+def command_digest(session, command):
+    if command.recipe is None:
+        return scientific_digest(session, command.action)
+    prepared=session.frozen_preparation['preparation']
+    return semantic_digest(dict(profile=session.frozen_preparation['execution_profile'],
+        dataset_sha256=session.dataset_sha256,plan_digest=prepared['evaluation_plan']['plan_digest'],
+        catalog_digest=prepared['catalog']['catalog_digest'],recipe_digest=command.recipe['recipe_digest']))
