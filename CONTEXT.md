@@ -114,3 +114,8 @@ node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 - 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
 - 直接使用 uvicorn 不会启动训练 worker；本地一键入口 `run.py` 默认同时启动二者。
 - 服务器升级前先备份 `storage/`；历史绑定先执行 `python -m backend.app.runs.migration --dry-run --owner-id ... --tenant-id ... --rebind-unowned`，确认后去掉 `--dry-run`。
+
+
+## 第四步知识协议
+
+新 CLI 配方任务使用 agent-state-v4 / agent-recipes-revision-v2，唯一知识开关为 module_policy.knowledge，CLI --knowledge 默认 off。开启在 Session 创建事务中冻结 common-modeling-v1、Train-only 匹配及受限投影；知识引用独立记录，不改变 recipe/catalog/scientific digest 或训练执行。恢复只消费已有快照，不加载最新知识。v1/v2/v3 wire、幂等及启动摘要保留，详细规则见 docs/agent_step2_contract.md。

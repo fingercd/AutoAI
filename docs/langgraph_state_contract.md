@@ -1,4 +1,4 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认采用训练证据配方 profile 与 agent-state-v3；直接模型选择 v2 和旧 v1 检查点保持原版本。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
+> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v4，知识默认关闭；v1/v2/v3 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
 
 # LangGraph 任务 State 契约
 
@@ -225,3 +225,10 @@ status 退出 0 表示查询成功，不表示实验成功；自动化脚本需�
 历史真实 LLM 验收使用服务器 Qwen3-4B + 本地 HTTP 后端及独立 worker + 合成分组数据。
 临时推理服务已停止，18001 不是常驻接口。此结果证明工程闭环，不证明服务器整体部署
 或领域科研效果。第二轮仅本地修复与回归，目标服务器部署检查未执行。
+
+
+## v4 知识冻结扩展
+
+以下扩展在同一 State 核心中实现，前文 v1 类型继续用于历史解码。`versions.knowledge` 初始化为 ready/knowledge-snapshot-v1；context/prompt 固定为 agent-context-knowledge-v1 / agent-decision-knowledge-v1，versions 与 module_policy 整块仍不可修改。
+
+新 knowledge 模块 implementation_status=ready。开启未创建 Session 时 pending，成功绑定后 ready，匹配可为空；关闭始终 disabled。State 保存 prior_version、匹配摘要及安全 snapshot，不存完整知识库。成功 Session 首次绑定不改变 startup_config_fingerprint，此后整个知识块冻结。开关与快照状态、来源绑定、实际投影摘要、决策引用版本必须一致；未知 wire/损坏数据拒绝，v1/v2/v3 不自动补 knowledge_refs 或重算旧摘要。
