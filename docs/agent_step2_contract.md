@@ -140,3 +140,11 @@ $PY scripts/agent_step2_acceptance.py --recipes --light-ablation --root /tmp/aut
 该命令创建自有 Web/worker、确定性合成分类数据，依次执行固定 LR、recipe Agent、structured Agent，并核对同数据/实际划分/固定参数以及终态不重复提交。它是实际 HTTP/worker/LLM 工程联调，不能称为真实业务数据验收或科研贡献证明。原 `--recipes` 中 Agent 选后普通 API 重放在记录中标为 `backend-equivalence`，不是独立科研基线。
 
 记录包括实验/配置摘要、源码摘要、数据/实际划分摘要、scope 绑定、seed、候选固定参数、E/R/K、表达模式、Prompt/LLM 摘要、Session/thread/Run、状态原因、validation、调用/token/耗时及产物引用。不可计量字段标 unknown。Test 仅在固定基线完成或 Agent Finalize 后离线提取汇总；不进入 Prompt、基线选择或逐样品公开投影。
+
+### 独立核验补正：源码与计量覆盖范围
+
+消融 CLI 每次执行均获取当前 `head / dirty_diff_sha256 / source_digest`，在网络调用前写入持久 attempt。恢复要求与 record.source 的起始绑定完全一致；变化时记录 `rejected_source_change` 并退出，不覆盖历史来源，也不发送 HTTP 请求。此绑定只代表 CLI 本地源码，每个 attempt 的 Web/worker 版本默认 `unknown`，不能据此声称远端代码相同；隔离验收清单中的独立 Web/worker 证据仍单独保留。
+
+每次 attempt 在 I/O 前写 running，正常 finally 写 settled 和本次 request-hook 计数、耗时。下次发现 running 表明上次没有结算，转 interrupted/incomplete。已知计数和耗时保留在 measurement.known_http_calls / known_elapsed_seconds；有中断或旧记录未核实区间时，累计 record_http_calls、普通基线 api_calls、elapsed_seconds 为 `unknown`，不把缺失区间计为零。Agent 的执行调用数仍由原 Graph journal 计量；recording client 的 HTTP 计量另列 scope。
+
+旧记录没有持久 attempt 标记，首次通过源码检查的恢复会保留旧测量值并标 legacy unverified；不能反推旧运行完整性。严格源码冻结也适用于修复前创建的记录：它们不会由新代码继续执行。同源且已绑定 Run 的恢复只轮询原 Run；POST 绑定前丢响应仍停在 submission_uncertain，需人工核对，绝不自动重提。该修正不改变普通 API 幂等协议或训练流程。

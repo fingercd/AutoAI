@@ -42,6 +42,61 @@ def experiment_lock(directory, experiment_id):
         finally:fcntl.flock(handle,fcntl.LOCK_UN)
 
 
+def summarize_measurements(record):
+    """Known values cover settled attempts only; interrupted intervals stay unknown."""
+    legacy = record.get('legacy_measurements')
+    known_calls = legacy.get('record_http_calls', 0) if legacy else 0
+    known_seconds = legacy.get('elapsed_seconds', 0) if legacy else 0
+    known_calls = known_calls if type(known_calls) is int else 0
+    known_seconds = known_seconds if type(known_seconds) in (int, float) else 0
+    incomplete = bool(legacy)
+    for attempt in record['attempts']:
+        measurement = attempt['measurement']
+        if measurement['status'] == 'complete':
+            known_calls += measurement['http_calls']
+            known_seconds += measurement['elapsed_seconds']
+        else:
+            incomplete = True
+    record['measurement'] = dict(status='incomplete' if incomplete else 'complete',
+        known_http_calls=known_calls, known_elapsed_seconds=known_seconds,
+        coverage='settled attempts plus recorded legacy values; interrupted intervals excluded',
+        http_call_scope='recording client request hooks; Agent execution calls use the Graph journal')
+    record['record_http_calls'] = 'unknown' if incomplete else known_calls
+    record['elapsed_seconds'] = 'unknown' if incomplete else known_seconds
+    if record['configuration']['kind'] == 'baseline':
+        record['api_calls'] = record['record_http_calls']
+
+
+def begin_attempt(record, path, source):
+    """Persist identity/source before I/O, including rejected resume attempts."""
+    if 'attempts' not in record:
+        record['legacy_measurements'] = dict(record_http_calls=record.get('record_http_calls', 'unknown'),
+            elapsed_seconds=record.get('elapsed_seconds', 'unknown'), status='unverified',
+            reason='legacy record has no durable attempt settlement markers')
+        record['attempts'] = []
+    for previous in record['attempts']:
+        if previous['status'] == 'running':
+            previous.update(status='interrupted', reason='previous_attempt_not_settled')
+            previous['measurement'] = dict(status='incomplete', http_calls='unknown', elapsed_seconds='unknown')
+    allowed = source == record['source']
+    attempt = dict(attempt_id=len(record['attempts'])+1, source=source,
+        source_policy='exact originating CLI source binding required',
+        remote_execution_versions=dict(web='unknown', worker='unknown'),
+        started_at=time.time(), status='running' if allowed else 'rejected_source_change',
+        measurement=dict(status='pending' if allowed else 'complete', http_calls=0, elapsed_seconds=0))
+    record['attempts'].append(attempt)
+    summarize_measurements(record)
+    save(path, record)
+    return attempt
+
+
+def finish_attempt(record, path, attempt, calls, elapsed):
+    attempt.update(status='settled', outcome=record['status'], finished_at=time.time(),
+        measurement=dict(status='complete', http_calls=calls, elapsed_seconds=elapsed))
+    summarize_measurements(record)
+    save(path, record)
+
+
 def baseline(client, record, path, timeout):
     """An ambiguous ordinary POST is never automatically repeated."""
     if record['status'] in ('attempt_started','submission_uncertain') and not record.get('run_id'):
@@ -123,13 +178,14 @@ def run(args):
     folder=args.storage.resolve()/args.experiment_id;path=folder/'record.json'
     # Lock covers initial record creation and ordinary submission as well as Graph.
     with experiment_lock(args.storage.resolve(),args.experiment_id):
+        code=code_binding()
+        source={key:code[key] for key in ('head','dirty_diff_sha256','source_digest')}
         if path.exists():
             record=json.loads(path.read_text())
             if record['configuration_digest']!=digest(configuration):raise ValueError('experiment configuration is frozen')
         else:
-            code=code_binding()
             record=dict(experiment_id=args.experiment_id,configuration=configuration,configuration_digest=digest(configuration),
-                source={key:code[key] for key in ('head','dirty_diff_sha256','source_digest')},
+                source=source, attempts=[],
                 thread_id=args.experiment_id,status='prepared',failure_reason=None,
                 seed=args.seed,scope_binding=configuration['scope_binding'],dataset_digest='unknown',actual_split_digest='unknown',
                 validation='unknown',llm_calls=0,api_calls='unknown',tokens='unknown',elapsed_seconds=0,artifacts=[],
@@ -146,13 +202,17 @@ def run(args):
                 record['session_request_id']=_key('session',args.experiment_id)
                 record['experiment_request_id']=_key('experiment',args.experiment_id)
             save(path,record)  # Experiment identity exists before any request.
+        attempt=begin_attempt(record,path,source)
+        if attempt['status']=='rejected_source_change':
+            print(json.dumps(dict(experiment_id=args.experiment_id,status='source_changed')))
+            return 2
         started=time.monotonic()
         token=os.environ.get('AUTOAI_API_TOKEN')
         headers={'Authorization':'Bearer '+token} if token else {}
         http_calls=[0]
         def count_request(request):http_calls[0]+=1
-        with httpx.Client(base_url=args.backend_url,headers=headers,timeout=30,trust_env=False,event_hooks={'request':[count_request]}) as client:
-            try:
+        try:
+            with httpx.Client(base_url=args.backend_url,headers=headers,timeout=30,trust_env=False,event_hooks={'request':[count_request]}) as client:
                 if record['status']!='completed':
                     if args.kind=='baseline':baseline(client,record,path,args.timeout)
                     else:
@@ -184,15 +244,12 @@ def run(args):
                             frozen_model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
                 if record['status']=='completed' and record.get('run_id'):
                     terminal_results(client,record)
-            except Exception as error:
-                # Do not write exception messages, URLs, headers or raw responses.
-                record['failure_reason']=type(error).__name__
-                if record['status'] not in ('submission_uncertain','attempt_started'):record['status']='needs_attention'
-            finally:
-                record['record_http_calls']=record.get('record_http_calls',0)+http_calls[0]
-                if args.kind=='baseline':record['api_calls']=record['record_http_calls']
-                record['elapsed_seconds']+=time.monotonic()-started
-                save(path,record)
+        except Exception as error:
+            # Do not write exception messages, URLs, headers or raw responses.
+            record['failure_reason']=type(error).__name__
+            if record['status'] not in ('submission_uncertain','attempt_started'):record['status']='needs_attention'
+        finally:
+            finish_attempt(record,path,attempt,http_calls[0],time.monotonic()-started)
         print(json.dumps(dict(experiment_id=args.experiment_id,status=record['status'],run_id=record.get('run_id'))))
         return 0 if record['status']=='completed' else 2
 
