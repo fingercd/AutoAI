@@ -211,3 +211,84 @@ def finalize_session(
         )
     except (AgentDomainError, TrainingConfigValidationError) as exc:
         raise _to_http_exception(exc) from exc
+
+
+# Negotiated current URLs share the service and legacy HTTP error boundary.
+from fastapi import Header
+from .deps import get_agent_service
+from ..agent.contracts import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2, CreateRecipeExperimentRequest, CreateKnowledgeExperimentRequest
+from ..model_config import model_capability_snapshot
+
+current_router = APIRouter(prefix='/api/agent/v2')
+
+def revision_header(x_autoai_agent_revision: str | None = Header(None)):
+    return x_autoai_agent_revision
+
+
+def require_negotiation(service, principal, revision, session_id=None, payload=None):
+    profile = (service._session(session_id, principal).frozen_preparation if session_id else
+               getattr(payload, 'execution_profile', None))
+    expected = (profile['protocol_revision'] if session_id and profile else getattr(payload, 'protocol_revision', None))
+    if profile and revision != expected:
+        raise AgentDomainError('agent_version_incompatible', 'Recipe protocol negotiation required', status_code=409)
+
+
+def call(method, principal, revision=None, **kwargs):
+    try:
+        service = get_agent_service(V2)
+        require_negotiation(service, principal, revision, kwargs.get('session_id'), kwargs.get('payload'))
+        return getattr(service, method)(principal=principal, **kwargs)
+    except (AgentDomainError, TrainingConfigValidationError, ValueError) as exc:
+        raise _to_http_exception(exc) from exc
+
+
+@current_router.get('/health')
+def current_health(revision: str | None = Depends(revision_header)):
+    result = agent_health()
+    snapshot = model_capability_snapshot()
+    result.update(contract_version=V2, **snapshot)
+    result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
+    if not any(m['available'] for m in snapshot['models']):
+        result['status'] = 'unavailable'
+    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+        result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
+    if revision == 'agent-recipes-revision-v2':
+        from ..agent.capabilities import module_catalog
+        result['modules'] = module_catalog(revision)
+    return result
+
+
+@current_router.post('/sessions', status_code=201)
+def current_create_session(payload: CreateAgentSessionRequestV2, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    return call('create_session', principal, revision=revision, payload=payload)
+
+
+@current_router.get('/sessions/{session_id}')
+def current_get_session(session_id: str, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    return call('get_session', principal, revision=revision, session_id=session_id)
+
+
+@current_router.post('/sessions/{session_id}/experiments', status_code=202)
+def current_create_experiment(session_id: str, payload: CreateKnowledgeExperimentRequest | CreateAgentExperimentRequestV2 | CreateRecipeExperimentRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    return call('create_experiment', principal, revision=revision, session_id=session_id, payload=payload)
+
+
+@current_router.get('/sessions/{session_id}/experiments/{run_id}/feedback')
+def current_feedback(session_id: str, run_id: str, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    return call('get_feedback', principal, revision=revision, session_id=session_id, run_id=run_id)
+
+
+@current_router.post('/sessions/{session_id}/finalize')
+def current_finalize(session_id: str, payload: FinalizeAgentSessionRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    return call('finalize_session', principal, revision=revision, session_id=session_id, selected_run_id=payload.selected_run_id)
+
+
+@current_router.post('/sessions/{session_id}/reconcile')
+def current_reconcile(session_id: str, payload: ReconcileAgentSessionRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+    try:
+        require_negotiation(get_agent_service(V2), principal, revision, session_id)
+        result = _reconciliation_service().reconcile_session(session_id=session_id, principal=principal)
+        result['contract_version'] = V2
+        return result
+    except AgentDomainError as exc:
+        raise _to_http_exception(exc) from exc

@@ -13,8 +13,8 @@ from ..runs.contracts import Principal, RunRecord
 from ..runs.repository import InvalidRunTransition, RunNotFound, RunRepository
 from ..runs.submission import RunSubmissionError, RunSubmissionRequest, RunSubmissionService
 from .capabilities import module_catalog
-from .contracts_v2 import V2
-from . import policy as policy_v2
+from .contracts import V2
+from . import policy
 from .policy import base_training_config as _training_config
 from .contracts import (
     AGENT_API_CONTRACT_VERSION,
@@ -103,8 +103,8 @@ class AgentService:
         if self.contract_version == V2:
             previous = self.sessions.find_session_request_scoped(payload.client_request_id, payload_hash=None, principal=principal) if payload.client_request_id else None
             if previous is not None:
-                policy_v2.require_version(previous, self.contract_version)
-            snapshot = policy_v2.freeze_session(payload, previous.capability_snapshot if previous else None)
+                policy.require_version(previous, self.contract_version)
+            snapshot = policy.freeze_session(payload, previous.capability_snapshot if previous else None)
             body.update(contract_version=V2, model_configs=snapshot['model_configs'])
         body_hash = _hash_payload(body)
         if payload.client_request_id:
@@ -193,7 +193,7 @@ class AgentService:
         session = self._session(session_id, principal)
         if self.contract_version != V2 and session.state != 'open':
             raise AgentSessionClosed()
-        command = policy_v2.normalize_experiment(session, payload)
+        command = policy.normalize_experiment(session, payload)
         action, body = command.action, command.request_body
         prepared = None
         full_digest = None
@@ -223,10 +223,10 @@ class AgentService:
                         bound = current
                     return self._experiment_response(session, bound, record, replay=True)
             if not mapping_exists:
-                policy_v2.admit_command(session, command)
+                policy.admit_command(session, command)
             prepared = (replay_reservation.compiled_config if replay_reservation else None)
             if prepared is None:
-                prepared = policy_v2.compiled_config(session, action, _training_config(session, action))
+                prepared = policy.compiled_config(session, action, _training_config(session, action))
                 _, plan = self.submissions.prepare_evaluation(dataset_id=session.dataset_id,
                     raw_config=prepared,principal=principal,expected_sha256=session.dataset_sha256)
                 prepared['evaluation_plan_digest'] = plan.plan_digest
@@ -236,7 +236,7 @@ class AgentService:
                     execution_catalog_digest=session.frozen_preparation['preparation']['catalog']['catalog_digest'],
                     execution_evidence_digest=session.frozen_preparation['preparation']['evidence']['evidence_digest'],
                     execution_search_digest=command.recipe['search_strategy_digest'])
-            full_digest = policy_v2.command_digest(session, command)
+            full_digest = policy.command_digest(session, command)
         if session.state != 'open':
             raise AgentSessionClosed()
         config_hash = full_digest[:16] if full_digest else _compute_config_hash(session=session, action=action)
@@ -521,7 +521,7 @@ class AgentService:
 
     def _session(self, session_id, principal):
         session = self.sessions.get_session_scoped(session_id, principal=principal)
-        policy_v2.require_version(session, self.contract_version)
+        policy.require_version(session, self.contract_version)
         return session
 
     def _run(self, run_id: str, principal: Principal) -> RunRecord:

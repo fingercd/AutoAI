@@ -156,7 +156,7 @@ class FinalizationContextV2(FinalizationContext):
     context_version: Literal['agent-context-step2-v1']
 
 
-from agent_poc.clients.contracts_v2 import Recipe, TrainStatistics, Risk, Preparation
+from agent_poc.clients.preparation import Recipe, TrainStatistics, Risk, Preparation
 
 
 class RecipeSelectionBindings(ClosedModel):
@@ -179,7 +179,7 @@ class RecipeFinalizationContext(FinalizationContext):
 
 
 def recipe_selection_context(*,task,session_id,preparation,context_policy):
-    from agent_poc.clients.contracts_v2 import KnowledgePreparation
+    from agent_poc.clients.knowledge import KnowledgePreparation
     modern=context_policy.get('projection')=='agent-context-knowledge-v1'
     prepared=(KnowledgePreparation if modern else Preparation).model_validate(preparation)
     payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
@@ -194,7 +194,7 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy):
     return (KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
 
 
-from agent_poc.clients.contracts_v2 import KnowledgeProjection
+from agent_poc.clients.knowledge import KnowledgeProjection
 
 
 class KnowledgeSelectionContext(RecipeSelectionContext):

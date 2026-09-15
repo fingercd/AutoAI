@@ -3,7 +3,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import pytest
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from backend.app.model_config import resolve_model_params
 
 
@@ -37,10 +37,10 @@ def test_real_scheduler_and_legacy_training_validation():
 
 @pytest.mark.parametrize('factor', [0.5, 1])
 def test_old_frozen_snapshot_is_not_rewritten(api, monkeypatch, factor):
-    from backend.app.agent import policy_v2
+    from backend.app.agent import policy
     client, storage, dataset = api
     with monkeypatch.context() as patch:
-        patch.setattr(policy_v2, 'model_capability_snapshot', old_snapshot)
+        patch.setattr(policy, 'model_capability_snapshot', old_snapshot)
         created = client.post('/api/agent/v2/sessions', json=dict(dataset_id=dataset,
             selection_metric='macro_f1', allowed_models=['cnn1d'], max_runs=1,
             model_configs={'cnn1d':{'epochs':2,'scheduler_factor':factor}}))
@@ -52,7 +52,7 @@ def test_old_frozen_snapshot_is_not_rewritten(api, monkeypatch, factor):
     assert submitted.status_code == (202 if factor == 0.5 else 409), submitted.text
     assert client.get(f'/api/agent/v2/sessions/{sid}').json()['locked_config'] == frozen
     if factor == 0.5:
-        from agent_poc.clients.contracts_v2 import LockedConfig
+        from agent_poc.clients.execution_contracts import LockedConfig
         assert LockedConfig.model_validate(frozen).model_dump(mode='json') == frozen
         assert submitted.json()['effective_config']['config_policy_version'] == 'agent-model-config-v1'
         replay = client.post(f'/api/agent/v2/sessions/{sid}/experiments', json={

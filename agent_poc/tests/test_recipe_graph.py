@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 import httpx
 import pytest
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from agent_poc.tests.test_review_recovery import CountTransport
 from agent_poc.clients.autoai_client import AutoAIClient
 from agent_poc.orchestration.llm import LLMAdapter,LLMConfig
@@ -82,7 +82,7 @@ def test_negotiated_client_uses_frozen_recipe_wire(api):
         def request(self,method,url,*,headers,json,timeout):
             response=api[0].request(method,urlsplit(url).path,headers=headers,json=json)
             if method=='POST' and url.endswith('/sessions') and response.status_code==201:
-                from agent_poc.clients.contracts_v2 import RecipeCreatedSessionResponse
+                from agent_poc.clients.preparation import RecipeCreatedSessionResponse
                 RecipeCreatedSessionResponse.model_validate(response.json())
             return response
     client=AutoAIClient('http://local.invalid',transport=Transport(),api_version='v2',execution_profile=PROFILE)

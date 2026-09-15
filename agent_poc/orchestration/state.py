@@ -938,7 +938,8 @@ def fingerprint(value: object) -> str:
                                      separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
-from agent_poc.clients.contracts_v2 import CapabilitySnapshot, FrozenSnapshot, ResolvedExecution, Scalar
+from agent_poc.clients.capabilities import CapabilitySnapshot, FrozenSnapshot, Scalar
+from agent_poc.clients.execution_contracts import ResolvedExecution
 
 class TaskStateV2(TaskState):
     model_configs: dict[Identifier,dict[Identifier,Scalar]] = Field(default_factory=dict)
@@ -1041,8 +1042,7 @@ class StateModelV2(StateModel):
 
 
 
-from agent_poc.clients.contracts_v2 import (Preparation, TrainEvidence as EvidenceContent,
-    RecipeCatalog as CatalogContent, EvaluationPlanReference)
+from agent_poc.clients.preparation import Preparation, TrainEvidence as EvidenceContent, RecipeCatalog as CatalogContent, EvaluationPlanReference
 
 
 class RecipeTask(TaskStateV2):
@@ -1134,7 +1134,7 @@ class RecipeStateModel(StateModelV2):
                 evidence=self.evidence.content,catalog=self.recipes.catalog)
             if self.task.dataset_fingerprint!=prepared.catalog.dataset_sha256 or self.task.split_fingerprint!=prepared.evaluation_plan.partition_digest:
                 raise ValueError('task preparation mismatch')
-            from agent_poc.clients.contracts_v2 import validate_catalog_binding
+            from agent_poc.clients.preparation import validate_catalog_binding
             validate_catalog_binding(prepared.catalog,self.capabilities.frozen_snapshot.model_dump(mode='json'))
             content=self.execution.submission_content
             if content is not None:
@@ -1388,7 +1388,7 @@ def validate_state(raw):
 
 
 # Thin v4 wire adapters use the same validation, graph and startup payload core.
-from agent_poc.clients.contracts_v2 import KnowledgeWire, KnowledgePreparation, KnowledgeMatchSummary
+from agent_poc.clients.knowledge import KnowledgeWire, KnowledgePreparation, KnowledgeMatchSummary
 
 
 class KnowledgeVersions(RecipeVersions):

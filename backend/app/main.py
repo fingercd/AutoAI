@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 # 项目内部依赖：路径/目录初始化、安全中间件，以及按业务域拆分的五组 router。
 from .paths import RUNS_DIR, STATIC_DIR, ensure_storage
 from .http.security import ServerAuthMiddleware, load_security_settings
-from .routers import agent, agent_v2, auth, catalog, datasets, preprocess, runs
+from .routers import agent, auth, catalog, datasets, preprocess, runs
 
 
 # 导入应用时先保证静态文件、上传和 Run 路径存在，路由随后即可安全写入。
@@ -82,4 +82,4 @@ app.include_router(datasets.router)
 app.include_router(preprocess.router)
 app.include_router(runs.router)
 app.include_router(agent.router)
-app.include_router(agent_v2.router)
+app.include_router(agent.current_router)

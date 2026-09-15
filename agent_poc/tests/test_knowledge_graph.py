@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from agent_poc.tests.test_review_recovery import CountTransport
 from agent_poc.clients.autoai_client import AutoAIClient
 from agent_poc.orchestration.llm import LLMAdapter, LLMConfig
@@ -30,7 +30,7 @@ class CheckedTransport(CountTransport):
     def request(self,method,url,**kwargs):
         response=super().request(method,url,**kwargs)
         if url.endswith('/sessions') and response.status_code==201:
-            from agent_poc.clients.contracts_v2 import KnowledgeCreatedSessionResponse
+            from agent_poc.clients.knowledge import KnowledgeCreatedSessionResponse
             try:
                 KnowledgeCreatedSessionResponse.model_validate(response.json())
             except ValueError as exc:

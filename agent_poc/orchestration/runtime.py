@@ -248,7 +248,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
     extra = {}
     llm_config = config.llm_config
     if api_version == 'v2':
-        from .state_v2 import new_state as factory
+        extra['wire_version'] = 'agent-state-v2'
         extra['model_configs'] = model_configs
         llm_config = replace(llm_config, prompt_version='agent-decision-step2-v1')
     elif model_configs is not None:

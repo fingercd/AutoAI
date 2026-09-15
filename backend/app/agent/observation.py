@@ -125,7 +125,7 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         'extensions': {},
     }
     if contract_version == 'agent-session-v2':
-        from .metadata_v2 import resolved_execution
+        from .metadata import resolved_execution
         response['resolved_execution'] = resolved_execution(run_dir, record)
         # Free progress/error prose is untrusted and never crosses the v2 boundary.
         response['progress'] = {'stage': record.state}

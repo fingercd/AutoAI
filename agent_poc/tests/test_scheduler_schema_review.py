@@ -1,10 +1,10 @@
 from copy import deepcopy
 import pytest
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from agent_poc.clients.autoai_client import AgentContractError
 from agent_poc.tools import build_tool_schemas, validate_tool_arguments
-from agent_poc.clients.contracts_v2 import CapabilitySnapshot
-from agent_poc.orchestration.state_v2 import CapabilitiesState
+from agent_poc.clients.capabilities import CapabilitySnapshot
+from agent_poc.orchestration.state import CapabilitiesStateV2 as CapabilitiesState
 from backend.tests.test_scheduler_policy_review import old_snapshot
 
 

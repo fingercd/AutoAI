@@ -5,10 +5,10 @@ import sqlite3
 
 import pytest
 
-from backend.tests.test_agent_v2 import api
-from backend.app.agent.contracts_v2 import CreateAgentExperimentRequestV2
+from backend.tests.test_agent_model_sessions import api
+from backend.app.agent.contracts import CreateAgentExperimentRequestV2
 from backend.app.agent.service import _hash_payload
-from backend.app.agent import policy_v2
+from backend.app.agent import policy
 from backend.app.model_catalog import canonical_model_type, ModelRetiredError
 from backend.app.runs.contracts import Principal
 from backend.app.runs.repository import RunRepository
@@ -68,16 +68,16 @@ def test_retired_unsubmitted_session_stays_frozen(api):
 
 @pytest.mark.parametrize('bound', [False, True])
 def test_retired_durable_fact_replays_and_checks_identity(api, bound):
-    service, session, policy = historical_session(api)
+    service, session, frozen_policy = historical_session(api)
     payload=CreateAgentExperimentRequestV2(model_type='dscarnet',client_request_id='old')
-    action=policy_v2.frozen_action(session,payload)
+    action=policy.frozen_action(session,payload)
     body=payload.model_dump(mode='json')
     body.update(contract_version='agent-session-v2',model_params=action['model_params'])
     compiled=dict(model_type='dscarnet',normalization='zscore',class_balance='none',seed=42,
         feature_selection_enabled=False,**session.evaluation_config,**action['model_params'],
-        agent_config_policy_version=policy['config_policy_version'],
-        agent_config_policy_digest=policy['config_policy_digest'])
-    digest=policy_v2.scientific_digest(session,action)
+        agent_config_policy_version=frozen_policy['config_policy_version'],
+        agent_config_policy_digest=frozen_policy['config_policy_digest'])
+    digest=policy.scientific_digest(session,action)
     reservation,_=service.sessions.reserve_experiment(session_id=session.session_id,action_json=action,
         rationale=payload.rationale,parent_run_id=None,config_hash=digest[:16],client_request_id='old',
         payload_hash=_hash_payload(body),active_run_ids=set(),principal=Principal(),
@@ -114,7 +114,7 @@ def test_retired_implementation_not_imported():
 def test_retired_resolved_metadata_is_safe_and_integrity_checked(tmp_path):
     from dataclasses import replace
     from backend.tests.test_agent_observation_contract import _ready_run
-    from backend.app.agent.metadata_v2 import resolved_execution
+    from backend.app.agent.metadata import resolved_execution
     from backend.app.runs.artifacts import RunArtifactWriter
     record, run_dir = _ready_run(tmp_path)
     record = replace(record, config={'model_type':'dscarnet'})

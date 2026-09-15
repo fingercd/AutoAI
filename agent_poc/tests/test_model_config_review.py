@@ -1,5 +1,5 @@
 import pytest
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from agent_poc.tests.test_review_recovery import components
 from agent_poc.orchestration.runtime import start_task
 

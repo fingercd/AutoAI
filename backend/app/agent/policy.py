@@ -7,7 +7,7 @@ from ..contracts import TrainingSpec
 from ..model_config import model_capability_snapshot, model_policy, resolve_model_params, semantic_digest, compatible_frozen_policy
 from ..model_catalog import model_availability, RETIRED_MODEL_ALIASES
 from .contracts import AgentDomainError
-from .contracts_v2 import V2
+from .contracts import V2
 
 
 def require_version(session, version):
@@ -97,7 +97,7 @@ class ExperimentCommand:
 
 
 def normalize_experiment(session, payload) -> ExperimentCommand:
-    from .contracts_v2 import CreateRecipeExperimentRequest, CreateAgentExperimentRequestV2
+    from .contracts import CreateRecipeExperimentRequest, CreateAgentExperimentRequestV2
     if session.frozen_preparation is not None:
         if not isinstance(payload, CreateRecipeExperimentRequest):
             raise AgentDomainError('agent_invalid_action', 'Recipe profile accepts only recipe selection', status_code=422)
@@ -110,7 +110,7 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
         action = frozen_action(session, canonical)
         body = payload.model_dump(mode='json')
         body.update(contract_version=V2,execution_profile=session.frozen_preparation['execution_profile'])
-        from .contracts_v2 import CreateKnowledgeExperimentRequest
+        from .contracts import CreateKnowledgeExperimentRequest
         metadata = None
         modern = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v2'
         if modern != isinstance(payload, CreateKnowledgeExperimentRequest):

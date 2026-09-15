@@ -178,7 +178,7 @@ class Nodes:
             request_type = SessionRequest
             request_extra = {}
             if state['versions']['api'] == 'agent-session-v2':
-                from .state_v2 import SessionRequest as request_type
+                from .state import SessionRequestV2 as request_type
                 if state['versions']['state'] in ('agent-state-v3','agent-state-v4'):
                     from .state import RecipeSessionRequest as request_type
                     if state['versions']['state']=='agent-state-v4':
@@ -354,7 +354,7 @@ class Nodes:
         response = self.call(state, 'inspect_ml_capabilities', {})
         step2 = state['versions']['api'] == 'agent-session-v2'
         if step2:
-            from agent_poc.clients.contracts_v2 import ModelCapability, validate_params
+            from agent_poc.clients.capabilities import ModelCapability, validate_params
             declared = {m['id']: ModelCapability.model_validate(m) for m in response['models']}
             if set(state['task']['allowed_models']) - set(declared):
                 raise ValueError('unknown allowed model')
@@ -398,7 +398,7 @@ class Nodes:
             raise ValueError('dataset metadata unavailable')
         extra = {'capabilities':{'frozen_snapshot':locked['capability_snapshot']}} if state['versions']['api'] == 'agent-session-v2' else {}
         if extra:
-            from agent_poc.clients.contracts_v2 import FrozenSnapshot, validate_params
+            from agent_poc.clients.capabilities import FrozenSnapshot, validate_params
             frozen = FrozenSnapshot.model_validate(locked['capability_snapshot'])
             for name, overrides in task['model_configs'].items():
                 if name in frozen.model_configs:
@@ -485,7 +485,7 @@ class Nodes:
             raise ValueError('wrong decision tool')
         request_type, decision_type = ExperimentRequest, DecisionState
         if state['versions']['api'] == 'agent-session-v2':
-            from .state_v2 import ExperimentRequest as request_type, DecisionState as decision_type
+            from .state import ExperimentRequestV2 as request_type, DecisionStateV2 as decision_type
         arguments=dict(proposal.arguments)
         if state['versions']['state'] in ('agent-state-v3','agent-state-v4'):
             from .state import RecipeExperimentRequest as request_type

@@ -106,7 +106,8 @@ class LLMError(RuntimeError):
 
 from pydantic import Field, model_validator, field_validator
 from agent_poc.clients.contracts import ClosedModel, Identifier, Digest
-from agent_poc.clients.contracts_v2 import KnowledgeProjection, digest
+from agent_poc.clients.knowledge import KnowledgeProjection
+from agent_poc.clients.capabilities import digest
 
 
 class StoredRecipeArguments(ClosedModel):
