@@ -112,3 +112,31 @@ python scripts/agent_step2_acceptance.py --recipes --knowledge-ablation   --root
 structured_config 的 LLM 提案包含 `session_id, model_id, normalization, class_balance, model_params, knowledge_refs, rationale`，不要求配方 ID。HTTP 请求使用同名执行字段（无 session_id，另有 client_request_id）；参数必须完整匹配冻结成员，normalization 固定 zscore，class_balance 固定 none。Graph 内部将完整表达绑定到规范 recipe_id，再由 Client 按冻结模式生成原始 HTTP 请求。服务端两表达解析成同一个 ExperimentCommand，复用预约、worker、恢复和 Finalize；科学摘要相同，原始请求 hash 可不同。旧 direct_action 不参与该对照。
 
 两表达知识引用规则相同：K-off 只能空引用；K-on 仅能引用冻结投影中提供的条目。E/R 只控制各自展示，硬合法域不变；K-on 可间接提供 Train 信息，不能将 E/R-off 称为完全无 Train 信息。软 Evidence 筛选为 not_applicable，动态处理为 unavailable。
+
+### 单行实验命令与最小记录
+
+`python scripts/agent_ablation.py` 针对已运行的服务执行一行并保存到 `work/ablation-records/<experiment-id>/record.json`。相同 ID 再次运行沿用冻结配置和原 checkpoint/journal；科研重复必须使用新 ID。Linux 上以 OS 文件锁避免并发重复。普通训练 API 没有幂等键：基线在 POST 前持久化 attempt_started，绑定 Run ID 后才继续；丢响应或在绑定前崩溃写 submission_uncertain 并停止，必须人工核对，禁止自动再次 POST。
+
+以下示例假定 Web/worker 已运行、数据已上传，`DATASET_ID` 为上传返回值；Bearer 仅由环境注入，不写入命令参数、文件或日志。LLM 模型和协议显式指定。固定基线必须先执行，再执行 Agent 对照。
+
+```bash
+PY=/users/fotile/work/autoai-server-acceptance-20260912/venv/bin/python
+COMMON=(--backend-url http://127.0.0.1:18771 --dataset-id "$DATASET_ID" --scope-key step3-acceptance --seed 42 --allowed-models logistic_regression svm)
+LLM=(--llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b --protocol json_action)
+$PY scripts/agent_ablation.py "${COMMON[@]}" --experiment-id fixed-lr-001 --kind baseline
+$PY scripts/agent_ablation.py "${COMMON[@]}" "${LLM[@]}" --experiment-id recipe-001 --kind agent --decision-mode recipe_id --knowledge off
+$PY scripts/agent_ablation.py "${COMMON[@]}" "${LLM[@]}" --experiment-id structured-001 --kind agent --decision-mode structured_config --knowledge off
+$PY scripts/agent_ablation.py "${COMMON[@]}" "${LLM[@]}" --experiment-id plain-001 --kind agent --decision-mode structured_config --knowledge off --hide-evidence-context --hide-risk-context
+```
+
+Evidence 关闭：在对应新实验命令增加 `--hide-evidence-context`；风险关闭：增加 `--hide-risk-context`；知识对照：仅切换 `--knowledge on/off`。保持其余配置、数据、seed、候选、固定参数和预算一致。Plain Agent 标为“同域结构化 Plain Agent”。每模型固定参数通过 `--model-configs <JSON文件>` 在 Session 前提供，不能看结果后更改同一个实验。
+
+完整隔离工程联调复用原验收脚本（真实本地 LLM 服务须已就绪）：
+
+```bash
+$PY scripts/agent_step2_acceptance.py --recipes --light-ablation --root /tmp/autoai-step4-ablation-UNIQUE --port 18771 --llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b
+```
+
+该命令创建自有 Web/worker、确定性合成分类数据，依次执行固定 LR、recipe Agent、structured Agent，并核对同数据/实际划分/固定参数以及终态不重复提交。它是实际 HTTP/worker/LLM 工程联调，不能称为真实业务数据验收或科研贡献证明。原 `--recipes` 中 Agent 选后普通 API 重放在记录中标为 `backend-equivalence`，不是独立科研基线。
+
+记录包括实验/配置摘要、源码摘要、数据/实际划分摘要、scope 绑定、seed、候选固定参数、E/R/K、表达模式、Prompt/LLM 摘要、Session/thread/Run、状态原因、validation、调用/token/耗时及产物引用。不可计量字段标 unknown。Test 仅在固定基线完成或 Agent Finalize 后离线提取汇总；不进入 Prompt、基线选择或逐样品公开投影。
