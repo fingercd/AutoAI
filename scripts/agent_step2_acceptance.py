@@ -149,6 +149,10 @@ def run(args):
             return dict(manifest_complete=complete,manifest_path=str(storage/'runs'/run_id/'manifest.json'),
                 execution_device=metadata.get('execution_device'),classification_head=metadata.get('classification_head'),
                 resolved_profile=metadata.get('model_profile'))
+        if args.light_ablation:
+            light_ablation(args,root,base,env,datasets,report)
+            report['completed']=True
+            return 0
         if args.backend_only:
             request=root/'native-backend.json'
             save(root,request.name,dict(dataset_id=datasets[3],config=dict(model_type='logistic_regression',
@@ -398,7 +402,7 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
         partition_fields=('fold_index','train_sample_ids','valid_sample_ids','test_sample_ids','partition_digest','final_fit_indices','best_params','selection_metric','preprocess','splits','external_test_indices')
         assert [{k:f[k] for k in partition_fields} for f in sa]==[{k:f[k] for k in partition_fields} for f in sb]
         entry=dict(scenario=scenario,classes=3,session_id=final['identity']['session_id'],thread_id=thread,
-            knowledge=final['knowledge'] if args.knowledge_ablation else None,run_id=run.run_id,baseline_run_id=other.run_id,
+            knowledge=final['knowledge'] if args.knowledge_ablation else None,run_id=run.run_id,baseline_run_id=other.run_id,comparison_kind='backend-equivalence',
             chosen_model=recipe['model_id'],recipe_id=recipe['recipe_id'],plan=final['recipes']['evaluation_plan'],
             agent_session_count_unchanged=True,baseline=baseline,paired_config_equal=True,paired_split_equal=True,
             paired_execution_audit_equal=True,execution_audit=a['execution_audit'],
@@ -407,18 +411,51 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
         report['llm'].append(entry);save(root,'runtime_manifest.json',report)
         print(json.dumps(dict(scenario=scenario,model=recipe['model_id'],status='completed',paired=True)),flush=True)
 
+
+def light_ablation(args,root,base,env,datasets,report):
+    """Three actual tasks; the ordinary LR choice is fixed before Agent runs."""
+    common=[sys.executable,'-B','scripts/agent_ablation.py','--backend-url',base,
+        '--dataset-id',datasets[3],'--scope-key','step3-acceptance','--storage',str(root/'ablation'),
+        '--seed','42','--allowed-models','logistic_regression','svm']
+    rows=[]
+    for name,kind,mode in [('fixed-lr','baseline','recipe_id'),('recipe','agent','recipe_id'),('structured','agent','structured_config')]:
+        experiment_id=name+'-'+root.name.rsplit('-',1)[-1]
+        command=common+['--experiment-id',experiment_id,'--kind',kind,'--decision-mode',mode]
+        if kind=='agent':command+=['--llm-url',args.llm_url,'--llm-model',args.llm_model,'--knowledge','off']
+        with (root/(name+'.log')).open('w') as log:
+            completed=subprocess.run(command,cwd=REPO,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=720)
+        if completed.returncode:raise RuntimeError('light ablation task failed: '+name)
+        path=root/'ablation'/experiment_id/'record.json';record=json.loads(path.read_text())
+        assert record['status']=='completed'
+        # Restart must reuse the terminal record, not create another Session/Run.
+        with (root/(name+'-resume.log')).open('w') as log:
+            resumed=subprocess.run(command,cwd=REPO,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=60)
+        assert resumed.returncode==0
+        assert json.loads(path.read_text())['run_id']==record['run_id']
+        rows.append(record)
+        report['ablation']=rows;save(root,'runtime_manifest.json',report)
+    assert len({r['run_id'] for r in rows})==3
+    assert len({r['dataset_digest'] for r in rows})==1 and rows[0]['dataset_digest']!='unknown'
+    assert len({r['actual_split_digest'] for r in rows})==1 and rows[0]['actual_split_digest']!='unknown'
+    assert rows[1]['frozen_model_configs']==rows[2]['frozen_model_configs']
+    report['ablation_validation']=dict(same_data=True,same_actual_split=True,same_frozen_parameters=True,
+        ordinary_baseline_before_agents=True,terminal_resume_did_not_resubmit=True,
+        real_llm_protocol='json_action',data_source='deterministic engineering synthetic; not real-data acceptance')
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--role',choices=('driver','web','worker','baseline'),default='driver')
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--port',type=int,default=18761)
     parser.add_argument('--recipes',action='store_true')
+    parser.add_argument('--light-ablation',action='store_true')
     parser.add_argument('--knowledge-ablation',action='store_true')
     parser.add_argument('--backend-only',action='store_true')
     parser.add_argument('--request-file',type=Path)
     parser.add_argument('--llm-url')
     parser.add_argument('--llm-model',default='qwen3-4b')
     args=parser.parse_args()
+    if args.light_ablation and (not args.recipes or not args.llm_url):parser.error('light ablation requires recipes and real LLM endpoint')
     if args.knowledge_ablation and not args.recipes:parser.error('knowledge ablation requires recipes')
     if args.backend_only:
         if args.recipes or args.llm_url:parser.error('backend-only cannot start Agent/LLM acceptance')
