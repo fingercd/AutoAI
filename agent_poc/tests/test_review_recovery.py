@@ -3,9 +3,9 @@ import pytest
 import time
 from datetime import datetime, timezone
 
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from agent_poc.tests.test_orchestration_integration import BackendTransport
-from agent_poc.tests.test_graph_v2 import ScriptedDecision
+from agent_poc.tests.test_graph_model_execution import ScriptedDecision
 from agent_poc.clients.autoai_client import AutoAIClient
 from agent_poc.orchestration.llm import LLMConfig, LLMAdapter
 from agent_poc.orchestration.runtime import RuntimeConfig, start_task, resume_task, TaskInterrupted, read_status

@@ -78,7 +78,7 @@ def test_invalid_params_before_reservation(api, config):
 
 
 def test_freeze_replay_and_drift(api, monkeypatch):
-    from backend.app.agent import policy_v2
+    from backend.app.agent import policy
     client, storage, dataset = api
     created = session(api, 'cnn1d', model_configs={'cnn1d':{'epochs':2}}, client_request_id='session')
     path = '/api/agent/v2/sessions/' + created['session_id']
@@ -87,7 +87,7 @@ def test_freeze_replay_and_drift(api, monkeypatch):
     assert bad.status_code == 422
     submitted = client.post(path+'/experiments', json={'model_type':'cnn1d', 'client_request_id':'exp'})
     assert submitted.status_code == 202, submitted.text
-    monkeypatch.setattr(policy_v2, 'model_availability', lambda _: (False,'dependency_missing_torch'))
+    monkeypatch.setattr(policy, 'model_availability', lambda _: (False,'dependency_missing_torch'))
     replay = client.post(path+'/experiments', json={'model_type':'cnn1d', 'model_params':params, 'client_request_id':'exp'})
     assert replay.status_code == 202
     assert replay.json()['run_id'] == submitted.json()['run_id']
@@ -101,11 +101,11 @@ def test_freeze_replay_and_drift(api, monkeypatch):
 
 
 def test_policy_drift_before_submit(api, monkeypatch):
-    from backend.app.agent import policy_v2
+    from backend.app.agent import policy
     client, storage, _ = api
     created = session(api)
-    original = policy_v2.model_policy
-    monkeypatch.setattr(policy_v2,'model_policy',lambda m:{**original(m),'config_policy_digest':'0'*64})
+    original = policy.model_policy
+    monkeypatch.setattr(policy,'model_policy',lambda m:{**original(m),'config_policy_digest':'0'*64})
     response = client.post('/api/agent/v2/sessions/'+created['session_id']+'/experiments',json={'model_type':'logistic_regression'})
     assert response.status_code == 409
     assert response.json()['detail']['code'] == 'agent_capability_changed'
@@ -160,8 +160,8 @@ def test_progress_is_safe(api):
 
 def test_mapping_survives_lost_response_and_capability_drift(api, monkeypatch):
     from backend.app.routers.agent import _agent_service
-    from backend.app.agent.contracts_v2 import CreateAgentExperimentRequestV2
-    from backend.app.agent import policy_v2
+    from backend.app.agent.contracts import CreateAgentExperimentRequestV2
+    from backend.app.agent import policy
     client, storage, _ = api
     created = session(api)
     service = _agent_service('agent-session-v2')
@@ -176,7 +176,7 @@ def test_mapping_survives_lost_response_and_capability_drift(api, monkeypatch):
         service.create_experiment(session_id=created['session_id'],payload=payload,principal=Principal())
     assert len(service.runs.list()) == 1
     assert service.sessions.list_experiments_scoped(created['session_id'],principal=Principal())[0].state == 'reserved'
-    monkeypatch.setattr(policy_v2,'model_availability',lambda _: (False,'dependency_missing_sklearn'))
+    monkeypatch.setattr(policy,'model_availability',lambda _: (False,'dependency_missing_sklearn'))
     replay = service.create_experiment(session_id=created['session_id'],payload=payload,principal=Principal())
     assert replay['binding_state'] == 'bound'
     assert replay['run_id'] == service.runs.list()[0].run_id

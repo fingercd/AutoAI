@@ -2,10 +2,10 @@
 from copy import deepcopy
 import pytest
 from agent_poc.clients.autoai_client import AutoAIClient, AgentContractError
-from agent_poc.clients.contracts_v2 import HealthResponse
+from agent_poc.clients.execution_contracts import HealthResponse
 from agent_poc.tools import ToolDispatcher, build_tool_schemas, validate_tool_arguments, TOOL_SCHEMAS
 from agent_poc.tests.test_orchestration_integration import BackendTransport
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 
 
 def test_real_v2_client_freezes_all_candidates(api):
@@ -59,7 +59,7 @@ def test_parameter_binding_rejects_cross_model_and_partial(api):
 
 
 def test_resolved_execution_closes_test_and_path_fields():
-    from agent_poc.clients.contracts_v2 import ResolvedExecution
+    from agent_poc.clients.execution_contracts import ResolvedExecution
     for params in ({'test_macro_f1':1},{'device':'/server/private'},{'svm_kernel':'/canary'},
                    {'channels':[1]*100},{'dropout':True}):
         with pytest.raises(ValueError):

@@ -4,9 +4,9 @@ from threading import Barrier
 
 import pytest
 
-from backend.tests.test_agent_v2 import api, session
+from backend.tests.test_agent_model_sessions import api, session
 from backend.app.agent.contracts import AgentDomainError
-from backend.app.agent.contracts_v2 import CreateAgentExperimentRequestV2
+from backend.app.agent.contracts import CreateAgentExperimentRequestV2
 from backend.app.runs.contracts import Principal
 
 

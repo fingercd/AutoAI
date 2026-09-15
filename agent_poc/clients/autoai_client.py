@@ -127,16 +127,16 @@ class AutoAIClient:
         from copy import deepcopy
         from agent_poc.tools import TOOL_SCHEMAS
         self.tool_schemas = deepcopy(TOOL_SCHEMAS)
-        from .contracts_v2 import RESPONSE_MODELS as V2_RESPONSES
+        from .execution_contracts import RESPONSE_MODELS as V2_RESPONSES
         self.response_models = V2_RESPONSES if self.api_version == 'v2' else RESPONSE_MODELS
         self.route_prefix = '/api/agent/v2/' if self.api_version == 'v2' else '/api/agent/'
         if self.execution_profile is not None:
             if self.execution_profile != 'train-evidence-recipes-v1' or self.api_version != 'v2':
                 raise ValueError('Recipe profile requires v2')
-            from .contracts_v2 import RECIPE_RESPONSE_MODELS
+            from .preparation import RECIPE_RESPONSE_MODELS
             if self.protocol_revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
                 raise ValueError('Unknown recipe revision')
-            from .contracts_v2 import KNOWLEDGE_RESPONSE_MODELS
+            from .knowledge import KNOWLEDGE_RESPONSE_MODELS
             self.response_models = KNOWLEDGE_RESPONSE_MODELS if self.protocol_revision=='agent-recipes-revision-v2' else RECIPE_RESPONSE_MODELS
         self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
@@ -213,15 +213,15 @@ class AutoAIClient:
 
     def restore_frozen_session(self, session_id, snapshot, preparation=None):
         """Restore validated local bindings without performing any HTTP request."""
-        from .contracts_v2 import FrozenSnapshot
+        from .capabilities import FrozenSnapshot
         if self.api_version != 'v2':
             raise AgentContractError('Frozen capabilities require v2')
         validate_identifier(session_id)
         frozen = FrozenSnapshot.model_validate(snapshot).model_dump(mode='json')
         self._sessions[session_id] = {'capability_snapshot': frozen}
         if self.execution_profile:
-            from .contracts_v2 import Preparation
-            from .contracts_v2 import KnowledgePreparation
+            from .preparation import Preparation
+            from .knowledge import KnowledgePreparation
             schema = KnowledgePreparation if self.protocol_revision=='agent-recipes-revision-v2' else Preparation
             bound = schema.model_validate(preparation).model_dump(mode='json',exclude_unset=True)
             self._sessions[session_id]['preparation'] = bound
@@ -229,7 +229,8 @@ class AutoAIClient:
 
     def restore_recipe_revision(self, revision):
         """Rebuild the negotiated client contract from a validated checkpoint."""
-        from .contracts_v2 import RECIPE_RESPONSE_MODELS, KNOWLEDGE_RESPONSE_MODELS
+        from .preparation import RECIPE_RESPONSE_MODELS
+        from .knowledge import KNOWLEDGE_RESPONSE_MODELS
         if self.api_version != 'v2' or revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
             raise AgentContractError('Invalid checkpoint recipe revision')
         self.execution_profile='train-evidence-recipes-v1'
@@ -330,7 +331,7 @@ class AutoAIClient:
             body=dict(recipe_id=recipe_id,recipe_digest=recipe['recipe_digest'],
                 catalog_digest=catalog['catalog_digest'],rationale=rationale,client_request_id=client_request_id)
             if self.protocol_revision=='agent-recipes-revision-v2':
-                from .contracts_v2 import KnowledgeWire
+                from .knowledge import KnowledgeWire
                 if knowledge_refs is None:
                     raise AgentContractError('knowledge_refs is required')
                 knowledge=KnowledgeWire.model_validate(self._sessions[session_id]['preparation']['knowledge'])
@@ -349,7 +350,7 @@ class AutoAIClient:
         if self.api_version == 'v2':
             if session_id not in self._sessions:
                 raise AgentContractError('Inspect or restore the frozen Session before submission')
-            from .contracts_v2 import FrozenSnapshot, validate_params
+            from .capabilities import FrozenSnapshot, validate_params
             frozen = FrozenSnapshot.model_validate(self._sessions[session_id]['capability_snapshot'])
             model = next((m for m in frozen.models if m.id == model_type), None)
             try:

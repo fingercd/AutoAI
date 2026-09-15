@@ -7,7 +7,7 @@ from backend.app.evaluation_plan import (DatasetView, TrainView, build_evaluatio
     select_train, validate_plan, PreparationLimits, PreparationResourceExhausted)
 from backend.app.train_evidence import compute_train_evidence
 from backend.app.recipes import PROFILE, REVISION
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from backend.app.runs.repository import RunRepository
 from backend.app.runs.contracts import Principal
 

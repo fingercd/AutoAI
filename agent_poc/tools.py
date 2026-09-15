@@ -143,7 +143,7 @@ class ToolDispatcher:
 def build_tool_schemas(capabilities: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return independent schemas from a validated v2 server capability snapshot."""
     from copy import deepcopy
-    from agent_poc.clients.contracts_v2 import HealthResponse
+    from agent_poc.clients.execution_contracts import HealthResponse
     health = HealthResponse.model_validate(capabilities)
     models = [m for m in health.models if m.available]
     ids = [m.id for m in models]

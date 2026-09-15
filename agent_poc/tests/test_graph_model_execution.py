@@ -9,7 +9,7 @@ from agent_poc.orchestration.llm import LLMConfig, LLMAdapter
 from agent_poc.orchestration.runtime import RuntimeConfig,start_task,resume_task,read_status
 from agent_poc.orchestration.state import validate_state
 from agent_poc.tests.test_orchestration_integration import BackendTransport
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 from backend.app.model_catalog import MODEL_DECLARATIONS, model_availability
 
 

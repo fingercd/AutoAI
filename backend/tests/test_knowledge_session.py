@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from backend.app import knowledge as k
-from backend.tests.test_agent_v2 import api
+from backend.tests.test_agent_model_sessions import api
 
 HEADERS={'X-AutoAI-Agent-Revision':k.REVISION}
 
