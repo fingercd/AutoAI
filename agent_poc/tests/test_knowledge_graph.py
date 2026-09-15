@@ -87,9 +87,10 @@ def test_llm_reference_boundary(api,protocol,refs):
         assert adapter.propose('submit',context).arguments['knowledge_refs']==[]
 
 
+@pytest.mark.parametrize('decision_mode',[None,'recipe_id','structured_config'])
 @pytest.mark.parametrize('enabled',[True,False])
 @pytest.mark.parametrize('protocol',['json_action','native_tools'])
-def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,protocol):
+def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,protocol,decision_mode):
     from backend.app.runs.execution import execute_claimed_run
     from backend.app.runs.repository import RunRepository
     from backend.app.runs.worker import RunWorker
@@ -97,7 +98,8 @@ def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,p
     client_api,storage,dataset=api;wire=CheckedTransport(client_api)
     cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1')
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
-    provider=KnowledgeProvider(protocol);adapter=LLMAdapter(cfg,transport=provider)
+    from backend.tests.test_agent_decision_modes import ExpressionProvider
+    provider=ExpressionProvider(protocol);adapter=LLMAdapter(cfg,transport=provider)
     def client():return AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',execution_profile='train-evidence-recipes-v1',
                                     protocol_revision='agent-recipes-revision-v2',max_retries=0)
     checkpoint=tmp_path/'checkpoint';original=Nodes.submit
@@ -105,7 +107,7 @@ def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,p
     monkeypatch.setattr(Nodes,'submit',stop)
     with pytest.raises(TaskInterrupted):
         start_task(runtime,dataset_id=dataset,allowed_models=['logistic_regression'],storage=checkpoint,thread_id='knowledge',
-                   client=client(),llm=adapter,knowledge=enabled)
+                   client=client(),llm=adapter,knowledge=enabled,decision_mode=decision_mode)
     before=read_status(storage=checkpoint,thread_id='knowledge')
     assert before['knowledge']['status']==('ready' if enabled else 'disabled')
     assert bool(before['decision']['evidence_refs'])==enabled

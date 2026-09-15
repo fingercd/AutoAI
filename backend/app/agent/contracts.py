@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 
 AGENT_API_CONTRACT_VERSION = 'agent-session-v1'
@@ -152,12 +152,23 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     allowed_models: list[str] = Field(min_length=1)
     max_runs: int = Field(1, strict=True, ge=1, le=1)
     model_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    decision_mode: Literal['recipe_id', 'structured_config'] | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_request_shape(self, handler):
+        result = handler(self)
+        if self.decision_mode is None:
+            result.pop('decision_mode', None)
+        return result
+
     execution_profile: Literal['train-evidence-recipes-v1'] | None = None
     protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2'] | None = None
     context_policy: AgentContextPolicy | RecipeContextPolicy = Field(default_factory=AgentContextPolicy)
 
     @model_validator(mode='after')
     def profile_consistency(self):
+        if self.decision_mode is not None and self.protocol_revision != 'agent-recipes-revision-v2':
+            raise ValueError('decision mode requires the knowledge-capable recipe protocol')
         if (self.execution_profile is None) != (self.protocol_revision is None):
             raise ValueError('profile requires negotiated protocol revision')
         if self.execution_profile:
@@ -221,3 +232,18 @@ class CreateKnowledgeExperimentRequest(CreateRecipeExperimentRequest):
         if len(self.knowledge_refs) != len(set(self.knowledge_refs)):
             raise ValueError('duplicate knowledge reference')
         return self
+
+
+class CreateStructuredExperimentRequest(_IdempotentRequest):
+    """One complete member of the frozen finite domain, expressed without IDs."""
+    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
+    model_id: str
+    normalization: Literal['zscore']
+    class_balance: Literal['none']
+    model_params: dict[str, Any]
+    knowledge_refs: list[str] = Field(max_length=6)
+    rationale: str | None = Field(None, max_length=2000)
+
+    def validate_business(self):
+        if len(self.knowledge_refs) != len(set(self.knowledge_refs)):
+            raise invalid('Duplicate knowledge reference')

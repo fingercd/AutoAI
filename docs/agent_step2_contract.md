@@ -102,3 +102,13 @@ python scripts/agent_step2_acceptance.py --recipes --knowledge-ablation   --root
 ```
 
 受控协议测试与真实 LLM 验收分开报告。知识消融驱动固定数据、种子和候选执行 on/off，要求真实 on 实际引用已展示知识；分别为选中配方运行普通后端配对，检查参数、实际划分、搜索审计、指标/预测容差及 Manifest。失败状态与调用计量保留，不能用脚本选择器冒充真实 LLM。
+
+## 同域表达与轻量消融（2026-09-15）
+
+当前实现集中在无版本后缀业务模块；v1/v2 请求类、State v1-v4 与真实 wire 字面量仍为历史解码边界。客户端能力、执行响应、准备包和知识分别由 `capabilities.py`、`execution_contracts.py`、`preparation.py`、`knowledge.py` 承载。两个 Agent URL 前缀在同一个 router 模块内调用同一 Service。
+
+新 CLI 配方任务默认冻结 `decision_mode=recipe_id`，也可选 `structured_config`。该字段是 `agent-recipes-revision-v2` 的显式可选扩展；缺字段的历史请求、State、启动摘要和 hash 保持原样，语义按 recipe_id。显式模式仅用于当前知识协议，模式进入 Session、任务启动摘要和 prepared 内容，resume 不提供更改入口。`restricted_strategy_pool` 始终表示硬有限域。
+
+structured_config 的 LLM 提案包含 `session_id, model_id, normalization, class_balance, model_params, knowledge_refs, rationale`，不要求配方 ID。HTTP 请求使用同名执行字段（无 session_id，另有 client_request_id）；参数必须完整匹配冻结成员，normalization 固定 zscore，class_balance 固定 none。Graph 内部将完整表达绑定到规范 recipe_id，再由 Client 按冻结模式生成原始 HTTP 请求。服务端两表达解析成同一个 ExperimentCommand，复用预约、worker、恢复和 Finalize；科学摘要相同，原始请求 hash 可不同。旧 direct_action 不参与该对照。
+
+两表达知识引用规则相同：K-off 只能空引用；K-on 仅能引用冻结投影中提供的条目。E/R 只控制各自展示，硬合法域不变；K-on 可间接提供 Train 信息，不能将 E/R-off 称为完全无 Train 信息。软 Evidence 筛选为 not_applicable，动态处理为 unavailable。

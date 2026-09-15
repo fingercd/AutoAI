@@ -1045,7 +1045,10 @@ class StateModelV2(StateModel):
 from agent_poc.clients.preparation import Preparation, TrainEvidence as EvidenceContent, RecipeCatalog as CatalogContent, EvaluationPlanReference
 
 
-class RecipeTask(TaskStateV2):
+from agent_poc.clients.contracts import DecisionModeBinding
+
+
+class RecipeTask(TaskStateV2, DecisionModeBinding):
     execution_profile: Literal['train-evidence-recipes-v1']='train-evidence-recipes-v1'
 
 
@@ -1158,7 +1161,7 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               llm_config_version: str = 'agent-llm-http-v1',
               source_role: Literal['development', 'benchmark', 'domain'] = 'development',
               wire_version: str = 'agent-state-v1', model_configs: dict | None = None,
-              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False) -> GraphState:
+              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -1183,8 +1186,10 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
         raise ValueError('knowledge requires v4')
     if not modern and model_configs:
         raise ValueError('v1 does not accept model configurations')
+    if decision_mode is not None and wire_version != 'agent-state-v4':
+        raise ValueError('decision mode requires current recipe State')
     evaluation = EvaluationConfig()
-    task = task_type(dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
+    task = task_type(**({'decision_mode':decision_mode} if decision_mode is not None else {}), dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
                      selection_metric=selection_metric,
                      **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
@@ -1421,7 +1426,7 @@ class BoundKnowledgeState(StrictModel):
     snapshot: KnowledgeWire | None=None
 
 
-class KnowledgeExperimentRequest(RecipeExperimentRequest):
+class KnowledgeExperimentRequest(RecipeExperimentRequest, DecisionModeBinding):
     knowledge_refs: list[Identifier]=Field(max_length=6)
 
     @model_validator(mode='after')
@@ -1431,7 +1436,7 @@ class KnowledgeExperimentRequest(RecipeExperimentRequest):
         return self
 
 
-class KnowledgeSessionRequest(RecipeSessionRequest):
+class KnowledgeSessionRequest(RecipeSessionRequest, DecisionModeBinding):
     context_policy: KnowledgeContext=Field(default_factory=KnowledgeContext)
 
 
@@ -1461,6 +1466,9 @@ class KnowledgeStateModel(RecipeStateModel):
 
     @model_validator(mode='after')
     def knowledge_binding(self):
+        content = self.execution.submission_content
+        if content is not None and content.decision_mode != self.task.decision_mode:
+            raise ValueError('prepared expression differs from frozen task')
         knowledge=self.knowledge
         enabled=self.module_policy.knowledge.enabled
         if self.evidence.content is None:

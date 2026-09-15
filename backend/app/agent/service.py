@@ -146,6 +146,8 @@ class AgentService:
                 protocol_revision=payload.protocol_revision,
                 preparation=dict(evaluation_plan=plan.safe_reference(),
                     evidence=evidence.model_dump(mode='json'),catalog=recipes.model_dump(mode='json')))
+        if requested_profile and payload.decision_mode is not None:
+            frozen_preparation['decision_mode'] = payload.decision_mode
         if requested_profile and payload.protocol_revision == 'agent-recipes-revision-v2':
             from ..knowledge import freeze_knowledge, KnowledgeError
             try:
@@ -541,7 +543,8 @@ def _preparation_wire(session):
     wire = {key: prepared[key] for key in ('evaluation_plan','evidence','catalog')}
     if frozen['protocol_revision'] == 'agent-recipes-revision-v2':
         wire['knowledge'] = prepared['knowledge'].wire()
-    return dict(execution_profile=frozen['execution_profile'], protocol_revision=frozen['protocol_revision'], preparation=wire)
+    return dict(execution_profile=frozen['execution_profile'], protocol_revision=frozen['protocol_revision'], preparation=wire,
+                **({'decision_mode': frozen['decision_mode']} if 'decision_mode' in frozen else {}))
 
 
 def _decision_wire(session, experiment):

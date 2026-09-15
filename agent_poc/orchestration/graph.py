@@ -135,6 +135,7 @@ class Nodes:
         if state['versions']['api'] == 'agent-session-v2':
             if state['task'].get('execution_profile') == 'train-evidence-recipes-v1':
                 self.deps.client.restore_recipe_revision(state['versions']['protocol_revision'])
+                self.deps.client.decision_mode = state['task'].get('decision_mode')
             from agent_poc.tools import build_tool_schemas
             source = state['capabilities']['frozen_snapshot'] or state['capabilities']['wire_snapshot']
             if source is not None:
@@ -184,6 +185,8 @@ class Nodes:
                     if state['versions']['state']=='agent-state-v4':
                         from .state import KnowledgeSessionRequest as request_type
                 request_extra['model_configs'] = {k:v for k,v in task['model_configs'].items() if k in state['capabilities']['eligible_models']}
+            if task.get('decision_mode') is not None:
+                request_extra['decision_mode'] = task['decision_mode']
             content = request_type(**request_extra, dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
                 allowed_models=state['capabilities']['eligible_models'], seed=task['seed'],
                 client_request_id=request_id, context_policy=state['module_policy']['context_policy']).model_dump(mode='json')
@@ -392,6 +395,8 @@ class Nodes:
             if state['versions']['state']=='agent-state-v4' and state['module_policy']['knowledge']['enabled']:
                 expected['modules'].append('knowledge')
             expected['context_policy'].update({k:state['module_policy']['context_policy'][k] for k in ('evidence','risks')})
+        if locked.get('decision_mode') != task.get('decision_mode'):
+            raise ValueError('locked decision mode mismatch')
         if any(locked[key] != value for key,value in expected.items()):
             raise ValueError('locked configuration mismatch')
         if locked['dataset_fingerprint_status'] != 'ready' or not locked['dataset_sha256']:
@@ -479,7 +484,8 @@ class Nodes:
             model_configs=state['capabilities']['frozen_snapshot']['model_configs'] if state['versions']['api'] == 'agent-session-v2' else None)
         if state['versions']['state'] in ('agent-state-v3','agent-state-v4'):
             context=recipe_selection_context(task=state['task'],session_id=state['identity']['session_id'],
-                preparation=self.preparation(state),context_policy=state['module_policy']['context_policy'])
+                preparation=self.preparation(state),context_policy=state['module_policy']['context_policy'],
+                model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
         proposal = self.llm_call(state, 'submit', context)
         if proposal.tool_name != 'submit_ml_experiment':
             raise ValueError('wrong decision tool')
@@ -487,6 +493,11 @@ class Nodes:
         if state['versions']['api'] == 'agent-session-v2':
             from .state import ExperimentRequestV2 as request_type, DecisionStateV2 as decision_type
         arguments=dict(proposal.arguments)
+        if state['task'].get('decision_mode') == 'structured_config':
+            from .llm import normalize_structured_arguments
+            arguments = normalize_structured_arguments(arguments, context)
+        if state['task'].get('decision_mode') is not None:
+            arguments['decision_mode'] = state['task']['decision_mode']
         if state['versions']['state'] in ('agent-state-v3','agent-state-v4'):
             from .state import RecipeExperimentRequest as request_type
             if state['versions']['state']=='agent-state-v4':
