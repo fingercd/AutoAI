@@ -646,6 +646,8 @@ def _decode_preparation(raw):
     frozen = _decode(raw, None)
     if frozen is None:
         return None
+    if 'decision_mode' in frozen and frozen['decision_mode'] not in ('recipe_id', 'structured_config'):
+        raise AgentDomainError('agent_preparation_failed', 'Invalid frozen decision mode', status_code=409)
     revision = frozen['protocol_revision']
     if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
         raise AgentDomainError('agent_version_incompatible', 'Unknown frozen revision', status_code=409)

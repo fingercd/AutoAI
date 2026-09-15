@@ -97,15 +97,25 @@ class ExperimentCommand:
 
 
 def normalize_experiment(session, payload) -> ExperimentCommand:
-    from .contracts import CreateRecipeExperimentRequest, CreateAgentExperimentRequestV2
+    from .contracts import CreateRecipeExperimentRequest, CreateAgentExperimentRequestV2, CreateStructuredExperimentRequest
     if session.frozen_preparation is not None:
-        if not isinstance(payload, CreateRecipeExperimentRequest):
+        structured = session.frozen_preparation.get('decision_mode', 'recipe_id') == 'structured_config'
+        if structured != isinstance(payload, CreateStructuredExperimentRequest):
+            raise AgentDomainError('agent_invalid_action', 'Expression differs from frozen decision mode', status_code=422)
+        if not isinstance(payload, (CreateRecipeExperimentRequest, CreateStructuredExperimentRequest)):
             raise AgentDomainError('agent_invalid_action', 'Recipe profile accepts only recipe selection', status_code=422)
         from ..recipes import RecipeCatalog, validate_catalog_binding
         catalog = validate_catalog_binding(RecipeCatalog.model_validate(session.frozen_preparation['preparation']['catalog']),session.capability_snapshot).model_dump(mode='json')
-        recipe = next((r for r in catalog['recipes'] if r['recipe_id']==payload.recipe_id), None)
-        if recipe is None or catalog['catalog_digest']!=payload.catalog_digest or recipe['recipe_digest']!=payload.recipe_digest:
-            raise AgentDomainError('agent_recipe_invalid', 'Recipe does not match frozen catalog', status_code=422)
+        if structured:
+            canonical = CreateAgentExperimentRequestV2(model_type=payload.model_id, model_params=payload.model_params)
+            frozen_action(session, canonical)  # Complete keys and strict finite numeric validation.
+            recipe = next((r for r in catalog['recipes'] if r['model_id'] == payload.model_id), None)
+            if recipe is None:
+                raise AgentDomainError('agent_recipe_invalid', 'Configuration is outside frozen catalog', status_code=422)
+        else:
+            recipe = next((r for r in catalog['recipes'] if r['recipe_id']==payload.recipe_id), None)
+            if recipe is None or catalog['catalog_digest']!=payload.catalog_digest or recipe['recipe_digest']!=payload.recipe_digest:
+                raise AgentDomainError('agent_recipe_invalid', 'Recipe does not match frozen catalog', status_code=422)
         canonical = CreateAgentExperimentRequestV2(model_type=recipe['model_id'])
         action = frozen_action(session, canonical)
         body = payload.model_dump(mode='json')
@@ -113,7 +123,7 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
         from .contracts import CreateKnowledgeExperimentRequest
         metadata = None
         modern = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v2'
-        if modern != isinstance(payload, CreateKnowledgeExperimentRequest):
+        if modern != isinstance(payload, (CreateKnowledgeExperimentRequest, CreateStructuredExperimentRequest)):
             raise AgentDomainError('agent_version_incompatible', 'Knowledge request revision mismatch', status_code=409)
         if modern:
             from ..knowledge import resolve_decision
@@ -122,7 +132,7 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
             except ValueError as exc:
                 raise AgentDomainError('agent_knowledge_reference_invalid', 'Reference not provided in frozen context', status_code=422) from exc
         return ExperimentCommand(action, body, payload.rationale, payload.client_request_id, recipe, metadata)
-    if isinstance(payload, CreateRecipeExperimentRequest):
+    if isinstance(payload, (CreateRecipeExperimentRequest, CreateStructuredExperimentRequest)):
         raise AgentDomainError('agent_version_incompatible', 'Recipe requires recipe profile', status_code=409)
     payload.validate_business()
     if payload.model_type not in session.allowed_models:

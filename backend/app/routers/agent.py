@@ -216,7 +216,7 @@ def finalize_session(
 # Negotiated current URLs share the service and legacy HTTP error boundary.
 from fastapi import Header
 from .deps import get_agent_service
-from ..agent.contracts import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2, CreateRecipeExperimentRequest, CreateKnowledgeExperimentRequest
+from ..agent.contracts import V2, CreateAgentSessionRequestV2, CreateAgentExperimentRequestV2, CreateRecipeExperimentRequest, CreateKnowledgeExperimentRequest, CreateStructuredExperimentRequest
 from ..model_config import model_capability_snapshot
 
 current_router = APIRouter(prefix='/api/agent/v2')
@@ -269,7 +269,7 @@ def current_get_session(session_id: str, principal: Principal = Depends(get_prin
 
 
 @current_router.post('/sessions/{session_id}/experiments', status_code=202)
-def current_create_experiment(session_id: str, payload: CreateKnowledgeExperimentRequest | CreateAgentExperimentRequestV2 | CreateRecipeExperimentRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
+def current_create_experiment(session_id: str, payload: CreateStructuredExperimentRequest | CreateKnowledgeExperimentRequest | CreateAgentExperimentRequestV2 | CreateRecipeExperimentRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
     return call('create_experiment', principal, revision=revision, session_id=session_id, payload=payload)
 
 

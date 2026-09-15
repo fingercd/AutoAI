@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, model_serializer
 from agent_poc.clients.contracts import (
     ClosedModel, Evaluation, Identifier, MetricName, ModelName, Score, ValidationMetrics,
 )
@@ -178,13 +178,15 @@ class RecipeFinalizationContext(FinalizationContext):
     context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1']
 
 
-def recipe_selection_context(*,task,session_id,preparation,context_policy):
+def recipe_selection_context(*,task,session_id,preparation,context_policy,model_configs=None):
     from agent_poc.clients.knowledge import KnowledgePreparation
     modern=context_policy.get('projection')=='agent-context-knowledge-v1'
     prepared=(KnowledgePreparation if modern else Preparation).model_validate(preparation)
     payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
         recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes],
         allowed_actions=['submit_ml_experiment'],bindings={'session_id':session_id})
+    if task.get('decision_mode') is not None:
+        payload.update(decision_mode=task['decision_mode'], fixed_model_params=model_configs or task.get('capability_snapshot',{}).get('model_configs',{}))
     if context_policy['evidence']:
         payload['train_statistics']=prepared.evidence.statistics.model_dump(mode='json')
     if context_policy['risks']:
@@ -198,5 +200,16 @@ from agent_poc.clients.knowledge import KnowledgeProjection
 
 
 class KnowledgeSelectionContext(RecipeSelectionContext):
+    decision_mode: Literal['recipe_id','structured_config'] | None = None
+    fixed_model_params: dict[str,dict[str,int|float|str]] | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_expression(self, handler):
+        result = handler(self)
+        if self.decision_mode is None:
+            result.pop('decision_mode',None)
+            result.pop('fixed_model_params',None)
+        return result
+
     context_version: Literal['agent-context-knowledge-v1']
     knowledge: KnowledgeProjection

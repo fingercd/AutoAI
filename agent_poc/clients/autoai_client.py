@@ -120,8 +120,13 @@ class AutoAIClient:
     api_version: str = "v1"
     execution_profile: str | None = None
     protocol_revision: str = 'agent-recipes-revision-v1'
+    decision_mode: str | None = None
 
     def __post_init__(self) -> None:
+        if self.decision_mode not in (None, 'recipe_id', 'structured_config'):
+            raise ValueError('Unknown decision mode')
+        if self.decision_mode is not None and (not self.execution_profile or self.protocol_revision != 'agent-recipes-revision-v2'):
+            raise ValueError('Decision mode requires current recipe protocol')
         if self.api_version not in ('v1','v2'):
             raise ValueError('Unknown API version')
         from copy import deepcopy
@@ -247,6 +252,8 @@ class AutoAIClient:
             schema['properties']['knowledge_refs']=dict(type='array',items={'type':'string'},maxItems=6,uniqueItems=True)
             schema['required'].append('knowledge_refs')
             self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge']
+        for name in ('start_ml_session', 'submit_ml_experiment'):
+            self.tool_schemas[name]['properties']['decision_mode'] = {'type':'string', 'enum':['recipe_id','structured_config']}
         context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
         context.update(evidence={'type':'boolean'},risks={'type':'boolean'})
 
@@ -278,7 +285,7 @@ class AutoAIClient:
                          modules: list[str] | None = None,
                          context_policy: dict[str, Any] | None = None,
                          client_request_id: str | None = None,
-                         model_configs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+                         model_configs: dict[str, dict[str, Any]] | None = None, decision_mode: str | None = None) -> dict[str, Any]:
         validate_identifier(dataset_id)
         if client_request_id is not None:
             validate_identifier(client_request_id)
@@ -291,6 +298,10 @@ class AutoAIClient:
             'context_policy': context_policy if context_policy is not None else {
                 'source_role': 'development', 'case_write': False},
         }
+        if decision_mode != self.decision_mode:
+            raise AgentContractError('Session expression differs from client binding')
+        if decision_mode is not None:
+            body['decision_mode'] = decision_mode
         if self.execution_profile:
             body.update(execution_profile=self.execution_profile,protocol_revision=self.protocol_revision,
                         modules=(modules if self.protocol_revision=='agent-recipes-revision-v2' and modules is not None else ['train_evidence','legal_recipes']))
@@ -315,11 +326,13 @@ class AutoAIClient:
                              parent_run_id: str | None = None, rationale: str | None = None,
                              client_request_id: str | None = None,
                              model_params: dict[str, Any] | None = None,
-                             recipe_id: str | None = None, knowledge_refs: list[str] | None = None) -> dict[str, Any]:
+                             recipe_id: str | None = None, knowledge_refs: list[str] | None = None, decision_mode: str | None = None) -> dict[str, Any]:
         validate_identifier(session_id)
         for value in (parent_run_id, client_request_id):
             if value is not None:
                 validate_identifier(value)
+        if decision_mode != self.decision_mode:
+            raise AgentContractError('Prepared expression differs from client binding')
         if self.execution_profile:
             if model_type is not None or model_params is not None or parent_run_id is not None or normalization!='zscore' or class_balance!='none':
                 raise AgentContractError('Recipe selection cannot contain free execution configuration')
@@ -330,6 +343,10 @@ class AutoAIClient:
                 raise AgentContractError('Restore frozen recipe catalog before selection')
             body=dict(recipe_id=recipe_id,recipe_digest=recipe['recipe_digest'],
                 catalog_digest=catalog['catalog_digest'],rationale=rationale,client_request_id=client_request_id)
+            if self.decision_mode == 'structured_config':
+                body = dict(model_id=recipe['model_id'], normalization='zscore', class_balance='none',
+                    model_params=dict(locked['capability_snapshot']['model_configs'][recipe['model_id']]),
+                    rationale=rationale, client_request_id=client_request_id)
             if self.protocol_revision=='agent-recipes-revision-v2':
                 from .knowledge import KnowledgeWire
                 if knowledge_refs is None:

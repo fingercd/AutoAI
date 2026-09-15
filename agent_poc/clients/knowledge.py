@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 import math
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from . import contracts as v1
-from .contracts import ClosedModel, Identifier
+from .contracts import ClosedModel, Identifier, DecisionModeBinding
 from .capabilities import digest
 from .execution_contracts import CreatedSessionResponse, SessionResponse, HealthResponse, ExperimentResponse
 from .preparation import Preparation, RecipeLockedConfig, RECIPE_RESPONSE_MODELS
@@ -129,7 +129,7 @@ class KnowledgePreparation(Preparation):
         return self
 
 
-class KnowledgeLockedConfig(RecipeLockedConfig):
+class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
     protocol_revision: Literal['agent-recipes-revision-v2']
     preparation: KnowledgePreparation
 

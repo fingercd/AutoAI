@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 ModelName = Literal['logistic_regression', 'svm', 'random_forest']
 MetricName = Literal['macro_f1', 'balanced_accuracy']
@@ -322,3 +322,14 @@ RESPONSE_MODELS = {
     'finalize_ml_session': FinalizeResponse,
     'reconcile_ml_session': ReconcileResponse,
 }
+
+
+class DecisionModeBinding(ClosedModel):
+    decision_mode: Literal['recipe_id', 'structured_config'] | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_mode_shape(self, handler):
+        result = handler(self)
+        if self.decision_mode is None:
+            result.pop('decision_mode', None)
+        return result
