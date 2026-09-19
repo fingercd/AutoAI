@@ -333,3 +333,30 @@ class DecisionModeBinding(ClosedModel):
         if self.decision_mode is None:
             result.pop('decision_mode', None)
         return result
+
+
+class KnowledgeQueryConfig(ClosedModel):
+    query_mode: Literal['train_template', 'user_text'] = 'train_template'
+    user_text: str | None = Field(default=None, min_length=1, max_length=4096)
+    domain: Identifier | None = None
+
+    @model_validator(mode='after')
+    def explicit_text(self):
+        if self.query_mode == 'user_text':
+            if self.user_text is None or not self.user_text.strip():
+                raise ValueError('user_text requires a nonempty description')
+        elif self.user_text is not None:
+            raise ValueError('template query cannot contain user_text')
+        return self
+
+
+class KnowledgeQueryBinding(DecisionModeBinding):
+    knowledge_query: KnowledgeQueryConfig | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_query_shape(self, handler):
+        result = handler(self)
+        for key in ('decision_mode', 'knowledge_query'):
+            if getattr(self, key) is None:
+                result.pop(key, None)
+        return result

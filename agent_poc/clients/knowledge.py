@@ -35,14 +35,23 @@ class KnowledgeEntryProjection(ClosedModel):
     conflict_notice: Literal['存在适用范围不同的建议'] | None
 
 
+class RagEntryProjection(ClosedModel):
+    entry_id: Identifier
+    entry_version: str = Field(pattern=r'^[0-9]{1,8}$')
+    related_recipe_ids: list[str]
+    title: str = Field(min_length=1, max_length=180)
+    body: str = Field(min_length=1, max_length=1200)
+    sources: list[KnowledgeSource] = Field(min_length=1, max_length=4)
+
+
 class KnowledgeProjection(ClosedModel):
     status: Literal['disabled','ready']
-    projection_version: Literal['knowledge-projection-v1'] | None
-    matched_count: int = Field(ge=0,le=32)
+    projection_version: Literal['knowledge-projection-v1', 'knowledge-rag-projection-v1'] | None
+    matched_count: int = Field(ge=0,le=256)
     provided_count: int = Field(ge=0,le=6)
-    omitted_count: int = Field(ge=0,le=32)
+    omitted_count: int = Field(ge=0,le=256)
     provided_entry_ids: list[Identifier]
-    entries: list[KnowledgeEntryProjection] = Field(max_length=6)
+    entries: list[KnowledgeEntryProjection | RagEntryProjection] = Field(max_length=6)
 
     @model_validator(mode='after')
     def coherent(self):
@@ -73,15 +82,15 @@ class KnowledgeProvenance(ClosedModel):
 
 
 class KnowledgeWire(ClosedModel):
-    schema_version: Literal['knowledge-snapshot-v1']
+    schema_version: Literal['knowledge-snapshot-v1', 'knowledge-snapshot-rag-v1']
     status: Literal['disabled','ready']
     knowledge_set_version: Identifier | None
     knowledge_set_digest: str | None = Field(pattern=r'^[a-f0-9]{64}$')
-    matcher_version: Literal['knowledge-match-v1'] | None
-    projection_version: Literal['knowledge-projection-v1'] | None
+    matcher_version: Literal['knowledge-match-v1', 'body-cosine-topk-v1'] | None
+    projection_version: Literal['knowledge-projection-v1', 'knowledge-rag-projection-v1'] | None
     semantic_input_digest: str | None = Field(pattern=r'^[a-f0-9]{64}$')
     match_digest: str | None = Field(pattern=r'^[a-f0-9]{64}$')
-    matches: list[KnowledgeMatchSummary] = Field(max_length=32)
+    matches: list[KnowledgeMatchSummary] = Field(max_length=256)
     projection: KnowledgeProjection
     projection_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
     provenance: KnowledgeProvenance | None
@@ -96,6 +105,12 @@ class KnowledgeWire(ClosedModel):
             raise ValueError('disabled knowledge has bindings')
         if self.status=='ready' and any(v is None for v in values):
             raise ValueError('ready knowledge lacks bindings')
+        if self.status == 'ready':
+            rag = self.schema_version == 'knowledge-snapshot-rag-v1'
+            if (self.matcher_version == 'body-cosine-topk-v1') != rag or (self.projection_version == 'knowledge-rag-projection-v1') != rag:
+                raise ValueError('knowledge method mismatch')
+            if any(isinstance(e, RagEntryProjection) != rag for e in self.projection.entries):
+                raise ValueError('knowledge entry method mismatch')
         matches={m.entry_id:m for m in self.matches}
         if len(matches)!=len(self.matches) or len(matches)!=self.projection.matched_count or self.status!=self.projection.status:
             raise ValueError('knowledge matches inconsistent')
@@ -158,7 +173,7 @@ class KnowledgeSessionResponse(SessionResponse):
 class KnowledgeCapability(ClosedModel):
     available: Literal[True]
     status: Literal['ready']
-    schema_version: Literal['knowledge-snapshot-v1']
+    schema_version: Literal['knowledge-snapshot-v1', 'knowledge-snapshot-rag-v1']
     reason: str | None
 
 

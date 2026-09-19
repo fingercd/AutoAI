@@ -146,6 +146,22 @@ class RecipeContextPolicy(AgentContextPolicy):
     risks: bool = True
 
 
+class KnowledgeQueryConfig(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    query_mode: Literal['train_template', 'user_text'] = 'train_template'
+    user_text: str | None = Field(default=None, min_length=1, max_length=4096)
+    domain: str | None = Field(default=None, pattern=r'^[A-Za-z][A-Za-z0-9_-]{0,63}$')
+
+    @model_validator(mode='after')
+    def explicit_text(self):
+        if self.query_mode == 'user_text':
+            if self.user_text is None or not self.user_text.strip():
+                raise ValueError('user_text requires a nonempty description')
+        elif self.user_text is not None:
+            raise ValueError('template query cannot contain user_text')
+        return self
+
+
 class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     model_config = ConfigDict(extra='forbid', strict=True)
     contract_version: ClassVar[str] = V2
@@ -153,12 +169,15 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     max_runs: int = Field(1, strict=True, ge=1, le=1)
     model_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     decision_mode: Literal['recipe_id', 'structured_config'] | None = None
+    knowledge_query: KnowledgeQueryConfig | None = None
 
     @model_serializer(mode='wrap')
     def preserve_request_shape(self, handler):
         result = handler(self)
         if self.decision_mode is None:
             result.pop('decision_mode', None)
+        if self.knowledge_query is None:
+            result.pop('knowledge_query', None)
         return result
 
     execution_profile: Literal['train-evidence-recipes-v1'] | None = None
@@ -167,6 +186,8 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
 
     @model_validator(mode='after')
     def profile_consistency(self):
+        if self.knowledge_query is not None and self.protocol_revision != 'agent-recipes-revision-v2':
+            raise ValueError('knowledge query requires knowledge-capable protocol')
         if self.decision_mode is not None and self.protocol_revision != 'agent-recipes-revision-v2':
             raise ValueError('decision mode requires the knowledge-capable recipe protocol')
         if (self.execution_profile is None) != (self.protocol_revision is None):

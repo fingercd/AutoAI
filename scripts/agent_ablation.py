@@ -158,6 +158,59 @@ def terminal_results(client,record):
                 record['actual_split_digest']=audit['partition_digest']
 
 
+def summarize_plan(rows, records):
+    """Offline, equally weighted runs. Missing/failed rows remain in denominators."""
+    import math
+    import statistics
+    identities = [(r['task_id'], r['family'], r['knowledge'], r['seed'], r['repeat']) for r in rows]
+    if len(identities) != len(set(identities)) or len({r['experiment_id'] for r in rows}) != len(rows):
+        raise ValueError('duplicate experiment identity')
+    if any(r['family'] not in ('ML', 'DL') or r['knowledge'] not in ('on', 'off') for r in rows):
+        raise ValueError('invalid planned cell')
+    metrics = ('macro_f1', 'balanced_accuracy', 'accuracy')
+    groups = {}
+    values = {}
+    for side in ('on', 'off'):
+        planned = [r for r in rows if r['knowledge'] == side]
+        group = dict(planned=len(planned), succeeded=0, rows=[], metrics={})
+        for row in planned:
+            record = records.get(row['experiment_id'])
+            successful = bool(record and record.get('status') == 'completed' and record.get('run_id'))
+            observed = record.get('offline_test', {}) if successful else {}
+            valid = successful and all(type(observed.get(m)) in (int, float) and math.isfinite(observed[m])
+                                       and 0 <= observed[m] <= 1 for m in metrics)
+            item = dict(**row, status=record.get('status') if record else 'not_started',
+                        run_id=record.get('run_id') if record else None,
+                        failure_reason=record.get('failure_reason') if record else 'not_started',
+                        metrics=observed if valid else None)
+            group['rows'].append(item)
+            if valid:
+                group['succeeded'] += 1
+                values[(row['task_id'], row['family'], side, row['seed'], row['repeat'])] = observed
+        for metric in metrics:
+            aggregates = {}
+            for family in ('ML', 'DL', 'all'):
+                selected = [r for r in group['rows'] if family == 'all' or r['family'] == family]
+                successful = [r['metrics'][metric] for r in selected if r['metrics'] is not None]
+                aggregates[family] = dict(planned=len(selected), denominator=len(successful),
+                    complete_mean=statistics.mean(successful) if successful and len(successful) == len(selected) else None,
+                    successful_subset_mean=statistics.mean(successful) if successful else None,
+                    run_sample_std=statistics.stdev(successful) if len(successful) > 1 else None)
+            group['metrics'][metric] = aggregates
+        groups[side] = group
+    paired = []
+    bases = sorted({(r['task_id'], r['family'], r['seed'], r['repeat']) for r in rows})
+    for task, family, seed, repeat in bases:
+        on = values.get((task, family, 'on', seed, repeat))
+        off = values.get((task, family, 'off', seed, repeat))
+        paired.append(dict(task_id=task, family=family, seed=seed, repeat=repeat,
+                           difference={m:on[m]-off[m] for m in metrics} if on and off else None))
+    complete = [p for p in paired if p['difference'] is not None]
+    return dict(groups=groups, paired=paired, paired_count=len(complete), unpaired_count=len(paired)-len(complete),
+                paired_mean_difference={m:statistics.mean(p['difference'][m] for p in complete) if complete else None for m in metrics},
+                uncertainty_note='Run sample standard deviation; ML/DL for the same task are not independent datasets.')
+
+
 def run(args):
     from scripts.agent_step2_acceptance import code_binding
     import httpx
@@ -169,10 +222,15 @@ def run(args):
         evidence=not args.hide_evidence_context,risks=not args.hide_risk_context,knowledge=args.knowledge,
         max_runs=1,max_llm_calls=args.max_llm_calls,max_api_calls=args.max_api_calls,timeout=args.timeout,
         backend_binding=digest(args.backend_url),scope_binding=digest(args.scope_key))
+    query_config = None
+    if getattr(args, 'query_mode', None) is not None or getattr(args, 'query_text', None) is not None or getattr(args, 'confirmed_domain', None) is not None:
+        from agent_poc.clients.contracts import KnowledgeQueryConfig
+        query_config = KnowledgeQueryConfig(query_mode=getattr(args, 'query_mode', None) or 'train_template', user_text=getattr(args, 'query_text', None), domain=getattr(args, 'confirmed_domain', None)).model_dump(mode='json')
+        configuration['knowledge_query'] = query_config
     llm=None
     if args.kind=='agent':
         from agent_poc.orchestration.llm import LLMConfig
-        llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1')
+        llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1', tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
         configuration['llm']=llm.public_config()
         configuration['llm_binding']=llm.fingerprint()
     folder=args.storage.resolve()/args.experiment_id;path=folder/'record.json'
@@ -228,7 +286,7 @@ def run(args):
                         if state is None:
                             state=start_task(runtime,dataset_id=args.dataset_id,allowed_models=args.allowed_models,
                                 model_configs=configs,storage=checkpoints,thread_id=args.experiment_id,task_id=args.experiment_id,
-                                seed=args.seed,wait=True,knowledge=args.knowledge=='on',decision_mode=args.decision_mode,
+                                seed=args.seed,wait=True,knowledge=args.knowledge=='on',decision_mode=args.decision_mode,knowledge_query=query_config,
                                 evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context,
                                 timeout_seconds=args.timeout,max_llm_calls=args.max_llm_calls,max_api_calls=args.max_api_calls)
                         else:state=resume_task(runtime,storage=checkpoints,thread_id=args.experiment_id,wait=True)
@@ -241,7 +299,9 @@ def run(args):
                             plan=state['recipes']['evaluation_plan'],validation=state['feedback'],
                             budget=state['budget'],llm_calls=state['budget']['llm_calls'],api_calls=state['budget']['api_calls'],
                             tokens={key:state['budget'][key] for key in ('input_tokens','output_tokens','cached_tokens')},versions=state['versions'],
-                            frozen_model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
+                            frozen_model_configs=state['capabilities']['frozen_snapshot']['model_configs'],
+                            knowledge_snapshot=state['knowledge']['snapshot'], decision=state['decision'],
+                            actual_recipe=state['execution'].get('submission_content'))
                 if record['status']=='completed' and record.get('run_id'):
                     terminal_results(client,record)
         except Exception as error:
@@ -267,6 +327,11 @@ def main(argv=None):
     p.add_argument('--model-configs',type=Path)
     p.add_argument('--decision-mode',choices=['recipe_id','structured_config'],default='recipe_id')
     p.add_argument('--knowledge',choices=['on','off'],default='off')
+    p.add_argument('--query-mode', choices=['train_template','user_text'])
+    p.add_argument('--query-text')
+    p.add_argument('--confirmed-domain')
+    p.add_argument('--llm-tokenizer')
+    p.add_argument('--context-window',type=int)
     p.add_argument('--hide-evidence-context',action='store_true')
     p.add_argument('--hide-risk-context',action='store_true')
     p.add_argument('--llm-url')

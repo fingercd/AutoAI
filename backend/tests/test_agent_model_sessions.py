@@ -17,6 +17,8 @@ from backend.tests.modeling_data_factory import write_grouped_classification_csv
 
 @pytest.fixture
 def api(monkeypatch, tmp_path):
+    from backend.tests.test_knowledge_retrieval import configure_fixture_rag
+    configure_fixture_rag(monkeypatch, tmp_path)
     storage, _, runs = _isolate_storage(monkeypatch, tmp_path)
     source = tmp_path / 'grouped.csv'
     write_grouped_classification_csv(source, groups_per_class=10, repeats=2, feature_count=128)

@@ -253,6 +253,9 @@ class AutoAIClient:
             schema['required'].append('knowledge_refs')
             self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge']
         for name in ('start_ml_session', 'submit_ml_experiment'):
+            from .contracts import KnowledgeQueryConfig
+            if name == 'start_ml_session':
+                self.tool_schemas[name]['properties']['knowledge_query'] = KnowledgeQueryConfig.model_json_schema()
             self.tool_schemas[name]['properties']['decision_mode'] = {'type':'string', 'enum':['recipe_id','structured_config']}
         context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
         context.update(evidence={'type':'boolean'},risks={'type':'boolean'})
@@ -285,7 +288,7 @@ class AutoAIClient:
                          modules: list[str] | None = None,
                          context_policy: dict[str, Any] | None = None,
                          client_request_id: str | None = None,
-                         model_configs: dict[str, dict[str, Any]] | None = None, decision_mode: str | None = None) -> dict[str, Any]:
+                         model_configs: dict[str, dict[str, Any]] | None = None, decision_mode: str | None = None, knowledge_query: dict | None = None) -> dict[str, Any]:
         validate_identifier(dataset_id)
         if client_request_id is not None:
             validate_identifier(client_request_id)
@@ -298,6 +301,9 @@ class AutoAIClient:
             'context_policy': context_policy if context_policy is not None else {
                 'source_role': 'development', 'case_write': False},
         }
+        if knowledge_query is not None:
+            from .contracts import KnowledgeQueryConfig
+            body['knowledge_query'] = KnowledgeQueryConfig.model_validate(knowledge_query).model_dump(mode='json')
         if decision_mode != self.decision_mode:
             raise AgentContractError('Session expression differs from client binding')
         if decision_mode is not None:

@@ -1045,10 +1045,10 @@ class StateModelV2(StateModel):
 from agent_poc.clients.preparation import Preparation, TrainEvidence as EvidenceContent, RecipeCatalog as CatalogContent, EvaluationPlanReference
 
 
-from agent_poc.clients.contracts import DecisionModeBinding
+from agent_poc.clients.contracts import DecisionModeBinding, KnowledgeQueryBinding
 
 
-class RecipeTask(TaskStateV2, DecisionModeBinding):
+class RecipeTask(TaskStateV2, KnowledgeQueryBinding):
     execution_profile: Literal['train-evidence-recipes-v1']='train-evidence-recipes-v1'
 
 
@@ -1161,7 +1161,7 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               llm_config_version: str = 'agent-llm-http-v1',
               source_role: Literal['development', 'benchmark', 'domain'] = 'development',
               wire_version: str = 'agent-state-v1', model_configs: dict | None = None,
-              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None) -> GraphState:
+              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None, knowledge_query: dict | None = None) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -1186,10 +1186,12 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
         raise ValueError('knowledge requires v4')
     if not modern and model_configs:
         raise ValueError('v1 does not accept model configurations')
+    if knowledge_query is not None and wire_version != 'agent-state-v4':
+        raise ValueError('knowledge query requires current recipe State')
     if decision_mode is not None and wire_version != 'agent-state-v4':
         raise ValueError('decision mode requires current recipe State')
     evaluation = EvaluationConfig()
-    task = task_type(**({'decision_mode':decision_mode} if decision_mode is not None else {}), dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
+    task = task_type(**({'knowledge_query':knowledge_query} if knowledge_query is not None else {}), **({'decision_mode':decision_mode} if decision_mode is not None else {}), dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
                      selection_metric=selection_metric,
                      **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
@@ -1198,6 +1200,8 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     policy = policy_type(context_policy=context_type(source_role=source_role,**({'evidence':evidence_context,'risks':risk_context} if recipes else {})))
     if wire_version=='agent-state-v4':
         policy.knowledge=KnowledgeSwitch(enabled=knowledge_enabled)
+        if knowledge_enabled:
+            versions.knowledge=VersionRef(status='ready',version='knowledge-snapshot-rag-v1')
     budget = BudgetState(deadline_at=started_at + timeout_seconds,
                          max_operation_attempts=max_operation_attempts,
                          max_repair_attempts=max_repair_attempts,
@@ -1436,7 +1440,7 @@ class KnowledgeExperimentRequest(RecipeExperimentRequest, DecisionModeBinding):
         return self
 
 
-class KnowledgeSessionRequest(RecipeSessionRequest, DecisionModeBinding):
+class KnowledgeSessionRequest(RecipeSessionRequest, KnowledgeQueryBinding):
     context_policy: KnowledgeContext=Field(default_factory=KnowledgeContext)
 
 

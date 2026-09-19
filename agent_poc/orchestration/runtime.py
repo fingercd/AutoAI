@@ -229,7 +229,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                max_repair_attempts: int = 2, timeout_seconds: float = 3600.0,
                source_role: str = 'development', client=None, llm=None,
                api_version: str | None = None, model_configs: dict | None = None,
-               execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True, knowledge: bool | None = None, decision_mode: str | None = None,
+               execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True, knowledge: bool | None = None, decision_mode: str | None = None, knowledge_query: dict | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
@@ -242,6 +242,8 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
     if execution_profile=='direct_action':execution_profile=None
     if execution_profile not in (None,'train-evidence-recipes-v1') or (execution_profile and api_version!='v2'):
         raise RuntimeErrorCode('unknown_execution_profile')
+    if knowledge_query is not None and not execution_profile:
+        raise RuntimeErrorCode('knowledge_query_requires_recipe_profile')
     if decision_mode is not None and not execution_profile:
         raise RuntimeErrorCode('decision_mode_requires_recipe_profile')
     if knowledge and not execution_profile:
@@ -257,8 +259,8 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('model_configs_require_v2')
     if execution_profile:
         factory=new_state
-        modern = knowledge is not None or client is None or decision_mode is not None
-        extra.update(wire_version='agent-state-v4' if modern else 'agent-state-v3',evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),decision_mode=decision_mode)
+        modern = knowledge is not None or client is None or decision_mode is not None or knowledge_query is not None
+        extra.update(wire_version='agent-state-v4' if modern else 'agent-state-v3',evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),decision_mode=decision_mode,knowledge_query=knowledge_query)
         llm_config=replace(llm_config,prompt_version='agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
     state = factory(**extra, dataset_id=dataset_id, allowed_models=allowed_models,
                       backend_fingerprint=config.backend_fingerprint(),
@@ -367,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument('--protocol', choices=('json_action', 'native_tools'))
         command.add_argument('--llm-timeout', type=float)
         command.add_argument('--llm-max-tokens', type=int)
+        command.add_argument('--llm-tokenizer')
+        command.add_argument('--llm-context-window', type=int)
         command.add_argument('--llm-max-response-bytes', type=int)
         command.add_argument('--temperature', type=float)
         command.add_argument('--top-p', type=float)
@@ -379,6 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument('--execution-profile',choices=['train-evidence-recipes-v1','direct_action'],default='train-evidence-recipes-v1')
             command.add_argument('--decision-mode', choices=['recipe_id','structured_config'], default='recipe_id')
             command.add_argument('--knowledge',choices=['on','off'],default='off')
+            command.add_argument('--query-mode', choices=['train_template','user_text'], default='train_template')
+            command.add_argument('--query-text')
+            command.add_argument('--confirmed-domain')
             command.add_argument('--hide-evidence-context',action='store_true')
             command.add_argument('--hide-risk-context',action='store_true')
             command.add_argument('--model-configs', type=json.loads, default={})
@@ -410,7 +417,10 @@ def _config_from_args(args, environ: Mapping[str, str]) -> RuntimeConfig:
             max_tokens=setting('llm_max_tokens', 'AUTOAI_LLM_MAX_TOKENS', 1024, int),
             max_response_bytes=setting('llm_max_response_bytes', 'AUTOAI_LLM_MAX_RESPONSE_BYTES', 32768, int),
             temperature=setting('temperature', 'AUTOAI_LLM_TEMPERATURE', 0.0, float),
-            top_p=setting('top_p', 'AUTOAI_LLM_TOP_P', 1.0, float))
+            top_p=setting('top_p', 'AUTOAI_LLM_TOP_P', 1.0, float),
+            tokenizer_path=getattr(args,'llm_tokenizer',None) or environ.get('AUTOAI_LLM_TOKENIZER'),
+            context_window=(int(getattr(args,'llm_context_window',None) or environ.get('AUTOAI_LLM_CONTEXT_WINDOW'))
+                if getattr(args,'llm_context_window',None) or environ.get('AUTOAI_LLM_CONTEXT_WINDOW') else None))
         return RuntimeConfig(
             backend_url=setting('backend_url', 'AUTOAI_BASE_URL', 'http://127.0.0.1:8000'),
             principal_scope=setting('principal_scope', 'AUTOAI_PRINCIPAL_SCOPE'), llm_config=config,
@@ -439,7 +449,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    max_operation_attempts=args.max_operation_attempts,
                                    max_repair_attempts=args.max_repair_attempts,
                                    timeout_seconds=args.timeout_seconds, source_role=args.source_role, model_configs=args.model_configs,
-                                   execution_profile=args.execution_profile,decision_mode=args.decision_mode if args.execution_profile!='direct_action' else None,knowledge=args.knowledge=='on',evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context)
+                                   execution_profile=args.execution_profile,decision_mode=args.decision_mode if args.execution_profile!='direct_action' else None,knowledge=args.knowledge=='on',knowledge_query=(dict(query_mode=args.query_mode,user_text=args.query_text,domain=args.confirmed_domain) if args.execution_profile!='direct_action' else None),evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context)
             else:
                 state = resume_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait)
         print(json.dumps(state if args.full else state_summary(state), ensure_ascii=False, allow_nan=False))
