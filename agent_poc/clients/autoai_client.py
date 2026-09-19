@@ -253,9 +253,13 @@ class AutoAIClient:
             schema['required'].append('knowledge_refs')
             self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge']
         for name in ('start_ml_session', 'submit_ml_experiment'):
-            from .contracts import KnowledgeQueryConfig
             if name == 'start_ml_session':
-                self.tool_schemas[name]['properties']['knowledge_query'] = KnowledgeQueryConfig.model_json_schema()
+                # The finite tool validator accepts nullable type lists, not
+                # Pydantic's general-purpose anyOf representation.
+                self.tool_schemas[name]['properties']['knowledge_query'] = dict(type='object', additionalProperties=False,
+                    properties=dict(query_mode=dict(type='string', enum=['train_template','user_text']),
+                                    user_text=dict(type=['string','null'], minLength=1, maxLength=4096),
+                                    domain=dict(type=['string','null'], minLength=1, maxLength=128)))
             self.tool_schemas[name]['properties']['decision_mode'] = {'type':'string', 'enum':['recipe_id','structured_config']}
         context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
         context.update(evidence={'type':'boolean'},risks={'type':'boolean'})

@@ -39,6 +39,28 @@ class CheckedTransport(CountTransport):
         return response
 
 
+@pytest.mark.parametrize('query',[
+    {'query_mode':'train_template','user_text':None,'domain':None},
+    {'query_mode':'user_text','user_text':'Small samples with many measured features.','domain':None},
+])
+def test_explicit_query_reaches_prepared_graph(api,tmp_path,monkeypatch,query):
+    wire=CheckedTransport(api[0])
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1')
+    runtime=RuntimeConfig('http://backend.invalid','local',cfg)
+    client=AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2',max_retries=0)
+    def stop(self,state):raise KeyboardInterrupt()
+    monkeypatch.setattr(Nodes,'submit',stop)
+    with pytest.raises(TaskInterrupted):
+        start_task(runtime,dataset_id=api[2],allowed_models=['logistic_regression'],knowledge=True,
+            knowledge_query=query,storage=tmp_path/'query-checkpoint',thread_id='explicit-query',
+            client=client,llm=LLMAdapter(cfg,transport=KnowledgeProvider('json_action')))
+    state=read_status(storage=tmp_path/'query-checkpoint',thread_id='explicit-query')
+    assert state['task']['knowledge_query']==query
+    assert state['identity']['session_id']
+    assert state['knowledge']['snapshot']['schema_version']=='knowledge-snapshot-rag-v1'
+    assert state['execution']['submission_content'] is not None
+
+
 class KnowledgeProvider:
     """Controlled protocol fixture; never evidence of a real LLM call."""
     def __init__(self,protocol):self.protocol=protocol;self.contexts=[]

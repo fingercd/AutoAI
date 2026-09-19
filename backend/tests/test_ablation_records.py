@@ -119,6 +119,22 @@ def test_same_source_cli_resume_keeps_exact_counts_and_run(recorded_cli):
     assert record['elapsed_seconds']>=0
 
 
+def test_agent_start_failure_keeps_original_reason_without_frozen_config(recorded_cli,monkeypatch):
+    from agent_poc.orchestration import runtime
+    from agent_poc.orchestration.state import new_state
+    ablation,argv,path,_,requests,_=recorded_cli
+    state=new_state(dataset_id='ds-one',allowed_models=['logistic_regression'],backend_fingerprint='a'*64,
+        principal_fingerprint='b'*64,llm_config_fingerprint='c'*64,wire_version='agent-state-v4')
+    state['lifecycle'].update(status='needs_attention',reason_code='contract_validation_failed')
+    monkeypatch.setattr(runtime,'start_task',lambda *args,**kwargs:state)
+    argv[argv.index('baseline')]='agent'
+    argv+=['--llm-url','http://fixture.invalid/v1','--llm-model','fixture']
+    assert ablation.main(argv)==2
+    record=json.loads(path.read_text())
+    assert record['failure_reason']=='contract_validation_failed'
+    assert record['frozen_model_configs'] is None and record['run_id'] is None
+
+
 @pytest.mark.parametrize('window_name',['post','poll'])
 def test_unsettled_post_and_poll_recovery_preserves_uncertainty(recorded_cli,monkeypatch,window_name):
     ablation,argv,path,_,requests,window=recorded_cli
