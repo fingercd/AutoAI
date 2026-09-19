@@ -22,7 +22,7 @@ from langsmith.run_helpers import tracing_context
 from pydantic import ValidationError
 
 from agent_poc.clients.autoai_client import AutoAIClient, validate_base_url, validate_identifier
-from .llm import LLMAdapter, LLMConfig, LLM_CONFIG_VERSION, PROMPT_VERSION
+from .llm import LLMAdapter, LLMConfig, LLMError, LLM_CONFIG_VERSION, PROMPT_VERSION
 from .persistence import CallJournal, JSONSerializer, PersistenceError, thread_lock
 from .projection import CONTEXT_VERSION
 from .state import GraphState, StateModel, apply_patch, fingerprint, new_state, validate_state
@@ -262,6 +262,18 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         modern = knowledge is not None or client is None or decision_mode is not None or knowledge_query is not None
         extra.update(wire_version='agent-state-v4' if modern else 'agent-state-v3',evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),decision_mode=decision_mode,knowledge_query=knowledge_query)
         llm_config=replace(llm_config,prompt_version='agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
+    if knowledge:
+        # Validate the adapter actually used, before checkpoints or remote effects.
+        adapter = llm if llm is not None else LLMAdapter(llm_config, token=config.llm_token)
+        if not isinstance(adapter, LLMAdapter):
+            raise RuntimeErrorCode('rag_prompt_budget_adapter_invalid')
+        try:
+            adapter.validate_prompt_budget()
+            if adapter.config != llm_config:
+                raise RuntimeErrorCode('rag_prompt_budget_configuration_mismatch')
+        except LLMError as exc:
+            raise RuntimeErrorCode(exc.code) from None
+        llm = adapter
     state = factory(**extra, dataset_id=dataset_id, allowed_models=allowed_models,
                       backend_fingerprint=config.backend_fingerprint(),
                       principal_fingerprint=config.principal_fingerprint(),

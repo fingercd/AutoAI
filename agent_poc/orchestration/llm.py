@@ -379,6 +379,27 @@ class LLMAdapter:
         ]
         return request, projected, schema, tool, knowledge_profile, recipe_profile, step2
 
+    def validate_prompt_budget(self):
+        """Verify local counting before a new RAG task can create a Session.
+
+        Kept out of LLMConfig construction and resume for historical bindings.
+        No HTTP requests or model weights are needed for this probe.
+        """
+        if self.config.tokenizer_path is None or self.config.context_window is None:
+            raise LLMError('rag_prompt_budget_configuration_required')
+        try:
+            self.config.public_config()  # Verify the files used in the frozen digest.
+            request = {'messages': [{'role': 'user', 'content': 'Budget validation'}]}
+            if self.config.protocol == 'native_tools':
+                request['tools'] = [{'type': 'function', 'function': {
+                    'name': 'budget_probe', 'description': 'Validate tool rendering',
+                    'parameters': {'type': 'object', 'properties': {}}}}]
+            count = self._prompt_tokens(request)
+            if type(count) is not int or count <= 0:
+                raise ValueError('invalid token count')
+        except Exception:
+            raise LLMError('rag_prompt_budget_configuration_invalid') from None
+
     def _prompt_tokens(self, request):
         if self.config.tokenizer_path is None:
             return None

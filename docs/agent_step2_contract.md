@@ -170,6 +170,6 @@ export AUTOAI_KNOWLEDGE_BUNDLE="$PWD/work/knowledge"
 
 检索仅做一次 NumPy 精确点积，默认 Top-3，硬上限 6；按分数降序和 ID 打破同分。当前 tau=null，不能保证无关查询返回空集。只按 scope、任务、确认领域及合法模型关联过滤；正文保留前提和限制，不将相似度解释成科学置信度。
 
-CLI 支持 `--query-mode train_template|user_text`、`--query-text` 和 `--confirmed-domain`。消融脚本额外支持 `--llm-tokenizer /path/to/local/model --context-window 32768`；启用后使用实际 chat template 对完整消息、工具 schema 和生成预留计数，必要时整卡减少，不截断正文或模型目录。完整实际展示上下文与 digest 写入现有 proposal journal，重放必须一致。预算不足是终止性 `llm_context_too_long`。
+CLI 支持 `--query-mode train_template|user_text`、`--query-text` 和 `--confirmed-domain`。新 RAG（`--knowledge on`）启动必须提供 `--llm-tokenizer /path/to/local/model --llm-context-window 32768`，也可设置 `AUTOAI_LLM_TOKENIZER` / `AUTOAI_LLM_CONTEXT_WINDOW`；消融脚本对应参数为 `--llm-tokenizer` / `--context-window`。启动前验证本地 tokenizer 文件、chat template 和实际计数能力，缺失返回 `rag_prompt_budget_configuration_required`，不可用返回 `rag_prompt_budget_configuration_invalid`，均不创建 Session、不请求 LLM。注入适配器须绑定同一配置。历史检查点仍按原配置指纹恢复，不追补新启动约束。配置后使用实际 chat template 对完整消息、工具 schema 和生成预留计数，必要时整卡减少，不截断正文或模型目录。完整实际展示上下文与 digest 写入现有 proposal journal，重放必须一致。预算不足是终止性 `llm_context_too_long`。
 
 `knowledge_refs` 可以为空；JSON action 和 native tools、recipe_id 和 structured_config 均使用实际提供的 ID/version。查询、检索分数、Embedding 版本不进入训练有效配置或科学摘要。`scripts.agent_ablation.summarize_plan` 仅离线汇总 Finalize 后的指标，失败保留计划分母；成功子集均值与完整均值分别报告。

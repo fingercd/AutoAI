@@ -43,9 +43,9 @@ class CheckedTransport(CountTransport):
     {'query_mode':'train_template','user_text':None,'domain':None},
     {'query_mode':'user_text','user_text':'Small samples with many measured features.','domain':None},
 ])
-def test_explicit_query_reaches_prepared_graph(api,tmp_path,monkeypatch,query):
+def test_explicit_query_reaches_prepared_graph(api,tmp_path,monkeypatch,budget_config,query):
     wire=CheckedTransport(api[0])
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1')
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
     client=AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2',max_retries=0)
     def stop(self,state):raise KeyboardInterrupt()
@@ -112,13 +112,13 @@ def test_llm_reference_boundary(api,protocol,refs):
 @pytest.mark.parametrize('decision_mode',[None,'recipe_id','structured_config'])
 @pytest.mark.parametrize('enabled',[True,False])
 @pytest.mark.parametrize('protocol',['json_action','native_tools'])
-def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,protocol,decision_mode):
+def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,budget_config,enabled,protocol,decision_mode):
     from backend.app.runs.execution import execute_claimed_run
     from backend.app.runs.repository import RunRepository
     from backend.app.runs.worker import RunWorker
     from backend.app.runs.status_projection import project_status
     client_api,storage,dataset=api;wire=CheckedTransport(client_api)
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1')
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1', **budget_config)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
     from backend.tests.test_agent_decision_modes import ExpressionProvider
     provider=ExpressionProvider(protocol);adapter=LLMAdapter(cfg,transport=provider)
@@ -154,7 +154,7 @@ def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,p
 
 
 @pytest.mark.parametrize('boundary',['session_response','llm_journal','journal_missing','journal_corrupt','run_response'])
-def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,boundary):
+def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,budget_config,boundary):
     import time
     from backend.app.runs.repository import RunRepository
     from agent_poc.orchestration.state import fingerprint
@@ -168,7 +168,7 @@ def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,
                 self.lost=True
                 raise TimeoutError('response lost after server commit')
             return response
-    wire=LostResponse(api[0]);cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1')
+    wire=LostResponse(api[0]);cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg);provider=KnowledgeProvider('json_action');adapter=LLMAdapter(cfg,transport=provider)
     def client():return AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',max_retries=0,
         execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2')
