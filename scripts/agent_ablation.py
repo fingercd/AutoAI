@@ -299,7 +299,7 @@ def run(args):
                             plan=state['recipes']['evaluation_plan'],validation=state['feedback'],
                             budget=state['budget'],llm_calls=state['budget']['llm_calls'],api_calls=state['budget']['api_calls'],
                             tokens={key:state['budget'][key] for key in ('input_tokens','output_tokens','cached_tokens')},versions=state['versions'],
-                            frozen_model_configs=state['capabilities']['frozen_snapshot']['model_configs'],
+                            frozen_model_configs=(state['capabilities']['frozen_snapshot'] or {}).get('model_configs'),
                             knowledge_snapshot=state['knowledge']['snapshot'], decision=state['decision'],
                             actual_recipe=state['execution'].get('submission_content'))
                 if record['status']=='completed' and record.get('run_id'):
@@ -344,4 +344,3 @@ def main(argv=None):
 
 
 if __name__=='__main__':raise SystemExit(main())
-
