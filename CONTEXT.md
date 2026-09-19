@@ -121,3 +121,7 @@ node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 新 CLI 配方任务使用 agent-state-v4 / agent-recipes-revision-v2，唯一知识开关为 module_policy.knowledge，CLI --knowledge 默认 off。新开启任务使用 knowledge-snapshot-rag-v1 / body-cosine-topk-v1：固定 BAAI/bge-small-zh-v1.5，只编码短卡正文；Train Evidence 模板或显式 user_text 查询进行一次精确 Top-3 检索。发布包、查询、结果、投影及来源绑定随 Session 冻结；知识引用独立记录，不改变 recipe/catalog/scientific digest 或训练执行。恢复只消费已有快照，不加载最新知识；旧 knowledge-snapshot-v1 保留原摘要只读兼容。v1/v2/v3 wire、幂等及启动摘要保留，详细规则见 docs/agent_step2_contract.md。
 
 当前正式材料只有 5 张来源卡，20–50 张规模与冻结人工检索质量尚未验收；tau 未启用，无关查询也可能返回卡片。knowledge-off 无需加载 Embedding；on 的发布或模型故障明确失败。生产调用应配置实际 LLM tokenizer 与上下文窗口，整卡减少后仍超限则失败；tokenizer 库必须支持所用模型的文件格式，可将 BGE 服务依赖与 LLM 客户端依赖隔离。真实对照使用原 scripts/agent_ablation.py，失败保留分母，指标仅在 Finalize 后离线读取。
+
+## 第四步 RAG 启动预算补修（2026-09-19）
+
+新 RAG on 在创建 Session 前必须通过本地 tokenizer 与 context window 校验；CLI 的 `--llm-tokenizer` / `--llm-context-window` 或对应环境变量不得同时缺失。旧检查点解码、配置指纹和恢复保持原契约。整卡裁剪、引用范围、实际展示上下文和 journal 摘要继续使用现有实现。原 40 次实验显式配置预算，源码绑定保留，不因本次启动校验重跑。正式知识仍为 5 张，20–50 张规模与人工相关性验收未完成。
