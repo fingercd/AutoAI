@@ -148,3 +148,28 @@ $PY scripts/agent_step2_acceptance.py --recipes --light-ablation --root /tmp/aut
 每次 attempt 在 I/O 前写 running，正常 finally 写 settled 和本次 request-hook 计数、耗时。下次发现 running 表明上次没有结算，转 interrupted/incomplete。已知计数和耗时保留在 measurement.known_http_calls / known_elapsed_seconds；有中断或旧记录未核实区间时，累计 record_http_calls、普通基线 api_calls、elapsed_seconds 为 `unknown`，不把缺失区间计为零。Agent 的执行调用数仍由原 Graph journal 计量；recording client 的 HTTP 计量另列 scope。
 
 旧记录没有持久 attempt 标记，首次通过源码检查的恢复会保留旧测量值并标 legacy unverified；不能反推旧运行完整性。严格源码冻结也适用于修复前创建的记录：它们不会由新代码继续执行。同源且已绑定 Run 的恢复只轮询原 Run；POST 绑定前丢响应仍停在 submission_uncertain，需人工核对，绝不自动重提。该修正不改变普通 API 幂等协议或训练流程。
+
+
+## 正文向量知识检索（2026-09-19）
+
+新 knowledge-on Session 使用 `knowledge-snapshot-rag-v1` / `body-cosine-topk-v1`；旧 `knowledge-snapshot-v1` 只按原规则和原摘要读取，不重新检索。knowledge-off 不读取卡库、不加载 transformers。on 的模型或发布包故障返回 503 `agent_knowledge_unavailable`，没有合法候选则是 ready 空集，不回退条件匹配。
+
+`knowledge_query` 是可选 Session 请求字段：`{"query_mode":"train_template","user_text":null,"domain":null}`。省略时使用 Train 模板且不改变旧请求的幂等摘要。`user_text` 模式必须显式给非空文本；domain 只接收已确认领域，不由文件名推断。查询只使用 Train 的组数、观测数、特征数、类别组数和重复测量；原查询与相似度不进入 Agent 上下文。E/R-off 仍可能通过检索结果间接传递 Train 信息。
+
+模型固定为 BAAI/bge-small-zh-v1.5 revision `7999e1d3359715c523056ef9478215996d62a620`。正文独立编码，不加前缀；查询使用固定中文前缀。CPU float32、CLS pooling、eval/no_grad、L2 归一化，超过 512 token 拒绝而不截断。发布包包含 cards.json、embeddings.npy、index_manifest.json；校验 hash、行映射、维度及单位范数后原子切换 current.json。新版本使用新目录，已有 Session 使用冻结内容恢复。
+
+安装可选 `backend/requirements-knowledge.txt`，不将其加入普通后端强制依赖。离线发布示例：
+
+```bash
+python scripts/build_knowledge_index.py --cards backend/app/knowledge_data/modeling_cards.json --model work/models/bge-small-zh-v1.5 --output work/knowledge --download-model
+export AUTOAI_EMBEDDING_MODEL="$PWD/work/models/bge-small-zh-v1.5"
+export AUTOAI_KNOWLEDGE_BUNDLE="$PWD/work/knowledge"
+```
+
+只有显式 `--download-model` 才访问公开模型站点，运行服务不下载模型。只发布 status=published 的卡片；同正文复用向量，但每行仍绑定 ID/version/body 摘要。当前迁移了 5 条原有知识，未达到正式 20–50 条规模；不将合成测试卡计入正式库。
+
+检索仅做一次 NumPy 精确点积，默认 Top-3，硬上限 6；按分数降序和 ID 打破同分。当前 tau=null，不能保证无关查询返回空集。只按 scope、任务、确认领域及合法模型关联过滤；正文保留前提和限制，不将相似度解释成科学置信度。
+
+CLI 支持 `--query-mode train_template|user_text`、`--query-text` 和 `--confirmed-domain`。消融脚本额外支持 `--llm-tokenizer /path/to/local/model --context-window 32768`；启用后使用实际 chat template 对完整消息、工具 schema 和生成预留计数，必要时整卡减少，不截断正文或模型目录。完整实际展示上下文与 digest 写入现有 proposal journal，重放必须一致。预算不足是终止性 `llm_context_too_long`。
+
+`knowledge_refs` 可以为空；JSON action 和 native tools、recipe_id 和 structured_config 均使用实际提供的 ID/version。查询、检索分数、Embedding 版本不进入训练有效配置或科学摘要。`scripts.agent_ablation.summarize_plan` 仅离线汇总 Finalize 后的指标，失败保留计划分母；成功子集均值与完整均值分别报告。

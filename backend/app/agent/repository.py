@@ -306,6 +306,11 @@ class AgentSessionRepository:
             if snapshot.status == 'ready' and (snapshot.projection_policy.evidence != record.context_policy['evidence']
                     or snapshot.projection_policy.risks != record.context_policy['risks']):
                 raise KnowledgeError('stored knowledge context policy mismatch')
+            if snapshot.schema_version == 'knowledge-snapshot-rag-v1':
+                from ..evaluation_plan import digest
+                expected_scope = digest(dict(owner_id=record.owner_id, tenant_id=record.tenant_id))
+                if snapshot.retrieval_policy['scope'] != expected_scope:
+                    raise KnowledgeError('stored knowledge scope mismatch')
         return record
 
     def _experiment(self, row: sqlite3.Row) -> AgentExperimentRecord:

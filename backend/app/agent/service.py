@@ -152,7 +152,11 @@ class AgentService:
             from ..knowledge import freeze_knowledge, KnowledgeError
             try:
                 knowledge = freeze_knowledge(enabled='knowledge' in payload.modules, evidence=evidence, catalog=recipes,
-                    evidence_context=payload.context_policy.evidence, risk_context=payload.context_policy.risks)
+                    evidence_context=payload.context_policy.evidence, risk_context=payload.context_policy.risks,
+                    query_mode=payload.knowledge_query.query_mode if payload.knowledge_query else 'train_template',
+                    user_text=payload.knowledge_query.user_text if payload.knowledge_query else None,
+                    domain=payload.knowledge_query.domain if payload.knowledge_query else None,
+                    scope=_hash_payload(dict(owner_id=principal.owner_id, tenant_id=principal.tenant_id)))
             except KnowledgeError as exc:
                 raise AgentDomainError('agent_knowledge_unavailable', 'Knowledge publication unavailable', status_code=503) from exc
             frozen_preparation['preparation']['knowledge'] = knowledge.model_dump(mode='json', exclude_unset=True)

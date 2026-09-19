@@ -122,7 +122,7 @@ class KnowledgeEntry(FrozenModel):
 class KnowledgeSet(FrozenModel):
     schema_version: Literal['knowledge-entry-v1']
     knowledge_set_version: Identifier
-    entries: Annotated[tuple[KnowledgeEntry, ...], Field(min_length=1, max_length=32)]
+    entries: Annotated[tuple[KnowledgeEntry, ...], Field(min_length=1, max_length=256)]
 
     @model_validator(mode='after')
     def closed(self):
@@ -343,14 +343,23 @@ class ProjectedEntry(FrozenModel):
     conflict_notice: Literal['存在适用范围不同的建议'] | None
 
 
+class RagProjectedEntry(FrozenModel):
+    entry_id: Identifier
+    entry_version: Annotated[str, Field(pattern=r'^[0-9]{1,8}$')]
+    related_recipe_ids: tuple[str, ...]
+    title: Annotated[str, Field(min_length=1, max_length=180)]
+    body: Annotated[str, Field(min_length=1, max_length=1200)]
+    sources: tuple[ProjectedSource, ...]
+
+
 class KnowledgeProjection(FrozenModel):
     status: Literal['disabled', 'ready']
-    projection_version: Literal['knowledge-projection-v1'] | None
-    matched_count: Annotated[int, Field(ge=0, le=32)]
+    projection_version: Literal['knowledge-projection-v1', 'knowledge-rag-projection-v1'] | None
+    matched_count: Annotated[int, Field(ge=0, le=256)]
     provided_count: Annotated[int, Field(ge=0, le=6)]
-    omitted_count: Annotated[int, Field(ge=0, le=32)]
+    omitted_count: Annotated[int, Field(ge=0, le=256)]
     provided_entry_ids: tuple[Identifier, ...]
-    entries: tuple[ProjectedEntry, ...]
+    entries: tuple[ProjectedEntry | RagProjectedEntry, ...]
 
     @model_validator(mode='after')
     def counts(self):
@@ -360,8 +369,10 @@ class KnowledgeProjection(FrozenModel):
             raise ValueError('projection counts mismatch')
         if self.status == 'disabled' and (self.matched_count or self.projection_version is not None):
             raise ValueError('disabled projection has knowledge')
-        if self.status == 'ready' and self.projection_version != PROJECTION_VERSION:
+        if self.status == 'ready' and self.projection_version not in (PROJECTION_VERSION, 'knowledge-rag-projection-v1'):
             raise ValueError('ready projection requires version')
+        if self.status == 'ready' and any(isinstance(e, RagProjectedEntry) != (self.projection_version == 'knowledge-rag-projection-v1') for e in self.entries):
+            raise ValueError('projection method mismatch')
         if len(self.model_dump_json(exclude_unset=True).encode()) > 16384:
             raise ValueError('projection too large')
         return self
@@ -444,7 +455,7 @@ class KnowledgeSnapshot(FrozenModel):
         return body
 
 
-def freeze_knowledge(*, enabled: bool, evidence: TrainEvidence, catalog: RecipeCatalog,
+def _freeze_legacy_knowledge(*, enabled: bool, evidence: TrainEvidence, catalog: RecipeCatalog,
                      evidence_context: bool, risk_context: bool) -> KnowledgeSnapshot:
     if enabled:
         knowledge = configured_knowledge()
@@ -469,7 +480,8 @@ def freeze_knowledge(*, enabled: bool, evidence: TrainEvidence, catalog: RecipeC
 
 def decode_snapshot(raw: dict) -> KnowledgeSnapshot:
     try:
-        return KnowledgeSnapshot.model_validate_json(json.dumps(raw, allow_nan=False))
+        model = RagSnapshot if raw.get('schema_version') == 'knowledge-snapshot-rag-v1' else KnowledgeSnapshot
+        return model.model_validate_json(json.dumps(raw, allow_nan=False))
     except (ValidationError, ValueError) as exc:
         raise KnowledgeError('stored knowledge snapshot invalid') from exc
 
@@ -497,3 +509,155 @@ def resolve_decision(snapshot: KnowledgeSnapshot, references: list[str]) -> Know
         raise ValueError('knowledge references not provided')
     return KnowledgeDecision(schema_version='knowledge-decision-v1',references=tuple(KnowledgeReference(entry_id=key, entry_version=entries[key].entry_version)
                                              for key in sorted(references)), projection_digest=snapshot.projection_digest)
+
+
+# The original snapshot class above is a read/verification adapter for persisted
+# rule-based sessions. New enabled sessions use only this retrieval path.
+from .knowledge_retrieval import Card, CardLibrary, ENCODING, RetrievalError, sha256
+
+
+class RagQuery(FrozenModel):
+    mode: Literal['train_template', 'user_text']
+    template_version: Literal['train-query-v1', 'user-text-v1']
+    text: Annotated[str, Field(min_length=1, max_length=4096)]
+    text_sha256: Sha256
+
+    @model_validator(mode='after')
+    def integrity(self):
+        expected = 'train-query-v1' if self.mode == 'train_template' else 'user-text-v1'
+        if self.template_version != expected or self.text_sha256 != sha256(self.text.encode()):
+            raise ValueError('query binding mismatch')
+        return self
+
+
+class RagMatch(FrozenModel):
+    entry: Card
+    related_recipe_ids: tuple[str, ...]
+    score: Annotated[float, Field(ge=-1.00001, le=1.00001, allow_inf_nan=False)]
+
+
+def project_rag(matches: tuple[RagMatch, ...], *, max_bytes=16384) -> dict:
+    entries = []
+    def block(items):
+        return dict(status='ready', projection_version='knowledge-rag-projection-v1',
+                    matched_count=len(matches), provided_count=len(items), omitted_count=len(matches)-len(items),
+                    provided_entry_ids=[e['entry_id'] for e in items], entries=items)
+    for match in matches:
+        card = match.entry
+        entry = dict(entry_id=card.entry_id, entry_version=card.entry_version,
+                     related_recipe_ids=list(match.related_recipe_ids), title=card.title, body=card.body,
+                     sources=[dict(source_id=s.source_id, description=s.locator) for s in card.sources])
+        candidate = block(entries + [entry])
+        if len(json.dumps(candidate, ensure_ascii=False, separators=(',', ':')).encode()) <= max_bytes:
+            entries.append(entry)
+    return block(entries)
+
+
+class RagSnapshot(FrozenModel):
+    schema_version: Literal['knowledge-snapshot-rag-v1'] = 'knowledge-snapshot-rag-v1'
+    status: Literal['ready'] = 'ready'
+    knowledge_set: CardLibrary
+    knowledge_set_digest: Sha256
+    matcher_version: Literal['body-cosine-topk-v1'] = 'body-cosine-topk-v1'
+    projection_version: Literal['knowledge-rag-projection-v1'] = 'knowledge-rag-projection-v1'
+    query: RagQuery
+    index_manifest: dict
+    index_manifest_digest: Sha256
+    semantic_input_digest: Sha256
+    retrieval_policy: dict
+    projection_policy: ProjectionPolicy
+    match_digest: Sha256
+    matches: Annotated[tuple[RagMatch, ...], Field(max_length=6)]
+    projection: KnowledgeProjection
+    projection_digest: Sha256
+    provenance: Provenance
+
+    @model_validator(mode='after')
+    def integrity(self):
+        from .knowledge_retrieval import row_map
+        if self.knowledge_set_digest != digest(self.knowledge_set.model_dump(mode='json')):
+            raise ValueError('frozen cards mismatch')
+        if self.index_manifest_digest != digest(self.index_manifest):
+            raise ValueError('frozen manifest mismatch')
+        if self.index_manifest.get('encoding') != ENCODING or self.index_manifest.get('rows') != row_map(self.knowledge_set):
+            raise ValueError('frozen encoder or rows mismatch')
+        if self.index_manifest.get('cards_sha256') != sha256(self.knowledge_set.model_dump_json().encode()):
+            raise ValueError('frozen publication mismatch')
+        policy = self.retrieval_policy
+        if set(policy) != {'k', 'tau', 'scope', 'domain', 'recipes', 'projection_max_bytes'}:
+            raise ValueError('invalid retrieval policy')
+        if type(policy['k']) is not int or not 1 <= policy['k'] <= 6 or len(self.matches) > policy['k']:
+            raise ValueError('invalid top-k')
+        if type(policy['projection_max_bytes']) is not int or not 256 <= policy['projection_max_bytes'] <= 16384:
+            raise ValueError('invalid projection budget')
+        if self.semantic_input_digest != digest(dict(query=self.query.model_dump(mode='json'), policy=policy,
+                                                       projection_policy=self.projection_policy.model_dump(mode='json'), index_manifest_digest=self.index_manifest_digest)):
+            raise ValueError('frozen retrieval inputs mismatch')
+        if self.match_digest != digest([m.model_dump(mode='json') for m in self.matches]):
+            raise ValueError('frozen retrieval result mismatch')
+        cards = {c.entry_id: c for c in self.knowledge_set.entries}
+        ids = [m.entry.entry_id for m in self.matches]
+        if len(ids) != len(set(ids)) or list(self.matches) != sorted(self.matches, key=lambda m: (-m.score, m.entry.entry_id)):
+            raise ValueError('duplicate or unordered retrieval')
+        for match in self.matches:
+            c = match.entry
+            recipes = tuple(r['recipe_id'] for r in policy['recipes'] if not c.related_models or r['model_id'] in c.related_models)
+            if (cards.get(c.entry_id) != c or c.status != 'published' or recipes != match.related_recipe_ids
+                    or not recipes or (c.scopes and policy['scope'] not in c.scopes)
+                    or ('general' not in c.domains and policy['domain'] not in c.domains)
+                    or (policy['tau'] is not None and match.score < policy['tau'])):
+                raise ValueError('retrieval outside frozen scope or catalog')
+        expected = project_rag(self.matches, max_bytes=policy['projection_max_bytes'])
+        if expected != self.projection.model_dump(mode='json') or digest(expected) != self.projection_digest:
+            raise ValueError('frozen projection mismatch')
+        return self
+
+    def wire(self):
+        # Query, numeric score, scopes and full sources never reach the LLM/client.
+        return dict(schema_version=self.schema_version, status=self.status,
+                    knowledge_set_version=self.knowledge_set.knowledge_set_version,
+                    knowledge_set_digest=self.knowledge_set_digest, matcher_version=self.matcher_version,
+                    projection_version=self.projection_version, semantic_input_digest=self.semantic_input_digest,
+                    match_digest=self.match_digest, matches=[dict(entry_id=m.entry.entry_id,
+                    entry_version=m.entry.entry_version, related_recipe_ids=list(m.related_recipe_ids)) for m in self.matches],
+                    projection=self.projection.model_dump(mode='json'), projection_digest=self.projection_digest,
+                    provenance=self.provenance.model_dump(mode='json'))
+
+
+@lru_cache(maxsize=2)
+def _rag_encoder(path: str):
+    from .knowledge_retrieval import BodyEncoder
+    return BodyEncoder(Path(path))
+
+
+def freeze_knowledge(*, enabled: bool, evidence: TrainEvidence, catalog: RecipeCatalog,
+                     evidence_context: bool, risk_context: bool, query_mode='train_template',
+                     user_text=None, domain=None, scope='local'):
+    if not enabled:
+        return _freeze_legacy_knowledge(enabled=False, evidence=evidence, catalog=catalog,
+                                        evidence_context=evidence_context, risk_context=risk_context)
+    from .knowledge_retrieval import current_bundle, build_query, retrieve
+    try:
+        bundle = current_bundle(Path(os.environ.get('AUTOAI_KNOWLEDGE_BUNDLE', 'storage/knowledge')))
+        query = RagQuery(**build_query(evidence, mode=query_mode, user_text=user_text, domain=domain))
+        encoder = _rag_encoder(os.environ.get('AUTOAI_EMBEDDING_MODEL', 'storage/models/bge-small-zh-v1.5'))
+        vector = encoder.encode([query.text], query=True)[0]
+        recipes = [dict(recipe_id=r.recipe_id, model_id=r.model_id) for r in catalog.recipes]
+        policy = dict(k=3, tau=None, scope=scope, domain=domain, recipes=recipes, projection_max_bytes=16384)
+        retrieved = retrieve(bundle, vector, models={r.model_id for r in catalog.recipes}, scope=scope, domain=domain)
+        matches = tuple(RagMatch(entry=item['card'], score=item['score'], related_recipe_ids=tuple(
+            r.recipe_id for r in catalog.recipes if not item['card'].related_models or r.model_id in item['card'].related_models))
+            for item in retrieved)
+        projection = project_rag(matches)
+        manifest_digest = digest(bundle.manifest)
+        return RagSnapshot(schema_version='knowledge-snapshot-rag-v1', status='ready',
+            matcher_version='body-cosine-topk-v1', projection_version='knowledge-rag-projection-v1', knowledge_set=bundle.cards, knowledge_set_digest=digest(bundle.cards.model_dump(mode='json')),
+            query=query, index_manifest=bundle.manifest, index_manifest_digest=manifest_digest,
+            semantic_input_digest=digest(dict(query=query.model_dump(mode='json'), policy=policy, projection_policy=dict(evidence=evidence_context, risks=risk_context), index_manifest_digest=manifest_digest)),
+            projection_policy=ProjectionPolicy(evidence=evidence_context, risks=risk_context),
+            retrieval_policy=policy, matches=matches, match_digest=digest([m.model_dump(mode='json') for m in matches]),
+            projection=KnowledgeProjection.model_validate_json(json.dumps(projection)), projection_digest=digest(projection),
+            provenance=Provenance(dataset_sha256=evidence.dataset_sha256, plan_digest=evidence.plan_digest,
+                                  evidence_digest=evidence.evidence_digest, catalog_digest=catalog.catalog_digest))
+    except (RetrievalError, ValueError, OSError) as exc:
+        raise KnowledgeError('knowledge retrieval unavailable or invalid') from exc

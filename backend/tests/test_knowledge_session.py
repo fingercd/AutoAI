@@ -81,10 +81,10 @@ def test_old_direct_session_without_preparation_still_reads_replays_and_submits(
 def test_on_freezes_and_off_does_not_load(api,monkeypatch,tmp_path):
     on,body=create(api)
     prepared=on['locked_config']['preparation'];wire=prepared['knowledge']
-    assert wire['schema_version']=='knowledge-snapshot-v1'
+    assert wire['schema_version']=='knowledge-snapshot-rag-v1'
     assert wire['status']=='ready' and wire['projection']['provided_entry_ids']==['km_grouped_repeats','km_lr_regularized_baseline']
     assert 'knowledge_set' not in wire
-    monkeypatch.setenv('AUTOAI_KNOWLEDGE_FILE',str(tmp_path/'missing.json'))
+    monkeypatch.setenv('AUTOAI_KNOWLEDGE_BUNDLE',str(tmp_path/'missing.json'))
     replay=api[0].post('/api/agent/v2/sessions',headers=HEADERS,json=body)
     assert replay.status_code==201 and replay.json()['locked_config']==on['locked_config']
     off,_=create(api,enabled=False,request='off')
@@ -121,7 +121,7 @@ def test_snapshot_roundtrip_and_tamper(api):
     body=json.loads(raw)['preparation']['knowledge']
     snapshot=k.decode_snapshot(body)
     assert snapshot.wire()==on['locked_config']['preparation']['knowledge']
-    body['projection']['entries'][0]['advice']='forged advice'
+    body['projection']['entries'][0]['body']='forged body'
     body['projection_digest']=k.digest(body['projection'])
     with pytest.raises(k.KnowledgeError):k.decode_snapshot(body)
 
@@ -172,10 +172,13 @@ def _race_session(database,publication,kwargs,barrier,queue):
     from backend.app.runs.contracts import Principal
     from backend.app.train_evidence import TrainEvidence
     from backend.app.recipes import RecipeCatalog
-    os.environ['AUTOAI_KNOWLEDGE_FILE']=publication
+    os.environ['AUTOAI_KNOWLEDGE_BUNDLE']=publication
+    from backend.tests.test_knowledge_retrieval import FixtureEncoder
+    k._rag_encoder = lambda path: FixtureEncoder()
     prepared=kwargs['frozen_preparation']['preparation']
     snapshot=k.freeze_knowledge(enabled=True,evidence=TrainEvidence.model_validate(prepared['evidence']),
-        catalog=RecipeCatalog.model_validate(prepared['catalog']),evidence_context=True,risk_context=True)
+        catalog=RecipeCatalog.model_validate(prepared['catalog']),evidence_context=True,risk_context=True,
+        scope=k.digest(dict(owner_id=None,tenant_id=None)))
     prepared['knowledge']=snapshot.model_dump(mode='json',exclude_unset=True)
     barrier.wait(timeout=30)
     repo=AgentSessionRepository(Path(database))
@@ -200,9 +203,11 @@ def test_two_process_publications_race_to_one_frozen_session(api,tmp_path):
         frozen_preparation=raw)
     publications=[]
     for index in (1,2):
-        body=k.configured_knowledge().model_dump(mode='json');body['knowledge_set_version']=f'common-modeling-v{index}'
-        if index==2:body['entries'][0]['entry_version']='2'
-        path=tmp_path/f'publication-{index}.json';path.write_text(json.dumps(body),encoding='utf-8');publications.append(path)
+        from backend.tests.test_knowledge_retrieval import fixture_modeling_library, FixtureEncoder
+        from backend.app.knowledge_retrieval import publish
+        path=tmp_path/f'publication-{index}'
+        publish(fixture_modeling_library(f'common-modeling-v{index}'), path, FixtureEncoder())
+        publications.append(path)
     context=multiprocessing.get_context('spawn');barrier=context.Barrier(2);queue=context.Queue()
     processes=[context.Process(target=_race_session,args=(str(database),str(path),kwargs,barrier,queue)) for path in publications]
     for process in processes:process.start()
@@ -215,3 +220,33 @@ def test_two_process_publications_race_to_one_frozen_session(api,tmp_path):
             if process.is_alive():process.terminate();process.join(timeout=10)
     assert results[0][0]==results[1][0] and results[0][2]==results[1][2]
     assert sorted(r[1] for r in results)==[False,True]
+
+
+def test_old_snapshot_still_decodes_without_encoder(api, monkeypatch):
+    from backend.app.train_evidence import TrainEvidence
+    from backend.app.recipes import RecipeCatalog
+    off, _ = create(api, enabled=False)
+    prepared = off['locked_config']['preparation']
+    old = k._freeze_legacy_knowledge(enabled=True,
+        evidence=TrainEvidence.model_validate(prepared['evidence']),
+        catalog=RecipeCatalog.model_validate(prepared['catalog']), evidence_context=True, risk_context=True)
+    raw = old.model_dump(mode='json', exclude_unset=True)
+    monkeypatch.setattr(k, '_rag_encoder', lambda path: (_ for _ in ()).throw(AssertionError('encoder called')))
+    assert k.decode_snapshot(raw).wire() == old.wire()
+    assert k.decode_snapshot(raw).model_dump(mode='json', exclude_unset=True) == raw
+
+
+def test_explicit_query_and_idempotency(api):
+    first, body = create(api)
+    body['knowledge_query'] = dict(query_mode='user_text', user_text='模型经验与限制', domain=None)
+    assert api[0].post('/api/agent/v2/sessions', headers=HEADERS, json=body).status_code == 409
+    body['client_request_id'] = 'explicit-user-query'
+    result = api[0].post('/api/agent/v2/sessions', headers=HEADERS, json=body)
+    assert result.status_code == 201
+    with sqlite3.connect(api[1]/'agent.sqlite3') as db:
+        raw = db.execute('select frozen_preparation_json from agent_sessions_v1 where session_id=?', (result.json()['session_id'],)).fetchone()[0]
+    query = json.loads(raw)['preparation']['knowledge']['query']
+    assert query['mode'] == 'user_text' and query['text'] == '模型经验与限制'
+    assert 'query' not in result.json()['locked_config']['preparation']['knowledge']
+    body['knowledge_query']['user_text'] = ' '
+    assert api[0].post('/api/agent/v2/sessions', headers=HEADERS, json=body).status_code == 422

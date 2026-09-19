@@ -185,6 +185,8 @@ class Nodes:
                     if state['versions']['state']=='agent-state-v4':
                         from .state import KnowledgeSessionRequest as request_type
                 request_extra['model_configs'] = {k:v for k,v in task['model_configs'].items() if k in state['capabilities']['eligible_models']}
+            if task.get('knowledge_query') is not None:
+                request_extra['knowledge_query'] = task['knowledge_query']
             if task.get('decision_mode') is not None:
                 request_extra['decision_mode'] = task['decision_mode']
             content = request_type(**request_extra, dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
@@ -289,6 +291,8 @@ class Nodes:
             state = getattr(self, action)(state)
             confirmed = True
         except LLMError as error:
+            if error.code == 'llm_context_too_long':
+                return _stop(state, error.code, self.deps.clock(), status='needs_attention')
             state = self.account(state)
             op = state['recovery']['pending_operation']['operation_id']
             failures = next((x['repair_attempts'] for x in state['recovery']['attempts']
@@ -486,6 +490,8 @@ class Nodes:
             context=recipe_selection_context(task=state['task'],session_id=state['identity']['session_id'],
                 preparation=self.preparation(state),context_policy=state['module_policy']['context_policy'],
                 model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
+        if isinstance(self.deps.llm, LLMAdapter):
+            context = self.deps.llm.prepare_context('submit', context)
         proposal = self.llm_call(state, 'submit', context)
         if proposal.tool_name != 'submit_ml_experiment':
             raise ValueError('wrong decision tool')

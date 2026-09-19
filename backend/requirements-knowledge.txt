@@ -1,0 +1,7 @@
+# Optional, separate from ordinary backend and training requirements.
+# Install in an isolated deployment environment; torch comes from the existing backend.
+transformers==4.44.2
+huggingface-hub==0.24.7
+tokenizers==0.19.1
+safetensors==0.4.5
+regex==2024.11.6

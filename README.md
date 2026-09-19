@@ -336,3 +336,6 @@ python -m backend.app.runs.migration --dry-run \
 ## 静态建模知识
 
 配方 CLI 任务现在使用知识协议 v4，默认 `--knowledge off`；显式 `--knowledge on` 后，Session 冻结五条有来源的通用建模建议，并向 LLM 提供与当前合法配方有关的有限投影。LLM 只选 recipe_id，可引用已展示条目；知识不改变执行配置、划分或搜索。普通后端训练与 worker 不依赖知识文件。旧任务按原协议恢复，完整契约见 [Agent 契约](docs/agent_step2_contract.md)。
+
+
+新知识 Session 使用短卡正文的单路向量检索（Top-3），发布与模型准备命令见 [Agent 契约](docs/agent_step2_contract.md)。Embedding 是可选部署依赖，普通训练和 knowledge-off 不加载模型；旧知识快照仍可恢复。当前只有 5 条既有来源卡，20–50 条知识规模及人工检索质量另行验收。

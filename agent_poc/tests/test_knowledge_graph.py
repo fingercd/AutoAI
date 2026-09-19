@@ -110,9 +110,11 @@ def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,enabled,p
                    client=client(),llm=adapter,knowledge=enabled,decision_mode=decision_mode)
     before=read_status(storage=checkpoint,thread_id='knowledge')
     assert before['knowledge']['status']==('ready' if enabled else 'disabled')
+    if enabled:
+        assert before['versions']['knowledge']['version']=='knowledge-snapshot-rag-v1'
     assert bool(before['decision']['evidence_refs'])==enabled
     assert before['recovery']['pending_operation']['status']=='prepared'
-    monkeypatch.setenv('AUTOAI_KNOWLEDGE_FILE',str(tmp_path/'missing-publication.json'))
+    monkeypatch.setenv('AUTOAI_KNOWLEDGE_BUNDLE',str(tmp_path/'missing-publication.json'))
     monkeypatch.setattr(Nodes,'submit',original)
     first=resume_task(runtime,storage=checkpoint,thread_id='knowledge',client=client(),llm=adapter)
     assert first['lifecycle']['status']=='waiting',first['lifecycle']
@@ -169,7 +171,7 @@ def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,
         first=start_task(runtime,dataset_id=api[2],allowed_models=['logistic_regression'],knowledge=True,
             client=client(),llm=adapter,storage=checkpoint,thread_id='lost',clock=lambda:clock[0])
         assert wire.lost
-    monkeypatch.setenv('AUTOAI_KNOWLEDGE_FILE',str(tmp_path/'missing.json'))
+    monkeypatch.setenv('AUTOAI_KNOWLEDGE_BUNDLE',str(tmp_path/'missing.json'))
     clock[0]+=3
     recovered=resume_task(runtime,client=client(),llm=adapter,storage=checkpoint,thread_id='lost',clock=lambda:clock[0])
     if boundary.startswith('journal_'):
@@ -183,3 +185,26 @@ def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,
     assert fingerprint(provider.contexts[0]['knowledge'])==recovered['knowledge']['snapshot']['projection_digest']
     assert recovered['identity']['startup_config_fingerprint']==first['identity']['startup_config_fingerprint']
     assert recovered['budget']['api_calls']['actual']==len(wire.requests)
+def test_prompt_budget_drops_whole_cards_and_preserves_recipes(api, monkeypatch):
+    from backend.tests.test_knowledge_session import create
+    from agent_poc.orchestration.projection import recipe_selection_context
+    from agent_poc.orchestration.llm import LLMError
+    created, _ = create(api)
+    locked = created['locked_config']
+    context = recipe_selection_context(task=locked, session_id=created['session_id'],
+        preparation=locked['preparation'], context_policy={**locked['context_policy'], 'projection':'agent-context-knowledge-v1'})
+    config = LLMConfig('http://fixture.invalid/v1', 'fixture', max_tokens=64,
+        prompt_version='agent-decision-knowledge-v1', tokenizer_path='fixture', context_window=350)
+    # Synthetic tokenizer budget fixture; actual tokenizer is exercised in real runs.
+    monkeypatch.setattr(LLMConfig, 'public_config', lambda self: {'context_version':'agent-context-knowledge-v1'})
+    adapter = LLMAdapter(config, transport=KnowledgeProvider('json_action'))
+    monkeypatch.setattr(adapter, '_prompt_tokens', lambda request:
+        100 + 100 * len(json.loads(request['messages'][-1]['content'])['knowledge']['entries']))
+    prepared = adapter.prepare_context('submit', context)
+    assert len(prepared['knowledge']['entries']) == 1
+    assert prepared['knowledge']['entries'][0] == context['knowledge']['entries'][0]
+    assert prepared['recipes'] == context['recipes']
+    assert len(context['knowledge']['entries']) == 2
+    monkeypatch.setattr(adapter, '_prompt_tokens', lambda request: 400)
+    with pytest.raises(LLMError, match='llm_context_too_long'):
+        adapter.prepare_context('submit', context)

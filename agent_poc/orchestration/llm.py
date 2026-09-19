@@ -37,9 +37,15 @@ class LLMConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     prompt_version: str = PROMPT_VERSION
+    tokenizer_path: str | None = None
+    context_window: int | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'base_url', validate_base_url(self.base_url))
+        if (self.tokenizer_path is None) != (self.context_window is None):
+            raise ValueError('tokenizer and context window must be supplied together')
+        if self.context_window is not None and (type(self.context_window) is not int or self.context_window <= self.max_tokens):
+            raise ValueError('invalid context window')
         if (not isinstance(self.model, str) or
                 not re.fullmatch(r'[A-Za-z0-9_./:\\-]{1,512}', self.model) or
                 '://' in self.model or
@@ -63,13 +69,22 @@ class LLMConfig:
     def public_config(self) -> dict[str, Any]:
         # A provider's served ID may be an absolute model path. Its raw value
         # belongs only in process memory and the provider's HTTP model field.
-        return {'version': LLM_CONFIG_VERSION,
+        result = {'version': LLM_CONFIG_VERSION,
                 'model_id_sha256': hashlib.sha256(self.model.encode('utf-8')).hexdigest(),
                 'protocol': self.protocol,
                 'timeout': self.timeout, 'max_tokens': self.max_tokens,
                 'max_response_bytes': self.max_response_bytes,
                 'temperature': self.temperature, 'top_p': self.top_p,
                 'prompt_version': self.prompt_version, 'context_version': ('agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
+
+        if self.tokenizer_path is not None:
+            from pathlib import Path
+            root = Path(self.tokenizer_path)
+            files = {name: hashlib.sha256((root/name).read_bytes()).hexdigest()
+                     for name in ('tokenizer.json', 'tokenizer_config.json')}
+            result['prompt_budget'] = dict(context_window=self.context_window,
+                tokenizer_digest=digest(files), policy='whole-card-trim-v1', enable_thinking=False)
+        return result
 
     def fingerprint(self) -> str:
         # Endpoint binding is checked without putting a URL into durable State.
@@ -168,6 +183,7 @@ class StoredProposal(ClosedModel):
     tool_call_id: Identifier | None
     response_id: Identifier | None
     usage: StoredUsage
+    displayed_context: dict | None = None
 
     @field_validator('rationale')
     @classmethod
@@ -183,6 +199,8 @@ class StoredProposal(ClosedModel):
         return self
 
     def bind(self,context):
+        if self.displayed_context is not None and self.displayed_context != context:
+            raise ValueError('stored displayed context mismatch')
         if self.context_digest!=digest(context) or self.tool_name!=context['allowed_actions'][0]:
             raise ValueError('stored proposal context mismatch')
         args=self.arguments.model_dump(mode='json',exclude_unset=True)
@@ -207,7 +225,7 @@ class StoredProposal(ClosedModel):
 def store_proposal(proposal: Proposal, context) -> dict:
     stored=StoredProposal(schema_version='knowledge-proposal-v1',context_digest=digest(context),tool_name=proposal.tool_name,arguments=proposal.arguments,
         rationale=proposal.rationale,tool_call_id=proposal.tool_call_id,response_id=proposal.response_id,
-        usage=StoredUsage(**proposal.usage.__dict__))
+        usage=StoredUsage(**proposal.usage.__dict__),displayed_context=context)
     stored.bind(context)
     return stored.model_dump(mode='json',exclude_unset=True)
 
@@ -271,16 +289,7 @@ class LLMAdapter:
     def __repr__(self):
         return f'LLMAdapter(protocol={self.config.protocol!r}, token=<redacted>)'
 
-    def propose(self, phase: str, context: dict[str, Any], *,
-                timeout_seconds: float | None = None, repair_code: str | None = None) -> Proposal:
-        if repair_code is not None and (type(repair_code) is not str or repair_code not in _REPAIR_CODES):
-            raise LLMError('llm_context_invalid') from None
-        if timeout_seconds is not None and (
-                type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)):
-            raise LLMError('llm_context_invalid') from None
-        request_timeout = min(self.config.timeout, timeout_seconds) if timeout_seconds is not None else self.config.timeout
-        if request_timeout <= 0:
-            raise LLMError('llm_timeout') from None
+    def _build_request(self, phase, context, repair_code=None):
         try:
             projected = validate_context(phase, context)
         except Exception:
@@ -368,6 +377,57 @@ class LLMAdapter:
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': json.dumps(projected, ensure_ascii=False, separators=(',', ':'))},
         ]
+        return request, projected, schema, tool, knowledge_profile, recipe_profile, step2
+
+    def _prompt_tokens(self, request):
+        if self.config.tokenizer_path is None:
+            return None
+        from transformers import AutoTokenizer
+        if not hasattr(self, '_budget_tokenizer'):
+            self._budget_tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer_path,
+                local_files_only=True, trust_remote_code=False)
+        kwargs = dict(tokenize=True, add_generation_prompt=True, enable_thinking=False)
+        if 'tools' in request:
+            kwargs['tools'] = request['tools']
+        tokens = self._budget_tokenizer.apply_chat_template(request['messages'], **kwargs)
+        return len(tokens)
+
+    def _check_prompt_budget(self, request):
+        count = self._prompt_tokens(request)
+        if count is not None and count + request['max_tokens'] > self.config.context_window:
+            raise LLMError('llm_context_too_long')
+        self.last_prompt_tokens = count
+
+    def prepare_context(self, phase, context):
+        # Freeze the complete displayed context in the existing proposal journal.
+        # The largest repair message is counted too, so retries cannot grow past it.
+        candidate = json.loads(json.dumps(context))
+        while True:
+            request, *_ = self._build_request(phase, candidate, 'llm_output_invalid')
+            count = self._prompt_tokens(request)
+            if count is None or count + self.config.max_tokens <= self.config.context_window:
+                return candidate
+            knowledge = candidate.get('knowledge')
+            if not knowledge or not knowledge['entries']:
+                raise LLMError('llm_context_too_long')
+            knowledge['entries'].pop()
+            knowledge['provided_entry_ids'] = [e['entry_id'] for e in knowledge['entries']]
+            knowledge['provided_count'] = len(knowledge['entries'])
+            knowledge['omitted_count'] = knowledge['matched_count'] - knowledge['provided_count']
+
+    def propose(self, phase: str, context: dict[str, Any], *,
+                timeout_seconds: float | None = None, repair_code: str | None = None) -> Proposal:
+        if repair_code is not None and (type(repair_code) is not str or repair_code not in _REPAIR_CODES):
+            raise LLMError('llm_context_invalid') from None
+        if timeout_seconds is not None and (
+                type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)):
+            raise LLMError('llm_context_invalid') from None
+        request_timeout = min(self.config.timeout, timeout_seconds) if timeout_seconds is not None else self.config.timeout
+        if request_timeout <= 0:
+            raise LLMError('llm_timeout') from None
+        request, projected, schema, tool, knowledge_profile, recipe_profile, step2 = self._build_request(phase, context, repair_code)
+        self._check_prompt_budget(request)
+        structured = projected.get('decision_mode') == 'structured_config'
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if self._token:
             headers['Authorization'] = f'Bearer {self._token}'
