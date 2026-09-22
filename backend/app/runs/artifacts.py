@@ -71,6 +71,9 @@ ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
     'fold_metrics.csv': {'label': '分折指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'predictions.csv': {'label': '预测明细', 'category': 'predictions', 'required': True, 'downloadable': True},
     'cv_predictions.csv': {'label': '交叉验证预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
+    # 全量数据预测明细：holdout 口径由最终模型对全部记录预测一次，交叉验证
+    # 口径取逐折 pooled OOF 行。required=False 让历史 Run 的 Manifest 仍然有效。
+    'all_predictions.csv': {'label': '全量数据预测明细', 'category': 'predictions', 'required': False, 'downloadable': True},
     'history.csv': {'label': '训练过程', 'category': 'training', 'required': False, 'downloadable': True},
     'hyperparameter_search.csv': {'label': '参数搜索记录', 'category': 'training', 'required': False, 'downloadable': True},
     'model_metadata.json': {'label': '模型元数据', 'category': 'metadata', 'required': True, 'downloadable': True},

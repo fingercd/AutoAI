@@ -26,9 +26,21 @@
   "sample_correctness": {"status": "ready", "sample_ids": [], "values": []},
   "repeat_stability": {"status": "ready", "rows": []},
   "class_recall": {"status": "ready", "labels": [], "rows": []},
+  "class_metrics": {"status": "ready", "labels": [], "rows": []},
   "confusion_matrices": []
 }
 ```
+
+`class_metrics` 按类别给出 Precision / Recall / F1 / Support：多次重复实验取均值与标准差（`*_std`），Support 求和；任一字段缺失即为 `null`，不填 0。**Recall（召回率）= TP/(TP+FN)**，二分类时即 Sensitivity，衡量漏判；**Precision（精确率）= TP/(TP+FP)**，衡量误判。二者不是同一个指标，经典对比页据此分成“各类别 Recall”和“各类别 Precision”两张表，Support 单独折叠展示；`class_recall` 与 recall 图像保持不变，供 v2 与历史归档继续使用。
+
+## 预测明细 Excel 导出（2026-09-22）
+
+`GET /api/training/batches/{batch_id}/predictions.xlsx` 返回两个工作表的 `.xlsx`（附件下载），同样按 Principal scope，只使用 Manifest 校验通过的成功子 Run 产物，响应不含服务器路径：
+
+- 工作表 1 `预测类别`：固定 `Index` / `Label` / `Sample_ID` / `划分` 四列，其后每个可比较模型一列，单元格是该模型对该记录的预测类别。
+- 工作表 2 `预测概率`：布局相同，每个模型单元格是按 `label_map` 编码顺序给出、逗号分隔、合计为 1 的逐类概率（列头注释与工作表名都标注类别顺序）。
+
+覆盖范围由评估口径和已验证产物决定，不重算、不补造：`stratified_holdout` / `external_test_holdout` 读取训练时写出的 `all_predictions.csv`（最终模型对全部记录预测一次，`划分` 为 train/valid/test，独立测试集记为 `external_test`）；交叉验证口径没有单一最终模型，同一文件存放逐折 pooled OOF 行，每条记录只在它作为测试集的那一折出现，`划分` 恒为 `test`（留一法加独立 Test 时为 `test` + `external_test`）。历史 Run 没有该产物时回退到 `predictions.csv`，只导出已有的 test/OOF 行，`Index` 列留空。批次不可比较或缺少校验通过的预测/类别映射时返回 409 与原因。
 
 新 Batch 固定一模型一 Run。sample_correctness.values 为 0/1/null；details 返回真实／预测类别、测量条数和概率均值或投票的聚合方法。Recall values 的 support 为该类预测记录数；混淆矩阵顺序严格按 label_map 编码顺序，不按字符串重排矩阵。
 

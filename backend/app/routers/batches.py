@@ -162,6 +162,29 @@ def get_batch_comparison(batch_id: str, principal: Principal = Depends(get_princ
     return project_model_comparison(batch_id=batch_id, records=records, run_dir_for=get_run_dir)
 
 
+@router.get('/api/training/batches/{batch_id}/predictions.xlsx')
+def download_batch_predictions(batch_id: str, principal: Principal = Depends(get_principal)):
+    """导出批次内每个模型对每条记录的预测类别与逐类概率（两个工作表）。"""
+    from ..runs.prediction_export import EXCEL_MEDIA_TYPE, PredictionExportError, build_prediction_workbook
+    repository = get_run_repository()
+    try:
+        repository.get_batch_scoped(batch_id, principal=principal)
+        records = repository.list_batch_runs_scoped(batch_id, principal=principal)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail="batch 不存在") from exc
+    comparison = project_model_comparison(batch_id=batch_id, records=records, run_dir_for=get_run_dir)
+    try:
+        content = build_prediction_workbook(batch_id=batch_id, records=records, run_dir_for=get_run_dir, comparison=comparison)
+    except PredictionExportError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    filename = f"predictions-{batch_id[:8]}.xlsx"
+    return Response(content, media_type=EXCEL_MEDIA_TYPE, headers={
+        'Content-Disposition': f'attachment; filename="{filename}"',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'private, no-store',
+    })
+
+
 @router.get('/api/training/batches')
 def list_batches(principal: Principal = Depends(get_principal), limit: int = Query(20, ge=1, le=100), cursor: str | None = None):
     from ..runs.batch_archive import archive_status

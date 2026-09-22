@@ -24,6 +24,16 @@ export function filteredSamples(data, search='', errors=false) {
   const sample=data.sample_correctness||{};
   return (sample.sample_ids||[]).map((id,index)=>({id,index})).filter(({id,index})=>String(id).toLowerCase().includes(search.toLowerCase())&&(!errors||(sample.values||[]).some(row=>row.values?.[index]===0)));
 }
+// 分类预测指标表：Recall 与 Precision 是两个不同指标，各占一张表；缺失值保持 —。
+export function classMetricValue(item,key){return typeof item?.[key]==='number'?`${(item[key]*100).toFixed(2)}%`:'—';}
+export function classMetricRows(data,models,key){
+  const block=data.class_metrics||{};
+  return models.map(row=>{const entry=(block.rows||[]).find(item=>item.model_type===row.model_type);return [row.model_type,...(entry?.values||[]).map(item=>classMetricValue(item,key))];});
+}
+export function classSupportRows(data,models){
+  const block=data.class_metrics||{};
+  return models.map(row=>{const entry=(block.rows||[]).find(item=>item.model_type===row.model_type);return [row.model_type,...(entry?.values||[]).map(item=>typeof item?.support==='number'?String(item.support):'—')];});
+}
 
 let state=null, root=null, observer=null, controller=null, renderToken=0, resizeTimer=null;
 let urls=[];
@@ -108,9 +118,11 @@ function paint() {
   top.append(element('p',`${meta.dataset_name||state.datasetName||'当前数据集'} · ${agg} · ${models.length} 个可比较模型`,'cmp-note'));
   const controls=element('div','','cmp-toolbar'),actions=element('div','','cmp-actions');
   const all=button('下载全部',async()=>{try{all.disabled=true;const file=await downloadFile(`/api/training/batches/${encodeURIComponent(state.id)}/archive/files/all.zip`);saveBlob(file.blob,`comparison-${state.id.slice(0,8)}.zip`);}catch(error){state.saveText=error.message;state.saved=false;}finally{updateSaveText();}});all.dataset.downloadAll='';all.disabled=!state.saved;
+  // Excel 明细与图集归档相互独立：它只依赖各子 Run 的预测产物，不要求存档完成。
+  const excel=button('下载 Excel',async()=>{try{excel.disabled=true;const file=await downloadFile(`/api/training/batches/${encodeURIComponent(state.id)}/predictions.xlsx`);saveBlob(file.blob,`predictions-${state.id.slice(0,8)}.xlsx`);note.textContent='第一个表是每个模型对每条记录的预测类别；第二个表是逐类概率（逗号分隔，合计为 1）。';note.className='cmp-note';}catch(error){note.textContent=`Excel 下载失败：${error.message}`;note.className='cmp-error';}finally{excel.disabled=false;}});excel.dataset.downloadExcel='';
   const retry=button('重试保存',()=>ensureSaved(true));retry.hidden=state.saved;retry.dataset.retrySave='';
   const note=element('span',state.saveText||'训练结束后自动保存','cmp-note');note.dataset.saveNote='';
-  actions.append(all,retry,note);controls.append(actions);top.append(controls);
+  actions.append(all,excel,retry,note);controls.append(actions);top.append(controls);
   root.replaceChildren(top);
   if(!data.comparable){root.append(element('p',data.reason||'暂无完整可比较结果','cmp-note'));return;}
   const overall=section('总体性能'),grid=element('div','','cmp-grid');
@@ -121,9 +133,18 @@ function paint() {
   matrices.append(element('p','纵轴：真实类别；横轴：预测类别。百分比固定 0–100%，计数视图共享色标。','cmp-note'));
   const matrixGrid=element('div','','cmp-grid'+((data.confusion_matrices||[]).some(row=>row.labels.length>6)?' cmp-large-classes':''));
   models.forEach(model=>{const row=(data.confusion_matrices||[]).find(item=>item.model_type===model.model_type);if(row?.confusion_matrix)matrixGrid.append(chart(modelName(model.model_type),{kind:'matrix',model:model.model_type,matrix_mode:state.matrixMode},tasks));});matrices.append(matrixGrid);root.append(matrices);
-  if(data.class_recall?.status==='ready'){
-    const recall=section('各类别 Recall / Sensitivity');recall.append(chart('类别召回率',{kind:'recall'},tasks));
-    recall.append(details('各类别记录数',table(['模型',...data.class_recall.labels],models.map(row=>{const entry=data.class_recall.rows.find(item=>item.model_type===row.model_type);return [modelName(row.model_type),...(entry?.values||[]).map(item=>item?.support)];}))));root.append(recall);
+  const classMetrics=data.class_metrics;
+  if(classMetrics?.status==='ready'){
+    const cls=section('分类预测指标');
+    cls.append(element('p','Recall（召回率）= TP/(TP+FN)，二分类时即 Sensitivity，衡量“别漏判”；Precision（精确率）= TP/(TP+FP)，衡量“别误判”。两者不是同一个指标，因此分成两张表。','cmp-note'));
+    const rowsFor=key=>classMetricRows(data,models,key).map(row=>[modelName(row[0]),...row.slice(1)]);
+    const subtitle=text=>element('h4',text,'cmp-subtitle');
+    cls.append(subtitle('各类别 Recall（召回率 / Sensitivity）'));
+    cls.append(table(['模型',...classMetrics.labels],rowsFor('recall')));
+    cls.append(subtitle('各类别 Precision（精确率）'));
+    cls.append(table(['模型',...classMetrics.labels],rowsFor('precision')));
+    cls.append(details('各类别记录数（Support）',table(['模型',...classMetrics.labels],classSupportRows(data,models).map(row=>[modelName(row[0]),...row.slice(1)]))));
+    root.append(cls);
   }
   if(data.sample_correctness?.status==='ready'){
     const search=element('input');search.type='search';search.placeholder='搜索 Sample_ID';search.value=state.search;search.setAttribute('aria-label','搜索 Sample_ID');
