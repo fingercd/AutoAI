@@ -175,6 +175,7 @@ def project_model_comparison(
         "sample_correctness": {"status": "missing", "sample_ids": [], "models": [], "values": []},
         "repeat_stability": {"status": "missing", "reason": "没有可比较的成功训练"},
         "class_recall": {"status": "missing", "labels": [], "rows": []},
+        "class_metrics": {"status": "missing", "labels": [], "rows": []},
         "confusion_matrices": [],
     }
     if not successful:
@@ -227,6 +228,10 @@ def project_model_comparison(
     model_rows: list[dict[str, Any]] = []
     all_sample_predictions: dict[str, dict[str, list[tuple[str, str]]]] = defaultdict(lambda: defaultdict(list))
     recall_values: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    # 逐类别 Precision/Recall/F1/Support：Recall 与 Precision 是两个不同指标
+    # （前者 TP/(TP+FN) 衡量漏判，后者 TP/(TP+FP) 衡量误判），分别成表展示。
+    class_metric_values: dict[str, dict[str, dict[str, list[float]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    class_support_values: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
     confusion_payloads: list[dict[str, Any]] = []
     for model_type, entries in by_model.items():
         metric_summary: dict[str, Any] = {}
@@ -256,6 +261,14 @@ def project_model_comparison(
                         recall = _finite_metric(item.get("recall"))
                         if recall is not None:
                             recall_values[model_type][label].append(recall)
+                        bucket = class_metric_values[model_type][label]
+                        for key in ("precision", "recall", "f1"):
+                            value = _finite_metric(item.get(key))
+                            if value is not None:
+                                bucket[key].append(value)
+                        support = item.get("support")
+                        if isinstance(support, (int, float)) and not isinstance(support, bool):
+                            class_support_values[model_type][label].append(int(support))
             raw_matrix = test.get("confusion_matrix")
             if isinstance(raw_matrix, list):
                 if matrix is None:
@@ -311,6 +324,23 @@ def project_model_comparison(
         for item in row['values']:
             if item is not None:
                 item['support'] = sum(test.get('classification_report', {}).get(item['label'], {}).get('support', 0) for _record, test, _rows in entries)
+    class_metric_rows: list[dict[str, Any]] = []
+    for model in model_rows:
+        model_type = model["model_type"]
+        values: list[dict[str, Any] | None] = []
+        for label in labels:
+            bucket = class_metric_values.get(model_type, {}).get(label, {})
+            supports = class_support_values.get(model_type, {}).get(label, [])
+            if not bucket and not supports:
+                values.append(None)
+                continue
+            item: dict[str, Any] = {"label": label, "support": int(sum(supports)) if supports else None}
+            for key in ("precision", "recall", "f1"):
+                series = bucket.get(key) or []
+                item[key] = float(sum(series) / len(series)) if series else None
+                item[f"{key}_std"] = float(np_std(series)) if series else None
+            values.append(item)
+        class_metric_rows.append({"model_type": model_type, "values": values})
     base.update({
         "comparable": True,
         "models": model_rows,
@@ -318,6 +348,7 @@ def project_model_comparison(
         "sample_correctness": {"status": "ready", "sample_ids": sample_ids, "models": [row["model_type"] for row in model_rows], "values": correctness_rows},
         "repeat_stability": {"status": "ready" if stability_rows else "not_applicable", "reason": None if stability_rows else "需要至少 2 次成功重复实验", "rows": stability_rows},
         "class_recall": {"status": "ready" if labels else "missing", "labels": labels, "rows": recall_rows},
+        "class_metrics": {"status": "ready" if labels else "missing", "labels": labels, "rows": class_metric_rows},
         "confusion_matrices": confusion_payloads,
         "split_digest": next(iter(fingerprints)),
         "evaluation": {"strategy": next(iter(strategies)), "primary_aggregation": "pooled_oof" if next(iter(strategies)) == "leave_one_sample_id_cv" else "direct_external_test" if next(iter(strategies)) == "leave_one_sample_id_cv_with_external_test" else "direct"},

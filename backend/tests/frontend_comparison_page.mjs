@@ -26,3 +26,17 @@ test('matrix enlargement stays bounded by both screen dimensions',()=>{
     assert.ok(size+100<=height*.85);
   }
 });
+
+test('per-class tables keep recall and precision apart',()=>{
+  const data={class_metrics:{status:'ready',labels:['1','2'],rows:[
+    {model_type:'pls_da',values:[{precision:.9,recall:.8,f1:.85,support:4},{precision:.7,recall:.6,f1:.65,support:4}]},
+    {model_type:'svm',values:[{precision:null,recall:.5,f1:null,support:null},{precision:.5,recall:null,f1:.5,support:2}]},
+  ]}};
+  const models=[{model_type:'pls_da'},{model_type:'svm'}];
+  const text=rows=>JSON.stringify(rows);
+  assert.equal(text(context.classMetricRows(data,models,'recall')),'[["pls_da","80.00%","60.00%"],["svm","50.00%","—"]]');
+  assert.equal(text(context.classMetricRows(data,models,'precision')),'[["pls_da","90.00%","70.00%"],["svm","—","50.00%"]]');
+  assert.equal(text(context.classSupportRows(data,models)),'[["pls_da","4","4"],["svm","—","2"]]');
+  // 同一个数字不会同时被当成两个指标：recall 与 precision 必须来自不同字段。
+  assert.notEqual(context.classMetricRows(data,models,'recall')[0][1],context.classMetricRows(data,models,'precision')[0][1]);
+});

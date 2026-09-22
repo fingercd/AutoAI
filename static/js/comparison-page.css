@@ -3,6 +3,7 @@
 #view-comparison .cmp * { box-sizing:border-box; }
 #view-comparison .cmp [hidden] { display:none !important; }
 #view-comparison .cmp h3, #view-comparison .cmp h4 { font-size:16px; margin:0; line-height:1.4; }
+#view-comparison .cmp .cmp-subtitle { font-size:14px; font-weight:600; color:#3c5f4e; }
 #view-comparison .cmp p { margin:0; line-height:1.55; }
 #view-comparison .cmp-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
 #view-comparison .cmp-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }

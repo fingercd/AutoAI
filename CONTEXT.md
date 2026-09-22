@@ -45,6 +45,8 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，v2/单模型结果页不变。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
 
+2026-09-22：对比页新增 `GET /api/training/batches/{batch_id}/predictions.xlsx`（openpyxl，两个工作表：预测类别 + 逐类概率），数据来自训练写出的 `all_predictions.csv`（holdout 为最终模型全量预测并标注 train/valid/test；CV 为 pooled OOF、划分恒为 test），历史 Run 回退 predictions.csv。对比页分类指标改为“各类别 Recall”和“各类别 Precision”两张表（`model-comparison-v1.class_metrics`），`class_recall` 与 recall 图保留给 v2 与归档。新增依赖 openpyxl（requirements 与 constraints 已同步）。
+
 `stratified_holdout` 以 8:1:1 为目标；`leave_one_sample_id_cv` 的主指标是全部外层 test 的 pooled OOF；`external_test_holdout` 主数据 8:2、独立数据为最终 test；`leave_one_sample_id_cv_with_external_test` 将主数据 pooled OOF 作为审计，而以全部主数据重训后的独立测试结果作为主指标。所有传统模型均以 `Sample_ID` 分组的内层 5 折 mean Balanced Accuracy 选优，normalizer/PCA/变量选择只在内层训练折拟合；深度模型使用 AdamW、学习率调度、早停和最佳 validation loss checkpoint。
 
 训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。

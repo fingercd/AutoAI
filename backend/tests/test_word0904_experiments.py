@@ -93,6 +93,20 @@ def test_new_evaluation_paths(tmp_path,monkeypatch,strategy):
         assert set(fold['train_sample_ids']).isdisjoint(fold['test_sample_ids'])
         if fold['fold_index']!='external_final':
             assert set(fold['train_sample_ids']).isdisjoint(fold['valid_sample_ids'])
+    # 全量预测明细：holdout 口径由最终模型覆盖全部记录并标注 train/valid/test；
+    # 交叉验证口径取逐折 pooled OOF 行，每条记录只出现一次且记为 test。
+    import pandas as pd
+    all_predictions=pd.read_csv(Path(result['run_dir'])/'all_predictions.csv')
+    assert len(all_predictions)==(16 if 'external' in strategy else 12)
+    expected_splits={
+        'stratified_holdout':{'train','valid','test'},
+        'external_test_holdout':{'train','valid','external_test'},
+        'leave_one_sample_id_cv':{'test'},
+        'leave_one_sample_id_cv_with_external_test':{'test','external_test'},
+    }[strategy]
+    assert set(all_predictions['split'])==expected_splits
+    assert all_predictions['Sample_ID'].nunique()==len(all_predictions)
+    assert list(all_predictions.columns[:7])==['dataset','split','fold_index','index','Sample_ID','true_label','pred_label']
 
 
 def test_selection_ignores_test_values_and_records_partial_scheme(monkeypatch):

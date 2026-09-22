@@ -85,6 +85,60 @@ class TrainingRunReplaced(RuntimeError):
     """Raised when a training run has been paused because a newer run replaced it."""
 
 
+# 交叉验证口径没有单一“最终模型”：每折模型只在自己的 test 折上预测，全量
+# 预测明细因此直接取这些 pooled OOF 行；只有 holdout 口径（stratified_holdout /
+# external_test_holdout）才需要用最终训练好的模型对全部记录再预测一次。
+_CV_EVALUATION_STRATEGIES = frozenset({
+    "leave_one_sample_id_cv",
+    "leave_one_sample_id_cv_with_external_test",
+})
+
+
+def _full_data_prediction_rows(
+    *,
+    probabilities: Any,
+    predicted: Any,
+    y_model: np.ndarray,
+    indices: list[int],
+    metadata: list[dict[str, Any]],
+    label_names: list[str],
+    splits: dict[str, list[int]],
+    strategy: str,
+    fold_index: int,
+) -> list[dict[str, Any]]:
+    """用最终训练好的模型对全部记录预测一次，生成带划分标注的预测明细行。
+
+    只由 holdout 口径调用（每折一个最终模型，因此这里覆盖 train/valid/test
+    全部记录）。``splits`` 决定每条记录的 ``split``：独立测试集口径下 test
+    段就是外部样本，记为 ``external_test``，与 ``predictions.csv`` 的
+    ``dataset`` 列语义保持一致。本函数只做记录，不参与任何指标计算——
+    这些预测是给导出表格用的审计视图，不进 metrics/cv_summary。
+    """
+    split_of: dict[int, str] = {}
+    for name in ("train", "valid", "test"):
+        for index in splits.get(name, []):
+            split_of[int(index)] = "external_test" if name == "test" and strategy == "external_test_holdout" else name
+    probs = np.asarray(probabilities, dtype=float)
+    preds = np.asarray(predicted, dtype=int).reshape(-1)
+    rows: list[dict[str, Any]] = []
+    for position, source_idx in enumerate(indices):
+        source_metadata = metadata[source_idx]
+        split = split_of.get(int(source_idx), "test")
+        row = {
+            "dataset": "external_test" if split == "external_test" else "primary",
+            "split": split,
+            "fold_index": fold_index,
+            "index": source_metadata["index"],
+            "Sample_ID": source_metadata["sample_id"],
+            "true_label": label_names[int(y_model[source_idx])],
+            "pred_label": label_names[int(preds[position])],
+        }
+        for label, probability in zip(label_names, probs[position]):
+            row[f"prob_{label}"] = float(probability)
+        rows.append(row)
+    return rows
+
+
 @dataclass
 class TrainConfig:
     """训练请求的完整内部配置，包括兼容字段与运行时解析字段。
@@ -1917,6 +1971,9 @@ def _run_legacy_training(
 
         # ── 阶段 2：初始化跨折累加器（预测明细、折指标、训练历史、OOF 汇总等） ──
     prediction_rows: list[dict[str, Any]] = []
+    # holdout 口径的“最终模型 × 全部记录”预测行；交叉验证口径留空，由
+    # pooled OOF 行在落盘前回填（见 _CV_EVALUATION_STRATEGIES 说明）。
+    all_prediction_rows: list[dict[str, Any]] = []
     fold_metric_rows: list[dict[str, Any]] = []
     cv_fold_payloads: list[dict[str, Any]] = []
     history_rows: list[dict[str, Any]] = []
@@ -2028,6 +2085,23 @@ def _run_legacy_training(
             }
             winner['requested_ratio'] = {'train': config.split_train, 'valid': config.split_valid, 'test': config.split_test}
             experiment_folds.append({k: v for k, v in winner.items() if k not in {'model', 'transformer', 'history', 'search_rows', 'evals'}})
+            if evaluation_strategy not in _CV_EVALUATION_STRATEGIES:
+                # 传统方案模型是 FeatureClassifier（自带 fitted transform），直接吃
+                # 原始特征矩阵；CNN 需先过本方案 fitted transform 再前向。
+                all_indices = list(range(len(metadata)))
+                if model_type == 'cnn1d':
+                    transformed = winner['transformer'].transform(x_model_raw)
+                    transformed_probabilities = _deep_probabilities(model, transformed)
+                    transformed_predictions = np.asarray(transformed_probabilities).argmax(axis=1)
+                else:
+                    transformed_probabilities = _traditional_probabilities(model, x_model_raw)
+                    transformed_predictions = np.asarray(model.predict(x_model_raw), dtype=int)
+                all_prediction_rows.extend(_full_data_prediction_rows(
+                    probabilities=transformed_probabilities,
+                    predicted=transformed_predictions,
+                    y_model=y_model, indices=all_indices, metadata=metadata, label_names=label_names,
+                    splits=splits, strategy=evaluation_strategy, fold_index=fold_index,
+                ))
             if model_type == 'cnn1d':
                 import joblib
                 joblib.dump(winner['transformer'], run_dir / 'feature_transform.joblib')
@@ -2066,6 +2140,14 @@ def _run_legacy_training(
             test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
             model = final_model
             normalizer = final_normalizer
+            if evaluation_strategy not in _CV_EVALUATION_STRATEGIES:
+                # 最终模型在全部主数据（+独立测试集）上的预测明细，供导出表格。
+                all_prediction_rows.extend(_full_data_prediction_rows(
+                    probabilities=_traditional_probabilities(final_model, final_x),
+                    predicted=np.asarray(final_model.predict(final_x), dtype=int),
+                    y_model=y_model, indices=list(range(len(metadata))), metadata=metadata, label_names=label_names,
+                    splits=splits, strategy=evaluation_strategy, fold_index=fold_index,
+                ))
             model_visualization_context = {
                 "model": model,
                 "x": final_x,
@@ -2145,6 +2227,23 @@ def _run_legacy_training(
                 "dscarnet_mapped": dscarnet_mapped,
                 "dscarnet_mapping_metadata": dscarnet_mapping_metadata,
             }
+            if evaluation_strategy not in _CV_EVALUATION_STRATEGIES:
+                # DSCARNet 双/单通路与普通 1D 网络分别用各自评估入口取全量概率。
+                all_indices = list(range(len(metadata)))
+                if dscarnet_mapped is not None:
+                    mode = dscarnet_mapped.metadata.get("mode", "dual")
+                    if mode == "dual":
+                        full_eval = _evaluate_dual(model, dscarnet_mapped.x_sar, dscarnet_mapped.x_car, y_model, all_indices, label_names)
+                    else:
+                        branch_values = dscarnet_mapped.x_sar if mode == "sar" else dscarnet_mapped.x_car
+                        full_eval = _evaluate_single_2d(model, branch_values, y_model, all_indices, label_names)
+                else:
+                    full_eval = _evaluate(model, x, y_model, all_indices, label_names)
+                all_prediction_rows.extend(_full_data_prediction_rows(
+                    probabilities=full_eval["probabilities"], predicted=full_eval["pred"],
+                    y_model=y_model, indices=all_indices, metadata=metadata, label_names=label_names,
+                    splits=splits, strategy=evaluation_strategy, fold_index=fold_index,
+                ))
             model_visualization_context = {
                 "model": model,
                 "x": x,
@@ -2489,6 +2588,24 @@ def _run_legacy_training(
         pd.DataFrame(history_rows).to_csv(run_dir / "history.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "predictions.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(prediction_rows).to_csv(run_dir / "cv_predictions.csv", index=False, encoding="utf-8-sig")
+    if not all_prediction_rows:
+        # 交叉验证口径没有单一最终模型：逐折 test 预测本身就是每条记录唯一一次
+        # “作为测试集”的 pooled OOF 结果，直接作为全量明细（split 恒为 test）。
+        # 列顺序与 holdout 明细保持一致，前端/导出层不需要分支处理。
+        all_prediction_rows = [
+            {
+                "dataset": row.get("dataset", "primary"),
+                "split": "external_test" if row.get("dataset") == "external_test" else "test",
+                "fold_index": row.get("fold_index"),
+                "index": row.get("index"),
+                "Sample_ID": row.get("Sample_ID"),
+                "true_label": row.get("true_label"),
+                "pred_label": row.get("pred_label"),
+                **{key: value for key, value in row.items() if key.startswith("prob_")},
+            }
+            for row in prediction_rows
+        ]
+    pd.DataFrame(all_prediction_rows).to_csv(run_dir / "all_predictions.csv", index=False, encoding="utf-8-sig")
     search_columns = [
         "scheme_id", "scheme_name", "status", "reason", "inner_fold_scores",
         "fold_index",
