@@ -55,6 +55,22 @@ def test_normalizer_statistics_use_train_only():
         _fit_x_normalizer(train, "bad")
 
 
+def test_default_zscore_matches_pre_step5_featurewise_calculation():
+    train = np.array([[1.0, 4.0, 6.0], [3.0, 8.0, 12.0],
+                      [5.0, 6.0, 18.0]], dtype=np.float32)
+    held_out = np.array([[7.0, 10.0, 24.0]], dtype=np.float32)
+    normalizer = _fit_x_normalizer(train, "zscore")
+    old_mean = train.mean(axis=0)
+    old_scale = np.maximum(train.std(axis=0), 1e-8)
+    assert normalizer["mode"] == "zscore"
+    np.testing.assert_array_equal(normalizer["mean"], old_mean)
+    np.testing.assert_array_equal(normalizer["scale"], old_scale)
+    np.testing.assert_array_equal(
+        _transform_x_with_normalizer(held_out, normalizer),
+        ((held_out - old_mean) / old_scale).astype(np.float32),
+    )
+
+
 def test_training_spec_rejects_unsupported_weight_before_queuing():
     from backend.app.contracts import TrainingConfigValidationError, TrainingSpec
 
@@ -100,3 +116,65 @@ def test_multiclass_xgboost_weight_is_rejected_before_run_creation(api, tmp_path
     })
     assert response.status_code == 422
     assert RunRepository(storage / 'runs.sqlite3').list() == []
+
+
+@pytest.mark.parametrize('model_type',['logistic_regression','svm','random_forest','xgboost'])
+def test_imbalanced_traditional_fit_consumes_reported_weight(model_type):
+    from backend.app.models import build_traditional_model
+    from backend.app.training import TrainConfig, _processing_stage_audit
+
+    x=np.random.default_rng(14).normal(size=(9,16)).astype(np.float32)
+    y=np.asarray([0]*6+[1]*3,dtype=np.int64)
+    config=TrainConfig(model_type=model_type,class_balance='class_weight',
+        random_forest_n_estimators=5,xgboost_n_estimators=3)
+    model=build_traditional_model(config,y,2)
+    model.fit(x,y)
+    audit=_processing_stage_audit(stage='selection_train',indices=list(range(len(y))),
+        normalizer={'mode':'none'},y=y,label_names=['A','B'],
+        model_type=model_type,class_balance='class_weight')
+    if model_type=='xgboost':
+        assert model.get_params()['scale_pos_weight']==audit['weighting']['value']==2.0
+    else:
+        assert model.get_params()['class_weight']=='balanced'
+        assert audit['weighting']['kind']=='balanced'
+        np.testing.assert_allclose(audit['weighting']['values'],[.75,1.5])
+        if model_type=='svm':
+            np.testing.assert_allclose(model.class_weight_,audit['weighting']['values'])
+        if model_type=='logistic_regression':
+            from sklearn.utils.class_weight import compute_class_weight
+            np.testing.assert_allclose(compute_class_weight('balanced',classes=np.unique(y),y=y),
+                audit['weighting']['values'])
+            unweighted=build_traditional_model(TrainConfig(model_type=model_type),y,2)
+            unweighted.fit(x,y)
+            assert not np.allclose(model.coef_,unweighted.coef_)
+
+
+@pytest.mark.parametrize('class_count',[2,3])
+def test_imbalanced_deep_loss_consumes_reported_weight(monkeypatch,tmp_path,class_count):
+    from backend.app import training
+    from backend.app.training import TrainConfig, _processing_stage_audit
+
+    counts=[6,3] if class_count==2 else [6,3,3]
+    y=np.asarray([label for label,count in enumerate(counts) for _ in range(count)],dtype=np.int64)
+    x=np.random.default_rng(18).normal(size=(len(y),32)).astype(np.float32)
+    splits={'train':list(range(len(y))),'valid':list(range(len(y)-3,len(y)))}
+    observed=[]
+    constructor=training.nn.BCEWithLogitsLoss if class_count==2 else training.nn.CrossEntropyLoss
+    method='BCEWithLogitsLoss' if class_count==2 else 'CrossEntropyLoss'
+    def capture(*args,**kwargs):
+        loss=constructor(*args,**kwargs)
+        observed.append(loss)
+        return loss
+    monkeypatch.setattr(training.nn,method,capture)
+    config=TrainConfig(model_type='cnn1d',class_balance='class_weight',epochs=1,batch_size=4)
+    training._fit_deep_fold(config=config,model_type='cnn1d',x=x,y=y,splits=splits,
+        label_names=[str(i) for i in range(class_count)],run_dir=tmp_path,sample_count=len(y))
+    assert observed
+    audit=_processing_stage_audit(stage='train',indices=splits['train'],normalizer={'mode':'none'},
+        y=y,label_names=[str(i) for i in range(class_count)],model_type='cnn1d',class_balance='class_weight')
+    if class_count==2:
+        assert audit['weighting']['kind']=='bce_pos_weight'
+        np.testing.assert_allclose(observed[0].pos_weight.detach().numpy(),[audit['weighting']['value']])
+    else:
+        assert audit['weighting']['kind']=='ce_class_weight'
+        np.testing.assert_allclose(observed[0].weight.detach().numpy(),audit['weighting']['values'])
