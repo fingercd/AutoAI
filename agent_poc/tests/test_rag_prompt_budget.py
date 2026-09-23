@@ -12,14 +12,13 @@ from agent_poc.orchestration.runtime import RuntimeConfig, RuntimeErrorCode, sta
 
 @pytest.mark.parametrize('decision_mode',['recipe_id','structured_config'])
 @pytest.mark.parametrize('knowledge',[False,True])
-@pytest.mark.parametrize('pool,mode,protocol,expected_count',[
-    ('all','dynamic','json_action',96),
-    ('ML','dynamic','native_tools',40),
-    ('DL','dynamic','json_action',56),
-    ('all','fixed','native_tools',13),
+@pytest.mark.parametrize('mode',['fixed','dynamic'])
+@pytest.mark.parametrize('protocol',['json_action','native_tools'])
+@pytest.mark.parametrize('pool,model_count,dynamic_count',[
+    ('ML',6,40),('DL',7,56),('all',13,96),
 ])
 def test_processing_full_catalog_fits_real_tokenizer_without_dropping_members(
-        api,budget_config,decision_mode,knowledge,pool,mode,protocol,expected_count):
+        api,budget_config,decision_mode,knowledge,pool,mode,protocol,model_count,dynamic_count):
     from backend.app.processing_policy import EXECUTABLE_MODELS
     from agent_poc.orchestration.projection import recipe_selection_context
     from backend.app.recipes import PROFILE
@@ -42,12 +41,12 @@ def test_processing_full_catalog_fits_real_tokenizer_without_dropping_members(
         preparation=locked['preparation'],context_policy={**locked['context_policy'],
         'projection':'agent-context-processing-v1'},model_configs=locked['capability_snapshot']['model_configs'])
     expected={recipe['recipe_id'] for recipe in locked['preparation']['catalog']['recipes']}
-    assert len(expected)==expected_count
+    assert len(expected)==(dynamic_count if mode=='dynamic' else model_count)
     assert {recipe['recipe_id'] for recipe in context['recipes']}==expected
     assert len(context['model_profiles'])==len(models)
     if knowledge:
         assert context['knowledge']['entries']
-    config=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,max_tokens=64,
+    config=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,max_tokens=1024,
         prompt_version='agent-decision-processing-v1',**budget_config)
     adapter=LLMAdapter(config)
     prepared=adapter.prepare_context('submit',context)
