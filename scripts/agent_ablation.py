@@ -33,13 +33,26 @@ def save(path, value):
 
 @contextmanager
 def experiment_lock(directory, experiment_id):
-    """Linux server command: kernel lock releases automatically after a crash."""
-    import fcntl
+    """A nonblocking OS lock that releases when the process exits."""
     directory.mkdir(parents=True,exist_ok=True)
-    with (directory/(experiment_id+'.lock')).open('a') as handle:
-        fcntl.flock(handle,fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:yield
-        finally:fcntl.flock(handle,fcntl.LOCK_UN)
+    with (directory/(experiment_id+'.lock')).open('a+b') as handle:
+        if os.name == 'nt':
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b'\0')
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            try:yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle,fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:yield
+            finally:fcntl.flock(handle,fcntl.LOCK_UN)
 
 
 def summarize_measurements(record):
@@ -158,20 +171,20 @@ def terminal_results(client,record):
                 record['actual_split_digest']=audit['partition_digest']
 
 
-def summarize_plan(rows, records):
+def summarize_plan(rows, records, *, factor='knowledge', sides=('on','off')):
     """Offline, equally weighted runs. Missing/failed rows remain in denominators."""
     import math
     import statistics
-    identities = [(r['task_id'], r['family'], r['knowledge'], r['seed'], r['repeat']) for r in rows]
+    identities = [(r['task_id'], r['family'], r[factor], r['seed'], r['repeat']) for r in rows]
     if len(identities) != len(set(identities)) or len({r['experiment_id'] for r in rows}) != len(rows):
         raise ValueError('duplicate experiment identity')
-    if any(r['family'] not in ('ML', 'DL') or r['knowledge'] not in ('on', 'off') for r in rows):
+    if any(r['family'] not in ('ML', 'DL') or r[factor] not in sides for r in rows):
         raise ValueError('invalid planned cell')
     metrics = ('macro_f1', 'balanced_accuracy', 'accuracy')
     groups = {}
     values = {}
-    for side in ('on', 'off'):
-        planned = [r for r in rows if r['knowledge'] == side]
+    for side in sides:
+        planned = [r for r in rows if r[factor] == side]
         group = dict(planned=len(planned), succeeded=0, rows=[], metrics={})
         for row in planned:
             record = records.get(row['experiment_id'])
@@ -201,8 +214,8 @@ def summarize_plan(rows, records):
     paired = []
     bases = sorted({(r['task_id'], r['family'], r['seed'], r['repeat']) for r in rows})
     for task, family, seed, repeat in bases:
-        on = values.get((task, family, 'on', seed, repeat))
-        off = values.get((task, family, 'off', seed, repeat))
+        on = values.get((task, family, sides[0], seed, repeat))
+        off = values.get((task, family, sides[1], seed, repeat))
         paired.append(dict(task_id=task, family=family, seed=seed, repeat=repeat,
                            difference={m:on[m]-off[m] for m in metrics} if on and off else None))
     complete = [p for p in paired if p['difference'] is not None]
@@ -211,17 +224,219 @@ def summarize_plan(rows, records):
                 uncertainty_note='Run sample standard deviation; ML/DL for the same task are not independent datasets.')
 
 
+def register_processing_plan(config, experiment_id):
+    """Freeze the 10 x 2 x 2 comparison before any Agent decision."""
+    from backend.app.processing_policy import EXECUTABLE_MODELS, freeze_fixed_processing
+    from backend.app.models import model_family
+    if type(config) is not dict or set(config) != {'tasks','model_pools','fixed_processing','seed','repeat','conditions'}:
+        raise ValueError('invalid processing registration')
+    tasks=config['tasks']
+    pools=config['model_pools']
+    if type(tasks) is not list or len(tasks)!=10 or type(pools) is not dict or set(pools)!={'ML','DL'}:
+        raise ValueError('processing plan requires ten tasks and both model families')
+    models={family:tuple(pool) for family,pool in pools.items()}
+    if (set(models['ML'])|set(models['DL'])!=EXECUTABLE_MODELS or
+            set(models['ML'])&set(models['DL']) or
+            any(len(pool)!=len(set(pool)) for pool in models.values()) or
+            any(model_family(model)!=('traditional_ml' if family=='ML' else 'deep_learning')
+                for family,pool in models.items() for model in pool)):
+        raise ValueError('processing model pools differ from executable families')
+    fixed=freeze_fixed_processing(sorted(EXECUTABLE_MODELS),config['fixed_processing'])
+    if type(config['seed']) is not int or config['seed']!=42 or type(config['repeat']) is not int or config['repeat']<0:
+        raise ValueError('processing plan requires seed 42 and nonnegative repeat')
+    seen=set()
+    for task in tasks:
+        if type(task) is not dict or set(task)!={'task_id','dataset_id','dataset_sha256'}:
+            raise ValueError('invalid planned task')
+        if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}',task['task_id']) or
+                not re.fullmatch(r'[a-f0-9]{64}',task['dataset_sha256']) or
+                not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',task['dataset_id'])):
+            raise ValueError('invalid task identity')
+        if task['task_id'] in seen:
+            raise ValueError('duplicate planned task')
+        seen.add(task['task_id'])
+    rows=[]
+    for task_index,task in enumerate(tasks):
+        for family_index,family in enumerate(('ML','DL')):
+            modes=('dynamic','fixed') if (task_index+family_index)%2==0 else ('fixed','dynamic')
+            for mode in modes:
+                rows.append(dict(experiment_id=f'{experiment_id}-{len(rows)+1:02d}',
+                    task_id=task['task_id'],dataset_id=task['dataset_id'],
+                    dataset_sha256=task['dataset_sha256'],family=family,processing_mode=mode,
+                    seed=42,repeat=config['repeat'],allowed_models=list(models[family])))
+    conditions=config['conditions']
+    if (type(conditions) is not dict or set(conditions)!={
+            'backend_binding','scope_binding','llm_binding','model_configs_digest'} or
+            any(type(value) is not str or not re.fullmatch(r'[a-f0-9]{64}',value)
+                for value in conditions.values()) or
+            any('token' in str(key).lower() or 'secret' in str(key).lower()
+                                                 for key in conditions)):
+        raise ValueError('registration conditions must be public')
+    result=dict(schema_version='processing-ablation-plan-v1',experiment_id=experiment_id,
+        created_at=time.time(),rows=rows,model_pools={key:list(value) for key,value in models.items()},
+        fixed_processing=fixed,conditions=conditions,
+        comparison='dynamic_minus_fixed',test_collection='after_all_decisions')
+    result['plan_digest']=digest({key:value for key,value in result.items() if key not in ('plan_digest','created_at')})
+    return result
+
+
+def summarize_processing_plan(plan, records):
+    result=summarize_plan(plan['rows'],records,factor='processing_mode',sides=('dynamic','fixed'))
+    distributions={}
+    costs={}
+    for mode in ('dynamic','fixed'):
+        items=[records.get(row['experiment_id']) for row in plan['rows'] if row['processing_mode']==mode]
+        counts={}
+        for record in items:
+            action=(record or {}).get('actual_processing') or {}
+            if action.get('model_type'):
+                key=(action.get('model_type'),action.get('normalization'),action.get('class_balance'))
+                label='/'.join(str(part) for part in key)
+                counts[label]=counts.get(label,0)+1
+        distributions[mode]=counts
+        costs[mode]=dict(planned=len(items),known_http_calls=sum(
+            (record or {}).get('measurement',{}).get('known_http_calls',0) for record in items),
+            unknown_count=sum(not record or (record.get('measurement') or {}).get('status')!='complete'
+                              for record in items))
+    condition_checks=[]
+    for task in plan['rows'][::4]:
+        for family in ('ML','DL'):
+            pair=[row for row in plan['rows'] if row['task_id']==task['task_id'] and row['family']==family]
+            if len(pair)!=2:raise ValueError('missing registered processing pair')
+            left,right=(records.get(row['experiment_id']) for row in pair)
+            if not left or not right or left.get('status')!='completed' or right.get('status')!='completed':
+                state='unavailable'
+            elif (left.get('dataset_digest')!=task['dataset_sha256'] or
+                    right.get('dataset_digest')!=task['dataset_sha256'] or
+                    not left.get('actual_split_digest') or
+                    left.get('actual_split_digest')=='unknown' or
+                    not left.get('frozen_model_configs') or
+                    left.get('dataset_digest')!=right.get('dataset_digest') or
+                    left.get('actual_split_digest')!=right.get('actual_split_digest') or
+                    left.get('frozen_model_configs')!=right.get('frozen_model_configs')):
+                state='mismatch'
+            else:state='matched'
+            condition_checks.append(dict(task_id=task['task_id'],family=family,status=state))
+    result.update(processing_distribution=distributions,costs=costs,condition_checks=condition_checks,
+        comparison='dynamic_minus_fixed',complete=(all(group['succeeded']==group['planned']
+            for group in result['groups'].values()) and all(item['status']=='matched' for item in condition_checks)))
+    return result
+
+
+def load_processing_plan(path):
+    plan=json.loads(path.read_text(encoding='utf-8'))
+    if plan.get('schema_version')!='processing-ablation-plan-v1' or len(plan.get('rows',[]))!=40:
+        raise ValueError('invalid processing plan')
+    if plan.get('plan_digest')!=digest({key:value for key,value in plan.items()
+                                       if key not in ('plan_digest','created_at')}):
+        raise ValueError('processing plan digest mismatch')
+    return plan
+
+
+def collect_processing_plan(plan_path,storage,backend_url):
+    """Read Test only after all 40 decisions have a durable terminal status."""
+    import httpx
+    plan=load_processing_plan(plan_path)
+    if plan_path.resolve()!=storage.resolve()/plan['experiment_id']/'plan.json':
+        raise ValueError('processing plan and row storage differ')
+    records={}
+    for row in plan['rows']:
+        path=storage/row['experiment_id']/'record.json'
+        if not path.exists():
+            raise ValueError('all planned decisions must finish before Test collection')
+        record=json.loads(path.read_text(encoding='utf-8'))
+        configuration=record.get('configuration') or {}
+        if (record['experiment_id']!=row['experiment_id'] or
+                configuration.get('processing_mode')!=row['processing_mode'] or
+                configuration.get('plan_digest')!=plan['plan_digest'] or
+                configuration.get('dataset_id')!=row['dataset_id'] or
+                configuration.get('seed')!=row['seed'] or
+                configuration.get('allowed_models')!=sorted(row['allowed_models']) or
+                configuration.get('fixed_processing')!={model:plan['fixed_processing'][model]
+                                                        for model in row['allowed_models']} or
+                any(configuration.get(key)!=plan['conditions'][key]
+                    for key in ('backend_binding','scope_binding','llm_binding')) or
+                digest(configuration.get('model_configs'))!=plan['conditions']['model_configs_digest']):
+            raise ValueError('record does not match processing plan')
+        if record.get('dataset_digest') not in (row['dataset_sha256'], 'unknown'):
+            raise ValueError('dataset digest differs from registered task')
+        if record['status'] in ('prepared','attempt_started','submitted','running'):
+            raise ValueError('all planned decisions must finish before Test collection')
+        records[row['experiment_id']]=record
+    token=os.environ.get('AUTOAI_API_TOKEN')
+    headers={'Authorization':'Bearer '+token} if token else {}
+    with httpx.Client(base_url=backend_url,headers=headers,timeout=30,trust_env=False) as client:
+        for row in plan['rows']:
+            record=records[row['experiment_id']]
+            if record['status']!='completed' or not record.get('run_id') or record.get('offline_test'):
+                continue
+            path=storage/row['experiment_id']/'record.json'
+            with experiment_lock(storage,row['experiment_id']):
+                try:
+                    terminal_results(client,record)
+                    record['offline_test_failure']=None
+                except Exception as error:
+                    # The row remains a failure; no Test value is synthesized.
+                    record.pop('offline_test',None)
+                    record['offline_test_failure']=type(error).__name__
+                save(path,record)
+    summary=summarize_processing_plan(plan,records)
+    save(plan_path.with_name('summary.json'),summary)
+    return summary
+
+
+def validate_planned_row(plan_path,args):
+    plan=load_processing_plan(plan_path)
+    if plan_path.resolve()!=args.storage.resolve()/plan['experiment_id']/'plan.json':
+        raise ValueError('processing plan and row storage differ')
+    rows=[row for row in plan['rows'] if row['experiment_id']==args.experiment_id]
+    if len(rows)!=1:
+        raise ValueError('experiment is not in processing plan')
+    row=rows[0]
+    if (args.kind!='agent' or not args.defer_test or args.dataset_id!=row['dataset_id'] or
+            args.seed!=row['seed'] or args.processing_mode!=row['processing_mode'] or
+            set(args.allowed_models)!=set(row['allowed_models']) or args.knowledge!='off' or
+            args.decision_mode!='recipe_id' or args.hide_evidence_context or args.hide_risk_context):
+        raise ValueError('CLI row differs from registered processing conditions')
+    if not args.fixed_processing:
+        raise ValueError('registered fixed processing file is required')
+    from backend.app.processing_policy import freeze_fixed_processing
+    fixed=json.loads(args.fixed_processing.read_text(encoding='utf-8'))
+    if freeze_fixed_processing(sorted(fixed),fixed)!=plan['fixed_processing']:
+        raise ValueError('fixed processing differs from registration')
+    return plan,row
+
+
 def run(args):
     from scripts.agent_step2_acceptance import code_binding
     import httpx
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',args.experiment_id):raise ValueError('invalid experiment ID')
+    if getattr(args,'plan',None):
+        plan,row=validate_planned_row(args.plan,args)
     if args.kind=='agent' and (not args.llm_url or not args.llm_model):raise ValueError('LLM endpoint and model are required')
     configs=json.loads(args.model_configs.read_text()) if args.model_configs else {}
+    processing_mode=getattr(args,'processing_mode',None)
+    if processing_mode is None and getattr(args,'fixed_processing',None) is not None:
+        raise ValueError('fixed_processing requires processing_mode')
+    fixed_processing=None
+    if processing_mode is not None:
+        from backend.app.processing_policy import freeze_fixed_processing
+        supplied=json.loads(args.fixed_processing.read_text()) if getattr(args,'fixed_processing',None) else None
+        if getattr(args,'plan',None):
+            supplied={model:supplied[model] for model in args.allowed_models}
+        fixed_processing=freeze_fixed_processing(args.allowed_models,supplied)
     configuration=dict(kind=args.kind,dataset_id=args.dataset_id,seed=args.seed,allowed_models=sorted(args.allowed_models),
         model_configs=configs,normalization='zscore',class_balance='none',decision_mode=args.decision_mode if args.kind=='agent' else 'fixed_baseline',
         evidence=not args.hide_evidence_context,risks=not args.hide_risk_context,knowledge=args.knowledge,
         max_runs=1,max_llm_calls=args.max_llm_calls,max_api_calls=args.max_api_calls,timeout=args.timeout,
         backend_binding=digest(args.backend_url),scope_binding=digest(args.scope_key))
+    if processing_mode is not None:
+        configuration.pop('normalization')
+        configuration.pop('class_balance')
+        configuration.update(processing_mode=processing_mode,fixed_processing=fixed_processing,
+            defer_test=bool(getattr(args,'defer_test',False)))
+    if getattr(args,'plan',None):
+        configuration['plan_digest']=plan['plan_digest']
     query_config = None
     if getattr(args, 'query_mode', None) is not None or getattr(args, 'query_text', None) is not None or getattr(args, 'confirmed_domain', None) is not None:
         from agent_poc.clients.contracts import KnowledgeQueryConfig
@@ -230,9 +445,17 @@ def run(args):
     llm=None
     if args.kind=='agent':
         from agent_poc.orchestration.llm import LLMConfig
-        llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1', tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
+        llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,
+            prompt_version='agent-decision-processing-v1' if processing_mode is not None else 'agent-decision-knowledge-v1',
+            tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
         configuration['llm']=llm.public_config()
         configuration['llm_binding']=llm.fingerprint()
+    if getattr(args,'plan',None):
+        expected=plan['conditions']
+        actual=dict(backend_binding=configuration['backend_binding'],scope_binding=configuration['scope_binding'],
+                    llm_binding=configuration.get('llm_binding'),model_configs_digest=digest(configs))
+        if actual!=expected:
+            raise ValueError('CLI execution conditions differ from registration')
     folder=args.storage.resolve()/args.experiment_id;path=folder/'record.json'
     # Lock covers initial record creation and ordinary submission as well as Graph.
     with experiment_lock(args.storage.resolve(),args.experiment_id):
@@ -247,11 +470,14 @@ def run(args):
                 thread_id=args.experiment_id,status='prepared',failure_reason=None,
                 seed=args.seed,scope_binding=configuration['scope_binding'],dataset_digest='unknown',actual_split_digest='unknown',
                 validation='unknown',llm_calls=0,api_calls='unknown',tokens='unknown',elapsed_seconds=0,artifacts=[],
-                modules=dict(soft_evidence_filter='not_applicable',dynamic_preprocessing='unavailable'),
+                modules=dict(soft_evidence_filter='not_applicable',dynamic_preprocessing=processing_mode or 'unavailable'),
                 label='same-domain structured Plain Agent' if args.kind=='agent' and args.decision_mode=='structured_config' and args.hide_evidence_context and args.hide_risk_context and args.knowledge=='off' else args.kind)
             if args.kind=='baseline':
+                baseline_processing=(fixed_processing or {}).get('logistic_regression',
+                    {'normalization':'zscore','class_balance':'none'})
                 record['training_request']=dict(dataset_id=args.dataset_id,config=dict(model_type='logistic_regression',
-                    normalization='zscore',class_balance='none',seed=args.seed,split_mode='stratified_holdout',
+                    normalization=baseline_processing['normalization'],class_balance=baseline_processing['class_balance'],
+                    seed=args.seed,split_mode='stratified_holdout',
                     split_train=8,split_valid=1,split_test=1,feature_selection_enabled=False))
                 record['baseline_policy']='LR fixed before Agent; retain existing internal search'
                 record['tokens']=0
@@ -287,6 +513,7 @@ def run(args):
                             state=start_task(runtime,dataset_id=args.dataset_id,allowed_models=args.allowed_models,
                                 model_configs=configs,storage=checkpoints,thread_id=args.experiment_id,task_id=args.experiment_id,
                                 seed=args.seed,wait=True,knowledge=args.knowledge=='on',decision_mode=args.decision_mode,knowledge_query=query_config,
+                                processing_mode=processing_mode,fixed_processing=fixed_processing,
                                 evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context,
                                 timeout_seconds=args.timeout,max_llm_calls=args.max_llm_calls,max_api_calls=args.max_api_calls)
                         else:state=resume_task(runtime,storage=checkpoints,thread_id=args.experiment_id,wait=True)
@@ -302,7 +529,10 @@ def run(args):
                             frozen_model_configs=(state['capabilities']['frozen_snapshot'] or {}).get('model_configs'),
                             knowledge_snapshot=state['knowledge']['snapshot'], decision=state['decision'],
                             actual_recipe=state['execution'].get('submission_content'))
-                if record['status']=='completed' and record.get('run_id'):
+                        action=state['execution'].get('effective_action') or {}
+                        record['actual_processing']={key:action.get(key) for key in ('model_type','normalization','class_balance')}
+                        record['candidate_count']=len((state.get('recipes',{}).get('catalog') or {}).get('recipes',[]))
+                if record['status']=='completed' and record.get('run_id') and not getattr(args,'defer_test',False):
                     terminal_results(client,record)
         except Exception as error:
             # Do not write exception messages, URLs, headers or raw responses.
@@ -315,6 +545,31 @@ def run(args):
 
 
 def main(argv=None):
+    argv=list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0]=='register-processing':
+        q=argparse.ArgumentParser(description='Freeze a forty-row processing comparison')
+        q.add_argument('--config',type=Path,required=True)
+        q.add_argument('--storage',type=Path,required=True)
+        q.add_argument('--experiment-id',required=True)
+        a=q.parse_args(argv[1:])
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,45}',a.experiment_id):
+            raise ValueError('invalid plan ID')
+        with experiment_lock(a.storage.resolve(),a.experiment_id):
+            path=a.storage.resolve()/a.experiment_id/'plan.json'
+            if path.exists():raise ValueError('processing plan already exists')
+            plan=register_processing_plan(json.loads(a.config.read_text(encoding='utf-8')),a.experiment_id)
+            save(path,plan)
+        print(json.dumps(dict(plan=str(path),plan_digest=plan['plan_digest'],rows=len(plan['rows']))))
+        return 0
+    if argv and argv[0]=='collect-processing':
+        q=argparse.ArgumentParser(description='Collect Test after all decisions finish')
+        q.add_argument('--plan',type=Path,required=True)
+        q.add_argument('--storage',type=Path,required=True)
+        q.add_argument('--backend-url',required=True)
+        a=q.parse_args(argv[1:])
+        summary=collect_processing_plan(a.plan,a.storage,a.backend_url)
+        print(json.dumps(dict(complete=summary['complete'],paired_count=summary['paired_count'])))
+        return 0
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--experiment-id',required=True)
     p.add_argument('--kind',choices=['baseline','agent'],required=True)
@@ -326,6 +581,10 @@ def main(argv=None):
     p.add_argument('--allowed-models',nargs='+',default=['logistic_regression','svm'])
     p.add_argument('--model-configs',type=Path)
     p.add_argument('--decision-mode',choices=['recipe_id','structured_config'],default='recipe_id')
+    p.add_argument('--processing-mode',choices=['fixed','dynamic'])
+    p.add_argument('--fixed-processing',type=Path)
+    p.add_argument('--defer-test',action='store_true')
+    p.add_argument('--plan',type=Path)
     p.add_argument('--knowledge',choices=['on','off'],default='off')
     p.add_argument('--query-mode', choices=['train_template','user_text'])
     p.add_argument('--query-text')
