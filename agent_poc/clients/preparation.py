@@ -70,13 +70,14 @@ class TrainEvidence(ClosedModel):
 
 class Recipe(ClosedModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    recipe_schema_version: Literal['execution-recipe-v1']='execution-recipe-v1'
+    recipe_schema_version: Literal['execution-recipe-v1','execution-recipe-v2']='execution-recipe-v1'
     recipe_id: str
     recipe_digest: str
     model_id: str
     architecture_version: str
     preprocessing: dict[str,str]
-    class_balance: Literal['none']='none'
+    class_balance: Literal['none','class_weight']='none'
+    processing_policy_version: str | None = None
     fixed_execution_config: dict[str,int|float|str|bool]
     model_policy_version: str
     model_policy_digest: str
@@ -89,7 +90,7 @@ class Recipe(ClosedModel):
 
     @model_validator(mode='after')
     def executable_digest(self):
-        body={k:v for k,v in self.model_dump(mode='json').items() if k not in
+        body={k:v for k,v in self.model_dump(mode='json',exclude_none=True).items() if k not in
               ('recipe_id','recipe_digest','hard_constraints','evidence_applicability','cost_description')}
         if digest(body)!=self.recipe_digest or self.recipe_id!='recipe_'+self.recipe_digest:
             raise ValueError('recipe executable content mismatch')
@@ -98,7 +99,7 @@ class Recipe(ClosedModel):
 
 class RecipeCatalog(ClosedModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    catalog_version: Literal['recipe-catalog-v1']='recipe-catalog-v1'
+    catalog_version: Literal['recipe-catalog-v1','recipe-catalog-v2']='recipe-catalog-v1'
     catalog_digest: str
     dataset_sha256: str
     plan_digest: str
@@ -106,6 +107,8 @@ class RecipeCatalog(ClosedModel):
     allowed_models: list[str]
     recipes: list[Recipe]
     excluded_models: dict[str,str]
+    processing_mode: Literal['fixed','dynamic'] | None = None
+    fixed_processing: dict[str,dict[str,str]] | None = None
 
 
 class EvaluationPlanReference(ClosedModel):
@@ -195,6 +198,9 @@ def validate_catalog_binding(catalog, snapshot):
         frozen_policies=[{k:v for k,v in policies[m].items() if k not in
             ('display_name','available','reason_code','availability_basis')} for m in allowed],
         recipe_digests=[r.recipe_digest for r in catalog.recipes])
+    if catalog.catalog_version == 'recipe-catalog-v2':
+        binding.update(processing_mode=catalog.processing_mode,fixed_processing=catalog.fixed_processing,
+            processing_policy_version='finite-processing-v1')
     if (allowed!=sorted(set(allowed)) or catalog.catalog_digest!=digest(binding)
             or [r.recipe_id for r in catalog.recipes]!=sorted(set(r.recipe_id for r in catalog.recipes))):
         raise ValueError('catalog binding mismatch')

@@ -108,7 +108,7 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
     checked = ValidationMetrics.model_validate(projected_metrics).model_dump(exclude_none=True)
     if checked.get(task['selection_metric']) != validation_score:
         raise ValueError('candidate selection metric mismatch')
-    context_type = (RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1') else
+    context_type = (RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1') else
                     FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2)
     return context_type.model_validate({
         'context_version': context_version, 'phase': 'finalize', 'task': _project_task(task),
@@ -120,7 +120,9 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
 
 
 def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
-    if context.get('context_version') == 'agent-context-knowledge-v1':
+    if context.get('context_version') == 'agent-context-processing-v1':
+        model = {'submit':ProcessingSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
+    elif context.get('context_version') == 'agent-context-knowledge-v1':
         model = {'submit':KnowledgeSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
     elif context.get('context_version') == 'agent-context-recipes-v1':
         model = {'submit':RecipeSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
@@ -130,7 +132,7 @@ def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
         model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
     if model is None:
         raise ValueError('unknown decision phase')
-    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version')!='agent-context-knowledge-v1')
+    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version') not in ('agent-context-knowledge-v1','agent-context-processing-v1'))
     if checked['phase'] != phase or len(checked['allowed_actions']) != 1:
         raise ValueError('invalid allowed action')
     return checked
@@ -175,15 +177,17 @@ class RecipeSelectionContext(ClosedModel):
 
 
 class RecipeFinalizationContext(FinalizationContext):
-    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1']
+    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1']
 
 
 def recipe_selection_context(*,task,session_id,preparation,context_policy,model_configs=None):
     from agent_poc.clients.knowledge import KnowledgePreparation
-    modern=context_policy.get('projection')=='agent-context-knowledge-v1'
+    processing=context_policy.get('projection')=='agent-context-processing-v1'
+    modern=context_policy.get('projection') in ('agent-context-knowledge-v1','agent-context-processing-v1')
     prepared=(KnowledgePreparation if modern else Preparation).model_validate(preparation)
+    full_recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes]
     payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
-        recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes],
+        recipes=full_recipes,
         allowed_actions=['submit_ml_experiment'],bindings={'session_id':session_id})
     if task.get('decision_mode') is not None:
         payload.update(decision_mode=task['decision_mode'], fixed_model_params=model_configs or task.get('capability_snapshot',{}).get('model_configs',{}))
@@ -192,8 +196,21 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy,model_
     if context_policy['risks']:
         payload['train_risks']=[r.model_dump(mode='json') for r in prepared.evidence.risks]
     if modern:
-        payload.update(context_version='agent-context-knowledge-v1',knowledge=prepared.knowledge.projection.model_dump(mode='json'))
-    return (KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
+        payload.update(context_version='agent-context-processing-v1' if processing else 'agent-context-knowledge-v1',
+            knowledge=prepared.knowledge.projection.model_dump(mode='json'))
+    if processing:
+        profiles={}
+        for recipe in full_recipes:
+            profiles.setdefault(recipe['model_id'], dict(
+                architecture_version=recipe['architecture_version'],
+                model_policy_version=recipe['model_policy_version'],
+                search_strategy_version=recipe['search_strategy_version'],
+                cost_description=recipe['cost_description']))
+        payload.update(processing_mode=task['processing_mode'],fixed_processing=task['fixed_processing'],
+            model_profiles=profiles,recipes=[dict(recipe_id=recipe['recipe_id'],
+                model_id=recipe['model_id'],normalization=recipe['preprocessing']['normalization'],
+                class_balance=recipe['class_balance']) for recipe in full_recipes])
+    return (ProcessingSelectionContext if processing else KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
 
 
 from agent_poc.clients.knowledge import KnowledgeProjection
@@ -213,3 +230,43 @@ class KnowledgeSelectionContext(RecipeSelectionContext):
 
     context_version: Literal['agent-context-knowledge-v1']
     knowledge: KnowledgeProjection
+
+
+class CompactRecipe(ClosedModel):
+    recipe_id: str
+    model_id: str
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
+
+
+class ModelProfile(ClosedModel):
+    architecture_version: str
+    model_policy_version: str
+    search_strategy_version: str
+    cost_description: str
+
+
+class ProcessingSelectionContext(KnowledgeSelectionContext):
+    context_version: Literal['agent-context-processing-v1']
+    recipes: Annotated[list[CompactRecipe],Field(min_length=1)]
+    model_profiles: dict[str,ModelProfile]
+    processing_mode: Literal['fixed','dynamic']
+    fixed_processing: dict[str,dict[str,str]]
+
+    @model_validator(mode='after')
+    def complete_processing_domain(self):
+        members={(r.model_id,r.normalization,r.class_balance) for r in self.recipes}
+        if len(members)!=len(self.recipes):
+            raise ValueError('duplicate processing member')
+        eligible={r.model_id for r in self.recipes}
+        if not eligible.issubset(self.fixed_processing):
+            raise ValueError('eligible model has no frozen processing')
+        for model_id in eligible:
+            choice=self.fixed_processing[model_id]
+            if (model_id,choice['normalization'],choice['class_balance']) not in members:
+                raise ValueError('fixed processing outside catalog')
+        if self.processing_mode=='fixed' and len(members)!=len(eligible):
+            raise ValueError('fixed catalog has extra processing members')
+        if set(self.model_profiles)!=eligible:
+            raise ValueError('processing model profiles incomplete')
+        return self

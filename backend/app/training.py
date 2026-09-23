@@ -1634,6 +1634,13 @@ def _run_legacy_training(
             config.normalization, config.class_balance,
         ):
             raise ValueError('execution search policy mismatch')
+    if ('execution_processing_policy_version' in raw_config or
+            'execution_processing_digest' in raw_config):
+        from .processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
+        if (raw_config.get('execution_processing_policy_version') != PROCESSING_POLICY_VERSION or
+                raw_config.get('execution_processing_digest') != processing_execution_digest(
+                    model_type, config.normalization, config.class_balance)):
+            raise ValueError('execution processing policy mismatch')
     sample_count = int(len(dataset.labels))
     x_raw = np.asarray(dataset.intensity, dtype=np.float32)
     if not np.isfinite(x_raw).all():
@@ -2008,6 +2015,7 @@ def _run_legacy_training(
     from .processing_policy import PROCESSING_POLICY_VERSION
     processing_summary = {
         'policy_version': PROCESSING_POLICY_VERSION,
+        'execution_digest': raw_config.get('execution_processing_digest'),
         'model_type': model_type,
         'normalization': config.normalization,
         'class_balance': config.class_balance,

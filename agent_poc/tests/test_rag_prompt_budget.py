@@ -10,6 +10,52 @@ from agent_poc.orchestration.llm import LLMAdapter, LLMConfig, LLMError, StoredP
 from agent_poc.orchestration.runtime import RuntimeConfig, RuntimeErrorCode, start_task
 
 
+@pytest.mark.parametrize('decision_mode',['recipe_id','structured_config'])
+@pytest.mark.parametrize('knowledge',[False,True])
+@pytest.mark.parametrize('pool,mode,protocol,expected_count',[
+    ('all','dynamic','json_action',96),
+    ('ML','dynamic','native_tools',40),
+    ('DL','dynamic','json_action',56),
+    ('all','fixed','native_tools',13),
+])
+def test_processing_full_catalog_fits_real_tokenizer_without_dropping_members(
+        api,budget_config,decision_mode,knowledge,pool,mode,protocol,expected_count):
+    from backend.app.processing_policy import EXECUTABLE_MODELS
+    from agent_poc.orchestration.projection import recipe_selection_context
+    from backend.app.recipes import PROFILE
+
+    client,_,dataset=api
+    headers={'X-AutoAI-Agent-Revision':'agent-recipes-revision-v3'}
+    from backend.app.models import model_family
+    models=sorted(model for model in EXECUTABLE_MODELS if pool=='all' or
+                  model_family(model)==('traditional_ml' if pool=='ML' else 'deep_learning'))
+    response=client.post('/api/agent/v2/sessions',headers=headers,json=dict(
+        dataset_id=dataset,selection_metric='macro_f1',allowed_models=models,
+        max_runs=1,seed=42,execution_profile=PROFILE,protocol_revision='agent-recipes-revision-v3',
+        processing_mode=mode,decision_mode=decision_mode,
+        modules=['train_evidence','legal_recipes']+(['dynamic_preprocessing'] if mode=='dynamic' else [])+(['knowledge'] if knowledge else []),
+        context_policy={'source_role':'development','case_write':False,'evidence':True,'risks':True},
+        client_request_id='full-'+pool+mode+protocol+decision_mode+str(knowledge)))
+    assert response.status_code==201,response.text
+    locked=response.json()['locked_config']
+    context=recipe_selection_context(task=locked,session_id=response.json()['session_id'],
+        preparation=locked['preparation'],context_policy={**locked['context_policy'],
+        'projection':'agent-context-processing-v1'},model_configs=locked['capability_snapshot']['model_configs'])
+    expected={recipe['recipe_id'] for recipe in locked['preparation']['catalog']['recipes']}
+    assert len(expected)==expected_count
+    assert {recipe['recipe_id'] for recipe in context['recipes']}==expected
+    assert len(context['model_profiles'])==len(models)
+    if knowledge:
+        assert context['knowledge']['entries']
+    config=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,max_tokens=64,
+        prompt_version='agent-decision-processing-v1',**budget_config)
+    adapter=LLMAdapter(config)
+    prepared=adapter.prepare_context('submit',context)
+    assert {recipe['recipe_id'] for recipe in prepared['recipes']}==expected
+    request,*_=adapter._build_request('submit',prepared,'llm_output_invalid')
+    assert adapter._prompt_tokens(request)+config.max_tokens<=config.context_window
+
+
 @pytest.mark.parametrize('protocol', ['json_action', 'native_tools'])
 def test_cli_requires_budget_before_building_graph(tmp_path, monkeypatch, capsys, protocol):
     from agent_poc.orchestration import runtime

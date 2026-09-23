@@ -25,8 +25,11 @@ def module_catalog(revision: str | None = None) -> dict[str, dict[str, Any]]:
         }
         for name in _PLANNED_MODULES
     }
-    if revision == 'agent-recipes-revision-v2':
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
         result['knowledge'] = dict(available=True, status='ready', schema_version='knowledge-snapshot-rag-v1', reason=None)
+    if revision == 'agent-recipes-revision-v3':
+        result['dynamic_preprocessing'] = dict(available=True, status='ready',
+            schema_version='finite-processing-v1', reason=None)
     return result
 
 

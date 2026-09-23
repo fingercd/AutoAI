@@ -106,23 +106,49 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
             raise AgentDomainError('agent_invalid_action', 'Recipe profile accepts only recipe selection', status_code=422)
         from ..recipes import RecipeCatalog, validate_catalog_binding
         catalog = validate_catalog_binding(RecipeCatalog.model_validate(session.frozen_preparation['preparation']['catalog']),session.capability_snapshot).model_dump(mode='json')
+        processing_revision = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3'
         if structured:
-            canonical = CreateAgentExperimentRequestV2(model_type=payload.model_id, model_params=payload.model_params)
-            frozen_action(session, canonical)  # Complete keys and strict finite numeric validation.
-            recipe = next((r for r in catalog['recipes'] if r['model_id'] == payload.model_id), None)
+            if processing_revision:
+                snapshot = session.capability_snapshot
+                frozen = snapshot['model_configs'].get(payload.model_id)
+                policy = next((m for m in snapshot['models'] if m['id'] == payload.model_id), None)
+                if frozen is None or policy is None or set(payload.model_params) != set(frozen):
+                    raise AgentDomainError('agent_recipe_invalid', 'Configuration is outside frozen catalog', status_code=422)
+                try:
+                    if resolve_model_params(payload.model_id, payload.model_params, policy=policy) != frozen:
+                        raise ValueError('model parameters differ')
+                except ValueError as exc:
+                    raise AgentDomainError('agent_recipe_invalid', 'Configuration is outside frozen catalog', status_code=422) from exc
+                recipe = next((r for r in catalog['recipes'] if
+                    r['model_id'] == payload.model_id and
+                    r['preprocessing']['normalization'] == payload.normalization and
+                    r['class_balance'] == payload.class_balance and
+                    {key: r['fixed_execution_config'][key] for key in frozen} == frozen), None)
+            else:
+                if payload.normalization != 'zscore' or payload.class_balance != 'none':
+                    raise AgentDomainError('agent_recipe_invalid', 'Configuration is outside frozen catalog', status_code=422)
+                canonical = CreateAgentExperimentRequestV2(model_type=payload.model_id, model_params=payload.model_params)
+                frozen_action(session, canonical)  # Complete keys and strict finite numeric validation.
+                recipe = next((r for r in catalog['recipes'] if r['model_id'] == payload.model_id), None)
             if recipe is None:
                 raise AgentDomainError('agent_recipe_invalid', 'Configuration is outside frozen catalog', status_code=422)
         else:
             recipe = next((r for r in catalog['recipes'] if r['recipe_id']==payload.recipe_id), None)
             if recipe is None or catalog['catalog_digest']!=payload.catalog_digest or recipe['recipe_digest']!=payload.recipe_digest:
                 raise AgentDomainError('agent_recipe_invalid', 'Recipe does not match frozen catalog', status_code=422)
-        canonical = CreateAgentExperimentRequestV2(model_type=recipe['model_id'])
-        action = frozen_action(session, canonical)
+        if processing_revision:
+            action = dict(model_type=recipe['model_id'],
+                normalization=recipe['preprocessing']['normalization'],
+                class_balance=recipe['class_balance'],parent_run_id=None,
+                model_params=dict(session.capability_snapshot['model_configs'][recipe['model_id']]))
+        else:
+            canonical = CreateAgentExperimentRequestV2(model_type=recipe['model_id'])
+            action = frozen_action(session, canonical)
         body = payload.model_dump(mode='json')
         body.update(contract_version=V2,execution_profile=session.frozen_preparation['execution_profile'])
         from .contracts import CreateKnowledgeExperimentRequest
         metadata = None
-        modern = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v2'
+        modern = session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3')
         if modern != isinstance(payload, (CreateKnowledgeExperimentRequest, CreateStructuredExperimentRequest)):
             raise AgentDomainError('agent_version_incompatible', 'Knowledge request revision mismatch', status_code=409)
         if modern:
@@ -162,6 +188,13 @@ def command_digest(session, command):
     if command.recipe is None:
         return scientific_digest(session, command.action)
     prepared=session.frozen_preparation['preparation']
+    if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3':
+        return semantic_digest(dict(profile=session.frozen_preparation['execution_profile'],
+            processing_policy_version=command.recipe['processing_policy_version'],
+            dataset_sha256=session.dataset_sha256,plan_digest=prepared['evaluation_plan']['plan_digest'],
+            model_id=command.recipe['model_id'],normalization=command.action['normalization'],
+            class_balance=command.action['class_balance'],model_params=command.action['model_params'],
+            search_strategy_digest=command.recipe['search_strategy_digest'],seed=session.seed))
     return semantic_digest(dict(profile=session.frozen_preparation['execution_profile'],
         dataset_sha256=session.dataset_sha256,plan_digest=prepared['evaluation_plan']['plan_digest'],
         catalog_digest=prepared['catalog']['catalog_digest'],recipe_digest=command.recipe['recipe_digest']))

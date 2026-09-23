@@ -43,6 +43,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'random_forest_oob_score', 'xgboost_min_child_weight', 'xgboost_gamma',
         'agent_config_policy_version', 'agent_config_policy_digest', 'evaluation_plan_digest',
         'execution_recipe_digest', 'execution_catalog_digest', 'execution_evidence_digest', 'execution_search_digest',
+        'execution_processing_policy_version', 'execution_processing_digest',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
     }
@@ -85,7 +86,7 @@ class TrainingSpec:
         """验证不依赖实际数据内容的关键约束，并规范化兼容别名。"""
 
         values = dict(self.values)
-        for field in ('execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest'):
+        for field in ('execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest','execution_processing_digest'):
             if field in values:
                 import re
                 if type(values[field]) is not str or re.fullmatch(r'[a-f0-9]{64}',values[field]) is None:
@@ -95,6 +96,8 @@ class TrainingSpec:
             value = values['evaluation_plan_digest']
             if type(value) is not str or not re.fullmatch('[a-f0-9]{64}', value):
                 raise TrainingConfigValidationError('invalid evaluation_plan_digest')
+        if 'execution_processing_policy_version' in values and values['execution_processing_policy_version'] != 'finite-processing-v1':
+            raise TrainingConfigValidationError('invalid execution processing policy')
         raw_model = str(values.get('model_type') or 'cnn1d').strip().lower()
         if raw_model in RETIRED_MODEL_ALIASES:
             raise TrainingConfigValidationError('model_retired: DSCARNet 已退役，不再接受新训练')

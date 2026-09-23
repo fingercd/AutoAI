@@ -205,7 +205,7 @@ def publish(library: CardLibrary, root: Path, encoder: BodyEncoder, *, previous:
     pointer = root / ('pointer_' + uuid4().hex + '.tmp')
     pointer.write_text(json.dumps(dict(directory=directory.name, manifest_sha256=bundle.manifest_digest)), encoding='utf-8')
     for path in [directory/'cards.json', directory/'embeddings.npy', directory/'index_manifest.json', pointer]:
-        with path.open('rb') as handle:
+        with path.open('r+b') as handle:
             os.fsync(handle.fileno())
     if os.name == 'posix':
         descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)

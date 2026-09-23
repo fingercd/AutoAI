@@ -298,7 +298,7 @@ class AgentSessionRepository:
         if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):
             raise AgentDomainError('agent_preparation_failed',
                 'session 冻结准备包缺失，无法恢复配方契约', status_code=409)
-        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v2':
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
             from ..knowledge import KnowledgeError
             snapshot = frozen['preparation']['knowledge']
             if ('knowledge' in record.modules) != (snapshot.status == 'ready'):
@@ -335,7 +335,7 @@ class AgentSessionRepository:
             raise AgentSessionNotFound()
         session = self._session(session_row)
         frozen = session.frozen_preparation
-        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v2':
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
             from ..knowledge import KnowledgeError, resolve_decision
             metadata = record.decision_metadata
             if metadata is None:
@@ -654,9 +654,15 @@ def _decode_preparation(raw):
     if 'decision_mode' in frozen and frozen['decision_mode'] not in ('recipe_id', 'structured_config'):
         raise AgentDomainError('agent_preparation_failed', 'Invalid frozen decision mode', status_code=409)
     revision = frozen['protocol_revision']
-    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'):
         raise AgentDomainError('agent_version_incompatible', 'Unknown frozen revision', status_code=409)
-    if revision == 'agent-recipes-revision-v2':
+    if revision == 'agent-recipes-revision-v3':
+        catalog = frozen['preparation']['catalog']
+        if (frozen.get('processing_mode') not in ('fixed','dynamic') or
+                frozen.get('processing_mode') != catalog.get('processing_mode') or
+                frozen.get('fixed_processing') != catalog.get('fixed_processing')):
+            raise AgentDomainError('agent_preparation_failed', 'Frozen processing differs from catalog', status_code=409)
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
         from ..knowledge import decode_snapshot, KnowledgeError
         prepared = frozen['preparation']
         if 'knowledge' not in prepared:

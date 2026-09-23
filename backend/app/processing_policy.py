@@ -6,6 +6,8 @@ implementation remain in their existing authoritative modules.
 from __future__ import annotations
 
 from itertools import product
+import hashlib
+import json
 from typing import Any, Iterable
 
 PROCESSING_POLICY_VERSION = "finite-processing-v1"
@@ -51,6 +53,14 @@ def legal_processing(model_id: str, *, class_count: int) -> tuple[tuple[str, str
         for normalization, balance in product(NORMALIZATIONS, BALANCES)
         if _is_legal(model_id, normalization, balance, class_count)
     )
+
+
+def processing_execution_digest(model_id: str, normalization: str, class_balance: str) -> str:
+    validate_processing(model_id, normalization, class_balance)
+    body = dict(policy_version=PROCESSING_POLICY_VERSION, model_id=model_id,
+                normalization=normalization, class_balance=class_balance)
+    return hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',', ':'),
+        ensure_ascii=False,allow_nan=False).encode('utf-8')).hexdigest()
 
 
 def _is_legal(model_id: str, normalization: str, balance: str, class_count: int) -> bool:
