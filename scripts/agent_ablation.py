@@ -16,6 +16,7 @@ from contextlib import contextmanager
 
 REPO=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(REPO))
+DECISION_TERMINAL_STATES=frozenset({'completed','failed','cancelled','timed_out','needs_attention'})
 
 
 def digest(value):
@@ -171,7 +172,7 @@ def terminal_results(client,record):
                 record['actual_split_digest']=audit['partition_digest']
 
 
-def summarize_plan(rows, records, *, factor='knowledge', sides=('on','off')):
+def summarize_plan(rows, records, *, factor='knowledge', sides=('on','off'), pair_conditions=None):
     """Offline, equally weighted runs. Missing/failed rows remain in denominators."""
     import math
     import statistics
@@ -205,8 +206,11 @@ def summarize_plan(rows, records, *, factor='knowledge', sides=('on','off')):
             for family in ('ML', 'DL', 'all'):
                 selected = [r for r in group['rows'] if family == 'all' or r['family'] == family]
                 successful = [r['metrics'][metric] for r in selected if r['metrics'] is not None]
+                conditions_ok=(pair_conditions is None or all(
+                    pair_conditions[(r['task_id'],r['family'],r['seed'],r['repeat'])]['status']=='matched'
+                    for r in selected))
                 aggregates[family] = dict(planned=len(selected), denominator=len(successful),
-                    complete_mean=statistics.mean(successful) if successful and len(successful) == len(selected) else None,
+                    complete_mean=statistics.mean(successful) if successful and len(successful) == len(selected) and conditions_ok else None,
                     successful_subset_mean=statistics.mean(successful) if successful else None,
                     run_sample_std=statistics.stdev(successful) if len(successful) > 1 else None)
             group['metrics'][metric] = aggregates
@@ -214,13 +218,16 @@ def summarize_plan(rows, records, *, factor='knowledge', sides=('on','off')):
     paired = []
     bases = sorted({(r['task_id'], r['family'], r['seed'], r['repeat']) for r in rows})
     for task, family, seed, repeat in bases:
+        condition=(pair_conditions or {}).get((task,family,seed,repeat),{'status':'matched','reason':None})
         on = values.get((task, family, sides[0], seed, repeat))
         off = values.get((task, family, sides[1], seed, repeat))
         paired.append(dict(task_id=task, family=family, seed=seed, repeat=repeat,
-                           difference={m:on[m]-off[m] for m in metrics} if on and off else None))
+                           condition_status=condition['status'],exclusion_reason=condition['reason'] if condition['status']!='matched' else None,
+                           difference={m:on[m]-off[m] for m in metrics} if on and off and condition['status']=='matched' else None))
     complete = [p for p in paired if p['difference'] is not None]
     return dict(groups=groups, paired=paired, paired_count=len(complete), unpaired_count=len(paired)-len(complete),
                 paired_mean_difference={m:statistics.mean(p['difference'][m] for p in complete) if complete else None for m in metrics},
+                paired_complete_mean_difference={m:statistics.mean(p['difference'][m] for p in complete) if len(complete)==len(paired) else None for m in metrics},
                 uncertainty_note='Run sample standard deviation; ML/DL for the same task are not independent datasets.')
 
 
@@ -280,8 +287,38 @@ def register_processing_plan(config, experiment_id):
     return result
 
 
+def _processing_pair_conditions(plan,records):
+    checks={}
+    for task_id,family,seed,repeat in sorted({
+            (r['task_id'],r['family'],r['seed'],r['repeat']) for r in plan['rows']}):
+        pair=[row for row in plan['rows'] if (row['task_id'],row['family'],row['seed'],row['repeat'])==
+              (task_id,family,seed,repeat)]
+        if len(pair)!=2 or {row['processing_mode'] for row in pair}!={'dynamic','fixed'}:
+            raise ValueError('missing registered processing pair')
+        left,right=(records.get(row['experiment_id']) for row in pair)
+        expected_sha=pair[0]['dataset_sha256']
+        reason=None
+        if not left or not right:reason='record_missing'
+        elif left.get('status')!='completed' or right.get('status')!='completed':reason='decision_not_completed'
+        elif not left.get('run_id') or not right.get('run_id'):reason='run_missing'
+        elif left['run_id']==right['run_id']:reason='run_reused'
+        elif left.get('dataset_digest')!=expected_sha or right.get('dataset_digest')!=expected_sha:
+            reason='dataset_mismatch'
+        elif not left.get('actual_split_digest') or left['actual_split_digest']=='unknown' or not right.get('actual_split_digest') or right['actual_split_digest']=='unknown':
+            reason='split_digest_unavailable'
+        elif left['actual_split_digest']!=right['actual_split_digest']:reason='split_mismatch'
+        elif not left.get('frozen_model_configs') or not right.get('frozen_model_configs'):
+            reason='model_configs_unavailable'
+        elif left['frozen_model_configs']!=right['frozen_model_configs']:reason='model_configs_mismatch'
+        checks[(task_id,family,seed,repeat)]=dict(status='matched' if reason is None else
+            'unavailable' if reason in ('record_missing','decision_not_completed','run_missing','split_digest_unavailable','model_configs_unavailable') else 'mismatch',
+            reason=reason)
+    return checks
+
+
 def summarize_processing_plan(plan, records):
-    result=summarize_plan(plan['rows'],records,factor='processing_mode',sides=('dynamic','fixed'))
+    checks=_processing_pair_conditions(plan,records)
+    result=summarize_plan(plan['rows'],records,factor='processing_mode',sides=('dynamic','fixed'),pair_conditions=checks)
     distributions={}
     costs={}
     for mode in ('dynamic','fixed'):
@@ -298,26 +335,12 @@ def summarize_processing_plan(plan, records):
             (record or {}).get('measurement',{}).get('known_http_calls',0) for record in items),
             unknown_count=sum(not record or (record.get('measurement') or {}).get('status')!='complete'
                               for record in items))
-    condition_checks=[]
-    for task in plan['rows'][::4]:
-        for family in ('ML','DL'):
-            pair=[row for row in plan['rows'] if row['task_id']==task['task_id'] and row['family']==family]
-            if len(pair)!=2:raise ValueError('missing registered processing pair')
-            left,right=(records.get(row['experiment_id']) for row in pair)
-            if not left or not right or left.get('status')!='completed' or right.get('status')!='completed':
-                state='unavailable'
-            elif (left.get('dataset_digest')!=task['dataset_sha256'] or
-                    right.get('dataset_digest')!=task['dataset_sha256'] or
-                    not left.get('actual_split_digest') or
-                    left.get('actual_split_digest')=='unknown' or
-                    not left.get('frozen_model_configs') or
-                    left.get('dataset_digest')!=right.get('dataset_digest') or
-                    left.get('actual_split_digest')!=right.get('actual_split_digest') or
-                    left.get('frozen_model_configs')!=right.get('frozen_model_configs')):
-                state='mismatch'
-            else:state='matched'
-            condition_checks.append(dict(task_id=task['task_id'],family=family,status=state))
+    condition_checks=[dict(task_id=task,family=family,seed=seed,repeat=repeat,**condition)
+        for (task,family,seed,repeat),condition in checks.items()]
+    condition_counts={status:sum(item['status']==status for item in condition_checks)
+                      for status in ('matched','mismatch','unavailable')}
     result.update(processing_distribution=distributions,costs=costs,condition_checks=condition_checks,
+        condition_counts=condition_counts,
         comparison='dynamic_minus_fixed',complete=(all(group['succeeded']==group['planned']
             for group in result['groups'].values()) and all(item['status']=='matched' for item in condition_checks)))
     return result
@@ -333,12 +356,50 @@ def load_processing_plan(path):
     return plan
 
 
+def _confirm_terminal_decision(storage,row,record):
+    """A row record is only a projection; the checkpoint owns decision state."""
+    if record.get('status') not in DECISION_TERMINAL_STATES:
+        raise ValueError('all planned decisions must finish before Test collection')
+    from agent_poc.orchestration.runtime import read_status
+    try:
+        state=read_status(storage=storage/row['experiment_id']/'checkpoints',
+            thread_id=row['experiment_id'])
+    except Exception as error:
+        raise ValueError('decision checkpoint unavailable before Test collection') from error
+    lifecycle=state.get('lifecycle') or {}
+    identity=state.get('identity') or {}
+    task=state.get('task') or {}
+    recovery=state.get('recovery') or {}
+    execution=state.get('execution') or {}
+    if (identity.get('thread_id')!=row['experiment_id'] or
+            task.get('dataset_id')!=row['dataset_id'] or
+            task.get('dataset_fingerprint')!=record.get('dataset_digest') or
+            task.get('processing_mode')!=row['processing_mode'] or
+            lifecycle.get('status')!=record['status'] or
+            lifecycle.get('status') not in DECISION_TERMINAL_STATES or
+            lifecycle.get('next_action') is not None or
+            lifecycle.get('ended_at') is None or
+            recovery.get('needs_human_review') is not False or
+            (recovery.get('pending_operation') or {}).get('status') in ('prepared','in_flight','unknown') or
+            execution.get('run_id')!=record.get('run_id')):
+        raise ValueError('decision checkpoint is not closed or differs from record')
+    if record['status']=='completed':
+        finalization=state.get('finalization') or {}
+        if (record.get('dataset_digest')!=row['dataset_sha256'] or
+                not record.get('run_id') or finalization.get('status')!='confirmed' or
+                finalization.get('selected_run_id')!=record['run_id'] or
+                finalization.get('backend_session_state')!='finalized'):
+            raise ValueError('completed decision lacks confirmed finalization')
+
+
 def collect_processing_plan(plan_path,storage,backend_url):
     """Read Test only after all 40 decisions have a durable terminal status."""
     import httpx
     plan=load_processing_plan(plan_path)
     if plan_path.resolve()!=storage.resolve()/plan['experiment_id']/'plan.json':
         raise ValueError('processing plan and row storage differ')
+    if digest(backend_url)!=plan['conditions']['backend_binding']:
+        raise ValueError('collection backend differs from registration')
     records={}
     for row in plan['rows']:
         path=storage/row['experiment_id']/'record.json'
@@ -360,8 +421,7 @@ def collect_processing_plan(plan_path,storage,backend_url):
             raise ValueError('record does not match processing plan')
         if record.get('dataset_digest') not in (row['dataset_sha256'], 'unknown'):
             raise ValueError('dataset digest differs from registered task')
-        if record['status'] in ('prepared','attempt_started','submitted','running'):
-            raise ValueError('all planned decisions must finish before Test collection')
+        _confirm_terminal_decision(storage,row,record)
         records[row['experiment_id']]=record
     token=os.environ.get('AUTOAI_API_TOKEN')
     headers={'Authorization':'Bearer '+token} if token else {}

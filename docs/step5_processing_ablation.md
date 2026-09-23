@@ -16,4 +16,8 @@ python -m scripts.agent_ablation register-processing --config work/step5/registr
 python -m scripts.agent_ablation collect-processing --plan work/step5/records/step5-processing/plan.json --storage work/step5/records --backend-url http://127.0.0.1:8000
 ```
 
-离线汇总写入计划旁的 `summary.json`。缺失/失败 Test 保持空值，完整均值只在全组成功且成对条件一致时出现；成功子集均值明确带分母。单 seed 的配对差值仅作描述，不作统计显著性结论。
+收集命令会先核对后端 URL 与预注册摘要，再逐行检查记录和持久 checkpoint。只有全部行处于已关闭的终态，才会发出读取 Test 的请求；等待、初始化、恢复、待人工处理中的 checkpoint 均会阻止收集。
+
+离线汇总写入计划旁的 `summary.json`。每对动态/固定 Run 必须使用注册数据集、不同 Run、相同分割及相同模型配置，否则记录排除原因，不计入 `paired_count`、配对均值或对应组的 `complete_mean`。缺失/失败 Test 保持空值；成功子集均值明确带分母。`paired_complete_mean_difference` 仅在全部配对有效时出现。单 seed 的配对差值仅作描述，不作统计显著性结论。
+
+本地受控组件验收可执行 `python -m scripts.verify_processing_matrix`，逐一拟合有限目录中的 188 个合法处理组合，结果保存在 `work/step5_local_acceptance/processing-matrix.json`。该组件验证不产生正式消融 Run 或 Test 指标。
