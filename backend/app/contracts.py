@@ -103,14 +103,16 @@ class TrainingSpec:
             raise TrainingConfigValidationError(f'不支持的分类模型：{raw_model}')
         values['model_type'] = model_type
 
-        normalization = str(values.get('normalization') or 'zscore').strip().lower()
-        if normalization not in {'zscore', 'minmax', 'area', 'none'}:
-            raise TrainingConfigValidationError('normalization 必须是 zscore、minmax、area 或 none')
+        from .processing_policy import validate_processing
+        normalization = values.get('normalization', 'zscore')
+        class_balance = values.get('class_balance', 'none')
+        try:
+            normalization, class_balance = validate_processing(
+                model_type, normalization, class_balance
+            )
+        except ValueError as exc:
+            raise TrainingConfigValidationError(str(exc)) from exc
         values['normalization'] = normalization
-
-        class_balance = str(values.get('class_balance') or 'none').strip().lower()
-        if class_balance not in {'none', 'class_weight'}:
-            raise TrainingConfigValidationError('class_balance 必须是 none 或 class_weight')
         values['class_balance'] = class_balance
 
 

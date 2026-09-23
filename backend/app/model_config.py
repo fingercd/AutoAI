@@ -273,3 +273,32 @@ def search_strategy_binding(model_id: str) -> dict[str, str]:
     rules = model_policy(model_id)['compatibility_rules']
     return dict(ref=rules[-1], version='training-execution-policy-v1',
                 digest=semantic_digest(dict(revision='training-execution-policy-v1', implementation=bound)))
+
+
+# Exact source bindings from the last accepted default-processing revision.
+# Only the zscore/none path was equivalent across the normalizer repair.
+_DEFAULT_PROCESSING_BINDING_COMPAT = {
+    'cnn1d': ('d835450df23a3c40afa441773e02fccae734c5a48ec0ee5ab0d4c0b662683199', 'e09ec1f1e2ef530c378775afc75610914405467df9efa4e00ee77284625ae296'),
+    'cnn1d_se': ('70f638a97937fac8adf6f7346d6d8c442e0f070917c79221d8bbaaa33eda3804', '66159230193dbc27c7f7280a2a7dd954449c66ba16f29c7fcc90b5cd735520d5'),
+    'cnn_transformer1d': ('bc74fe86e9a916d2328d52dd4b16a1f87a165dcfc5799074b6e582877459fb6a', '3004bd3f4e32f3c76a32369e02640329c2432fccb472223aa0b270c2af46c42f'),
+    'inception1d': ('08aa449ed5a2be1e47e953aa4546ccf13f94b26d746366784771df68122ae4c2', 'ad6e0f58858fd45b03b959f492eaf3a6129695bacc4dd47a4930241098e3c760'),
+    'logistic_regression': ('98f25de6c56a875a5f76665bad4b4cfd271a6dd9373a800ea775f946e3fd93d2', 'd1ea85d6041056dfd9e8a936737141f41622e347ea192e1687821aa753cc6ed3'),
+    'pca_lda': ('ba762ea4737eb065e0caa6cb54e0de850b233b271f6eddd91258d5f384a8b67a', '4992d8c518c381b48eb6ddb964264192a80e06316cead1a5ec3e23f278034b8b'),
+    'pca_mlp': ('b49fd4f273ee7af345d9b35a83aa203042f8cb323605afcaf6b9ec2b24a7bf37', '7209c3b8eaa7b7df70b4b32774773d49bcb963a35cd68672f943c5db263e64e2'),
+    'pls_da': ('ce30dff0bb2e96bc1902d2d0f56d070c07d2bc800bcec345156b299b2f1ed6e9', '05bb26ba8cf8be990bfa4a9fbc587aa4208781f5899ce8c5b69f85a801107b69'),
+    'random_forest': ('299ca52e525de3bf5dc841208df9a15d33e0e2ed4c8d895b2d0bc0280ed12594', '401861090e63506c17d8cfefcc14d667ad61f112873797b199f1ec954acfd753'),
+    'resnet1d': ('db67cb26bb0b8a90e35073d4fbca6b257a714b9de1834610e10e946ea0530554', '514a8342d28ea3ceb82a50c5f5c0ce5d85a009ae0353abad14f8c50701ad7987'),
+    'svm': ('d0dd2b72459383c15e9e9750b6d80d155eb2b9419db6a4d47d5b727eb3388a31', 'e522d91e4f9dfc3c1ec1ebe6270eed051740de701be0ab8ac6594f86cb8a013b'),
+    'tcn1d': ('eeb68e65877402286a4ab479edb34b25f947dc04e8cfbc516fe031cf3a492db6', 'f0c71ae4c5e8a4aa7fd5fdb18632fa7dc158f63a8b6161a975f8d524d99632e0'),
+    'xgboost': ('34db4c1acf3bbb9511a1f2acfc103d79e6738c9350653ed5415dcb0fa657bfea', 'f9e28eb729ee27249e7e3b2e79707fd9c06f3f45e90f0521fba12f81cac73600'),
+}
+
+
+def compatible_search_strategy_binding(model_id: str, frozen_digest: str,
+                                       normalization: str, class_balance: str) -> bool:
+    current = search_strategy_binding(model_id)['digest']
+    if frozen_digest == current:
+        return True
+    return (normalization, class_balance) == ('zscore', 'none') and (
+        frozen_digest, current
+    ) == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id)

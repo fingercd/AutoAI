@@ -582,6 +582,33 @@ def test_stratified_holdout_uses_single_8_1_1_split(tmp_path, monkeypatch):
         assert split_labels == {"A", "B"}
 
 
+def test_processing_audit_records_real_traditional_fit_stages(tmp_path, monkeypatch):
+    import backend.app.training as training
+    from backend.app.model_config import semantic_digest
+
+    source = tmp_path / "grouped.csv"
+    _write_grouped_modeling_csv(source, group_count=10, repeats=2)
+    monkeypatch.setattr(training, "RUNS_DIR", tmp_path / "runs")
+    result = train_model(source, {
+        "model_type": "logistic_regression",
+        "normalization": "minmax",
+        "class_balance": "class_weight",
+        "split_mode": "stratified_holdout",
+        "feature_selection_enabled": False,
+    })
+    run_dir = Path(result["run_dir"])
+    fold = json.loads((run_dir / "split.json").read_text(encoding="utf-8"))[0]
+    metadata = json.loads((run_dir / "model_metadata.json").read_text(encoding="utf-8"))
+    stages = fold["processing_execution"]["stages"]
+    assert [stage["stage"] for stage in stages] == ["selection_train", "final_train_valid"]
+    assert [stage["fit_count"] for stage in stages] == [12, 16]
+    assert stages[0]["fit_indices_digest"] == semantic_digest(sorted(fold["splits"]["train"]))
+    assert stages[1]["fit_indices_digest"] == semantic_digest(sorted(fold["final_fit_indices"]))
+    assert stages[0]["normalization"] == stages[1]["normalization"] == "minmax"
+    assert stages[0]["weighting"]["kind"] == stages[1]["weighting"]["kind"] == "balanced"
+    assert metadata["execution_audit"]["processing_execution"]["folds"][0]["stages"][0]["normalizer_digest"] == stages[0]["normalizer_digest"]
+
+
 def test_external_test_dataset_uses_train_valid_holdout(tmp_path, monkeypatch):
     import backend.app.training as training
 

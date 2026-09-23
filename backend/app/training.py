@@ -213,26 +213,6 @@ def _validate_split_ratio_config(policy: EvaluationPolicy) -> None:
         raise ValueError("训练、验证、测试比例相加必须等于 10，且三项均大于 0")
 
 
-def _normalize(x: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
-    """按“每条曲线自身”做行内归一化（axis=1），返回归一化结果与模式记录。
-
-        这是早期兼容路径：minmax/zscore 在单条曲线内部计算统计量。正式训练折使用
-        _fit_x_normalizer/_transform_x_with_normalizer 的按特征（axis=0）、仅用 train
-        拟合的版本，以避免 valid/test 信息泄漏。"""
-    if mode == "none":
-        return x.astype(np.float32), {"mode": mode}
-    if mode == "minmax":
-        mins = x.min(axis=1, keepdims=True)
-        maxs = x.max(axis=1, keepdims=True)
-        return ((x - mins) / np.maximum(maxs - mins, 1e-8)).astype(np.float32), {"mode": mode}
-    if mode == "area":
-        area = np.trapz(np.abs(x), axis=1, keepdims=True)
-        return (x / np.maximum(area, 1e-8)).astype(np.float32), {"mode": mode}
-    means = x.mean(axis=1, keepdims=True)
-    stds = x.std(axis=1, keepdims=True)
-    return ((x - means) / np.maximum(stds, 1e-8)).astype(np.float32), {"mode": "zscore"}
-
-
 from .evaluation_plan import split_indices as _split_indices
 
 
@@ -698,41 +678,114 @@ def _clone_config(config: TrainConfig, **overrides: Any) -> TrainConfig:
 
 
 def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
-    """只用当前折 train 拟合按特征（axis=0）的标准化参数。
+    """Fit feature statistics on the current Train partition only."""
+    from .processing_policy import NORMALIZATIONS
 
-        zscore/minmax 记录逐特征统计量；area 是逐曲线自身面积归一化，无训练统计量，
-        因此只记模式。scale 下限 1e-8 防零方差除零。"""
-    mode = str(mode or "zscore").lower()
-    if mode == "none":
-        return {"mode": "none"}
+    if type(mode) is not str or mode not in NORMALIZATIONS:
+        raise ValueError("invalid_normalization")
+    values = np.asarray(x_train)
+    if values.ndim != 2 or not values.shape[0] or not values.shape[1]:
+        raise ValueError("normalizer requires a nonempty feature matrix")
+    if not np.isfinite(values).all():
+        raise ValueError("normalizer input must be finite")
+    if mode in ("none", "area"):
+        return {"mode": mode}
     if mode == "minmax":
-        mins = x_train.min(axis=0)
-        maxs = x_train.max(axis=0)
-        return {"mode": "minmax", "min": mins, "scale": np.maximum(maxs - mins, 1e-8)}
-    if mode == "area":
-        return {"mode": "area"}
-    means = x_train.mean(axis=0)
-    stds = x_train.std(axis=0)
-    return {"mode": "zscore", "mean": means, "scale": np.maximum(stds, 1e-8)}
+        mins = values.min(axis=0)
+        maxs = values.max(axis=0)
+        result = {"mode": mode, "min": mins, "scale": np.maximum(maxs - mins, 1e-8)}
+    else:
+        means = values.mean(axis=0)
+        stds = values.std(axis=0)
+        result = {"mode": mode, "mean": means, "scale": np.maximum(stds, 1e-8)}
+    if not all(np.isfinite(value).all() for value in result.values() if isinstance(value, np.ndarray)):
+        raise ValueError("normalizer parameters must be finite")
+    return result
 
 
 def _transform_x_with_normalizer(x: np.ndarray, normalizer: dict[str, Any]) -> np.ndarray:
-    """把已拟合的 normalizer 应用到任意矩阵（train/valid/test 共用同一组参数）。"""
-    mode = normalizer.get("mode", "zscore")
-    values = np.asarray(x, dtype=np.float32)
+    """Apply frozen Train statistics and reject overflow after float32 conversion."""
+    from .processing_policy import NORMALIZATIONS
+
+    mode = normalizer.get("mode")
+    if type(mode) is not str or mode not in NORMALIZATIONS:
+        raise ValueError("invalid_normalization")
+    values = np.asarray(x)
+    if values.ndim != 2 or not values.shape[0] or not values.shape[1]:
+        raise ValueError("normalizer requires a nonempty feature matrix")
+    if not np.isfinite(values).all():
+        raise ValueError("normalizer input must be finite")
     if mode == "none":
-        return values.astype(np.float32)
-    if mode == "minmax":
-        return ((values - normalizer["min"]) / normalizer["scale"]).astype(np.float32)
-    if mode == "area":
-        area = np.trapz(np.abs(values), axis=1, keepdims=True)
-        return (values / np.maximum(area, 1e-8)).astype(np.float32)
-    return ((values - normalizer["mean"]) / normalizer["scale"]).astype(np.float32)
+        transformed = values
+    elif mode == "minmax":
+        transformed = (values - normalizer["min"]) / normalizer["scale"]
+    elif mode == "area":
+        magnitudes = np.abs(values.astype(np.float64))
+        with np.errstate(over='ignore', invalid='ignore'):
+            area = np.sum((magnitudes[:, :-1] + magnitudes[:, 1:]) * 0.5, axis=1)[:, None]
+        if not np.isfinite(area).all():
+            raise ValueError("normalizer area must be finite")
+        transformed = values / np.maximum(area, 1e-8)
+    else:
+        transformed = (values - normalizer["mean"]) / normalizer["scale"]
+    if not np.isfinite(transformed).all():
+        raise ValueError("normalizer output must be finite")
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = np.asarray(transformed, dtype=np.float32)
+    if not np.isfinite(result).all():
+        raise ValueError("normalizer float32 output must be finite")
+    return result
 
 
 def _json_normalizer(normalizer: dict[str, Any]) -> dict[str, Any]:
     """把 normalizer 中的 ndarray 转成 JSON 可序列化的 float 列表（写入 split.json）。"""
     return {key: (np.asarray(value).astype(float).tolist() if isinstance(value, np.ndarray) else value) for key, value in normalizer.items()}
+
+
+def _processing_stage_audit(
+    *, stage: str, indices: list[int] | np.ndarray, normalizer: dict[str, Any],
+    y: np.ndarray, label_names: list[str], model_type: str, class_balance: str,
+) -> dict[str, Any]:
+    """Record the parameters and labels consumed by one actual fit stage."""
+    from .model_config import semantic_digest
+    from .processing_policy import PROCESSING_POLICY_VERSION
+
+    fit_indices = sorted(int(index) for index in indices)
+    counts = np.bincount(y[fit_indices], minlength=len(label_names)).astype(int).tolist()
+    if any(count == 0 for count in counts):
+        raise ValueError('processing fit stage has an absent class')
+    if class_balance == 'none':
+        weighting: dict[str, Any] = {'kind': 'none'}
+    elif model_type == 'xgboost':
+        fit_counts = np.asarray(counts, dtype=np.float32)
+        weighting = {'kind': 'scale_pos_weight', 'value': float(fit_counts[0] / max(fit_counts[1], 1.0))}
+    elif model_family(model_type) == 'traditional_ml':
+        weighting = {'kind': 'balanced', 'values': [len(fit_indices) / (len(counts) * count) for count in counts]}
+    elif len(counts) == 2:
+        fit_counts = np.asarray(counts, dtype=np.float32)
+        weighting = {'kind': 'bce_pos_weight', 'value': float(fit_counts[0] / max(fit_counts[1], 1.0))}
+    else:
+        fit_counts = np.asarray(counts, dtype=np.float32)
+        weights = (fit_counts.sum() / np.maximum(fit_counts, 1.0)) / len(label_names)
+        weighting = {'kind': 'ce_class_weight', 'values': [float(value) for value in weights]}
+    frozen_normalizer = _json_normalizer(normalizer)
+    mode = frozen_normalizer['mode']
+    fit_scope = 'per_sample' if mode == 'area' else 'identity' if mode == 'none' else stage
+    return {
+        'policy_version': PROCESSING_POLICY_VERSION,
+        'stage': stage,
+        'normalization': mode,
+        'class_balance': class_balance,
+        'fit_scope': fit_scope,
+        'fit_count': len(fit_indices),
+        'fit_indices_digest': semantic_digest(fit_indices),
+        'normalizer': frozen_normalizer,
+        'normalizer_digest': semantic_digest(frozen_normalizer),
+        'label_to_id': {label: index for index, label in enumerate(label_names)},
+        'class_counts': counts,
+        'weighting': weighting,
+        'weighting_digest': semantic_digest(weighting),
+    }
 
 
 def _dimension_band(n_features: int) -> str:
@@ -1575,12 +1628,19 @@ def _run_legacy_training(
         view = DatasetView.loaded(dataset,actual_sha256)
         validate_plan(evaluation_plan,view,evaluation_config(config.__dict__),config.seed)
     if raw_config.get('execution_search_digest'):
-        from .model_config import search_strategy_binding
-        if search_strategy_binding(model_type)['digest'] != raw_config['execution_search_digest']:
+        from .model_config import compatible_search_strategy_binding
+        if not compatible_search_strategy_binding(
+            model_type, raw_config['execution_search_digest'],
+            config.normalization, config.class_balance,
+        ):
             raise ValueError('execution search policy mismatch')
     sample_count = int(len(dataset.labels))
     x_raw = np.asarray(dataset.intensity, dtype=np.float32)
+    if not np.isfinite(x_raw).all():
+        raise ValueError("training float32 input must be finite")
     label_names = sorted(set(dataset.labels))
+    from .processing_policy import validate_processing
+    validate_processing(model_type, config.normalization, config.class_balance, class_count=len(label_names))
     label_to_id = {label: idx for idx, label in enumerate(label_names)}
     y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
     sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
@@ -1709,6 +1769,13 @@ def _run_legacy_training(
         check_run_active()
         splits = fold["splits"]
         normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
+        selection_audit = _processing_stage_audit(
+            stage='selection_train' if model_family(model_type) == 'traditional_ml' else 'train',
+            indices=splits['train'], normalizer=normalizer,
+            y=y_model, label_names=label_names, model_type=model_type,
+            class_balance=config.class_balance,
+        )
+        processing_stages = [selection_audit]
         x = _transform_x_with_normalizer(x_model_raw, normalizer)
         fold_index = int(fold["fold_index"])
         write_progress(fold_index, max(0, fold_index - 1), fold)
@@ -1739,6 +1806,11 @@ def _run_legacy_training(
                 normalization=config.normalization,
                 label_names=label_names,
             )
+            processing_stages.append(_processing_stage_audit(
+                stage='final_train_valid', indices=fold_final_fit_indices,
+                normalizer=final_normalizer, y=y_model, label_names=label_names,
+                model_type=model_type, class_balance=config.class_balance,
+            ))
             final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
             test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
             model = final_model
@@ -1865,6 +1937,11 @@ def _run_legacy_training(
                 "metrics": fold_metrics,
                 "split_metrics": split_metrics,
                 "preprocess": _json_normalizer(normalizer),
+                "processing_execution": {
+                    "normalization": config.normalization,
+                    "class_balance": config.class_balance,
+                    "stages": processing_stages,
+                },
                 "splits": fold.get("internal_splits", splits),
                 "external_test_indices": fold.get("external_test_indices", []),
             }
@@ -1927,7 +2004,24 @@ def _run_legacy_training(
         train_sample_count=metadata_train_count,
         feature_count=x_raw.shape[1],
     )
-    execution_audit = None
+    from .model_config import semantic_digest
+    from .processing_policy import PROCESSING_POLICY_VERSION
+    processing_summary = {
+        'policy_version': PROCESSING_POLICY_VERSION,
+        'model_type': model_type,
+        'normalization': config.normalization,
+        'class_balance': config.class_balance,
+        'plan_digest': evaluation_plan.plan_digest if evaluation_plan is not None else None,
+        'folds': [
+            {'fold_index': fold['fold_index'],
+             'stages': [{key: stage[key] for key in (
+                 'stage', 'fit_scope', 'fit_indices_digest', 'normalizer_digest', 'weighting_digest'
+             )} for stage in fold['processing_execution']['stages']]}
+            for fold in cv_fold_payloads
+        ],
+    }
+    processing_summary['digest'] = semantic_digest(processing_summary)
+    execution_audit = {'processing_execution': processing_summary}
     if evaluation_plan is not None:
         from .evaluation_plan import digest as plan_hash
         consumed = {name:list(rows) for name,rows in folds[0]['splits'].items()}
@@ -1935,11 +2029,14 @@ def _run_legacy_training(
         partition_digest = plan_hash({'indices':consumed,'groups':groups})
         if partition_digest != evaluation_plan.partition_digest:
             raise ValueError('consumed evaluation partition mismatch')
-        from .model_config import search_strategy_binding
+        from .model_config import search_strategy_binding, compatible_search_strategy_binding
         search_binding = search_strategy_binding(model_type)
-        if raw_config.get('execution_search_digest', search_binding['digest']) != search_binding['digest']:
+        if not compatible_search_strategy_binding(
+            model_type, raw_config.get('execution_search_digest', search_binding['digest']),
+            config.normalization, config.class_balance,
+        ):
             raise ValueError('execution search policy mismatch')
-        execution_audit = dict(search_strategy=search_binding, evaluation_plan=evaluation_plan.safe_reference(),
+        execution_audit.update(search_strategy=search_binding, evaluation_plan=evaluation_plan.safe_reference(),
             partition_digest=partition_digest, initial_fit_scope='train',
             final_fit_scope='train+valid' if last_model_family=='traditional_ml' else 'train')
     model_metadata = {

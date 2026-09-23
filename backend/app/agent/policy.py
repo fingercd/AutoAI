@@ -150,8 +150,11 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
 def admit_command(session, command):
     admit_action(session, command.action)
     if command.recipe is not None:
-        from ..model_config import search_strategy_binding
-        if search_strategy_binding(command.recipe['model_id'])['digest'] != command.recipe['search_strategy_digest']:
+        from ..model_config import compatible_search_strategy_binding
+        if not compatible_search_strategy_binding(
+            command.recipe['model_id'], command.recipe['search_strategy_digest'],
+            command.action['normalization'], command.action['class_balance'],
+        ):
             raise AgentDomainError('agent_capability_changed', 'Execution search policy changed', status_code=409)
 
 
