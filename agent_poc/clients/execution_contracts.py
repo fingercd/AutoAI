@@ -9,16 +9,16 @@ from .capabilities import CanonicalID, Scalar, FrozenSnapshot, CapabilitySnapsho
 
 class EffectiveAction(v1.EffectiveAction):
     model_type: CanonicalID
-    normalization: Literal['zscore']
-    class_balance: Literal['none']
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
     parent_run_id: None
     model_params: dict[CanonicalID,Scalar]
 
 
 class EffectiveConfig(v1.EffectiveConfig):
     model_type: CanonicalID
-    normalization: Literal['zscore']
-    class_balance: Literal['none']
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
     feature_selection_enabled: Literal[False]
     config_stage: Literal['submission']
     config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2']

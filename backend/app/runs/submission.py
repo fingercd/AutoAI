@@ -206,7 +206,8 @@ class RunSubmissionService:
         prepared_evaluation: PreparedEvaluation | None = None,
     ) -> RunSubmissionResult:
         """提交已由 HTTP 兼容层解析的数据引用，供旧路由保持注入点兼容。"""
-        audit_fields={'execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest'}
+        audit_fields={'execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest',
+            'execution_processing_policy_version','execution_processing_digest'}
         if submission_source!='agent' and audit_fields.intersection(raw_config):
             raise RunSubmissionError('invalid_training_config','Execution recipe audit is server-owned')
         if prepared_evaluation is not None:
@@ -256,6 +257,18 @@ class RunSubmissionService:
                 'agent_dataset_fingerprint_mismatch',
                 '数据指纹与冻结 Session 不一致，未创建训练任务', status_code=409,
             )
+        if spec.values.get('model_type') == 'xgboost' and spec.values.get('class_balance') == 'class_weight':
+            from ..parsers import load_modeling_csv
+            from ..processing_policy import validate_processing
+            try:
+                source = (self.datasets.resolve(reference.dataset_id, principal=principal)
+                          if reference.dataset_id else
+                          self.datasets.resolve_system(None, legacy_path=reference.legacy_path))
+                labels = load_modeling_csv(source.path).labels
+                validate_processing('xgboost', spec.values['normalization'], 'class_weight',
+                    class_count=len(set(labels)))
+            except (FileNotFoundError, PermissionError, ValueError) as exc:
+                raise RunSubmissionError('invalid_training_config', str(exc), status_code=422) from exc
         effective_training_config = spec.to_legacy_dict()
         if not has_external_test and effective_training_config['split_mode'] == 'stratified_holdout':
             _, plan = self.prepare_evaluation(dataset_id=reference.dataset_id,

@@ -92,8 +92,8 @@ from ..runs.artifacts import RunArtifactWriter, ManifestCorruptError, ArtifactIn
 
 class SafeEffectiveConfigV2(SafeEffectiveConfig):
     model_type: str
-    normalization: Literal['zscore']
-    class_balance: Literal['none']
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
     feature_selection_enabled: Literal[False]
     config_stage: Literal['submission']
     config_policy_version: str

@@ -92,3 +92,79 @@ def test_negotiated_client_uses_frozen_recipe_wire(api):
     client.restore_frozen_session(result['session_id'],result['locked_config']['capability_snapshot'],preparation)
     response=client.submit_ml_experiment(result['session_id'],recipe_id=preparation['catalog']['recipes'][0]['recipe_id'],rationale='Fixed candidate.',client_request_id='selection')
     assert response['binding_state']=='bound'
+
+
+@pytest.mark.parametrize('decision_mode',['recipe_id','structured_config'])
+@pytest.mark.parametrize('interrupt',[False,True])
+def test_processing_recipe_graph_keeps_nondefault_member(api,tmp_path,budget_config,decision_mode,interrupt,monkeypatch):
+    api_client,storage,dataset=api
+    wire=CountTransport(api_client)
+    config=LLMConfig('http://scripted.invalid/v1','fixture',protocol='json_action',
+        prompt_version='agent-decision-processing-v1',max_tokens=64,**budget_config)
+    runtime=RuntimeConfig('http://backend.invalid','local',config)
+
+    class ProcessingDecision(RecipeDecision):
+        def request(self,method,url,*,headers,json,timeout):
+            import json as codec
+            context=codec.loads(json['messages'][-1]['content'])
+            self.contexts.append(context)
+            args=dict(context['bindings'])
+            if context['phase']=='submit':
+                recipe=next(r for r in context['recipes'] if
+                    r['model_id']=='logistic_regression' and
+                    r['normalization']=='area' and
+                    r['class_balance']=='class_weight')
+                if decision_mode=='recipe_id':
+                    args.update(recipe_id=recipe['recipe_id'],knowledge_refs=[])
+                else:
+                    args.update(model_id=recipe['model_id'],normalization='area',
+                        class_balance='class_weight',model_params=context['fixed_model_params'][recipe['model_id']],
+                        knowledge_refs=[])
+            rationale='Select finite processing.'
+            message={'role':'assistant','content':codec.dumps(dict(
+                tool_name=context['allowed_actions'][0],arguments=args,rationale=rationale))}
+            return httpx.Response(200,json={'choices':[{'message':message,'finish_reason':'stop'}],
+                'usage':{'prompt_tokens':20,'completion_tokens':10,'total_tokens':30}})
+
+    provider=ProcessingDecision('logistic_regression','json_action')
+    adapter=LLMAdapter(config,transport=provider)
+    client=AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',
+        execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v3',
+        decision_mode=decision_mode,processing_mode='dynamic',max_retries=0)
+    options=dict(storage=tmp_path/'processing-state',thread_id='processing',
+        dataset_id=dataset,allowed_models=['logistic_regression'],processing_mode='dynamic',
+        decision_mode=decision_mode,knowledge=False,client=client,llm=adapter)
+    if interrupt:
+        original=Nodes.submit
+        def stop(self,state):raise KeyboardInterrupt()
+        monkeypatch.setattr(Nodes,'submit',stop)
+        with pytest.raises(TaskInterrupted):start_task(runtime,**options)
+        pending=read_status(storage=options['storage'],thread_id='processing')
+        assert pending['recovery']['pending_operation']['status']=='prepared'
+        assert pending['execution']['submission_content']['recipe_id']
+        monkeypatch.setattr(Nodes,'submit',original)
+        state=resume_task(runtime,storage=options['storage'],thread_id='processing',client=client,llm=adapter)
+    else:
+        state=start_task(runtime,**options)
+    assert state['lifecycle']['status']=='waiting',state['lifecycle']
+    assert state['versions']['state']=='agent-state-v5'
+    from backend.app.runs.repository import RunRepository
+    record=RunRepository(storage/'runs.sqlite3').get(state['execution']['run_id'])
+    assert (record.config['normalization'],record.config['class_balance'])==('area','class_weight')
+    assert len(provider.contexts[0]['recipes'])==8
+    from backend.app.runs.execution import execute_claimed_run
+    from backend.app.runs.worker import RunWorker
+    from backend.app.runs.status_projection import project_status
+    repo=RunRepository(storage/'runs.sqlite3')
+    worker=RunWorker(repository=repo,worker_id='processing',execute=lambda r:execute_claimed_run(r,repository=repo),
+        now=lambda:datetime.now(timezone.utc),heartbeat_seconds=60,
+        project_status=lambda r:project_status(storage/'runs'/r.run_id,r))
+    assert worker.run_once()
+    assert repo.get(record.run_id).state=='succeeded',repo.get(record.run_id).error
+    resumed=AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',
+        execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v3',
+        decision_mode=decision_mode,processing_mode='dynamic',max_retries=0)
+    final=resume_task(runtime,storage=tmp_path/'processing-state',thread_id='processing',
+        client=resumed,llm=adapter,wait=True)
+    assert final['lifecycle']['status']=='completed',final['lifecycle']
+    assert final['finalization']['selected_run_id']==record.run_id

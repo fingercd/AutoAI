@@ -170,6 +170,8 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     model_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     decision_mode: Literal['recipe_id', 'structured_config'] | None = None
     knowledge_query: KnowledgeQueryConfig | None = None
+    processing_mode: Literal['fixed', 'dynamic'] | None = None
+    fixed_processing: dict[str, dict[str, str]] | None = None
 
     @model_serializer(mode='wrap')
     def preserve_request_shape(self, handler):
@@ -178,27 +180,46 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
             result.pop('decision_mode', None)
         if self.knowledge_query is None:
             result.pop('knowledge_query', None)
+        if self.protocol_revision != 'agent-recipes-revision-v3':
+            result.pop('processing_mode', None)
+            result.pop('fixed_processing', None)
         return result
 
     execution_profile: Literal['train-evidence-recipes-v1'] | None = None
-    protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2'] | None = None
+    protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'] | None = None
     context_policy: AgentContextPolicy | RecipeContextPolicy = Field(default_factory=AgentContextPolicy)
 
     @model_validator(mode='after')
     def profile_consistency(self):
-        if self.knowledge_query is not None and self.protocol_revision != 'agent-recipes-revision-v2':
+        knowledge_capable = self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3')
+        if self.knowledge_query is not None and not knowledge_capable:
             raise ValueError('knowledge query requires knowledge-capable protocol')
-        if self.decision_mode is not None and self.protocol_revision != 'agent-recipes-revision-v2':
+        if self.decision_mode is not None and not knowledge_capable:
             raise ValueError('decision mode requires the knowledge-capable recipe protocol')
+        if self.protocol_revision == 'agent-recipes-revision-v3':
+            from ..processing_policy import freeze_fixed_processing
+            self.processing_mode = self.processing_mode or 'fixed'
+            self.decision_mode = self.decision_mode or 'recipe_id'
+            self.fixed_processing = freeze_fixed_processing(self.allowed_models, self.fixed_processing)
+        elif self.processing_mode is not None or self.fixed_processing is not None:
+            raise ValueError('processing configuration requires revision v3')
         if (self.execution_profile is None) != (self.protocol_revision is None):
             raise ValueError('profile requires negotiated protocol revision')
         if self.execution_profile:
             self.context_policy = RecipeContextPolicy.model_validate(self.context_policy.model_dump())
             allowed = [['train_evidence','legal_recipes']]
-            if self.protocol_revision == 'agent-recipes-revision-v2':
+            if knowledge_capable:
                 allowed.append(['train_evidence','legal_recipes','knowledge'])
-            valid = (set(self.modules)=={'train_evidence','legal_recipes'} and len(self.modules)==2
-                     if self.protocol_revision=='agent-recipes-revision-v1' else self.modules in allowed)
+            if self.protocol_revision == 'agent-recipes-revision-v3':
+                expected = {'train_evidence','legal_recipes'}
+                if 'knowledge' in self.modules:
+                    expected.add('knowledge')
+                if self.processing_mode == 'dynamic':
+                    expected.add('dynamic_preprocessing')
+                valid = set(self.modules) == expected and len(self.modules) == len(expected)
+            else:
+                valid = (set(self.modules)=={'train_evidence','legal_recipes'} and len(self.modules)==2
+                         if self.protocol_revision=='agent-recipes-revision-v1' else self.modules in allowed)
             if not valid:
                 raise ValueError('recipe profile requires evidence and recipe capabilities')
         elif isinstance(self.context_policy, RecipeContextPolicy):
@@ -259,8 +280,8 @@ class CreateStructuredExperimentRequest(_IdempotentRequest):
     """One complete member of the frozen finite domain, expressed without IDs."""
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
     model_id: str
-    normalization: Literal['zscore']
-    class_balance: Literal['none']
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
     model_params: dict[str, Any]
     knowledge_refs: list[str] = Field(max_length=6)
     rationale: str | None = Field(None, max_length=2000)

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from backend.tests.test_agent_model_sessions import api
 
 from backend.app.processing_policy import (
     EXECUTABLE_MODELS,
@@ -80,3 +81,22 @@ def test_old_source_bindings_only_match_verified_default_processing():
         assert not compatible_search_strategy_binding(model_id, old_digest, "area", "none")
         assert not compatible_search_strategy_binding(model_id, old_digest, "zscore", "class_weight")
         assert not compatible_search_strategy_binding(model_id, "0" * 64, "zscore", "none")
+
+
+def test_multiclass_xgboost_weight_is_rejected_before_run_creation(api, tmp_path):
+    from backend.tests.modeling_data_factory import write_grouped_classification_csv
+    from backend.app.runs.repository import RunRepository
+
+    client, storage, _ = api
+    source = write_grouped_classification_csv(tmp_path / 'three-classes.csv',
+        groups_per_class=4,repeats=2,feature_count=16,labels=('A','B','C'))
+    with source.open('rb') as handle:
+        uploaded = client.post('/api/datasets/upload', files={
+            'file': ('three-classes.csv',handle,'text/csv')})
+    assert uploaded.status_code == 200
+    response = client.post('/api/training/runs',json={
+        'dataset_id': uploaded.json()['dataset_id'],
+        'config': {'model_type':'xgboost','class_balance':'class_weight'},
+    })
+    assert response.status_code == 422
+    assert RunRepository(storage / 'runs.sqlite3').list() == []

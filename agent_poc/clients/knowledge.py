@@ -145,13 +145,15 @@ class KnowledgePreparation(Preparation):
 
 
 class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
-    protocol_revision: Literal['agent-recipes-revision-v2']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3']
     preparation: KnowledgePreparation
+    processing_mode: Literal['fixed','dynamic'] | None = None
+    fixed_processing: dict[str,dict[str,str]] | None = None
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
-        if value not in (['train_evidence','legal_recipes'],['train_evidence','legal_recipes','knowledge']):
+        if set(value)-{'train_evidence','legal_recipes','knowledge','dynamic_preprocessing'}:
             raise ValueError('invalid knowledge modules')
         return value
 
@@ -159,6 +161,14 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
     def module_binding(self):
         if ('knowledge' in self.modules)!=(self.preparation.knowledge.status=='ready'):
             raise ValueError('knowledge switch mismatch')
+        if self.protocol_revision == 'agent-recipes-revision-v3':
+            if (self.processing_mode is None or self.fixed_processing is None or
+                    ('dynamic_preprocessing' in self.modules) != (self.processing_mode == 'dynamic')):
+                raise ValueError('processing switch mismatch')
+            if self.preparation.catalog.processing_mode != self.processing_mode or self.preparation.catalog.fixed_processing != self.fixed_processing:
+                raise ValueError('processing catalog mismatch')
+        elif self.processing_mode is not None or self.fixed_processing is not None or 'dynamic_preprocessing' in self.modules:
+            raise ValueError('legacy knowledge processing mismatch')
         return self
 
 
@@ -177,19 +187,28 @@ class KnowledgeCapability(ClosedModel):
     reason: str | None
 
 
+class ProcessingCapability(ClosedModel):
+    available: Literal[True]
+    status: Literal['ready']
+    schema_version: Literal['finite-processing-v1']
+    reason: None
+
+
 class KnowledgeHealthResponse(HealthResponse):
-    protocol_revision: Literal['agent-recipes-revision-v2']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3']
     execution_profiles: list[Literal['train-evidence-recipes-v1']]
-    modules: dict[str, v1.ModuleCapability | KnowledgeCapability]
+    modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability]
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
         from agent_poc.tools import MODULES
-        if set(value)-set(MODULES)-{'knowledge'} or 'knowledge' not in value:
+        if set(value)-set(MODULES)-{'knowledge','dynamic_preprocessing'} or 'knowledge' not in value:
             raise ValueError('unknown module')
         if not isinstance(value['knowledge'],KnowledgeCapability):
             raise ValueError('knowledge capability missing')
+        if 'dynamic_preprocessing' in value and not isinstance(value['dynamic_preprocessing'],(v1.ModuleCapability,ProcessingCapability)):
+            raise ValueError('processing capability invalid')
         return value
 
 

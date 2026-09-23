@@ -51,7 +51,7 @@ class LLMConfig:
                 '://' in self.model or
                 self.model.lower().startswith('file:')):
             raise ValueError('LLM served model ID 无效')
-        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1','agent-decision-knowledge-v1'):
+        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1','agent-decision-knowledge-v1','agent-decision-processing-v1'):
             raise ValueError('Unknown Prompt version')
         if self.protocol not in ('json_action', 'native_tools'):
             raise ValueError('必须明确选择受支持的 LLM 协议')
@@ -75,7 +75,7 @@ class LLMConfig:
                 'timeout': self.timeout, 'max_tokens': self.max_tokens,
                 'max_response_bytes': self.max_response_bytes,
                 'temperature': self.temperature, 'top_p': self.top_p,
-                'prompt_version': self.prompt_version, 'context_version': ('agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
+                'prompt_version': self.prompt_version, 'context_version': ('agent-context-processing-v1' if self.prompt_version=='agent-decision-processing-v1' else 'agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
 
         if self.tokenizer_path is not None:
             from pathlib import Path
@@ -135,8 +135,8 @@ class StoredRecipeArguments(ClosedModel):
 class StoredStructuredArguments(ClosedModel):
     session_id: Identifier
     model_id: Identifier
-    normalization: Literal['zscore']
-    class_balance: Literal['none']
+    normalization: Literal['zscore','minmax','area','none']
+    class_balance: Literal['none','class_weight']
     model_params: dict[str, int | float | str]
     knowledge_refs: list[Identifier] = Field(max_length=6)
     rationale: str
@@ -152,7 +152,9 @@ def normalize_structured_arguments(arguments, context):
         target = expected[key]
         if type(value) is bool or (type(target) is int and type(value) is not int) or value != target:
             raise ValueError('structured parameter differs from frozen value')
-    recipe = next((r for r in context['recipes'] if r['model_id'] == parsed.model_id), None)
+    recipe = next((r for r in context['recipes'] if
+        (r['model_id'],r.get('normalization',r.get('preprocessing',{}).get('normalization')),r['class_balance']) ==
+        (parsed.model_id,parsed.normalization,parsed.class_balance)), None)
     if recipe is None:
         raise ValueError('structured model outside catalog')
     refs = parsed.knowledge_refs
@@ -296,8 +298,9 @@ class LLMAdapter:
             raise LLMError('llm_context_invalid') from None
         if projected['context_version'] != self.config.public_config()['context_version']:
             raise LLMError('llm_context_invalid')
-        knowledge_profile = projected['context_version']=='agent-context-knowledge-v1'
-        recipe_profile = projected['context_version'] in ('agent-context-recipes-v1','agent-context-knowledge-v1')
+        processing_profile = projected['context_version']=='agent-context-processing-v1'
+        knowledge_profile = projected['context_version'] in ('agent-context-knowledge-v1','agent-context-processing-v1')
+        recipe_profile = projected['context_version'] in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1')
         step2 = projected['context_version'] == 'agent-context-step2-v1'
         tool = projected['allowed_actions'][0]
         schema = json.loads(json.dumps(TOOL_SCHEMAS[tool]))
@@ -323,6 +326,18 @@ class LLMAdapter:
                 for key, value in params.items():
                     properties[key] = {'type': 'integer' if type(value) is int else 'number' if type(value) is float else 'string'}
             schema['properties']['model_params'].update(properties=properties, additionalProperties=False)
+            if processing_profile:
+                schema['properties']['normalization']['enum'] = ['zscore','minmax','area','none']
+                schema['properties']['class_balance']['enum'] = ['none','class_weight']
+                schema['oneOf'] = [{
+                    'properties': {
+                        'model_id': {'const': recipe['model_id']},
+                        'normalization': {'const': recipe['normalization']},
+                        'class_balance': {'const': recipe['class_balance']},
+                        'model_params': {'const': projected['fixed_model_params'][recipe['model_id']]},
+                    },
+                    'required': ['model_id','normalization','class_balance','model_params'],
+                } for recipe in projected['recipes']]
         for key, value in projected['bindings'].items():
             schema['properties'][key]['enum'] = [value]
             if key not in schema['required']:
@@ -335,7 +350,9 @@ class LLMAdapter:
             'Give a brief decision rationale, without private reasoning or external references. '
         )
         if structured:
-            system += 'Choose one permitted model_id and return normalization=zscore, class_balance=none and its complete fixed_model_params as model_params. Do not return recipe_id. This is the same finite domain; no free hyperparameters. '
+            system += ('Choose one complete model, normalization and class_balance combination from the supplied finite candidates, with its exact fixed_model_params. Do not return recipe_id or invent hyperparameters. '
+                       if processing_profile else
+                       'Choose one permitted model_id and return normalization=zscore, class_balance=none and its complete fixed_model_params as model_params. Do not return recipe_id. This is the same finite domain; no free hyperparameters. ')
         elif recipe_profile:
             system += 'Select exactly one frozen recipe_id. Train statistics and risk flags, when present, are advisory. Do not invent metrics or change execution parameters. '
         if knowledge_profile and tool=='submit_ml_experiment':

@@ -45,12 +45,12 @@ def start(config,**kwargs):
 runtime.start_task=start
 runtime._config_from_args=lambda *args:fixture_config()
 raise SystemExit(runtime.main(['start','--storage',sys.argv[1],'--thread-id','fixture-thread',
- '--dataset-id','fixture-data','--allowed-models','svm','--wait']))
+ '--dataset-id','fixture-data','--allowed-models','svm','--execution-profile','direct_action','--wait']))
 '''
     runner = subprocess.Popen([sys.executable,'-B','-c',script,str(tmp_path)], cwd=ROOT,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,text=True)
     try:
-        assert runner.stdout.readline().strip() == 'waiting'
+        assert runner.stdout.readline().strip() == 'waiting', runner.stderr.read()
         before = database_facts(tmp_path)
         state = read_status(storage=tmp_path,thread_id='fixture-thread')
         reader = subprocess.run([sys.executable,'-B','-m','agent_poc.orchestration','status',

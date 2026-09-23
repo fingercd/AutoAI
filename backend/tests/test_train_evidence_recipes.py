@@ -94,6 +94,36 @@ def test_frozen_catalog_and_replay(api,monkeypatch):
         RunRepository(storage/'runs.sqlite3').get_evaluation_plan(record.config['evaluation_plan_digest'],principal=Principal('other','tenant'))
 
 
+def test_processing_revision_freezes_full_domain_and_structured_member(api):
+    client, storage, dataset = api
+    headers = {'X-AutoAI-Agent-Revision': 'agent-recipes-revision-v3'}
+    base = dict(dataset_id=dataset, selection_metric='macro_f1',
+        allowed_models=['logistic_regression'], max_runs=1, seed=42,
+        execution_profile=PROFILE, protocol_revision='agent-recipes-revision-v3',
+        fixed_processing={'logistic_regression': {'normalization': 'zscore', 'class_balance': 'none'}})
+    dynamic = client.post('/api/agent/v2/sessions', headers=headers, json={
+        **base, 'modules': ['train_evidence','legal_recipes','dynamic_preprocessing'],
+        'processing_mode': 'dynamic', 'decision_mode': 'structured_config',
+        'client_request_id': 'dynamic-structured',
+    })
+    assert dynamic.status_code == 201, dynamic.text
+    locked = dynamic.json()['locked_config']
+    catalog = locked['preparation']['catalog']
+    assert (catalog['catalog_version'], catalog['processing_mode']) == ('recipe-catalog-v2', 'dynamic')
+    assert len(catalog['recipes']) == 8
+    selected = next(recipe for recipe in catalog['recipes'] if
+        recipe['preprocessing']['normalization'] == 'area' and recipe['class_balance'] == 'class_weight')
+    response = client.post('/api/agent/v2/sessions/'+dynamic.json()['session_id']+'/experiments',
+        headers=headers, json=dict(model_id='logistic_regression', normalization='area',
+            class_balance='class_weight', model_params=locked['capability_snapshot']['model_configs']['logistic_regression'],
+            knowledge_refs=[], rationale='finite member', client_request_id='dynamic-run'))
+    assert response.status_code == 202, response.text
+    assert response.json()['effective_action']['normalization'] == 'area'
+    record = RunRepository(storage/'runs.sqlite3').get(response.json()['run_id'])
+    assert record.config['execution_recipe_digest'] == selected['recipe_digest']
+    assert (record.config['normalization'], record.config['class_balance']) == ('area', 'class_weight')
+
+
 # Golden indices computed from the exact pre-step-three trainer implementation.
 @pytest.mark.parametrize("classes,groups,repeats,seed,expected",[[2, 3, 1, 42, {'train': [2, 3], 'valid': [1, 5], 'test': [0, 4]}], [3, 3, 2, 42, {'train': [4, 5, 6, 7, 14, 15], 'valid': [2, 3, 10, 11, 16, 17], 'test': [0, 1, 8, 9, 12, 13]}], [3, 10, 2, 7, {'train': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 36, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 52, 53, 54, 55, 56, 57, 58, 59], 'valid': [10, 11, 20, 21, 44, 45], 'test': [18, 19, 34, 35, 50, 51]}], [2, 17, 3, 42, {'train': [0, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 84, 85, 86, 87, 88, 89, 93, 94, 95, 96, 97, 98, 99, 100, 101], 'valid': [3, 4, 5, 60, 61, 62, 81, 82, 83], 'test': [24, 25, 26, 39, 40, 41, 90, 91, 92]}]])
 def test_preexisting_split_golden_indices(classes,groups,repeats,seed,expected):
@@ -252,4 +282,45 @@ def test_worker_rejects_changed_dataset_before_fit(api,monkeypatch):
         now=lambda:datetime.now(timezone.utc),heartbeat_seconds=60,project_status=lambda r:None)
     assert worker.run_once()
     assert repo.get(record.run_id).state=='failed'
+    assert not called
+
+
+def test_processing_worker_rejects_tampered_execution_digest_before_fit(api,monkeypatch):
+    import json
+    import sqlite3
+    from datetime import datetime,timezone
+    from backend.app.runs.execution import execute_claimed_run
+    from backend.app.runs.worker import RunWorker
+    from backend.app import training
+
+    client,storage,dataset=api
+    headers={'X-AutoAI-Agent-Revision':'agent-recipes-revision-v3'}
+    created=client.post('/api/agent/v2/sessions',headers=headers,json=dict(
+        dataset_id=dataset,allowed_models=['logistic_regression'],selection_metric='macro_f1',max_runs=1,
+        execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v3',
+        processing_mode='dynamic',decision_mode='structured_config',
+        modules=['train_evidence','legal_recipes','dynamic_preprocessing']))
+    assert created.status_code==201,created.text
+    body=created.json();recipe=next(item for item in body['locked_config']['preparation']['catalog']['recipes']
+        if item['fixed_execution_config']['normalization']=='area' and
+        item['fixed_execution_config']['class_balance']=='class_weight')
+    submitted=client.post('/api/agent/v2/sessions/'+body['session_id']+'/experiments',headers=headers,
+        json=dict(model_id='logistic_regression',normalization='area',class_balance='class_weight',
+            model_params=body['locked_config']['capability_snapshot']['model_configs']['logistic_regression'],
+            knowledge_refs=[],client_request_id='tamper'))
+    assert submitted.status_code==202,submitted.text
+    run_id=submitted.json()['run_id']
+    with sqlite3.connect(storage/'runs.sqlite3') as database:
+        config=json.loads(database.execute('SELECT config_json FROM runs WHERE run_id=?',(run_id,)).fetchone()[0])
+        assert config['execution_processing_digest']
+        config['execution_processing_digest']='0'*64
+        database.execute('UPDATE runs SET config_json=? WHERE run_id=?',(json.dumps(config),run_id))
+    called=[]
+    monkeypatch.setattr(training,'_traditional_candidate_configs',lambda *a,**k:called.append(True))
+    repo=RunRepository(storage/'runs.sqlite3')
+    worker=RunWorker(repository=repo,worker_id='processing-tamper',
+        execute=lambda record:execute_claimed_run(record,repository=repo),
+        now=lambda:datetime.now(timezone.utc),heartbeat_seconds=60,project_status=lambda record:None)
+    assert worker.run_once()
+    assert repo.get(run_id).state=='failed'
     assert not called

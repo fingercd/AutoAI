@@ -250,9 +250,9 @@ def current_health(revision: str | None = Depends(revision_header)):
     result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
     if not any(m['available'] for m in snapshot['models']):
         result['status'] = 'unavailable'
-    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2'):
+    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'):
         result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
-    if revision == 'agent-recipes-revision-v2':
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
         from ..agent.capabilities import module_catalog
         result['modules'] = module_catalog(revision)
     return result

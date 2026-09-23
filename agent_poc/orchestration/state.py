@@ -829,7 +829,8 @@ class StateModel(StrictModel):
         config = self.execution.effective_config
         if config is not None:
             if (config.seed != self.task.seed or config.evaluation_config != self.task.evaluation_config
-                    or config.normalization != self.task.normalization or config.class_balance != self.task.class_balance):
+                    or (self.versions.state != 'agent-state-v5' and
+                        (config.normalization != self.task.normalization or config.class_balance != self.task.class_balance))):
                 raise ValueError('effective configuration differs from frozen task')
             if config.model_type not in self.capabilities.eligible_models:
                 raise ValueError('effective model is outside Agent candidate capability')
@@ -842,8 +843,9 @@ class StateModel(StrictModel):
         if decision.validation_status == 'ready' and decision.kind == 'direct_action':
             if decision.action is None or decision.action.model_type not in self.capabilities.eligible_models:
                 raise ValueError('validated decision is outside Agent candidate capability')
-            if (decision.action.normalization != self.task.normalization
-                    or decision.action.class_balance != self.task.class_balance):
+            if (self.versions.state != 'agent-state-v5' and
+                    (decision.action.normalization != self.task.normalization
+                     or decision.action.class_balance != self.task.class_balance)):
                 raise ValueError('validated decision changes frozen processing')
         if self.execution.submission_content is not None:
             content = self.execution.submission_content
@@ -872,10 +874,10 @@ class StateModel(StrictModel):
                 raise ValueError('selection score requires ready validation')
             if self.feedback.selection_score != getattr(self.feedback.validation_metrics, self.task.selection_metric):
                 raise ValueError('selection score does not match the frozen metric')
-        for name in (('memory','diagnosis','replanning') if self.versions.state=='agent-state-v4' else ('knowledge', 'memory', 'diagnosis', 'replanning') if self.versions.state in ('agent-state-v3','agent-state-v4') else ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning')):
+        for name in (('memory','diagnosis','replanning') if self.versions.state in ('agent-state-v4','agent-state-v5') else ('knowledge', 'memory', 'diagnosis', 'replanning') if self.versions.state=='agent-state-v3' else ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning')):
             if getattr(self, name).status != 'disabled':
                 raise ValueError('unavailable research module cannot publish an enabled status')
-        if self.versions.state not in ('agent-state-v3','agent-state-v4'):
+        if self.versions.state not in ('agent-state-v3','agent-state-v4','agent-state-v5'):
             if (self.evidence.algorithm_version is not None or self.evidence.risks or self.evidence.summary is not None
                     or self.evidence.references or self.evidence.validity != 'unavailable'
                     or self.evidence.statistics != TrainStatistics()):
@@ -884,7 +886,7 @@ class StateModel(StrictModel):
                     or self.recipes.catalog_digest is not None or self.recipes.legal_recipes or self.recipes.uses
                     or self.recipes.selection_mode != 'direct_action'):
                 raise ValueError('disabled recipes cannot publish fabricated outputs')
-        if self.versions.state!='agent-state-v4' and (self.knowledge.prior_version is not None or self.knowledge.matches):
+        if self.versions.state not in ('agent-state-v4','agent-state-v5') and (self.knowledge.prior_version is not None or self.knowledge.matches):
             raise ValueError('disabled knowledge cannot publish fabricated outputs')
         if (self.memory.snapshot_version is not None or self.memory.snapshot_digest is not None
                 or self.memory.recalls or self.memory.publication_operation_id is not None
@@ -1161,7 +1163,8 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               llm_config_version: str = 'agent-llm-http-v1',
               source_role: Literal['development', 'benchmark', 'domain'] = 'development',
               wire_version: str = 'agent-state-v1', model_configs: dict | None = None,
-              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None, knowledge_query: dict | None = None) -> GraphState:
+              evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None, knowledge_query: dict | None = None,
+              processing_mode: str | None = None, fixed_processing: dict | None = None) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -1169,10 +1172,10 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     for count in (max_llm_calls, max_api_calls, max_operation_attempts):
         if type(count) is not int or count < 1:
             raise ValueError('runtime call limits must be positive integers')
-    if wire_version not in ('agent-state-v1', 'agent-state-v2','agent-state-v3','agent-state-v4'):
+    if wire_version not in ('agent-state-v1', 'agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5'):
         raise ValueError('unknown State version')
     modern = wire_version != 'agent-state-v1'
-    recipes = wire_version in ('agent-state-v3','agent-state-v4')
+    recipes = wire_version in ('agent-state-v3','agent-state-v4','agent-state-v5')
     task_type = TaskStateV2 if modern else TaskState
     version_type = VersionsStateV2 if modern else VersionsState
     context_type = ContextPolicyV2 if modern else ContextPolicy
@@ -1182,26 +1185,40 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
         task_type,version_type,context_type,policy_type,state_type = RecipeTask,RecipeVersions,RecipeContext,RecipeModulePolicy,RecipeStateModel
     if wire_version=='agent-state-v4':
         version_type,context_type,policy_type,state_type=KnowledgeVersions,KnowledgeContext,KnowledgeModulePolicy,KnowledgeStateModel
-    elif knowledge_enabled:
+    if wire_version=='agent-state-v5':
+        task_type,version_type,context_type,policy_type,state_type=(
+            ProcessingTask,ProcessingVersions,ProcessingContext,ProcessingModulePolicy,ProcessingStateModel)
+    if wire_version not in ('agent-state-v4','agent-state-v5') and knowledge_enabled:
         raise ValueError('knowledge requires v4')
     if not modern and model_configs:
         raise ValueError('v1 does not accept model configurations')
-    if knowledge_query is not None and wire_version != 'agent-state-v4':
+    if knowledge_query is not None and wire_version not in ('agent-state-v4','agent-state-v5'):
         raise ValueError('knowledge query requires current recipe State')
-    if decision_mode is not None and wire_version != 'agent-state-v4':
+    if decision_mode is not None and wire_version not in ('agent-state-v4','agent-state-v5'):
         raise ValueError('decision mode requires current recipe State')
+    if wire_version == 'agent-state-v5':
+        from backend.app.processing_policy import freeze_fixed_processing
+        if processing_mode not in ('fixed','dynamic'):
+            raise ValueError('invalid processing mode')
+        fixed_processing = freeze_fixed_processing(allowed_models, fixed_processing)
+    elif processing_mode is not None or fixed_processing is not None:
+        raise ValueError('processing requires v5')
     evaluation = EvaluationConfig()
-    task = task_type(**({'knowledge_query':knowledge_query} if knowledge_query is not None else {}), **({'decision_mode':decision_mode} if decision_mode is not None else {}), dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
+    task = task_type(**({'knowledge_query':knowledge_query} if knowledge_query is not None else {}), **({'decision_mode':decision_mode} if decision_mode is not None else {}),
+                     **({'processing_mode':processing_mode,'fixed_processing':fixed_processing} if wire_version=='agent-state-v5' else {}),
+                     dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
                      selection_metric=selection_metric,
                      **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
-    versions = version_type(prompt='agent-decision-knowledge-v1' if wire_version=='agent-state-v4' else 'agent-decision-recipes-v1' if recipes else ('agent-decision-step2-v1' if modern else prompt_version), llm_config=llm_config_version,
+    versions = version_type(prompt='agent-decision-processing-v1' if wire_version=='agent-state-v5' else 'agent-decision-knowledge-v1' if wire_version=='agent-state-v4' else 'agent-decision-recipes-v1' if recipes else ('agent-decision-step2-v1' if modern else prompt_version), llm_config=llm_config_version,
                              llm_config_fingerprint=llm_config_fingerprint)
     policy = policy_type(context_policy=context_type(source_role=source_role,**({'evidence':evidence_context,'risks':risk_context} if recipes else {})))
-    if wire_version=='agent-state-v4':
+    if wire_version in ('agent-state-v4','agent-state-v5'):
         policy.knowledge=KnowledgeSwitch(enabled=knowledge_enabled)
         if knowledge_enabled:
             versions.knowledge=VersionRef(status='ready',version='knowledge-snapshot-rag-v1')
+    if wire_version=='agent-state-v5':
+        policy.dynamic_preprocessing=KnowledgeSwitch(enabled=processing_mode=='dynamic')
     budget = BudgetState(deadline_at=started_at + timeout_seconds,
                          max_operation_attempts=max_operation_attempts,
                          max_repair_attempts=max_repair_attempts,
@@ -1220,7 +1237,7 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
                                              or fingerprint({'api_timeout': 10.0})),
                        lifecycle=LifecycleState(started_at=started_at), task=task, versions=versions,
                        module_policy=policy, budget=budget,
-                       **({'knowledge':BoundKnowledgeState(status='pending' if knowledge_enabled else 'disabled')} if wire_version=='agent-state-v4' else {}))
+                       **({'knowledge':BoundKnowledgeState(status='pending' if knowledge_enabled else 'disabled')} if wire_version in ('agent-state-v4','agent-state-v5') else {}))
     return cast(GraphState, state.model_dump(mode='json'))
 
 
@@ -1331,14 +1348,14 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
     old = validate_state(state).model_dump(mode='json')
     merged = _deep_merge(old, patch)
     updated = validate_state(merged).model_dump(mode='json')
-    if old['versions']['state'] in ('agent-state-v2','agent-state-v3','agent-state-v4'):
+    if old['versions']['state'] in ('agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5'):
         frozen = old['capabilities']['frozen_snapshot']
         if frozen is not None and frozen != updated['capabilities']['frozen_snapshot']:
             raise ValueError('Session capability snapshot is frozen')
-    if old['versions']['state'] in ('agent-state-v3','agent-state-v4') and old['evidence']['content'] is not None:
+    if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5') and old['evidence']['content'] is not None:
         if old['evidence']!=updated['evidence'] or any(old['recipes'][k]!=updated['recipes'][k] for k in ('status','catalog','evaluation_plan')):
             raise ValueError('prepared evidence and catalog are frozen')
-    if old['versions']['state']=='agent-state-v4' and old['knowledge']['snapshot'] is not None and old['knowledge']!=updated['knowledge']:
+    if old['versions']['state'] in ('agent-state-v4','agent-state-v5') and old['knowledge']['snapshot'] is not None and old['knowledge']!=updated['knowledge']:
         raise ValueError('knowledge snapshot is frozen')
     for block in ('versions', 'module_policy'):
         if old[block] != updated[block]:
@@ -1350,7 +1367,7 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
         if value is not None and value != updated['identity'][key]:
             raise ValueError('bound identity cannot be changed')
     for key, value in old['task'].items():
-        if old['versions']['state'] in ('agent-state-v3','agent-state-v4') and key in ('split_fingerprint','split_fingerprint_status') and old['task']['split_fingerprint_status']=='unavailable':
+        if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5') and key in ('split_fingerprint','split_fingerprint_status') and old['task']['split_fingerprint_status']=='unavailable':
             continue
         if key in ('dataset_fingerprint', 'dataset_fingerprint_status') and old['task']['dataset_fingerprint_status'] == 'pending':
             continue
@@ -1389,6 +1406,8 @@ def validate_state(raw):
         return StateModel.model_validate(raw)
     if version == 'agent-state-v4':
         return KnowledgeStateModel.model_validate(raw)
+    if version == 'agent-state-v5':
+        return ProcessingStateModel.model_validate(raw)
     if version == 'agent-state-v3':
         return RecipeStateModel.model_validate(raw)
     if version == 'agent-state-v2':
@@ -1495,4 +1514,76 @@ class KnowledgeStateModel(RecipeStateModel):
                 if self.decision.kind=='recipe_selection' and (self.decision.evidence_refs!=expected
                         or self.decision.knowledge_projection_digest!=prepared.knowledge.projection_digest):
                     raise ValueError('knowledge decision binding mismatch')
+        return self
+
+
+class ProcessingTask(RecipeTask):
+    processing_mode: Literal['fixed','dynamic']
+    fixed_processing: dict[Identifier,dict[str,str]]
+
+    @model_validator(mode='after')
+    def frozen_processing(self):
+        from backend.app.processing_policy import freeze_fixed_processing
+        if freeze_fixed_processing(self.allowed_models, self.fixed_processing) != self.fixed_processing:
+            raise ValueError('invalid frozen processing')
+        return self
+
+
+class ProcessingVersions(KnowledgeVersions):
+    state: Literal['agent-state-v5']='agent-state-v5'
+    protocol_revision: Literal['agent-recipes-revision-v3']='agent-recipes-revision-v3'
+    context_projection: Literal['agent-context-processing-v1']='agent-context-processing-v1'
+    prompt: Literal['agent-decision-processing-v1']='agent-decision-processing-v1'
+    recipes: VersionRef=Field(default_factory=lambda:VersionRef(status='ready',version='recipe-catalog-v2'))
+
+
+class ProcessingContext(KnowledgeContext):
+    projection: Literal['agent-context-processing-v1']='agent-context-processing-v1'
+
+
+class ProcessingModulePolicy(KnowledgeModulePolicy):
+    context_policy: ProcessingContext=Field(default_factory=ProcessingContext)
+    dynamic_preprocessing: KnowledgeSwitch=Field(default_factory=KnowledgeSwitch)
+
+
+class ProcessingSessionRequest(KnowledgeSessionRequest):
+    context_policy: ProcessingContext=Field(default_factory=ProcessingContext)
+    processing_mode: Literal['fixed','dynamic']
+    fixed_processing: dict[Identifier,dict[str,str]]
+
+
+class ProcessingPendingOperation(KnowledgePendingOperation):
+    content: ProcessingSessionRequest | KnowledgeExperimentRequest | FinalizeRequest | None=None
+
+
+class ProcessingRecovery(KnowledgeRecovery):
+    pending_operation: ProcessingPendingOperation | None=None
+
+
+class ProcessingStateModel(KnowledgeStateModel):
+    task: ProcessingTask
+    versions: ProcessingVersions
+    module_policy: ProcessingModulePolicy=Field(default_factory=ProcessingModulePolicy)
+    recovery: ProcessingRecovery=Field(default_factory=ProcessingRecovery)
+
+    @model_validator(mode='after')
+    def processing_binding(self):
+        if self.module_policy.dynamic_preprocessing.enabled != (self.task.processing_mode == 'dynamic'):
+            raise ValueError('processing switch differs from frozen task')
+        catalog = self.recipes.catalog
+        if catalog is None:
+            return self
+        if (catalog.catalog_version != 'recipe-catalog-v2' or
+                catalog.processing_mode != self.task.processing_mode or
+                catalog.fixed_processing != self.task.fixed_processing):
+            raise ValueError('processing catalog differs from frozen task')
+        content = self.execution.submission_content
+        if content is not None:
+            recipe = next((r for r in catalog.recipes if r.recipe_id == content.recipe_id), None)
+            if recipe is None:
+                raise ValueError('decision outside frozen processing catalog')
+            for action in (self.execution.effective_action,self.execution.effective_config):
+                if action is not None and (action.model_type,action.normalization,action.class_balance) != (
+                        recipe.model_id,recipe.preprocessing['normalization'],recipe.class_balance):
+                    raise ValueError('effective processing differs from frozen recipe')
         return self
