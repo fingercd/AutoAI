@@ -1148,10 +1148,18 @@ def _select_traditional_config(
         with scope as trial_fact:
             if cancel_check is not None: cancel_check()
             model = build_traditional_model(candidate, y_train, len(label_names))
-            model.fit(x_train, y_train)
+            fit_scope = (accounting.span('trial_fit', fold_index=fold_index,
+                trial_index=index, parent_span=trial_fact['span_id'],
+                measurement_scope='train') if accounting is not None else nullcontext())
+            with fit_scope:
+                model.fit(x_train, y_train)
             if cancel_check is not None: cancel_check()
-            valid_eval = _evaluate_traditional_model(
-                model, x_valid, y_valid, list(range(len(y_valid))), label_names)
+            valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
+                trial_index=index, parent_span=trial_fact['span_id'],
+                measurement_scope='valid') if accounting is not None else nullcontext())
+            with valid_scope:
+                valid_eval = _evaluate_traditional_model(
+                    model, x_valid, y_valid, list(range(len(y_valid))), label_names)
             trial_fact['selection_score'] = float(valid_eval['balanced_accuracy'])
             if accounting is not None:
                 trial_fact['artifact_digest'] = accounting.save_traditional_candidate(
@@ -1247,9 +1255,17 @@ def _select_random_forest_config(
         with scope as trial_fact:
             if cancel_check is not None: cancel_check()
             model = build_traditional_model(candidate, y_train, len(label_names))
-            model.fit(x_train, y_train)
+            fit_scope = (accounting.span('trial_fit', fold_index=fold_index,
+                trial_index=index, parent_span=trial_fact['span_id'],
+                measurement_scope='train') if accounting is not None else nullcontext())
+            with fit_scope:
+                model.fit(x_train, y_train)
             if cancel_check is not None: cancel_check()
-            oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
+            valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
+                trial_index=index, parent_span=trial_fact['span_id'],
+                measurement_scope='train_oob') if accounting is not None else nullcontext())
+            with valid_scope:
+                oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
             trial_fact['selection_score'] = oob_balanced_accuracy
             trial_fact['oob_accuracy'] = oob_accuracy
             probabilities = np.asarray(model.oob_decision_function_, dtype=float)
@@ -1345,6 +1361,9 @@ def _fit_final_traditional_model(
     train_valid_indices: list[int],
     normalization: str,
     label_names: list[str],
+    accounting: Any | None = None,
+    fold_index: int | None = None,
+    parent_span: str | None = None,
 ) -> tuple[Any, dict[str, Any], np.ndarray]:
     """选参结束后用 train+valid 重训最终模型（标准化也在 train+valid 上重拟合）。
 
@@ -1359,8 +1378,13 @@ def _fit_final_traditional_model(
     final_indices = np.asarray(sorted({int(index) for index in train_valid_indices}), dtype=np.int64)
     if final_indices.size == 0:
         raise ValueError("传统模型最终训练池不能为空")
-    normalizer = _fit_x_normalizer(x_raw[final_indices.tolist()], normalization)
-    x_final = _transform_x_with_normalizer(x_raw, normalizer)
+    transform_scope = (accounting.span('model_preprocessing_refit',
+        fold_index=fold_index, parent_span=parent_span,
+        measurement_scope='train_valid_fit_then_all_transform')
+        if accounting is not None else nullcontext())
+    with transform_scope:
+        normalizer = _fit_x_normalizer(x_raw[final_indices.tolist()], normalization)
+        x_final = _transform_x_with_normalizer(x_raw, normalizer)
     model = build_traditional_model(selected_config, y[final_indices], len(label_names))
     model.fit(x_final[final_indices], y[final_indices])
     return model, normalizer, final_indices
@@ -1378,6 +1402,8 @@ def _fit_deep_fold(
     sample_count: int,
     cancel_check: Any | None = None,
     progress_callback: Any | None = None,
+    accounting: Any | None = None,
+    trial_fact: dict[str, Any] | None = None,
 ) -> tuple[nn.Module, list[dict[str, Any]]]:
     """单个训练折的深度模型训练（含早停）。
 
@@ -1429,27 +1455,44 @@ def _fit_deep_fold(
     best_valid_loss = float("inf")
     best_state = None
     bad_epochs = 0
+    completed_batches = 0
+    if accounting is not None:
+        if trial_fact is None:
+            raise ValueError('deep trial accounting requires a ledger row')
+        accounting.record_trial_progress(trial_fact, actual_epochs=0, training_batches=0)
+
+    def phase(name: str, epoch: int):
+        return (accounting.span(name, fold_index=trial_fact['fold_index'],
+            trial_index=trial_fact['trial_index'], epoch_index=epoch,
+            parent_span=trial_fact['span_id'], measurement_scope='train' if name=='trial_fit' else 'valid')
+            if accounting is not None else nullcontext())
+
     for epoch in range(1, config.epochs + 1):
         if progress_callback is not None:
             progress_callback("epoch_training", f"正在训练 Epoch {epoch}/{config.epochs}", epoch)
         if cancel_check is not None:
             cancel_check()
-        model.train()
-        losses = []
-        for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
-            optimizer.zero_grad()
-            logits = model(bx)
-            target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
-            loss = criterion(logits, target)
-            loss.backward()
-            optimizer.step()
-            losses.append(float(loss.item()))
-        valid_loss = _evaluate_deep_loss(
-            model,
-            _loader(x, y, splits["valid"], config.batch_size, False),
-            criterion,
-        )
-        valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
+        with phase('trial_fit', epoch):
+            model.train()
+            losses = []
+            for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
+                optimizer.zero_grad()
+                logits = model(bx)
+                target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
+                loss = criterion(logits, target)
+                loss.backward()
+                optimizer.step()
+                losses.append(float(loss.item()))
+                completed_batches += 1
+                if accounting is not None:
+                    accounting.record_trial_progress(trial_fact, training_batches=completed_batches)
+        with phase('trial_validation', epoch):
+            valid_loss = _evaluate_deep_loss(
+                model,
+                _loader(x, y, splits["valid"], config.batch_size, False),
+                criterion,
+            )
+            valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
             # 学习率调度、最佳权重与早停都只盯 valid_loss；valid 指标仅记录，不进决策。
         scheduler.step(valid_loss)
         current_learning_rate = float(optimizer.param_groups[0]["lr"])
@@ -1475,6 +1518,8 @@ def _fit_deep_fold(
                 "bad_epochs": bad_epochs,
             }
         )
+        if accounting is not None:
+            accounting.record_trial_progress(trial_fact, actual_epochs=epoch)
         if cancel_check is not None:
             cancel_check()
         if config.early_stopping_patience > 0 and bad_epochs >= config.early_stopping_patience:
@@ -1761,7 +1806,7 @@ def _run_legacy_training(
             architecture_version=ARCHITECTURE_VERSION,
             processing_policy_version=PROCESSING_POLICY_VERSION)
         search_accounting.end_stage(preparation_stage)
-        with search_accounting.span('actual_preprocessing', applicable=False):
+        with search_accounting.span('upstream_spectral_preprocessing', applicable=False):
             pass
         if model_family(model_type) == 'deep_learning':
             with search_accounting.span('final_refit', applicable=False):
@@ -1849,7 +1894,13 @@ def _run_legacy_training(
     for fold in folds:
         check_run_active()
         splits = fold["splits"]
-        normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
+        fold_index = int(fold["fold_index"])
+        transform_scope = (search_accounting.span('model_preprocessing_selection',
+            fold_index=fold_index, measurement_scope='train_fit_then_all_transform')
+            if search_accounting else nullcontext())
+        with transform_scope:
+            normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
+            x = _transform_x_with_normalizer(x_model_raw, normalizer)
         selection_audit = _processing_stage_audit(
             stage='selection_train' if model_family(model_type) == 'traditional_ml' else 'train',
             indices=splits['train'], normalizer=normalizer,
@@ -1857,8 +1908,6 @@ def _run_legacy_training(
             class_balance=config.class_balance,
         )
         processing_stages = [selection_audit]
-        x = _transform_x_with_normalizer(x_model_raw, normalizer)
-        fold_index = int(fold["fold_index"])
         write_progress(fold_index, max(0, fold_index - 1), fold)
         fold_final_fit_indices: np.ndarray | None = None
         fold_best_params: dict[str, Any] = {}
@@ -1891,12 +1940,14 @@ def _run_legacy_training(
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
             refit_scope = search_accounting.span('final_refit', fold_index=fold_index) if search_accounting else nullcontext()
-            with refit_scope:
+            with refit_scope as refit_stage:
                 check_run_active()
                 final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
                     selected_config=selected_config, model_type=model_type,
                     x_raw=x_model_raw, y=y_model, train_valid_indices=train_valid_indices,
-                    normalization=config.normalization, label_names=label_names)
+                    normalization=config.normalization, label_names=label_names,
+                    accounting=search_accounting, fold_index=fold_index,
+                    parent_span=refit_stage['span_id'] if refit_stage else None)
                 check_run_active()
                 if search_accounting is not None:
                     final_refit_count += 1
@@ -1905,7 +1956,11 @@ def _run_legacy_training(
                 normalizer=final_normalizer, y=y_model, label_names=label_names,
                 model_type=model_type, class_balance=config.class_balance,
             ))
-            final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
+            final_transform_scope = (search_accounting.span('model_preprocessing_final_evaluation',
+                fold_index=fold_index, measurement_scope='all_transform')
+                if search_accounting else nullcontext())
+            with final_transform_scope:
+                final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
             eval_scope = search_accounting.span('final_evaluation', fold_index=fold_index) if search_accounting else nullcontext()
             with eval_scope:
                 check_run_active()
@@ -1974,17 +2029,18 @@ def _run_legacy_training(
                             trial_model, trial_history = _fit_deep_fold(
                                 config=trial_config, model_type=model_type, x=x, y=y_model,
                                 splits=splits, label_names=label_names, run_dir=trial_dir,
-                                sample_count=int(len(splits['train'])),
-                                cancel_check=check_run_active,
-                                progress_callback=report_deep_stage)
+                                 sample_count=int(len(splits['train'])),
+                                 cancel_check=check_run_active,
+                                 progress_callback=report_deep_stage,
+                                 accounting=search_accounting, trial_fact=trial_fact)
                             if not trial_history:
                                 raise ValueError('deep trial produced no training history')
                             score = float(trial_history[-1]['best_valid_loss'])
                             if not np.isfinite(score):
                                 raise ValueError('deep trial produced nonfinite valid loss')
                             trial_fact['selection_score'] = score
-                            trial_fact['actual_epochs'] = len(trial_history)
-                            trial_fact['training_batches'] = int(np.ceil(len(splits['train']) / trial_config.batch_size)) * len(trial_history)
+                            if trial_fact['actual_epochs'] != len(trial_history):
+                                raise ValueError('deep trial epoch ledger differs from history')
                             weight_file = trial_dir / 'model.pt'
                             torch.save(trial_model.state_dict(), weight_file)
                             trial_fact['artifact_digest'] = hashlib.sha256(weight_file.read_bytes()).hexdigest()

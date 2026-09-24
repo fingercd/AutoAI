@@ -325,21 +325,28 @@ _DEFAULT_PROCESSING_BINDING_COMPAT = {
     'xgboost': ('34db4c1acf3bbb9511a1f2acfc103d79e6738c9350653ed5415dcb0fa657bfea', 'f9e28eb729ee27249e7e3b2e79707fd9c06f3f45e90f0521fba12f81cac73600'),
 }
 
-# The finite-search addition changes the AST binding of traditional selection
-# functions while retaining their legacy path.  Preserve the accepted v5
-# digest for old frozen Sessions; only default processing is compatible.
+# Finite search and request-level timing change reachable source bindings while
+# retaining the accepted default-processing mathematics.  Historical digests
+# remain explicit; only zscore/none can use this compatibility path.
 _PRE_FINITE_SEARCH_BINDINGS = {
     model_id: pair[1] for model_id, pair in _DEFAULT_PROCESSING_BINDING_COMPAT.items()
 }
-_CURRENT_FINITE_BINDINGS = {
-    'logistic_regression': 'ef21f8243c98f8ec5af36ffc1ea435aff52f15bb5f49043c9b7d0abfe15cb693',
-    'pca_lda': '444712b20b98121110ef3b885b4f8c0b5c1bb321d28e496c6ce2b5230b1e156d',
-    'pls_da': '1f3091014975e4553367c41dc89617c8b0b6db1ad13dac792ec0a0bafef61222',
-    'random_forest': '5b4d4ccf95a18b05868adc4be0fa1d158027ed45c5795de68b99748ec6097d14',
-    'svm': '65ef9983b6b8a8694a63388d47b27d32be9c7e4ccea6469388e09091bcb03e8c',
-    'xgboost': 'e3f408c8d8615ea6949020a9e8429e24a697fc1ca16ff5a16ac348b9d1344f91',
+_CURRENT_TIMED_BINDINGS = {
+    'cnn1d': '16a37a5940fd603923ea9033c2296e0fb81b2cfa0e6b8d7df96ecd72fcc0bad3',
+    'cnn1d_se': 'a4e6c221e92444067053cc2a5fe69f41ebb23a05b67ae9ddc6fd31920172736a',
+    'cnn_transformer1d': 'de120f8edef22439ea9cb66a2c608e9ae83120014f3ad3461759e1dcd7c7f13a',
+    'inception1d': '1f6ff06c31e12010d6e74c2263bd2a0be5afe5343dbc94869f042108b2269f3b',
+    'logistic_regression': '0d917735615a0d71f103196900f46fe32922a2781576f0fa1c8ad85227cb61eb',
+    'pca_lda': '4708555f53ff0a54a5164bcbd7852b197130217e429bf349016a43427b972625',
+    'pca_mlp': 'bb5a120e9ae9dd2d84dbcd96f8dcf0ba41843aab6abca8eadfaf85cbdd6392bc',
+    'pls_da': '4806d045b6ab840ab1cb557ab65963759f6ef19ad93d75e669be663d305aef8a',
+    'random_forest': 'fc399d0bc3b4b082a5865b0a1efa5b6377aafe51a60211e155f840ea9f5cee30',
+    'resnet1d': 'f7b6c08a47e0fb3f6e991769874da9a0bd5212f40de25ea25912d280351e86bb',
+    'svm': '059055b48b65b737a80292d834db123efe9787fdee55fb5fb50cc7b7fbf71e14',
+    'tcn1d': '387ba4cc71cacdf934ff83aeeabe1d60ea1a281eecd1dc797b4497e047983977',
+    'xgboost': 'd8f76b507fe03a619e5fa122c8555d378c93a9f563ef53e8f1430064f7c10da9',
 }
-for _model_id, _digest in _CURRENT_FINITE_BINDINGS.items():
+for _model_id, _digest in _CURRENT_TIMED_BINDINGS.items():
     _old, _previous = _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id]
     _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id] = (_old, _digest)
 

@@ -372,6 +372,42 @@ def load_search_plan(path):
 
 
 def summarize_search_plan(plan, records):
+    import math
+
+    def measured_count(value):
+        if type(value) is int and value >= 0:
+            return value
+        if type(value) is float and math.isfinite(value) and value >= 0 and value.is_integer():
+            return int(value)
+        return None
+
+    def tally(items, value_of, *, complete_if=None):
+        known = known_count = unknown_count = 0
+        for record in items:
+            value = measured_count(value_of(record or {}))
+            if value is not None:
+                known += value
+                known_count += 1
+            if value is None or (complete_if is not None and not complete_if(record or {})):
+                unknown_count += 1
+        return known, known_count, unknown_count
+
+    def graph_dimension(record, name):
+        return (record.get('budget') or {}).get(name) or record.get(name) or {}
+
+    def graph_complete(record, name):
+        dimension=graph_dimension(record,name)
+        return (dimension.get('unknown_pending') in (None,0,0.0) and
+                dimension.get('measurement_status') not in ('pending','invalid'))
+
+    def search_progress(record, name):
+        summary=record.get('search_summary') or {}
+        value=summary.get(name)
+        if value is not None:
+            return value
+        return (summary.get(name+'_known')
+                if summary.get(name+'_known_trials',0)>0 else None)
+
     checks={}
     for task,family,seed,repeat in sorted({(r['task_id'],r['family'],r['seed'],r['repeat'])
                                            for r in plan['rows']}):
@@ -389,35 +425,76 @@ def summarize_search_plan(plan, records):
         elif not left.get('actual_split_digest') or left['actual_split_digest'] in ('unknown',None) or not right.get('actual_split_digest') or right['actual_split_digest'] in ('unknown',None):reason='split_unavailable'
         elif left['actual_split_digest']!=right['actual_split_digest']:reason='split_mismatch'
         elif left.get('frozen_model_configs')!=right.get('frozen_model_configs'):reason='baseline_mismatch'
-        elif left.get('candidate_pool')!=right.get('candidate_pool'):reason='candidate_pool_mismatch'
-        elif left.get('actual_processing')!=right.get('actual_processing'):reason='processing_mismatch'
+        elif (left.get('candidate_pool')!=sorted(fixed['allowed_models']) or
+              right.get('candidate_pool')!=sorted(bounded['allowed_models'])):reason='candidate_pool_mismatch'
+        elif any((record.get('actual_processing') or {}).get('model_type') not in row['allowed_models']
+                 for row,record in ((fixed,left),(bounded,right))):reason='selected_model_outside_pool'
+        elif any(any((record.get('actual_processing') or {}).get(key)!=
+                     plan['fixed_processing'][(record.get('actual_processing') or {})['model_type']][key]
+                     for key in ('normalization','class_balance'))
+                 for record in (left,right)):reason='processing_mismatch'
+        elif any((left.get('actual_processing') or {}).get(key)!=
+                 (right.get('actual_processing') or {}).get(key)
+                 for key in ('normalization','class_balance')):reason='processing_mismatch'
         elif left.get('source')!=right.get('source'):reason='source_mismatch'
         elif any((left.get('configuration') or {}).get(key)!=(right.get('configuration') or {}).get(key)
                  for key in ('backend_binding','scope_binding','llm_binding')):reason='llm_or_scope_mismatch'
-        checks[(task,family,seed,repeat)]=dict(status='matched' if reason is None else
+        checks[(task,family,seed,repeat)]=dict(
+            fixed_model=((left or {}).get('actual_processing') or {}).get('model_type'),
+            bounded_model=((right or {}).get('actual_processing') or {}).get('model_type'),
+            status='matched' if reason is None else
             'unavailable' if reason in ('record_missing','decision_not_completed','run_missing','split_unavailable') else 'mismatch',
             reason=reason)
     result=summarize_plan(plan['rows'],records,factor='search_mode',
                           sides=('bounded','fixed'),pair_conditions=checks)
     result['condition_checks']=[dict(task_id=key[0],family=key[1],seed=key[2],repeat=key[3],**value)
-                                for key,value in checks.items()]
+                                 for key,value in checks.items()]
+    for pair in result['paired']:
+        condition=checks[(pair['task_id'],pair['family'],pair['seed'],pair['repeat'])]
+        pair['fixed_model']=condition['fixed_model']
+        pair['bounded_model']=condition['bounded_model']
     result['complete']=all(group['succeeded']==group['planned'] for group in result['groups'].values()) and all(
         value['status']=='matched' for value in checks.values())
     costs={}
     for mode in ('fixed','bounded'):
         items=[records.get(row['experiment_id']) for row in plan['rows'] if row['search_mode']==mode]
         complete=[r for r in items if (r or {}).get('search_summary',{}).get('integrity')=='complete']
-        costs[mode]=dict(planned=len(items),measured=len(complete),
-            unknown_count=len(items)-len(complete),
-            candidate_fits_known=sum(r['search_summary']['candidate_fit_count'] for r in complete),
-            final_refits_known=sum(r['search_summary']['final_refit_count'] for r in complete),
-            epochs_known=sum(r['search_summary']['actual_epochs'] for r in complete),
-            http_calls_known=sum((r or {}).get('measurement',{}).get('known_http_calls',0)
-                                 for r in items),
-            llm_call_count_known=sum((r or {}).get('budget',{}).get('llm_calls',{}).get('count',0)
-                                     for r in items if type((r or {}).get('budget',{}).get('llm_calls',{}).get('count')) is int))
+        cost=dict(planned=len(items), measured=len(complete),
+                  search_summary_unknown_count=len(items)-len(complete))
+        for prefix, getter, complete_if in (
+            ('candidate_fits', lambda r:(r.get('search_summary') or {}).get('candidate_fit_count'), None),
+            ('final_refits', lambda r:(r.get('search_summary') or {}).get('final_refit_count'), None),
+            ('epochs', lambda r:search_progress(r,'actual_epochs'),
+                           lambda r:(r.get('search_summary') or {}).get('actual_epochs') is not None),
+            ('training_batches', lambda r:search_progress(r,'training_batches'),
+                                    lambda r:(r.get('search_summary') or {}).get('training_batches') is not None),
+            ('llm_call_count', lambda r:graph_dimension(r,'llm_calls').get('actual'),
+                               lambda r:graph_complete(r,'llm_calls')),
+            ('graph_api_calls', lambda r:graph_dimension(r,'api_calls').get('actual'),
+                                lambda r:graph_complete(r,'api_calls')),
+            ('record_http_calls', lambda r:(r.get('measurement') or {}).get('known_http_calls'),
+                                  lambda r:(r.get('measurement') or {}).get('status')=='complete'),
+            ('input_tokens', lambda r:graph_dimension(r,'input_tokens').get('actual'),
+                             lambda r:graph_dimension(r,'input_tokens').get('measurement_status') not in ('pending','invalid')),
+            ('output_tokens', lambda r:graph_dimension(r,'output_tokens').get('actual'),
+                              lambda r:graph_dimension(r,'output_tokens').get('measurement_status') not in ('pending','invalid')),
+            ('cached_tokens', lambda r:graph_dimension(r,'cached_tokens').get('actual'),
+                              lambda r:graph_dimension(r,'cached_tokens').get('measurement_status') not in ('pending','invalid')),
+        ):
+            subtotal, known_count, unknown_count=tally(items,getter,complete_if=complete_if)
+            cost[prefix+'_known']=subtotal
+            cost[prefix+'_known_count']=known_count
+            cost[prefix+'_unknown_count']=unknown_count
+        cost['http_calls_known']=cost['graph_api_calls_known']+cost['record_http_calls_known']
+        cost['http_calls_known_count']=sum(
+            measured_count(graph_dimension(r or {},'api_calls').get('actual')) is not None and
+            graph_complete(r or {},'api_calls') and
+            measured_count(((r or {}).get('measurement') or {}).get('known_http_calls')) is not None and
+            ((r or {}).get('measurement') or {}).get('status')=='complete' for r in items)
+        cost['http_calls_unknown_count']=len(items)-cost['http_calls_known_count']
+        costs[mode]=cost
     result['costs']=costs
-    result['cost_scope']='Candidate fits, final refits, epochs, API and LLM have separate measured denominators; missing rows remain unknown.'
+    result['cost_scope']='Each known subtotal and row denominator is separate. Graph API calls and record HTTP calls are disjoint scopes; token counts are provider measurements. Partial values remain in known subtotals while their row is also marked unknown. Parent and child durations must not be added.'
     return result
 
 

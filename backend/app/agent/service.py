@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from .metadata import dataset_metadata, run_metadata
 from .repository import (
     AgentExperimentRecord,
     AgentExperimentNotFound,
+    AgentIdempotencyConflict,
     AgentSessionClosed,
     AgentSessionRecord,
     AgentSessionRepository,
@@ -100,6 +102,7 @@ class AgentService:
         if not requested_profile:
             body.pop('execution_profile', None); body.pop('protocol_revision', None)
         snapshot = None
+        previous = None
         if self.contract_version == V2:
             previous = self.sessions.find_session_request_scoped(payload.client_request_id, payload_hash=None, principal=principal) if payload.client_request_id else None
             if previous is not None:
@@ -108,11 +111,38 @@ class AgentService:
             body.update(contract_version=V2, model_configs=snapshot['model_configs'])
         body_hash = _hash_payload(body)
         if payload.client_request_id:
-            existing = self.sessions.find_session_request_scoped(
-                payload.client_request_id, payload_hash=body_hash, principal=principal,
-            )
-            if existing is not None:
-                return self._session_creation_response(existing, created=False, principal=principal)
+            if self.contract_version != V2:
+                previous = self.sessions.find_session_request_scoped(
+                    payload.client_request_id, payload_hash=body_hash, principal=principal)
+            if previous is not None:
+                if previous.payload_hash != body_hash:
+                    # Before the stable request hash fix, v4 stored the hash
+                    # after dimension-dependent defaults changed model_configs.
+                    # Reconstruct that one historical form from frozen Train
+                    # evidence; never re-read the mutable Dataset or plan.
+                    if (payload.protocol_revision != 'agent-recipes-revision-v4'
+                            or previous.frozen_preparation is None
+                            or previous.frozen_preparation['protocol_revision'] != 'agent-recipes-revision-v4'):
+                        raise AgentIdempotencyConflict()
+                    from ..search_policy import adjust_baselines_for_train
+                    from ..train_evidence import TrainEvidence
+                    try:
+                        evidence = TrainEvidence.model_validate(
+                            previous.frozen_preparation['preparation']['evidence'])
+                        stats = evidence.statistics
+                        legacy_snapshot = deepcopy(snapshot)
+                        adjust_baselines_for_train(legacy_snapshot,
+                            train_count=stats.observation_count,
+                            feature_count=stats.feature_count,
+                            class_count=len(stats.classes),
+                            explicit_configs=payload.model_configs)
+                    except (KeyError, TypeError, ValueError):
+                        raise AgentIdempotencyConflict() from None
+                    legacy_hash = _hash_payload({**body,
+                        'model_configs': legacy_snapshot['model_configs']})
+                    if (legacy_hash == body_hash or legacy_hash != previous.payload_hash):
+                        raise AgentIdempotencyConflict()
+                return self._session_creation_response(previous, created=False, principal=principal)
         if unavailable:
             raise AgentDomainError('agent_module_unavailable', f'请求的模块当前不可用：{", ".join(unavailable)}', status_code=422)
         if payload.context_policy.case_write:
@@ -140,7 +170,6 @@ class AgentService:
                     adjust_baselines_for_train(snapshot, train_count=stats.observation_count,
                         feature_count=stats.feature_count, class_count=len(stats.classes),
                         explicit_configs=payload.model_configs)
-                    body['model_configs'] = snapshot['model_configs']
                 recipes = compile_recipe_catalog(body, snapshot, evidence, plan, search_plans=search_plans)
                 limits.check()
             except PreparationResourceExhausted as exc:
@@ -174,13 +203,6 @@ class AgentService:
             except KnowledgeError as exc:
                 raise AgentDomainError('agent_knowledge_unavailable', 'Knowledge publication unavailable', status_code=503) from exc
             frozen_preparation['preparation']['knowledge'] = knowledge.model_dump(mode='json', exclude_unset=True)
-        if getattr(payload, 'protocol_revision', None) == 'agent-recipes-revision-v4':
-            body_hash = _hash_payload(body)
-            if payload.client_request_id:
-                existing = self.sessions.find_session_request_scoped(
-                    payload.client_request_id, payload_hash=body_hash, principal=principal)
-                if existing is not None:
-                    return self._session_creation_response(existing, created=False, principal=principal)
         session, created = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,

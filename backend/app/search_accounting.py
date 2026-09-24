@@ -68,6 +68,7 @@ class SearchAccounting:
         # crash.  A completed Run replaces it only after every planned fit.
         counts = {state: sum(row['state'] == state for row in self.trials)
                   for state in ('prepared', 'running', 'succeeded', 'failed', 'interrupted')}
+        progress = self._progress_totals()
         _atomic_json(self.run_dir / 'search_summary.json', dict(
             schema_version='search-summary-v1', run_id=self.run_id,
             plan_digest=self.plan['plan_digest'], mode=self.plan['mode'],
@@ -78,9 +79,26 @@ class SearchAccounting:
             selection_metric=self.plan['selection_metric'],
             candidate_fit_count=counts['succeeded'] + counts['failed'] + counts['interrupted'],
             final_refit_count=None, total_fit_count=None,
-            actual_epochs=sum((row['actual_epochs'] or 0) for row in self.trials),
-            training_batches=sum((row['training_batches'] or 0) for row in self.trials),
+            **progress,
             integrity='incomplete'))
+
+    def _progress_totals(self) -> dict[str, int | None]:
+        # Traditional models do not have epochs/batches.  Deep trial counters
+        # remain unknown until the trainer has actually begun recording them.
+        if self.plan['selection_metric'] != 'best_valid_loss':
+            return dict(actual_epochs=0, training_batches=0,
+                        actual_epochs_known=0, training_batches_known=0,
+                        actual_epochs_known_trials=0, training_batches_known_trials=0,
+                        actual_epochs_unknown_trials=0, training_batches_unknown_trials=0)
+        result: dict[str, int | None] = {}
+        for field in ('actual_epochs', 'training_batches'):
+            values = [row[field] for row in self.trials if row[field] is not None]
+            unknown = len(self.trials) - len(values)
+            result[field + '_known'] = sum(values)
+            result[field + '_known_trials'] = len(values)
+            result[field + '_unknown_trials'] = unknown
+            result[field] = sum(values) if self.trials and unknown == 0 else None
+        return result
 
     def record_queue_wait(self, created_at: str | None, started_at: str | None) -> None:
         """Persist the repository's queue interval without mixing process clocks."""
@@ -122,10 +140,13 @@ class SearchAccounting:
     @contextmanager
     def span(self, name: str, *, fold_index: int | None = None,
              trial_index: int | None = None, parent_span: str | None = None,
+             epoch_index: int | None = None, measurement_scope: str | None = None,
              applicable: bool = True) -> Iterator[dict[str, Any]]:
         span_id = f'span-{len(self.spans)}'
         row = dict(span_id=span_id, parent_span_id=parent_span, run_id=self.run_id,
-                   fold_index=fold_index, trial_index=trial_index, stage=name,
+                   fold_index=fold_index, trial_index=trial_index,
+                   epoch_index=epoch_index, measurement_scope=measurement_scope,
+                   stage=name,
                    status='running' if applicable else 'not_applicable',
                    started_at=_utc() if applicable else None,
                    ended_at=None, duration_seconds=None,
@@ -156,13 +177,15 @@ class SearchAccounting:
                    params=candidate['params'], params_digest=candidate['params_digest'],
                    state='prepared', started_at=None, ended_at=None, duration_seconds=None,
                    actual_epochs=None, training_batches=None, selection_metric=self.plan['selection_metric'],
-                   selection_score=None, error_type=None, artifact_digest=None)
+                   selection_score=None, error_type=None, artifact_digest=None,
+                   span_id=None)
         if any((item['fold_index'], item['trial_index']) == (fold_index, index) for item in self.trials):
             raise ValueError('duplicate trial execution')
         self.trials.append(row)
         self._flush()
         with self.span('trial_train_validation', fold_index=fold_index, trial_index=index,
                        parent_span=parent_span) as span:
+            row['span_id'] = span['span_id']
             row['state'] = 'running'
             row['started_at'] = span['started_at']
             self._flush()
@@ -179,6 +202,21 @@ class SearchAccounting:
                 row['ended_at'] = _utc()
                 row['duration_seconds'] = time.monotonic() - started
                 self._flush()
+
+    def record_trial_progress(self, row: dict[str, Any], *,
+                              actual_epochs: int | None = None,
+                              training_batches: int | None = None) -> None:
+        if row not in self.trials or row['state'] != 'running':
+            raise ValueError('trial progress requires a running ledger row')
+        for field, value in (('actual_epochs', actual_epochs),
+                             ('training_batches', training_batches)):
+            if value is None:
+                continue
+            previous = row[field]
+            if type(value) is not int or value < 0 or (previous is not None and value < previous):
+                raise ValueError('trial progress must be nonnegative and monotonic')
+            row[field] = value
+        self._flush()
 
     def sync_trial_durations(self) -> None:
         spans = {(s['fold_index'], s['trial_index']): s for s in self.spans
@@ -214,6 +252,9 @@ class SearchAccounting:
         planned = self.plan['effective_trials'] * len(selected)
         if len(self.trials) != planned:
             raise ValueError('search trial count differs from frozen plan')
+        progress = self._progress_totals()
+        if progress['actual_epochs_unknown_trials'] or progress['training_batches_unknown_trials']:
+            raise ValueError('successful search has unknown deep training progress')
         body = dict(schema_version='search-summary-v1', run_id=self.run_id,
                     plan_digest=self.plan['plan_digest'], mode=self.plan['mode'],
                     planned_trials=planned, started_trials=len(self.trials),
@@ -222,8 +263,7 @@ class SearchAccounting:
                     selection_metric=self.plan['selection_metric'],
                     candidate_fit_count=len(self.trials), final_refit_count=refit_count,
                     total_fit_count=len(self.trials)+refit_count,
-                    actual_epochs=sum((row['actual_epochs'] or 0) for row in self.trials),
-                    training_batches=sum((row['training_batches'] or 0) for row in self.trials),
+                    **progress,
                     integrity='complete')
         _atomic_json(self.run_dir / 'search_summary.json', body)
         fields = ('run_id','fold_index','trial_index','state','params_digest','selection_metric',
