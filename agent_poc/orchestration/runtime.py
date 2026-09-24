@@ -178,7 +178,7 @@ def _build(config: RuntimeConfig, saver: SqliteSaver, journal: CallJournal, *,
     from .graph import Dependencies, build_graph
     deps = Dependencies(client=client or AutoAIClient(config.backend_url, token=config.backend_token,
                                                      timeout=config.api_timeout, max_retries=0, api_version=api_version,execution_profile=execution_profile,protocol_revision=protocol_revision),
-                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
+                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-search-v1' if protocol_revision=='agent-recipes-revision-v4' else 'agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
                         journal=journal, clock=clock)
     return (graph_factory or build_graph)(deps, saver)
 
@@ -231,6 +231,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                api_version: str | None = None, model_configs: dict | None = None,
                execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True, knowledge: bool | None = None, decision_mode: str | None = None, knowledge_query: dict | None = None,
                processing_mode: str | None = None, fixed_processing: dict | None = None,
+               search_mode: str | None = None, max_trials: int | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
@@ -260,15 +261,24 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('model_configs_require_v2')
     if execution_profile:
         factory=new_state
-        if processing_mode is None and getattr(client,'protocol_revision',None)=='agent-recipes-revision-v3':
+        if processing_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
             processing_mode=getattr(client,'processing_mode','fixed')
+        if search_mode is None and getattr(client,'protocol_revision',None)=='agent-recipes-revision-v4':
+            search_mode=getattr(client,'search_mode','fixed')
+            max_trials=getattr(client,'max_trials',1)
+        if search_mode is not None:
+            from backend.app.search_policy import validate_search_options
+            max_trials=validate_search_options(search_mode,max_trials)
+            processing_mode=processing_mode or 'fixed'
         processing = processing_mode is not None
+        searching = search_mode is not None
         modern = knowledge is not None or client is None or decision_mode is not None or knowledge_query is not None
-        extra.update(wire_version='agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
+        extra.update(wire_version='agent-state-v6' if searching else 'agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
             evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),
             decision_mode=decision_mode or ('recipe_id' if processing else None),knowledge_query=knowledge_query,
-            processing_mode=processing_mode,fixed_processing=fixed_processing)
-        llm_config=replace(llm_config,prompt_version='agent-decision-processing-v1' if processing else 'agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
+            processing_mode=processing_mode,fixed_processing=fixed_processing,
+            search_mode=search_mode,max_trials=max_trials)
+        llm_config=replace(llm_config,prompt_version='agent-decision-search-v1' if searching else 'agent-decision-processing-v1' if processing else 'agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
     if knowledge or processing_mode is not None:
         # Validate the adapter actually used, before checkpoints or remote effects.
         adapter = llm if llm is not None else LLMAdapter(llm_config, token=config.llm_token)
@@ -402,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument('--execution-profile',choices=['train-evidence-recipes-v1','direct_action'],default='train-evidence-recipes-v1')
             command.add_argument('--decision-mode', choices=['recipe_id','structured_config'], default='recipe_id')
             command.add_argument('--processing-mode', choices=['fixed','dynamic'], default='fixed')
+            command.add_argument('--search-mode', choices=['fixed','bounded'], default='fixed')
+            command.add_argument('--max-trials', type=int)
             command.add_argument('--fixed-processing', type=json.loads)
             command.add_argument('--knowledge',choices=['on','off'],default='off')
             command.add_argument('--query-mode', choices=['train_template','user_text'], default='train_template')
@@ -472,7 +484,9 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    timeout_seconds=args.timeout_seconds, source_role=args.source_role, model_configs=args.model_configs,
                                    execution_profile=args.execution_profile,decision_mode=args.decision_mode if args.execution_profile!='direct_action' else None,knowledge=args.knowledge=='on',knowledge_query=(dict(query_mode=args.query_mode,user_text=args.query_text,domain=args.confirmed_domain) if args.execution_profile!='direct_action' else None),evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context,
                                    processing_mode=args.processing_mode if args.execution_profile!='direct_action' else None,
-                                   fixed_processing=args.fixed_processing if args.execution_profile!='direct_action' else None)
+                                   fixed_processing=args.fixed_processing if args.execution_profile!='direct_action' else None,
+                                   search_mode=args.search_mode if args.execution_profile!='direct_action' else None,
+                                   max_trials=args.max_trials if args.execution_profile!='direct_action' else None)
             else:
                 state = resume_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait)
         print(json.dumps(state if args.full else state_summary(state), ensure_ascii=False, allow_nan=False))

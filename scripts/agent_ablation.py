@@ -155,7 +155,7 @@ def terminal_results(client,record):
         for item in result.get('artifacts',[])]
     # Actual partition and dataset hashes, without persisting sample IDs or paths.
     for item in record['artifacts']:
-        if item.get('name') not in ('split.json','model_metadata.json') or not item.get('download_url'):continue
+        if item.get('name') not in ('split.json','model_metadata.json','search_summary.json') or not item.get('download_url'):continue
         if not item['download_url'].startswith('/api/training/runs/'+record['run_id']+'/'):
             raise ValueError('artifact URL is outside the bound Run')
         payload=client.get(item['download_url']);payload.raise_for_status();content=payload.json()
@@ -163,6 +163,11 @@ def terminal_results(client,record):
             if isinstance(content,list):
                 record['actual_split_digest']=digest([{k:fold[k] for k in ('fold_index','train_sample_ids','valid_sample_ids','test_sample_ids','partition_digest') if k in fold} for fold in content])
                 record['partition_digests']=[fold.get('partition_digest','unknown') for fold in content]
+        elif item['name']=='search_summary.json' and isinstance(content,dict):
+            record['search_summary']={key:content.get(key) for key in (
+                'mode','integrity','planned_trials','started_trials','completed_trials',
+                'failed_trials','interrupted_trials','effective_search','candidate_fit_count',
+                'final_refit_count','total_fit_count','actual_epochs','training_batches')}
         elif isinstance(content,dict):
             audit=content.get('execution_audit') or {}
             record['execution_digest']=digest(audit)
@@ -287,6 +292,135 @@ def register_processing_plan(config, experiment_id):
     return result
 
 
+def register_search_plan(config, experiment_id):
+    """Freeze the 10 x ML/DL x search fixed/bounded comparison without executing it."""
+    from backend.app.search_policy import POLICY_VERSION, validate_search_options
+    from backend.app.model_catalog import MODELS_BY_ID
+    from backend.app.processing_policy import EXECUTABLE_MODELS, freeze_fixed_processing
+    expected={'tasks','model_pools','fixed_processing','model_configs','seed','repeat',
+              'conditions','bounded_max_trials'}
+    if type(config) is not dict or set(config)!=expected:
+        raise ValueError('invalid search registration')
+    if (type(config['tasks']) is not list or len(config['tasks'])!=10 or
+            type(config['model_pools']) is not dict or set(config['model_pools'])!={'ML','DL'}):
+        raise ValueError('search registration requires ten tasks and both families')
+    pools={family:list(config['model_pools'][family]) for family in ('ML','DL')}
+    if (set(pools['ML']) | set(pools['DL']) != EXECUTABLE_MODELS or
+            set(pools['ML']) & set(pools['DL']) or
+            any(len(pool)!=len(set(pool)) for pool in pools.values()) or
+            any(MODELS_BY_ID[model].execution_family !=
+                ('traditional_ml' if family=='ML' else 'deep_learning')
+                for family,pool in pools.items() for model in pool)):
+        raise ValueError('invalid search model pools')
+    if config['seed'] != 42 or type(config['seed']) is not int or type(config['repeat']) is not int or config['repeat'] < 0:
+        raise ValueError('search registration requires seed 42')
+    validate_search_options('bounded', config['bounded_max_trials'])
+    fixed=freeze_fixed_processing(sorted(EXECUTABLE_MODELS),config['fixed_processing'])
+    if type(config['model_configs']) is not dict or set(config['model_configs'])!=EXECUTABLE_MODELS:
+        raise ValueError('complete baseline model configs required')
+    from backend.app.model_config import model_policy, resolve_model_params
+    for model,values in config['model_configs'].items():
+        policy=model_policy(model,search_revision=True)
+        if (type(values) is not dict or
+                set(values)!={item['name'] for item in policy['parameters']} or
+                resolve_model_params(model,values,policy=policy)!=values):
+            raise ValueError('baseline model config is incomplete or invalid')
+    conditions=config['conditions']
+    if (type(conditions) is not dict or set(conditions)!={
+            'backend_binding','scope_binding','llm_binding','source_binding',
+            'tokenizer_binding','prompt_binding'} or
+            any(type(value) is not str or not re.fullmatch('[a-f0-9]{64}',value)
+                for value in conditions.values())):
+        raise ValueError('invalid search comparison bindings')
+    seen=set()
+    for task in config['tasks']:
+        if (type(task) is not dict or set(task)!={'task_id','dataset_id','dataset_sha256'} or
+                not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}',task['task_id']) or
+                not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',task['dataset_id']) or
+                not re.fullmatch('[a-f0-9]{64}',task['dataset_sha256']) or
+                task['task_id'] in seen):
+            raise ValueError('invalid or duplicate search task')
+        seen.add(task['task_id'])
+    rows=[]
+    for task_index,task in enumerate(config['tasks']):
+        for family_index,family in enumerate(('ML','DL')):
+            modes=('fixed','bounded') if (task_index+family_index)%2==0 else ('bounded','fixed')
+            for mode in modes:
+                rows.append(dict(experiment_id=f'{experiment_id}-{len(rows)+1:02d}',
+                    **task,family=family,processing_mode='fixed',search_mode=mode,
+                    max_trials=1 if mode=='fixed' else config['bounded_max_trials'],
+                    seed=42,repeat=config['repeat'],allowed_models=pools[family]))
+    result=dict(schema_version='search-ablation-plan-v1',experiment_id=experiment_id,
+        created_at=time.time(),rows=rows,model_pools=pools,fixed_processing=fixed,
+        baseline_configs=config['model_configs'],baseline_digest=digest(config['model_configs']),
+        search_policy_version=POLICY_VERSION,conditions=conditions,
+        comparison='bounded_minus_fixed',test_collection='after_all_decisions',
+        registration_state='registered_not_executed')
+    result['plan_digest']=digest({key:value for key,value in result.items()
+                                  if key not in ('plan_digest','created_at')})
+    return result
+
+
+def load_search_plan(path):
+    plan=json.loads(path.read_text(encoding='utf-8'))
+    if plan.get('schema_version')!='search-ablation-plan-v1' or len(plan.get('rows',[]))!=40:
+        raise ValueError('invalid search plan')
+    if plan.get('plan_digest')!=digest({key:value for key,value in plan.items()
+                                       if key not in ('plan_digest','created_at')}):
+        raise ValueError('search plan digest mismatch')
+    return plan
+
+
+def summarize_search_plan(plan, records):
+    checks={}
+    for task,family,seed,repeat in sorted({(r['task_id'],r['family'],r['seed'],r['repeat'])
+                                           for r in plan['rows']}):
+        pair=[r for r in plan['rows'] if (r['task_id'],r['family'],r['seed'],r['repeat'])==
+              (task,family,seed,repeat)]
+        fixed,bounded=(next(r for r in pair if r['search_mode']==mode)
+                       for mode in ('fixed','bounded'))
+        left,right=(records.get(r['experiment_id']) for r in (fixed,bounded))
+        reason=None
+        if not left or not right:reason='record_missing'
+        elif left.get('status')!='completed' or right.get('status')!='completed':reason='decision_not_completed'
+        elif not left.get('run_id') or not right.get('run_id'):reason='run_missing'
+        elif left['run_id']==right['run_id']:reason='run_reused'
+        elif any(r.get('dataset_digest')!=fixed['dataset_sha256'] for r in (left,right)):reason='dataset_mismatch'
+        elif not left.get('actual_split_digest') or left['actual_split_digest'] in ('unknown',None) or not right.get('actual_split_digest') or right['actual_split_digest'] in ('unknown',None):reason='split_unavailable'
+        elif left['actual_split_digest']!=right['actual_split_digest']:reason='split_mismatch'
+        elif left.get('frozen_model_configs')!=right.get('frozen_model_configs'):reason='baseline_mismatch'
+        elif left.get('candidate_pool')!=right.get('candidate_pool'):reason='candidate_pool_mismatch'
+        elif left.get('actual_processing')!=right.get('actual_processing'):reason='processing_mismatch'
+        elif left.get('source')!=right.get('source'):reason='source_mismatch'
+        elif any((left.get('configuration') or {}).get(key)!=(right.get('configuration') or {}).get(key)
+                 for key in ('backend_binding','scope_binding','llm_binding')):reason='llm_or_scope_mismatch'
+        checks[(task,family,seed,repeat)]=dict(status='matched' if reason is None else
+            'unavailable' if reason in ('record_missing','decision_not_completed','run_missing','split_unavailable') else 'mismatch',
+            reason=reason)
+    result=summarize_plan(plan['rows'],records,factor='search_mode',
+                          sides=('bounded','fixed'),pair_conditions=checks)
+    result['condition_checks']=[dict(task_id=key[0],family=key[1],seed=key[2],repeat=key[3],**value)
+                                for key,value in checks.items()]
+    result['complete']=all(group['succeeded']==group['planned'] for group in result['groups'].values()) and all(
+        value['status']=='matched' for value in checks.values())
+    costs={}
+    for mode in ('fixed','bounded'):
+        items=[records.get(row['experiment_id']) for row in plan['rows'] if row['search_mode']==mode]
+        complete=[r for r in items if (r or {}).get('search_summary',{}).get('integrity')=='complete']
+        costs[mode]=dict(planned=len(items),measured=len(complete),
+            unknown_count=len(items)-len(complete),
+            candidate_fits_known=sum(r['search_summary']['candidate_fit_count'] for r in complete),
+            final_refits_known=sum(r['search_summary']['final_refit_count'] for r in complete),
+            epochs_known=sum(r['search_summary']['actual_epochs'] for r in complete),
+            http_calls_known=sum((r or {}).get('measurement',{}).get('known_http_calls',0)
+                                 for r in items),
+            llm_call_count_known=sum((r or {}).get('budget',{}).get('llm_calls',{}).get('count',0)
+                                     for r in items if type((r or {}).get('budget',{}).get('llm_calls',{}).get('count')) is int))
+    result['costs']=costs
+    result['cost_scope']='Candidate fits, final refits, epochs, API and LLM have separate measured denominators; missing rows remain unknown.'
+    return result
+
+
 def _processing_pair_conditions(plan,records):
     checks={}
     for task_id,family,seed,repeat in sorted({
@@ -375,6 +509,7 @@ def _confirm_terminal_decision(storage,row,record):
             task.get('dataset_id')!=row['dataset_id'] or
             task.get('dataset_fingerprint')!=record.get('dataset_digest') or
             task.get('processing_mode')!=row['processing_mode'] or
+            ('search_mode' in row and task.get('search_mode')!=row['search_mode']) or
             lifecycle.get('status')!=record['status'] or
             lifecycle.get('status') not in DECISION_TERMINAL_STATES or
             lifecycle.get('next_action') is not None or
@@ -445,8 +580,62 @@ def collect_processing_plan(plan_path,storage,backend_url):
     return summary
 
 
+def collect_search_plan(plan_path,storage,backend_url):
+    """Collect Test only after all forty registered search decisions close."""
+    import httpx
+    plan=load_search_plan(plan_path)
+    if plan_path.resolve()!=storage.resolve()/plan['experiment_id']/'plan.json':
+        raise ValueError('search plan and row storage differ')
+    if digest(backend_url)!=plan['conditions']['backend_binding']:
+        raise ValueError('collection backend differs from registration')
+    records={}
+    for row in plan['rows']:
+        path=storage/row['experiment_id']/'record.json'
+        if not path.exists():
+            raise ValueError('all planned decisions must finish before Test collection')
+        record=json.loads(path.read_text(encoding='utf-8'))
+        config=record.get('configuration') or {}
+        if (record.get('experiment_id')!=row['experiment_id'] or
+                config.get('plan_digest')!=plan['plan_digest'] or
+                config.get('dataset_id')!=row['dataset_id'] or
+                config.get('seed')!=row['seed'] or
+                config.get('processing_mode')!='fixed' or
+                config.get('search_mode')!=row['search_mode'] or
+                config.get('max_trials')!=row['max_trials'] or
+                config.get('allowed_models')!=sorted(row['allowed_models']) or
+                config.get('fixed_processing')!={model:plan['fixed_processing'][model]
+                    for model in row['allowed_models']} or
+                digest(config.get('model_configs'))!=plan['baseline_digest'] or
+                any(config.get(key)!=plan['conditions'][key]
+                    for key in ('backend_binding','scope_binding','llm_binding'))):
+            raise ValueError('record differs from registered search plan')
+        _confirm_terminal_decision(storage,row,record)
+        records[row['experiment_id']]=record
+    token=os.environ.get('AUTOAI_API_TOKEN')
+    headers={'Authorization':'Bearer '+token} if token else {}
+    with httpx.Client(base_url=backend_url,headers=headers,timeout=30,trust_env=False) as client:
+        for row in plan['rows']:
+            record=records[row['experiment_id']]
+            if record['status']!='completed' or not record.get('run_id') or record.get('offline_test'):
+                continue
+            path=storage/row['experiment_id']/'record.json'
+            with experiment_lock(storage,row['experiment_id']):
+                try:
+                    terminal_results(client,record)
+                    record['offline_test_failure']=None
+                except Exception as error:
+                    record.pop('offline_test',None)
+                    record['offline_test_failure']=type(error).__name__
+                save(path,record)
+    summary=summarize_search_plan(plan,records)
+    save(plan_path.with_name('summary.json'),summary)
+    return summary
+
+
 def validate_planned_row(plan_path,args):
-    plan=load_processing_plan(plan_path)
+    raw=json.loads(plan_path.read_text(encoding='utf-8'))
+    searching=raw.get('schema_version')=='search-ablation-plan-v1'
+    plan=load_search_plan(plan_path) if searching else load_processing_plan(plan_path)
     if plan_path.resolve()!=args.storage.resolve()/plan['experiment_id']/'plan.json':
         raise ValueError('processing plan and row storage differ')
     rows=[row for row in plan['rows'] if row['experiment_id']==args.experiment_id]
@@ -458,12 +647,19 @@ def validate_planned_row(plan_path,args):
             set(args.allowed_models)!=set(row['allowed_models']) or args.knowledge!='off' or
             args.decision_mode!='recipe_id' or args.hide_evidence_context or args.hide_risk_context):
         raise ValueError('CLI row differs from registered processing conditions')
+    if searching and (args.search_mode!=row['search_mode'] or args.max_trials!=row['max_trials']):
+        raise ValueError('CLI search differs from registered search conditions')
+    if searching and args.protocol!='json_action':
+        raise ValueError('registered search protocol requires json_action')
     if not args.fixed_processing:
         raise ValueError('registered fixed processing file is required')
     from backend.app.processing_policy import freeze_fixed_processing
     fixed=json.loads(args.fixed_processing.read_text(encoding='utf-8'))
     if freeze_fixed_processing(sorted(fixed),fixed)!=plan['fixed_processing']:
         raise ValueError('fixed processing differs from registration')
+    if searching:
+        if not args.model_configs or digest(json.loads(args.model_configs.read_text(encoding='utf-8')))!=plan['baseline_digest']:
+            raise ValueError('baseline configs differ from search registration')
     return plan,row
 
 
@@ -495,6 +691,10 @@ def run(args):
         configuration.pop('class_balance')
         configuration.update(processing_mode=processing_mode,fixed_processing=fixed_processing,
             defer_test=bool(getattr(args,'defer_test',False)))
+    if getattr(args,'search_mode',None) is not None:
+        from backend.app.search_policy import validate_search_options
+        configuration.update(search_mode=args.search_mode,
+            max_trials=validate_search_options(args.search_mode,args.max_trials))
     if getattr(args,'plan',None):
         configuration['plan_digest']=plan['plan_digest']
     query_config = None
@@ -506,7 +706,8 @@ def run(args):
     if args.kind=='agent':
         from agent_poc.orchestration.llm import LLMConfig
         llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,
-            prompt_version='agent-decision-processing-v1' if processing_mode is not None else 'agent-decision-knowledge-v1',
+            prompt_version='agent-decision-search-v1' if getattr(args,'search_mode',None) is not None else
+                'agent-decision-processing-v1' if processing_mode is not None else 'agent-decision-knowledge-v1',
             tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
         configuration['llm']=llm.public_config()
         configuration['llm_binding']=llm.fingerprint()
@@ -515,7 +716,14 @@ def run(args):
     if getattr(args,'plan',None):
         expected=plan['conditions']
         actual=dict(backend_binding=configuration['backend_binding'],scope_binding=configuration['scope_binding'],
-                    llm_binding=configuration.get('llm_binding'),model_configs_digest=digest(configs))
+                    llm_binding=configuration.get('llm_binding'))
+        if plan['schema_version']=='processing-ablation-plan-v1':
+            actual['model_configs_digest']=digest(configs)
+        else:
+            actual.update(source_binding=expected['source_binding'],
+                tokenizer_binding=(configuration['llm'].get('prompt_budget') or {}).get('tokenizer_digest'),
+                prompt_binding=digest(dict(prompt_version=llm.prompt_version,
+                                           protocol=llm.protocol,max_tokens=llm.max_tokens)))
         if actual!=expected:
             raise ValueError('CLI execution conditions differ from registration')
     folder=args.storage.resolve()/args.experiment_id;path=folder/'record.json'
@@ -523,6 +731,9 @@ def run(args):
     with experiment_lock(args.storage.resolve(),args.experiment_id):
         code=code_binding()
         source={key:code[key] for key in ('head','dirty_diff_sha256','source_digest')}
+        if getattr(args,'plan',None) and plan['schema_version']=='search-ablation-plan-v1':
+            if source['source_digest']!=plan['conditions']['source_binding']:
+                raise ValueError('CLI source differs from registered search plan')
         if path.exists():
             record=json.loads(path.read_text())
             if record['configuration_digest']!=digest(configuration):raise ValueError('experiment configuration is frozen')
@@ -576,6 +787,8 @@ def run(args):
                                 model_configs=row_configs,storage=checkpoints,thread_id=args.experiment_id,task_id=args.experiment_id,
                                 seed=args.seed,wait=True,knowledge=args.knowledge=='on',decision_mode=args.decision_mode,knowledge_query=query_config,
                                 processing_mode=processing_mode,fixed_processing=fixed_processing,
+                                search_mode=getattr(args,'search_mode',None),
+                                max_trials=getattr(args,'max_trials',None),
                                 evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context,
                                 timeout_seconds=args.timeout,max_llm_calls=args.max_llm_calls,max_api_calls=args.max_api_calls)
                         else:state=resume_task(runtime,storage=checkpoints,thread_id=args.experiment_id,wait=True)
@@ -589,6 +802,7 @@ def run(args):
                             budget=state['budget'],llm_calls=state['budget']['llm_calls'],api_calls=state['budget']['api_calls'],
                             tokens={key:state['budget'][key] for key in ('input_tokens','output_tokens','cached_tokens')},versions=state['versions'],
                             frozen_model_configs=(state['capabilities']['frozen_snapshot'] or {}).get('model_configs'),
+                            candidate_pool=sorted(state['task']['allowed_models']),
                             knowledge_snapshot=state['knowledge']['snapshot'], decision=state['decision'],
                             actual_recipe=state['execution'].get('submission_content'))
                         action=state['execution'].get('effective_action') or {}
@@ -632,6 +846,30 @@ def main(argv=None):
         summary=collect_processing_plan(a.plan,a.storage,a.backend_url)
         print(json.dumps(dict(complete=summary['complete'],paired_count=summary['paired_count'])))
         return 0
+    if argv and argv[0]=='register-search':
+        q=argparse.ArgumentParser(description='Freeze a forty-row search comparison')
+        q.add_argument('--config',type=Path,required=True)
+        q.add_argument('--storage',type=Path,required=True)
+        q.add_argument('--experiment-id',required=True)
+        a=q.parse_args(argv[1:])
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,45}',a.experiment_id):
+            raise ValueError('invalid plan ID')
+        with experiment_lock(a.storage.resolve(),a.experiment_id):
+            path=a.storage.resolve()/a.experiment_id/'plan.json'
+            if path.exists():raise ValueError('search plan already exists')
+            plan=register_search_plan(json.loads(a.config.read_text(encoding='utf-8')),a.experiment_id)
+            save(path,plan)
+        print(json.dumps(dict(plan=str(path),plan_digest=plan['plan_digest'],rows=len(plan['rows']))))
+        return 0
+    if argv and argv[0]=='collect-search':
+        q=argparse.ArgumentParser(description='Collect search Test after all decisions finish')
+        q.add_argument('--plan',type=Path,required=True)
+        q.add_argument('--storage',type=Path,required=True)
+        q.add_argument('--backend-url',required=True)
+        a=q.parse_args(argv[1:])
+        summary=collect_search_plan(a.plan,a.storage,a.backend_url)
+        print(json.dumps(dict(complete=summary['complete'],paired_count=summary['paired_count'])))
+        return 0
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--experiment-id',required=True)
     p.add_argument('--kind',choices=['baseline','agent'],required=True)
@@ -644,6 +882,8 @@ def main(argv=None):
     p.add_argument('--model-configs',type=Path)
     p.add_argument('--decision-mode',choices=['recipe_id','structured_config'],default='recipe_id')
     p.add_argument('--processing-mode',choices=['fixed','dynamic'])
+    p.add_argument('--search-mode',choices=['fixed','bounded'])
+    p.add_argument('--max-trials',type=int)
     p.add_argument('--fixed-processing',type=Path)
     p.add_argument('--defer-test',action='store_true')
     p.add_argument('--plan',type=Path)

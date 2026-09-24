@@ -108,7 +108,7 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
     checked = ValidationMetrics.model_validate(projected_metrics).model_dump(exclude_none=True)
     if checked.get(task['selection_metric']) != validation_score:
         raise ValueError('candidate selection metric mismatch')
-    context_type = (RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1') else
+    context_type = (RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1') else
                     FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2)
     return context_type.model_validate({
         'context_version': context_version, 'phase': 'finalize', 'task': _project_task(task),
@@ -120,7 +120,9 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
 
 
 def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
-    if context.get('context_version') == 'agent-context-processing-v1':
+    if context.get('context_version') == 'agent-context-search-v1':
+        model = {'submit':SearchSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
+    elif context.get('context_version') == 'agent-context-processing-v1':
         model = {'submit':ProcessingSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
     elif context.get('context_version') == 'agent-context-knowledge-v1':
         model = {'submit':KnowledgeSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
@@ -132,7 +134,7 @@ def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
         model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
     if model is None:
         raise ValueError('unknown decision phase')
-    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version') not in ('agent-context-knowledge-v1','agent-context-processing-v1'))
+    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version') not in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1'))
     if checked['phase'] != phase or len(checked['allowed_actions']) != 1:
         raise ValueError('invalid allowed action')
     return checked
@@ -177,13 +179,14 @@ class RecipeSelectionContext(ClosedModel):
 
 
 class RecipeFinalizationContext(FinalizationContext):
-    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1']
+    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1']
 
 
 def recipe_selection_context(*,task,session_id,preparation,context_policy,model_configs=None):
     from agent_poc.clients.knowledge import KnowledgePreparation
-    processing=context_policy.get('projection')=='agent-context-processing-v1'
-    modern=context_policy.get('projection') in ('agent-context-knowledge-v1','agent-context-processing-v1')
+    searching=context_policy.get('projection')=='agent-context-search-v1'
+    processing=context_policy.get('projection') in ('agent-context-processing-v1','agent-context-search-v1')
+    modern=context_policy.get('projection') in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1')
     prepared=(KnowledgePreparation if modern else Preparation).model_validate(preparation)
     full_recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes]
     payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
@@ -196,7 +199,7 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy,model_
     if context_policy['risks']:
         payload['train_risks']=[r.model_dump(mode='json') for r in prepared.evidence.risks]
     if modern:
-        payload.update(context_version='agent-context-processing-v1' if processing else 'agent-context-knowledge-v1',
+        payload.update(context_version='agent-context-search-v1' if searching else 'agent-context-processing-v1' if processing else 'agent-context-knowledge-v1',
             knowledge=prepared.knowledge.projection.model_dump(mode='json'))
     if processing:
         profiles={}
@@ -210,7 +213,9 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy,model_
             model_profiles=profiles,recipes=[dict(recipe_id=recipe['recipe_id'],
                 model_id=recipe['model_id'],normalization=recipe['preprocessing']['normalization'],
                 class_balance=recipe['class_balance']) for recipe in full_recipes])
-    return (ProcessingSelectionContext if processing else KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
+    if searching:
+        payload.update(search_mode=task['search_mode'],max_trials=task['max_trials'])
+    return (SearchSelectionContext if searching else ProcessingSelectionContext if processing else KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
 
 
 from agent_poc.clients.knowledge import KnowledgeProjection
@@ -270,3 +275,9 @@ class ProcessingSelectionContext(KnowledgeSelectionContext):
         if set(self.model_profiles)!=eligible:
             raise ValueError('processing model profiles incomplete')
         return self
+
+
+class SearchSelectionContext(ProcessingSelectionContext):
+    context_version: Literal['agent-context-search-v1']
+    search_mode: Literal['fixed','bounded']
+    max_trials: int

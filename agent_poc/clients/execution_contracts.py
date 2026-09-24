@@ -1,6 +1,6 @@
 """Current execution response codecs; legacy wire models remain in contracts."""
 from __future__ import annotations
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 import math
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from . import contracts as v1
@@ -21,7 +21,7 @@ class EffectiveConfig(v1.EffectiveConfig):
     class_balance: Literal['none','class_weight']
     feature_selection_enabled: Literal[False]
     config_stage: Literal['submission']
-    config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2']
+    config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2','agent-model-config-v3']
     config_policy_digest: v1.Digest
     model_params: dict[CanonicalID,Scalar]
 
@@ -106,6 +106,7 @@ class ObservationResponse(v1.ObservationResponse):
     effective_config: EffectiveConfig | None = None
     effective_action: EffectiveAction
     resolved_execution: ResolvedExecution
+    extensions: dict[str, Any]
 
 
 class FinalizeResponse(v1.FinalizeResponse):

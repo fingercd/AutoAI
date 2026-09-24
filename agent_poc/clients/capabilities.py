@@ -18,7 +18,7 @@ def digest(value):
 
 class Parameter(v1.ClosedModel):
     name: CanonicalID
-    value_type: Literal['integer','number','string','boolean']
+    value_type: Literal['integer','number','string','boolean','scalar']
     nullable: bool
     default_status: Literal['fixed','derived','unavailable']
     default: Scalar | bool | None
@@ -27,7 +27,7 @@ class Parameter(v1.ClosedModel):
     exclusive_maximum: int | float | None = None
     exclusive_minimum: int | float | None
     choices: list[Scalar | bool] | None
-    role: Literal['operator_fixed','backend_search','train_profile','fixed']
+    role: Literal['operator_fixed','backend_search','train_profile','fixed','search_baseline']
     applies_to: list[CanonicalID]
     condition_refs: list[Annotated[str,Field(pattern=r'^[a-z0-9_-]+$')]]
 
@@ -54,10 +54,11 @@ def validate_value(parameter, value):
         if parameter.nullable:
             return value
         raise ValueError('parameter is not nullable')
-    types = {'integer':(int,), 'number':(int,float), 'string':(str,), 'boolean':(bool,)}
+    types = {'integer':(int,), 'number':(int,float), 'string':(str,), 'boolean':(bool,),
+             'scalar':(int,float,str)}
     if type(value) not in types[parameter.value_type]:
         raise ValueError('parameter type mismatch')
-    if parameter.value_type in ('integer','number'):
+    if parameter.value_type in ('integer','number') or parameter.value_type == 'scalar' and type(value) in (int,float):
         if not math.isfinite(value):
             raise ValueError('nonfinite parameter')
         if parameter.minimum is not None and value < parameter.minimum:
@@ -83,7 +84,7 @@ class ModelCapability(v1.ClosedModel):
     available: bool
     availability_basis: Literal['declaration-module-dependency-probe']
     reason_code: Annotated[str,Field(pattern=r'^(not_implemented_for_version|implementation_missing|dependency_missing_[a-z0-9_]+)$')] | None
-    config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2']
+    config_policy_version: Literal['agent-model-config-v1','agent-model-config-v2','agent-model-config-v3']
     config_policy_digest: v1.Digest
     fixed_execution_defaults: dict[CanonicalID, Scalar]
     parameters: list[Parameter]
@@ -98,7 +99,7 @@ class ModelCapability(v1.ClosedModel):
         specs={p.name:p for p in self.parameters}
         if len(specs)!=len(self.parameters):
             raise ValueError('duplicate parameter')
-        expected={p.name:p.default for p in self.parameters if p.role=='operator_fixed' and p.default_status=='fixed'}
+        expected={p.name:p.default for p in self.parameters if p.role in ('operator_fixed','search_baseline') and p.default_status=='fixed'}
         if expected != self.fixed_execution_defaults:
             raise ValueError('inconsistent defaults')
         if any(self.id not in p.applies_to for p in self.parameters):
@@ -110,7 +111,7 @@ class ModelCapability(v1.ClosedModel):
 
 
 def validate_params(model, params, *, complete=False):
-    specs={p.name:p for p in model.parameters if p.role=='operator_fixed'}
+    specs={p.name:p for p in model.parameters if p.role in ('operator_fixed','search_baseline')}
     if type(params) is not dict or set(params)-set(specs) or (complete and set(params)!=set(specs)):
         raise ValueError('invalid parameter keys')
     return {key:validate_value(specs[key],value) for key,value in params.items()}

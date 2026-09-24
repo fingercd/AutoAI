@@ -39,7 +39,8 @@ def test_complete_typed_empty_state_round_trips_json(state):
                 'evidence', 'recipes', 'knowledge', 'memory', 'decision', 'execution',
                 'budget', 'feedback', 'guard', 'diagnosis', 'replanning', 'candidates',
                 'history', 'recovery', 'finalization'}
-    assert set(state) == expected == set(GraphState.__annotations__)
+    assert set(state) == expected == set(StateModel.model_fields)
+    assert set(GraphState.__annotations__) == expected | {'search_plans'}
     parsed = StateModel.model_validate(state)
     assert all(isinstance(getattr(parsed, key), BaseModel) for key in expected)
     assert all(getattr(parsed, key).model_config['extra'] == 'forbid' for key in expected)
@@ -59,7 +60,7 @@ def test_complete_typed_empty_state_round_trips_json(state):
     assert 'cnn1d' in state['task']['allowed_models']
 
 
-@pytest.mark.parametrize('block', list(GraphState.__annotations__))
+@pytest.mark.parametrize('block', list(StateModel.model_fields))
 def test_each_block_rejects_unknown_fields(state, block):
     state[block]['raw_payload'] = {'private': 'not-allowed'}
     with pytest.raises(ValidationError):
