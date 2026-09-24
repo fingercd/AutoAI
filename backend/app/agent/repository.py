@@ -94,6 +94,7 @@ class AgentSessionRecord:
     contract_version: str | None = None
     capability_snapshot: dict[str, Any] | None = None
     frozen_preparation: dict[str, Any] | None = None
+    payload_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +294,7 @@ class AgentSessionRepository:
             dataset_sha256=row['dataset_sha256'], metadata_version=row['metadata_version'],
             contract_version=row['contract_version'], capability_snapshot=_decode(row['capability_snapshot_json'], None),
             frozen_preparation=_decode_preparation(row['frozen_preparation_json']),
+            payload_hash=row['payload_hash'],
         )
         frozen = record.frozen_preparation
         if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):

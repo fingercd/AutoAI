@@ -110,6 +110,12 @@ def adjust_baselines_for_train(snapshot: dict[str, Any], *, train_count: int,
         if model_id not in snapshot['model_configs']:
             continue
         key = 'pls_components' if model_id == 'pls_da' else 'pca_components'
+        if model_id == 'pca_lda' and (feature_count < 2 or train_count <= class_count):
+            # The catalog excludes this model before making a recipe.  A user
+            # supplied baseline still has to fail instead of being discarded.
+            if model_id in (explicit_configs or {}):
+                raise ValueError('explicit PCA-LDA baseline is not trainable on this data')
+            continue
         if key in (explicit_configs or {}).get(model_id, {}):
             continue
         legal, _ = _legal_domain(model_id, train_count, feature_count, class_count)

@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 
 from backend.tests.test_agent_model_sessions import api
+from backend.tests.test_finite_search import low_feature_api, HEADERS
 from backend.app.runs.repository import RunRepository
 from backend.app.runs.worker import RunWorker
 from backend.app.runs.execution import execute_claimed_run
@@ -11,6 +12,33 @@ from agent_poc.clients.autoai_client import AutoAIClient
 from agent_poc.orchestration.llm import LLMAdapter, LLMConfig
 from agent_poc.orchestration.runtime import RuntimeConfig, start_task, resume_task
 from agent_poc.orchestration.persistence import CallJournal
+
+
+def test_graph_default_low_dimension_session_request_replays(monkeypatch,tmp_path,budget_config):
+    test_client,_,dataset=low_feature_api(monkeypatch,tmp_path,2)
+    llm_config=LLMConfig('http://scripted.invalid/v1','fixture',
+        prompt_version='agent-decision-search-v1',**budget_config)
+    runtime=RuntimeConfig('http://backend.invalid','local',llm_config)
+    wire=CountTransport(test_client)
+    client=AutoAIClient(runtime.backend_url,transport=wire,
+        api_version='v2',execution_profile='train-evidence-recipes-v1',
+        protocol_revision='agent-recipes-revision-v4',processing_mode='fixed',
+        search_mode='fixed',max_trials=1,max_retries=0)
+    llm=LLMAdapter(llm_config,transport=KnowledgeProvider('json_action'))
+    state=start_task(runtime,dataset_id=dataset,allowed_models=['pls_da'],
+        processing_mode='fixed',search_mode='fixed',max_trials=1,
+        decision_mode='recipe_id',knowledge=False,
+        storage=tmp_path/'graph',thread_id='small-pls-graph',client=client,llm=llm,
+        wait=False)
+    assert state['identity']['session_id']
+    request=next(body for method,path,body in wire.calls
+                 if method=='POST' and path=='/api/agent/v2/sessions')
+    assert not request.get('model_configs')
+    replay=test_client.post('/api/agent/v2/sessions',headers=HEADERS,json=request)
+    assert replay.status_code==201,replay.text
+    assert replay.json()['idempotent_replay'] is True
+    assert replay.json()['session_id']==state['identity']['session_id']
+    assert replay.json()['locked_config']['capability_snapshot']['model_configs']['pls_da']['pls_components']==2
 
 
 def test_bounded_search_graph_finalizes_one_run_and_replays(api,tmp_path,budget_config):
