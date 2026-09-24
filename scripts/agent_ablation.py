@@ -510,6 +510,8 @@ def run(args):
             tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
         configuration['llm']=llm.public_config()
         configuration['llm_binding']=llm.fingerprint()
+    row_configs=({model:configs[model] for model in args.allowed_models if model in configs}
+                 if getattr(args,'plan',None) else configs)
     if getattr(args,'plan',None):
         expected=plan['conditions']
         actual=dict(backend_binding=configuration['backend_binding'],scope_binding=configuration['scope_binding'],
@@ -571,7 +573,7 @@ def run(args):
                             state=None
                         if state is None:
                             state=start_task(runtime,dataset_id=args.dataset_id,allowed_models=args.allowed_models,
-                                model_configs=configs,storage=checkpoints,thread_id=args.experiment_id,task_id=args.experiment_id,
+                                model_configs=row_configs,storage=checkpoints,thread_id=args.experiment_id,task_id=args.experiment_id,
                                 seed=args.seed,wait=True,knowledge=args.knowledge=='on',decision_mode=args.decision_mode,knowledge_query=query_config,
                                 processing_mode=processing_mode,fixed_processing=fixed_processing,
                                 evidence_context=not args.hide_evidence_context,risk_context=not args.hide_risk_context,

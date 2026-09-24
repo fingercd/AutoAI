@@ -243,3 +243,54 @@ def test_invalid_pair_is_excluded_from_formal_aggregates():
     assert result['groups']['dynamic']['metrics']['macro_f1']['all']['complete_mean'] is None
     assert result['groups']['fixed']['metrics']['macro_f1']['all']['complete_mean'] is None
     assert result['groups']['dynamic']['metrics']['macro_f1']['DL']['complete_mean']==.5
+
+
+def test_planned_row_uses_only_its_models_from_frozen_global_config(tmp_path,monkeypatch):
+    import httpx
+    from agent_poc.orchestration import runtime
+    from agent_poc.orchestration.llm import LLMConfig
+    from agent_poc.orchestration.state import new_state
+    from scripts import agent_ablation,agent_step2_acceptance
+
+    configs={'logistic_regression':{'logistic_c':2.0},'cnn1d':{'epochs':2}}
+    config=registered_config()
+    config['conditions'].update(scope_binding=digest('test'),
+        model_configs_digest=digest(configs),
+        llm_binding=LLMConfig(BACKEND_URL+'/v1','fixture',protocol='json_action',
+            timeout=180,max_tokens=1024,prompt_version='agent-decision-processing-v1').fingerprint())
+    plan=register_processing_plan(config,'comparison')
+    plan_path=tmp_path/'comparison'/'plan.json'
+    save(plan_path,plan)
+    config_path=tmp_path/'model-configs.json'
+    fixed_path=tmp_path/'fixed-processing.json'
+    save(config_path,configs)
+    save(fixed_path,plan['fixed_processing'])
+    row=plan['rows'][0]
+    observed=[]
+    def start(*args,**kwargs):
+        observed.append(kwargs['model_configs'])
+        state=new_state(dataset_id=row['dataset_id'],allowed_models=row['allowed_models'],
+            backend_fingerprint='a'*64,principal_fingerprint='b'*64,
+            llm_config_fingerprint='c'*64,wire_version='agent-state-v4')
+        state['lifecycle'].update(status='needs_attention',reason_code='fixture_stop')
+        return state
+    monkeypatch.setattr(runtime,'start_task',start)
+    monkeypatch.setattr(agent_step2_acceptance,'code_binding',lambda:dict(
+        head='a'*40,dirty_diff_sha256='b'*64,source_digest='c'*64))
+    class Client:
+        def __init__(self,**kwargs):pass
+        def __enter__(self):return self
+        def __exit__(self,*args):return False
+    monkeypatch.setattr(httpx,'Client',Client)
+    argv=['--experiment-id',row['experiment_id'],'--kind','agent',
+        '--backend-url',BACKEND_URL,'--dataset-id',row['dataset_id'],
+        '--scope-key','test','--storage',str(tmp_path),'--seed','42',
+        '--allowed-models',*row['allowed_models'],'--decision-mode','recipe_id',
+        '--processing-mode',row['processing_mode'],'--fixed-processing',str(fixed_path),
+        '--model-configs',str(config_path),'--defer-test','--plan',str(plan_path),
+        '--knowledge','off','--llm-url',BACKEND_URL+'/v1','--llm-model','fixture']
+    assert agent_ablation.main(argv)==2
+    assert observed==[{'logistic_regression':{'logistic_c':2.0}}]
+    stored=json.loads((tmp_path/row['experiment_id']/'record.json').read_text())
+    assert stored['configuration']['model_configs']==configs
+    assert stored['configuration']['plan_digest']==plan['plan_digest']
