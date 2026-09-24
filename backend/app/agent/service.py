@@ -133,7 +133,15 @@ class AgentService:
                     raw_config={**payload.evaluation.model_dump(), 'seed':payload.seed},
                     principal=principal, expected_sha256=digest, limits=limits)
                 evidence = compute_train_evidence(select_train(view, plan), limits)
-                recipes = compile_recipe_catalog(body, snapshot, evidence, plan)
+                search_plans = {}
+                if payload.protocol_revision == 'agent-recipes-revision-v4':
+                    from ..search_policy import adjust_baselines_for_train
+                    stats = evidence.statistics
+                    adjust_baselines_for_train(snapshot, train_count=stats.observation_count,
+                        feature_count=stats.feature_count, class_count=len(stats.classes),
+                        explicit_configs=payload.model_configs)
+                    body['model_configs'] = snapshot['model_configs']
+                recipes = compile_recipe_catalog(body, snapshot, evidence, plan, search_plans=search_plans)
                 limits.check()
             except PreparationResourceExhausted as exc:
                 raise AgentDomainError('preparation_resource_exhausted','Preparation resource limit exceeded',status_code=422) from exc
@@ -146,12 +154,15 @@ class AgentService:
                 protocol_revision=payload.protocol_revision,
                 preparation=dict(evaluation_plan=plan.safe_reference(),
                     evidence=evidence.model_dump(mode='json'),catalog=recipes.model_dump(mode='json')))
-            if payload.protocol_revision == 'agent-recipes-revision-v3':
+            if payload.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
                 frozen_preparation.update(processing_mode=payload.processing_mode,
                     fixed_processing=payload.fixed_processing)
+            if payload.protocol_revision == 'agent-recipes-revision-v4':
+                frozen_preparation.update(search_mode=payload.search_mode,max_trials=payload.max_trials)
+                frozen_preparation['preparation']['search_plans'] = search_plans
         if requested_profile and payload.decision_mode is not None:
             frozen_preparation['decision_mode'] = payload.decision_mode
-        if requested_profile and payload.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+        if requested_profile and payload.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
             from ..knowledge import freeze_knowledge, KnowledgeError
             try:
                 knowledge = freeze_knowledge(enabled='knowledge' in payload.modules, evidence=evidence, catalog=recipes,
@@ -163,6 +174,13 @@ class AgentService:
             except KnowledgeError as exc:
                 raise AgentDomainError('agent_knowledge_unavailable', 'Knowledge publication unavailable', status_code=503) from exc
             frozen_preparation['preparation']['knowledge'] = knowledge.model_dump(mode='json', exclude_unset=True)
+        if getattr(payload, 'protocol_revision', None) == 'agent-recipes-revision-v4':
+            body_hash = _hash_payload(body)
+            if payload.client_request_id:
+                existing = self.sessions.find_session_request_scoped(
+                    payload.client_request_id, payload_hash=body_hash, principal=principal)
+                if existing is not None:
+                    return self._session_creation_response(existing, created=False, principal=principal)
         session, created = self.sessions.create_session(
             dataset_id=payload.dataset_id,
             selection_metric=payload.selection_metric,
@@ -245,11 +263,14 @@ class AgentService:
                     execution_catalog_digest=session.frozen_preparation['preparation']['catalog']['catalog_digest'],
                     execution_evidence_digest=session.frozen_preparation['preparation']['evidence']['evidence_digest'],
                     execution_search_digest=command.recipe['search_strategy_digest'])
-                if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3':
+                if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
                     from ..processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
                     prepared.update(execution_processing_policy_version=PROCESSING_POLICY_VERSION,
                         execution_processing_digest=processing_execution_digest(
                             action['model_type'],action['normalization'],action['class_balance']))
+                if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4':
+                    plan_digest = command.recipe['search_plan_digest']
+                    prepared['execution_search_plan'] = session.frozen_preparation['preparation']['search_plans'][plan_digest]
             full_digest = policy.command_digest(session, command)
         if session.state != 'open':
             raise AgentSessionClosed()
@@ -415,12 +436,17 @@ class AgentService:
                     or record.config.get('execution_evidence_digest')!=prepared['evidence']['evidence_digest']
                     or record.config.get('execution_search_digest')!=recipe['search_strategy_digest']):
                 raise AgentDomainError('agent_metadata_invalid','Run differs from frozen execution recipe',status_code=409)
-            if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3':
+            if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
                 from ..processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
                 if (record.config.get('execution_processing_policy_version') != PROCESSING_POLICY_VERSION or
                         record.config.get('execution_processing_digest') != processing_execution_digest(
                             recipe['model_id'],recipe['preprocessing']['normalization'],recipe['class_balance'])):
                     raise AgentDomainError('agent_metadata_invalid','Run processing differs from frozen recipe',status_code=409)
+            if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4':
+                plan_digest = recipe.get('search_plan_digest')
+                plan = session.frozen_preparation['preparation']['search_plans'].get(plan_digest)
+                if plan is None or record.config.get('execution_search_plan') != plan:
+                    raise AgentDomainError('agent_metadata_invalid','Run search differs from frozen recipe',status_code=409)
 
     @classmethod
     def _experiment_response(cls, session: AgentSessionRecord, experiment: AgentExperimentRecord,
@@ -559,16 +585,20 @@ def _preparation_wire(session):
         return {}
     prepared = frozen['preparation']
     wire = {key: prepared[key] for key in ('evaluation_plan','evidence','catalog')}
-    if frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+    if frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
         wire['knowledge'] = prepared['knowledge'].wire()
+    if frozen['protocol_revision'] == 'agent-recipes-revision-v4':
+        wire['search_plans'] = prepared['search_plans']
     return dict(execution_profile=frozen['execution_profile'], protocol_revision=frozen['protocol_revision'], preparation=wire,
                 **({'decision_mode': frozen['decision_mode']} if 'decision_mode' in frozen else {}),
                 **({'processing_mode': frozen['processing_mode'], 'fixed_processing': frozen['fixed_processing']}
-                   if frozen['protocol_revision'] == 'agent-recipes-revision-v3' else {}))
+                   if frozen['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4') else {}),
+                **({'search_mode': frozen['search_mode'], 'max_trials': frozen['max_trials']}
+                   if frozen['protocol_revision'] == 'agent-recipes-revision-v4' else {}))
 
 
 def _decision_wire(session, experiment):
     frozen = session.frozen_preparation
-    if frozen is None or frozen['protocol_revision'] not in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+    if frozen is None or frozen['protocol_revision'] not in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
         return {}
     return dict(decision_metadata=experiment.decision_metadata.model_dump(mode='json'))

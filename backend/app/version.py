@@ -26,7 +26,7 @@ ARTIFACT_MANIFEST_CONTRACT_VERSION = 'run-artifact-manifest-v2'
 RUN_SUMMARY_CONTRACT_VERSION = 'v1'
 
 # Worker must understand frozen processing semantics before it claims new Runs.
-WORKER_CONTRACT_VERSION = 'training-worker-processing-v1'
+WORKER_CONTRACT_VERSION = 'training-worker-search-v1'
 
 # 汇总字典：一次性暴露全部 Web 端契约版本，供契约/健康类接口原样返回，
 # 前端可据此快速判断前后端契约是否匹配；键名同样是公开协议的一部分。

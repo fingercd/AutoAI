@@ -1,0 +1,67 @@
+{
+  "pls_da": {
+    "ref": "pls_da-train-bounded-validation-search-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "05bb26ba8cf8be990bfa4a9fbc587aa4208781f5899ce8c5b69f85a801107b69"
+  },
+  "pca_lda": {
+    "ref": "pca_lda-train-bounded-validation-search-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "4992d8c518c381b48eb6ddb964264192a80e06316cead1a5ec3e23f278034b8b"
+  },
+  "logistic_regression": {
+    "ref": "logistic_regression-train-bounded-validation-search-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "d1ea85d6041056dfd9e8a936737141f41622e347ea192e1687821aa753cc6ed3"
+  },
+  "svm": {
+    "ref": "svm-train-bounded-validation-search-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "e522d91e4f9dfc3c1ec1ebe6270eed051740de701be0ab8ac6594f86cb8a013b"
+  },
+  "random_forest": {
+    "ref": "rf-oob-balanced-accuracy-accuracy-stable-order-v1",
+    "version": "training-execution-policy-v1",
+    "digest": "401861090e63506c17d8cfefcc14d667ad61f112873797b199f1ec954acfd753"
+  },
+  "xgboost": {
+    "ref": "xgboost-twelve-candidate-validation-search-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "f9e28eb729ee27249e7e3b2e79707fd9c06f3f45e90f0521fba12f81cac73600"
+  },
+  "pca_mlp": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "7209c3b8eaa7b7df70b4b32774773d49bcb963a35cd68672f943c5db263e64e2"
+  },
+  "cnn1d": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "e09ec1f1e2ef530c378775afc75610914405467df9efa4e00ee77284625ae296"
+  },
+  "cnn1d_se": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "66159230193dbc27c7f7280a2a7dd954449c66ba16f29c7fcc90b5cd735520d5"
+  },
+  "resnet1d": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "514a8342d28ea3ceb82a50c5f5c0ce5d85a009ae0353abad14f8c50701ad7987"
+  },
+  "inception1d": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "ad6e0f58858fd45b03b959f492eaf3a6129695bacc4dd47a4930241098e3c760"
+  },
+  "tcn1d": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "f0c71ae4c5e8a4aa7fd5fdb18632fa7dc158f63a8b6161a975f8d524d99632e0"
+  },
+  "cnn_transformer1d": {
+    "ref": "train-only-profile-v2",
+    "version": "training-execution-policy-v1",
+    "digest": "3004bd3f4e32f3c76a32369e02640329c2432fccb472223aa0b270c2af46c42f"
+  }
+}

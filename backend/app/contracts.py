@@ -44,6 +44,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'agent_config_policy_version', 'agent_config_policy_digest', 'evaluation_plan_digest',
         'execution_recipe_digest', 'execution_catalog_digest', 'execution_evidence_digest', 'execution_search_digest',
         'execution_processing_policy_version', 'execution_processing_digest',
+        'execution_search_plan',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
     }
@@ -86,6 +87,12 @@ class TrainingSpec:
         """验证不依赖实际数据内容的关键约束，并规范化兼容别名。"""
 
         values = dict(self.values)
+        if 'execution_search_plan' in values:
+            plan = values['execution_search_plan']
+            if type(plan) is not dict or plan.get('schema_version') != 'search-plan-v1':
+                raise TrainingConfigValidationError('invalid execution search plan')
+            if 'random_forest_search_iterations' in values:
+                raise TrainingConfigValidationError('random_forest_search_iterations is legacy; use max_trials')
         for field in ('execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest','execution_processing_digest'):
             if field in values:
                 import re

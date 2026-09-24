@@ -245,14 +245,14 @@ def call(method, principal, revision=None, **kwargs):
 @current_router.get('/health')
 def current_health(revision: str | None = Depends(revision_header)):
     result = agent_health()
-    snapshot = model_capability_snapshot()
+    snapshot = model_capability_snapshot(search_revision=revision == 'agent-recipes-revision-v4')
     result.update(contract_version=V2, **snapshot)
     result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
     if not any(m['available'] for m in snapshot['models']):
         result['status'] = 'unavailable'
-    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'):
+    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
         result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
         from ..agent.capabilities import module_catalog
         result['modules'] = module_catalog(revision)
     return result

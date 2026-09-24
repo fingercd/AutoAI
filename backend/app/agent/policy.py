@@ -16,7 +16,9 @@ def require_version(session, version):
 
 
 def freeze_session(payload, previous=None):
-    snapshot = previous if previous is not None else model_capability_snapshot()
+    search_revision = getattr(payload, 'protocol_revision', None) == 'agent-recipes-revision-v4'
+    snapshot = previous if previous is not None else (model_capability_snapshot(search_revision=True)
+        if search_revision else model_capability_snapshot())
     policies = {m['id']: m for m in snapshot['models']}
     configs = {}
     for name in payload.allowed_models:
@@ -49,7 +51,10 @@ def admit_action(session, action):
     if model in RETIRED_MODEL_ALIASES:
         raise AgentDomainError('model_retired', 'DSCARNet has been retired', status_code=409)
     policy = next(m for m in session.capability_snapshot['models'] if m['id'] == model)
-    if not compatible_frozen_policy(model, policy, action['model_params'], current=model_policy(model)):
+    search_revision = bool(session.frozen_preparation and session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4')
+    current_policy = (model_policy(model, search_revision=True)
+                      if search_revision else model_policy(model))
+    if not compatible_frozen_policy(model, policy, action['model_params'], current=current_policy):
         raise AgentDomainError('agent_capability_changed', 'Model execution policy changed', status_code=409)
     if not model_availability(model)[0]:
         raise AgentDomainError('agent_model_unavailable', 'Model is no longer executable', status_code=409)
@@ -106,7 +111,7 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
             raise AgentDomainError('agent_invalid_action', 'Recipe profile accepts only recipe selection', status_code=422)
         from ..recipes import RecipeCatalog, validate_catalog_binding
         catalog = validate_catalog_binding(RecipeCatalog.model_validate(session.frozen_preparation['preparation']['catalog']),session.capability_snapshot).model_dump(mode='json')
-        processing_revision = session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3'
+        processing_revision = session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4')
         if structured:
             if processing_revision:
                 snapshot = session.capability_snapshot
@@ -148,7 +153,7 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
         body.update(contract_version=V2,execution_profile=session.frozen_preparation['execution_profile'])
         from .contracts import CreateKnowledgeExperimentRequest
         metadata = None
-        modern = session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3')
+        modern = session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4')
         if modern != isinstance(payload, (CreateKnowledgeExperimentRequest, CreateStructuredExperimentRequest)):
             raise AgentDomainError('agent_version_incompatible', 'Knowledge request revision mismatch', status_code=409)
         if modern:
@@ -176,6 +181,13 @@ def normalize_experiment(session, payload) -> ExperimentCommand:
 def admit_command(session, command):
     admit_action(session, command.action)
     if command.recipe is not None:
+        if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4':
+            from ..search_policy import _digest_source
+            plans = session.frozen_preparation['preparation']['search_plans']
+            bound = command.recipe.get('search_plan_digest')
+            if bound not in plans or plans[bound]['source_digest'] != _digest_source():
+                raise AgentDomainError('agent_capability_changed', 'Execution search plan changed', status_code=409)
+            return
         from ..model_config import compatible_search_strategy_binding
         if not compatible_search_strategy_binding(
             command.recipe['model_id'], command.recipe['search_strategy_digest'],
@@ -188,6 +200,12 @@ def command_digest(session, command):
     if command.recipe is None:
         return scientific_digest(session, command.action)
     prepared=session.frozen_preparation['preparation']
+    if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4':
+        return semantic_digest(dict(profile=session.frozen_preparation['execution_profile'],
+            dataset_sha256=session.dataset_sha256, plan_digest=prepared['evaluation_plan']['plan_digest'],
+            model_id=command.recipe['model_id'], normalization=command.action['normalization'],
+            class_balance=command.action['class_balance'], model_params=command.action['model_params'],
+            search_plan_digest=command.recipe['search_plan_digest'], seed=session.seed))
     if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v3':
         return semantic_digest(dict(profile=session.frozen_preparation['execution_profile'],
             processing_policy_version=command.recipe['processing_policy_version'],

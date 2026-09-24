@@ -236,7 +236,7 @@ class RunWorker:
             )
         # lease 丢失/状态被并发改写：本 worker 的结果作废，返回 True 继续下一轮
         except InvalidRunTransition:
-            if self.discard_artifacts is not None:
+            if self.discard_artifacts is not None and 'execution_search_plan' not in run.config:
                 self.discard_artifacts(run.run_id)
             return True
         except Exception as exc:
