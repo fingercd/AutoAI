@@ -10,6 +10,8 @@ import hashlib
 import json
 import math
 import re
+import time
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from agent_poc.clients.autoai_client import Transport, validate_base_url, validate_identifier
@@ -51,7 +53,7 @@ class LLMConfig:
                 '://' in self.model or
                 self.model.lower().startswith('file:')):
             raise ValueError('LLM served model ID 无效')
-        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1','agent-decision-knowledge-v1','agent-decision-processing-v1'):
+        if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1','agent-decision-knowledge-v1','agent-decision-processing-v1','agent-decision-search-v1'):
             raise ValueError('Unknown Prompt version')
         if self.protocol not in ('json_action', 'native_tools'):
             raise ValueError('必须明确选择受支持的 LLM 协议')
@@ -75,7 +77,7 @@ class LLMConfig:
                 'timeout': self.timeout, 'max_tokens': self.max_tokens,
                 'max_response_bytes': self.max_response_bytes,
                 'temperature': self.temperature, 'top_p': self.top_p,
-                'prompt_version': self.prompt_version, 'context_version': ('agent-context-processing-v1' if self.prompt_version=='agent-decision-processing-v1' else 'agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
+                'prompt_version': self.prompt_version, 'context_version': ('agent-context-search-v1' if self.prompt_version=='agent-decision-search-v1' else 'agent-context-processing-v1' if self.prompt_version=='agent-decision-processing-v1' else 'agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
 
         if self.tokenizer_path is not None:
             from pathlib import Path
@@ -287,6 +289,7 @@ class LLMAdapter:
                  transport: Transport | None = None):
         self.config, self._token = config, token
         self._transport = transport or _BoundedHttpxTransport(config.max_response_bytes)
+        self.last_request_measurement: dict[str, Any] | None = None
 
     def __repr__(self):
         return f'LLMAdapter(protocol={self.config.protocol!r}, token=<redacted>)'
@@ -298,9 +301,9 @@ class LLMAdapter:
             raise LLMError('llm_context_invalid') from None
         if projected['context_version'] != self.config.public_config()['context_version']:
             raise LLMError('llm_context_invalid')
-        processing_profile = projected['context_version']=='agent-context-processing-v1'
-        knowledge_profile = projected['context_version'] in ('agent-context-knowledge-v1','agent-context-processing-v1')
-        recipe_profile = projected['context_version'] in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1')
+        processing_profile = projected['context_version'] in ('agent-context-processing-v1','agent-context-search-v1')
+        knowledge_profile = projected['context_version'] in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1')
+        recipe_profile = projected['context_version'] in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1')
         step2 = projected['context_version'] == 'agent-context-step2-v1'
         tool = projected['allowed_actions'][0]
         schema = json.loads(json.dumps(TOOL_SCHEMAS[tool]))
@@ -455,6 +458,7 @@ class LLMAdapter:
 
     def propose(self, phase: str, context: dict[str, Any], *,
                 timeout_seconds: float | None = None, repair_code: str | None = None) -> Proposal:
+        self.last_request_measurement = None
         if repair_code is not None and (type(repair_code) is not str or repair_code not in _REPAIR_CODES):
             raise LLMError('llm_context_invalid') from None
         if timeout_seconds is not None and (
@@ -469,18 +473,41 @@ class LLMAdapter:
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if self._token:
             headers['Authorization'] = f'Bearer {self._token}'
+        sent_at = datetime.now(timezone.utc).isoformat()
+        started = time.monotonic()
         try:
             response = self._transport.request('POST', self.config.base_url + '/chat/completions',
                                                headers=headers, json=request, timeout=request_timeout)
         except LLMError:
+            self.last_request_measurement = dict(request_started_at_utc=sent_at,
+                response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
+                request_duration_seconds=time.monotonic()-started, outcome='failed',
+                model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
+                protocol=self.config.protocol, phase=phase)
             raise LLMError('llm_output_too_large') from None
         except Exception as exc:
+            self.last_request_measurement = dict(request_started_at_utc=sent_at,
+                response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
+                request_duration_seconds=time.monotonic()-started, outcome='failed',
+                model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
+                protocol=self.config.protocol, phase=phase)
             code = 'llm_timeout' if isinstance(exc, TimeoutError) or 'timeout' in type(exc).__name__.lower() else 'llm_unavailable'
             raise LLMError(code) from None
+        self.last_request_measurement = dict(request_started_at_utc=sent_at,
+            response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
+            request_duration_seconds=time.monotonic()-started, outcome='response_received',
+            model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
+            protocol=self.config.protocol, phase=phase)
         usage = TokenUsage()
         try:
             if type(response.status_code) is not int or not 200 <= response.status_code < 300:
-                raise LLMError('llm_http_error')
+                try:
+                    failure_payload = response.json()
+                    if type(failure_payload) is dict:
+                        usage = _usage(failure_payload)
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                raise LLMError('llm_http_error', usage=usage)
             raw_content = getattr(response, 'content', None)
             if isinstance(raw_content, bytes):
                 if len(raw_content) > self.config.max_response_bytes:

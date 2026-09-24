@@ -145,15 +145,17 @@ class KnowledgePreparation(Preparation):
 
 
 class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4']
     preparation: KnowledgePreparation
     processing_mode: Literal['fixed','dynamic'] | None = None
     fixed_processing: dict[str,dict[str,str]] | None = None
+    search_mode: Literal['fixed','bounded'] | None = None
+    max_trials: int | None = None
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
-        if set(value)-{'train_evidence','legal_recipes','knowledge','dynamic_preprocessing'}:
+        if set(value)-{'train_evidence','legal_recipes','knowledge','dynamic_preprocessing','bounded_hpo'}:
             raise ValueError('invalid knowledge modules')
         return value
 
@@ -161,7 +163,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
     def module_binding(self):
         if ('knowledge' in self.modules)!=(self.preparation.knowledge.status=='ready'):
             raise ValueError('knowledge switch mismatch')
-        if self.protocol_revision == 'agent-recipes-revision-v3':
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
             if (self.processing_mode is None or self.fixed_processing is None or
                     ('dynamic_preprocessing' in self.modules) != (self.processing_mode == 'dynamic')):
                 raise ValueError('processing switch mismatch')
@@ -169,6 +171,18 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
                 raise ValueError('processing catalog mismatch')
         elif self.processing_mode is not None or self.fixed_processing is not None or 'dynamic_preprocessing' in self.modules:
             raise ValueError('legacy knowledge processing mismatch')
+        if self.protocol_revision == 'agent-recipes-revision-v4':
+            from backend.app.search_policy import validate_search_options
+            if (self.search_mode is None or self.max_trials != validate_search_options(self.search_mode, self.max_trials)
+                    or ('bounded_hpo' in self.modules) != (self.search_mode == 'bounded')):
+                raise ValueError('search switch mismatch')
+            if self.preparation.catalog.search_mode != self.search_mode or self.preparation.catalog.max_trials != self.max_trials:
+                raise ValueError('search catalog mismatch')
+            plans = self.preparation.search_plans
+            if plans is None or any(recipe.search_plan_digest not in plans for recipe in self.preparation.catalog.recipes):
+                raise ValueError('search plans missing')
+        elif self.search_mode is not None or self.max_trials is not None or 'bounded_hpo' in self.modules:
+            raise ValueError('legacy knowledge search mismatch')
         return self
 
 
@@ -194,21 +208,30 @@ class ProcessingCapability(ClosedModel):
     reason: None
 
 
+class SearchCapability(ClosedModel):
+    available: Literal[True]
+    status: Literal['ready']
+    schema_version: Literal['finite-hpo-v1']
+    reason: None
+
+
 class KnowledgeHealthResponse(HealthResponse):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4']
     execution_profiles: list[Literal['train-evidence-recipes-v1']]
-    modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability]
+    modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability | SearchCapability]
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
         from agent_poc.tools import MODULES
-        if set(value)-set(MODULES)-{'knowledge','dynamic_preprocessing'} or 'knowledge' not in value:
+        if set(value)-set(MODULES)-{'knowledge','dynamic_preprocessing','bounded_hpo'} or 'knowledge' not in value:
             raise ValueError('unknown module')
         if not isinstance(value['knowledge'],KnowledgeCapability):
             raise ValueError('knowledge capability missing')
         if 'dynamic_preprocessing' in value and not isinstance(value['dynamic_preprocessing'],(v1.ModuleCapability,ProcessingCapability)):
             raise ValueError('processing capability invalid')
+        if 'bounded_hpo' in value and not isinstance(value['bounded_hpo'], (v1.ModuleCapability, SearchCapability)):
+            raise ValueError('search capability invalid')
         return value
 
 

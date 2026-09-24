@@ -1,6 +1,6 @@
 """Frozen Train evidence, finite recipes and their response bindings."""
 from __future__ import annotations
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Any
 import math
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from . import contracts as v1
@@ -70,7 +70,7 @@ class TrainEvidence(ClosedModel):
 
 class Recipe(ClosedModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    recipe_schema_version: Literal['execution-recipe-v1','execution-recipe-v2']='execution-recipe-v1'
+    recipe_schema_version: Literal['execution-recipe-v1','execution-recipe-v2','execution-recipe-v3']='execution-recipe-v1'
     recipe_id: str
     recipe_digest: str
     model_id: str
@@ -84,6 +84,8 @@ class Recipe(ClosedModel):
     search_strategy_ref: str
     search_strategy_version: str
     search_strategy_digest: str
+    search_plan_digest: str | None = None
+    search_policy_version: str | None = None
     hard_constraints: list[str]
     evidence_applicability: Literal['eligible']='eligible'
     cost_description: str
@@ -99,7 +101,7 @@ class Recipe(ClosedModel):
 
 class RecipeCatalog(ClosedModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    catalog_version: Literal['recipe-catalog-v1','recipe-catalog-v2']='recipe-catalog-v1'
+    catalog_version: Literal['recipe-catalog-v1','recipe-catalog-v2','recipe-catalog-v3']='recipe-catalog-v1'
     catalog_digest: str
     dataset_sha256: str
     plan_digest: str
@@ -109,6 +111,8 @@ class RecipeCatalog(ClosedModel):
     excluded_models: dict[str,str]
     processing_mode: Literal['fixed','dynamic'] | None = None
     fixed_processing: dict[str,dict[str,str]] | None = None
+    search_mode: Literal['fixed','bounded'] | None = None
+    max_trials: int | None = None
 
 
 class EvaluationPlanReference(ClosedModel):
@@ -126,6 +130,7 @@ class Preparation(ClosedModel):
     evaluation_plan: EvaluationPlanReference
     evidence: TrainEvidence
     catalog: RecipeCatalog
+    search_plans: dict[str,dict[str,Any]] | None = None
 
     @model_validator(mode='after')
     def bound(self):
@@ -198,9 +203,11 @@ def validate_catalog_binding(catalog, snapshot):
         frozen_policies=[{k:v for k,v in policies[m].items() if k not in
             ('display_name','available','reason_code','availability_basis')} for m in allowed],
         recipe_digests=[r.recipe_digest for r in catalog.recipes])
-    if catalog.catalog_version == 'recipe-catalog-v2':
+    if catalog.catalog_version in ('recipe-catalog-v2','recipe-catalog-v3'):
         binding.update(processing_mode=catalog.processing_mode,fixed_processing=catalog.fixed_processing,
             processing_policy_version='finite-processing-v1')
+    if catalog.catalog_version == 'recipe-catalog-v3':
+        binding.update(search_mode=catalog.search_mode,max_trials=catalog.max_trials)
     if (allowed!=sorted(set(allowed)) or catalog.catalog_digest!=digest(binding)
             or [r.recipe_id for r in catalog.recipes]!=sorted(set(r.recipe_id for r in catalog.recipes))):
         raise ValueError('catalog binding mismatch')

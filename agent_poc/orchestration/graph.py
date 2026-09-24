@@ -124,11 +124,12 @@ class Nodes:
 
     @staticmethod
     def preparation(state):
-        if state['versions']['state'] not in ('agent-state-v3','agent-state-v4','agent-state-v5') or state['evidence']['content'] is None:
+        if state['versions']['state'] not in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') or state['evidence']['content'] is None:
             return None
         return dict(evaluation_plan=state['recipes']['evaluation_plan'],
                     evidence=state['evidence']['content'],catalog=state['recipes']['catalog'],
-                    **({'knowledge':state['knowledge']['snapshot']} if state['versions']['state'] in ('agent-state-v4','agent-state-v5') else {}))
+                    **({'knowledge':state['knowledge']['snapshot']} if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6') else {}),
+                    **({'search_plans':state['search_plans']} if state['versions']['state']=='agent-state-v6' else {}))
 
     def restore_client_contract(self, state):
         """Rehydrate only checkpointed facts, including when prepare is skipped."""
@@ -137,23 +138,34 @@ class Nodes:
                 self.deps.client.restore_recipe_revision(state['versions']['protocol_revision'])
                 self.deps.client.decision_mode = state['task'].get('decision_mode')
                 self.deps.client.processing_mode = state['task'].get('processing_mode')
+                self.deps.client.search_mode = state['task'].get('search_mode')
+                self.deps.client.max_trials = state['task'].get('max_trials')
             from agent_poc.tools import build_tool_schemas
             source = state['capabilities']['frozen_snapshot'] or state['capabilities']['wire_snapshot']
             if source is not None:
                 health = {k:v for k,v in source.items() if k != 'model_configs'}
                 health.update(contract_version='agent-session-v2',status='ready',modules={},capabilities=dict(create_session=True,create_experiment=True,read_session=True,read_feedback=True,finalize_session=True))
                 self.deps.client.tool_schemas = build_tool_schemas(health)
-                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
                     self.deps.client._recipe_tools()
             frozen = state['capabilities']['frozen_snapshot']
             if frozen is not None and state['identity']['session_id'] is not None:
-                self.deps.client.restore_frozen_session(state['identity']['session_id'], frozen, **({'preparation':self.preparation(state)} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5') else {}))
+                self.deps.client.restore_frozen_session(state['identity']['session_id'], frozen, **({'preparation':self.preparation(state)} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else {}))
 
     def prepare(self, raw):
         state = validate_state(raw).model_dump(mode='json')
         self.restore_client_contract(state)
         state = self.account(state)
         action = state['lifecycle']['next_action']
+        if (state['lifecycle']['status']=='waiting' and action=='observe' and
+                state['execution']['run_id'] and
+                (state['recovery']['next_wake_at'] is None or
+                 self.deps.clock() >= state['recovery']['next_wake_at'] or
+                 self.deps.clock() >= state['budget']['deadline_at'])):
+            previous=state['recovery']['pending_operation']
+            if previous is not None:
+                self.deps.journal.end_monitor_wait(operation_id=previous['operation_id'],
+                    status='interrupted' if self.deps.clock()>=state['budget']['deadline_at'] else 'succeeded')
         if action is None:
             return state
         if self.deps.clock() >= state['budget']['deadline_at']:
@@ -181,21 +193,25 @@ class Nodes:
             request_extra = {}
             if state['versions']['api'] == 'agent-session-v2':
                 from .state import SessionRequestV2 as request_type
-                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
                     from .state import RecipeSessionRequest as request_type
-                    if state['versions']['state'] in ('agent-state-v4','agent-state-v5'):
+                    if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
                         from .state import KnowledgeSessionRequest as request_type
-                    if state['versions']['state']=='agent-state-v5':
+                    if state['versions']['state'] in ('agent-state-v5','agent-state-v6'):
                         from .state import ProcessingSessionRequest as request_type
+                    if state['versions']['state']=='agent-state-v6':
+                        from .state import SearchSessionRequest as request_type
                 request_extra['model_configs'] = {k:v for k,v in task['model_configs'].items() if k in state['capabilities']['eligible_models']}
             if task.get('knowledge_query') is not None:
                 request_extra['knowledge_query'] = task['knowledge_query']
             if task.get('decision_mode') is not None:
                 request_extra['decision_mode'] = task['decision_mode']
-            if state['versions']['state']=='agent-state-v5':
+            if state['versions']['state'] in ('agent-state-v5','agent-state-v6'):
                 request_extra.update(processing_mode=task['processing_mode'],
                     fixed_processing={key:value for key,value in task['fixed_processing'].items()
                                       if key in state['capabilities']['eligible_models']})
+            if state['versions']['state']=='agent-state-v6':
+                request_extra.update(search_mode=task['search_mode'],max_trials=task['max_trials'])
             content = request_type(**request_extra, dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
                 allowed_models=state['capabilities']['eligible_models'], seed=task['seed'],
                 client_request_id=request_id, context_policy=state['module_policy']['context_policy']).model_dump(mode='json')
@@ -237,7 +253,9 @@ class Nodes:
         call_id = self.deps.journal.begin(operation_id=op_id, kind='api', name=name,
             maximum=int(state['budget']['api_calls']['limit']),
             max_attempts=state['budget']['max_operation_attempts'],
-            deadline=state['budget']['deadline_at'], now=self.deps.clock())
+            deadline=state['budget']['deadline_at'], now=self.deps.clock(),
+            task_id=state['identity']['task_id'],session_id=state['identity']['session_id'],
+            run_id=state['execution']['run_id'])
         original_timeout = getattr(self.deps.client, 'timeout', None)
         if original_timeout is not None:
             self.deps.client.timeout = min(original_timeout, state['budget']['deadline_at'] - self.deps.clock())
@@ -258,7 +276,7 @@ class Nodes:
         return result
 
     def llm_call(self, state, phase, context):
-        modern=state['versions']['state'] in ('agent-state-v4','agent-state-v5')
+        modern=state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6')
         if modern:
             from .llm import StoredProposal, store_proposal
             stored=self.deps.journal.proposal(state['recovery']['pending_operation']['operation_id'])
@@ -268,7 +286,9 @@ class Nodes:
             operation_id=state['recovery']['pending_operation']['operation_id'], kind='llm', name=phase,
             maximum=int(state['budget']['llm_calls']['limit']),
             max_attempts=state['budget']['max_repair_attempts'] + 1,
-            deadline=state['budget']['deadline_at'], now=self.deps.clock())
+            deadline=state['budget']['deadline_at'], now=self.deps.clock(),
+            task_id=state['identity']['task_id'],session_id=state['identity']['session_id'],
+            run_id=state['execution']['run_id'])
         try:
             if isinstance(self.deps.llm, LLMAdapter):
                 operation_id = state['recovery']['pending_operation']['operation_id']
@@ -282,11 +302,13 @@ class Nodes:
         except LLMError as error:
             self.deps.journal.finish(call_id, error_code=error.code,
                 input_tokens=error.usage.prompt_tokens, output_tokens=error.usage.completion_tokens,
-                total_tokens=error.usage.total_tokens, token_status=error.usage.status)
+                total_tokens=error.usage.total_tokens, token_status=error.usage.status,
+                measurement=getattr(self.deps.llm,'last_request_measurement',None))
             raise
         self.deps.journal.finish(call_id, input_tokens=proposal.usage.prompt_tokens,
                                  output_tokens=proposal.usage.completion_tokens,
                                  total_tokens=proposal.usage.total_tokens, token_status=proposal.usage.status,
+                                 measurement=getattr(self.deps.llm,'last_request_measurement',None),
                                  **({'proposal':store_proposal(proposal,context)} if modern else {}))
         return proposal
 
@@ -348,6 +370,11 @@ class Nodes:
                     reason_code=state['lifecycle']['reason_code'],
                     safe_record_ref=f"call-{rows[-1]['id']}").model_dump(mode='json')
                 state = apply_patch(state, {'history': {'events': [event]}})
+        if (state['lifecycle']['status']=='waiting' and state['lifecycle']['next_action']=='observe'
+                and state['execution']['run_id']):
+            self.deps.journal.begin_monitor_wait(operation_id=operation_id,
+                run_id=state['execution']['run_id'],reason_code=state['execution']['run_status'],
+                task_id=state['identity']['task_id'],session_id=state['identity']['session_id'])
         return state
 
     def retry(self, state, action, reason):
@@ -401,18 +428,24 @@ class Nodes:
             'seed':task['seed'], 'evaluation_config':task['evaluation_config'], 'modules':[],
             'context_policy':{key:state['module_policy']['context_policy'][key]
                               for key in ('source_role','case_write')}}
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
             expected['modules']=['train_evidence','legal_recipes']
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5') and state['module_policy']['knowledge']['enabled']:
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6') and state['module_policy']['knowledge']['enabled']:
                 expected['modules'].append('knowledge')
-            if state['versions']['state']=='agent-state-v5' and state['module_policy']['dynamic_preprocessing']['enabled']:
+            if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and state['module_policy']['dynamic_preprocessing']['enabled']:
                 expected['modules'].append('dynamic_preprocessing')
+            if state['versions']['state']=='agent-state-v6' and state['module_policy']['bounded_hpo']['enabled']:
+                expected['modules'].append('bounded_hpo')
             expected['context_policy'].update({k:state['module_policy']['context_policy'][k] for k in ('evidence','risks')})
-        if state['versions']['state']=='agent-state-v5' and (
+        if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and (
                 locked.get('processing_mode') != task['processing_mode'] or
                 locked.get('fixed_processing') != {key:value for key,value in task['fixed_processing'].items()
                     if key in state['capabilities']['eligible_models']}):
             raise ValueError('locked processing differs from frozen task')
+        if state['versions']['state']=='agent-state-v6' and (
+                locked.get('search_mode') != task['search_mode'] or
+                locked.get('max_trials') != task['max_trials']):
+            raise ValueError('locked search differs from frozen task')
         if locked.get('decision_mode') != task.get('decision_mode'):
             raise ValueError('locked decision mode mismatch')
         if any(locked[key] != value for key,value in expected.items()):
@@ -429,13 +462,15 @@ class Nodes:
                     resolved = {**model.fixed_execution_defaults, **validate_params(model,overrides)}
                     if resolved != frozen.model_configs[name]:
                         raise ValueError('operator parameters changed')
-            self.deps.client.restore_frozen_session(response['session_id'], locked['capability_snapshot'], **({'preparation':locked['preparation']} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5') else {}))
+            self.deps.client.restore_frozen_session(response['session_id'], locked['capability_snapshot'], **({'preparation':locked['preparation']} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else {}))
         task_extra={}
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
             prepared=locked['preparation']
             extra.update(evidence={'status':'ready','content':prepared['evidence']},
                 recipes={'status':'ready','catalog':prepared['catalog'],'evaluation_plan':prepared['evaluation_plan']})
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5'):
+            if state['versions']['state']=='agent-state-v6':
+                extra['search_plans']=prepared['search_plans']
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
                 knowledge=prepared['knowledge']
                 extra['knowledge']=dict(status=knowledge['status'],prior_version=knowledge['knowledge_set_version'],
                     matches=knowledge['matches'],snapshot=knowledge)
@@ -450,11 +485,13 @@ class Nodes:
     def session(self, state):
         content = dict(state['recovery']['pending_operation']['content'])
         content.pop('evaluation')  # Client alone translates the fixed public request to HTTP.
-        content['context_policy'] = {k:content['context_policy'][k] for k in (('source_role','case_write','evidence','risks') if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5') else ('source_role','case_write'))}
-        if state['versions']['state'] in ('agent-state-v4','agent-state-v5'):
+        content['context_policy'] = {k:content['context_policy'][k] for k in (('source_role','case_write','evidence','risks') if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else ('source_role','case_write'))}
+        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
             content['modules']=['train_evidence','legal_recipes']+(['knowledge'] if state['module_policy']['knowledge']['enabled'] else [])
-        if state['versions']['state']=='agent-state-v5' and state['module_policy']['dynamic_preprocessing']['enabled']:
+        if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and state['module_policy']['dynamic_preprocessing']['enabled']:
             content['modules'].append('dynamic_preprocessing')
+        if state['versions']['state']=='agent-state-v6' and state['module_policy']['bounded_hpo']['enabled']:
+            content['modules'].append('bounded_hpo')
         response = self.call(state, 'start_ml_session', content)
         state = self.check_locked(state, response)
         return _next(state, 'inspect_session')
@@ -463,7 +500,7 @@ class Nodes:
         keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
         action = {k:response['effective_action'][k] for k in keys}
         expected = state['execution']['submission_content']
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
             recipe=next(r for r in state['recipes']['catalog']['recipes'] if r['recipe_id']==expected['recipe_id'])
             expected={**recipe['fixed_execution_config'],'model_params':state['capabilities']['frozen_snapshot']['model_configs'][recipe['model_id']]}
         if action != {k:expected[k] for k in action}:
@@ -502,7 +539,7 @@ class Nodes:
         context = selection_context(task=state['task'], models=state['capabilities']['eligible_models'],
             session_id=state['identity']['session_id'], client_request_id=state['identity']['experiment_request_id'],
             model_configs=state['capabilities']['frozen_snapshot']['model_configs'] if state['versions']['api'] == 'agent-session-v2' else None)
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
             context=recipe_selection_context(task=state['task'],session_id=state['identity']['session_id'],
                 preparation=self.preparation(state),context_policy=state['module_policy']['context_policy'],
                 model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
@@ -520,9 +557,9 @@ class Nodes:
             arguments = normalize_structured_arguments(arguments, context)
         if state['task'].get('decision_mode') is not None:
             arguments['decision_mode'] = state['task']['decision_mode']
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
             from .state import RecipeExperimentRequest as request_type
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5'):
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
                 from .state import KnowledgeExperimentRequest as request_type, KnowledgeDecisionState as decision_type
             if 'client_request_id' in arguments:
                 raise ValueError('request ID is controlled by runner')
@@ -530,7 +567,7 @@ class Nodes:
         content = request_type.model_validate(arguments).model_dump(mode='json')
         if any(content[k] != value for k,value in context['bindings'].items()):
             raise ValueError('decision binding mismatch')
-        recipe_profile=state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5')
+        recipe_profile=state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6')
         if not recipe_profile and content['model_type'] not in context['capabilities']['models']:
             raise ValueError('decision model not permitted')
         keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
@@ -538,7 +575,7 @@ class Nodes:
         if recipe_profile and content['recipe_id'] not in {r['recipe_id'] for r in context['recipes']}:
             raise ValueError('recipe outside frozen catalog')
         knowledge_decision={}
-        if state['versions']['state'] in ('agent-state-v4','agent-state-v5'):
+        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
             snapshot=state['knowledge']['snapshot']
             versions={e['entry_id']:e['entry_version'] for e in snapshot['projection']['entries']}
             if set(content['knowledge_refs'])-versions.keys():

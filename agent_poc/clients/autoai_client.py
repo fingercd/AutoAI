@@ -122,18 +122,26 @@ class AutoAIClient:
     protocol_revision: str = 'agent-recipes-revision-v1'
     decision_mode: str | None = None
     processing_mode: str | None = None
+    search_mode: str | None = None
+    max_trials: int | None = None
 
     def __post_init__(self) -> None:
         if self.decision_mode not in (None, 'recipe_id', 'structured_config'):
             raise ValueError('Unknown decision mode')
-        if self.protocol_revision == 'agent-recipes-revision-v3':
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
             self.decision_mode = self.decision_mode or 'recipe_id'
             self.processing_mode = self.processing_mode or 'fixed'
             if self.processing_mode not in ('fixed','dynamic'):
                 raise ValueError('Unknown processing mode')
         elif self.processing_mode is not None:
             raise ValueError('Processing mode requires revision v3')
-        if self.decision_mode is not None and (not self.execution_profile or self.protocol_revision not in ('agent-recipes-revision-v2','agent-recipes-revision-v3')):
+        if self.protocol_revision == 'agent-recipes-revision-v4':
+            from backend.app.search_policy import validate_search_options
+            self.search_mode = self.search_mode or 'fixed'
+            self.max_trials = validate_search_options(self.search_mode, self.max_trials)
+        elif self.search_mode is not None or self.max_trials is not None:
+            raise ValueError('Search mode requires revision v4')
+        if self.decision_mode is not None and (not self.execution_profile or self.protocol_revision not in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4')):
             raise ValueError('Decision mode requires current recipe protocol')
         if self.api_version not in ('v1','v2'):
             raise ValueError('Unknown API version')
@@ -147,10 +155,10 @@ class AutoAIClient:
             if self.execution_profile != 'train-evidence-recipes-v1' or self.api_version != 'v2':
                 raise ValueError('Recipe profile requires v2')
             from .preparation import RECIPE_RESPONSE_MODELS
-            if self.protocol_revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'):
+            if self.protocol_revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
                 raise ValueError('Unknown recipe revision')
             from .knowledge import KNOWLEDGE_RESPONSE_MODELS
-            self.response_models = KNOWLEDGE_RESPONSE_MODELS if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3') else RECIPE_RESPONSE_MODELS
+            self.response_models = KNOWLEDGE_RESPONSE_MODELS if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4') else RECIPE_RESPONSE_MODELS
         self._sessions = {}
         self.base_url = validate_base_url(self.base_url)
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 5:
@@ -235,7 +243,7 @@ class AutoAIClient:
         if self.execution_profile:
             from .preparation import Preparation
             from .knowledge import KnowledgePreparation
-            schema = KnowledgePreparation if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3') else Preparation
+            schema = KnowledgePreparation if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4') else Preparation
             bound = schema.model_validate(preparation).model_dump(mode='json',exclude_unset=True)
             self._sessions[session_id]['preparation'] = bound
             self._recipe_tools()
@@ -244,22 +252,22 @@ class AutoAIClient:
         """Rebuild the negotiated client contract from a validated checkpoint."""
         from .preparation import RECIPE_RESPONSE_MODELS
         from .knowledge import KNOWLEDGE_RESPONSE_MODELS
-        if self.api_version != 'v2' or revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3'):
+        if self.api_version != 'v2' or revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
             raise AgentContractError('Invalid checkpoint recipe revision')
         self.execution_profile='train-evidence-recipes-v1'
         self.protocol_revision=revision
-        self.response_models=KNOWLEDGE_RESPONSE_MODELS if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3') else RECIPE_RESPONSE_MODELS
+        self.response_models=KNOWLEDGE_RESPONSE_MODELS if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4') else RECIPE_RESPONSE_MODELS
 
     def _recipe_tools(self):
         self.tool_schemas['submit_ml_experiment'] = dict(type='object',additionalProperties=False,
             properties={'session_id':{'type':'string'},'recipe_id':{'type':'string','pattern':'^recipe_[a-f0-9]{64}$'},
                         'rationale':{'type':'string','maxLength':2000},'client_request_id':{'type':'string'}},
             required=['session_id','recipe_id','rationale','client_request_id'])
-        if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+        if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
             schema=self.tool_schemas['submit_ml_experiment']
             schema['properties']['knowledge_refs']=dict(type='array',items={'type':'string'},maxItems=6,uniqueItems=True)
             schema['required'].append('knowledge_refs')
-            self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge'] + (['dynamic_preprocessing'] if self.protocol_revision=='agent-recipes-revision-v3' else [])
+            self.tool_schemas['start_ml_session']['properties']['modules']['items']['enum']=['train_evidence','legal_recipes','knowledge'] + (['dynamic_preprocessing'] if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4') else []) + (['bounded_hpo'] if self.protocol_revision == 'agent-recipes-revision-v4' else [])
         for name in ('start_ml_session', 'submit_ml_experiment'):
             if name == 'start_ml_session':
                 # The finite tool validator accepts nullable type lists, not
@@ -269,7 +277,7 @@ class AutoAIClient:
                                     user_text=dict(type=['string','null'], minLength=1, maxLength=4096),
                                     domain=dict(type=['string','null'], minLength=1, maxLength=128)))
             self.tool_schemas[name]['properties']['decision_mode'] = {'type':'string', 'enum':['recipe_id','structured_config']}
-        if self.protocol_revision=='agent-recipes-revision-v3':
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
             start=self.tool_schemas['start_ml_session']
             models=start['properties']['allowed_models']['items'].get('enum',[])
             start['properties']['processing_mode']={'type':'string','enum':['fixed','dynamic']}
@@ -278,6 +286,9 @@ class AutoAIClient:
                     'normalization':{'type':'string','enum':['zscore','minmax','area','none']},
                     'class_balance':{'type':'string','enum':['none','class_weight']},
                 },'required':['normalization','class_balance']} for model in models}}
+            if self.protocol_revision == 'agent-recipes-revision-v4':
+                start['properties']['search_mode']={'type':'string','enum':['fixed','bounded']}
+                start['properties']['max_trials']={'type':'integer','minimum':1,'maximum':18}
         context=self.tool_schemas['start_ml_session']['properties']['context_policy']['properties']
         context.update(evidence={'type':'boolean'},risks={'type':'boolean'})
 
@@ -292,7 +303,7 @@ class AutoAIClient:
         config = result.get('effective_config')
         if config is not None and (config['model_type'] != action['model_type'] or config['model_params'] != action['model_params']):
             raise AgentContractError('Execution differs from frozen decision')
-        if self.execution_profile and self.protocol_revision=='agent-recipes-revision-v3' and request_body is not None:
+        if self.execution_profile and self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4') and request_body is not None:
             recipe=next((r for r in locked['preparation']['catalog']['recipes']
                          if r['recipe_id']==request_body.get('recipe_id') or
                          (request_body.get('model_id'),request_body.get('normalization'),request_body.get('class_balance')) ==
@@ -303,7 +314,7 @@ class AutoAIClient:
             if config is not None and (config['normalization'],config['class_balance']) != (
                     action['normalization'],action['class_balance']):
                 raise AgentContractError('Effective processing differs from action')
-        if self.execution_profile and self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3') and request_body is not None and 'knowledge_refs' in request_body:
+        if self.execution_profile and self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4') and request_body is not None and 'knowledge_refs' in request_body:
             projection=locked['preparation']['knowledge']
             entries={e['entry_id']:e['entry_version'] for e in projection['projection']['entries']}
             metadata=result['decision_metadata']
@@ -321,7 +332,8 @@ class AutoAIClient:
                          context_policy: dict[str, Any] | None = None,
                          client_request_id: str | None = None,
                          model_configs: dict[str, dict[str, Any]] | None = None, decision_mode: str | None = None, knowledge_query: dict | None = None,
-                         processing_mode: str | None = None, fixed_processing: dict[str,dict[str,str]] | None = None) -> dict[str, Any]:
+                         processing_mode: str | None = None, fixed_processing: dict[str,dict[str,str]] | None = None,
+                         search_mode: str | None = None, max_trials: int | None = None) -> dict[str, Any]:
         validate_identifier(dataset_id)
         if client_request_id is not None:
             validate_identifier(client_request_id)
@@ -339,7 +351,7 @@ class AutoAIClient:
             body['knowledge_query'] = KnowledgeQueryConfig.model_validate(knowledge_query).model_dump(mode='json')
         if decision_mode != self.decision_mode:
             raise AgentContractError('Session expression differs from client binding')
-        if self.protocol_revision == 'agent-recipes-revision-v3':
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
             if processing_mode != self.processing_mode:
                 raise AgentContractError('Session processing mode differs from client binding')
             body['processing_mode'] = processing_mode
@@ -347,11 +359,17 @@ class AutoAIClient:
                 model: {'normalization':'zscore','class_balance':'none'} for model in allowed_models}
         elif processing_mode is not None or fixed_processing is not None:
             raise AgentContractError('Processing requires revision v3')
+        if self.protocol_revision == 'agent-recipes-revision-v4':
+            if search_mode != self.search_mode or max_trials != self.max_trials:
+                raise AgentContractError('Session search differs from client binding')
+            body.update(search_mode=search_mode,max_trials=max_trials)
+        elif search_mode is not None or max_trials is not None:
+            raise AgentContractError('Search requires revision v4')
         if decision_mode is not None:
             body['decision_mode'] = decision_mode
         if self.execution_profile:
             body.update(execution_profile=self.execution_profile,protocol_revision=self.protocol_revision,
-                        modules=(modules if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3') and modules is not None else ['train_evidence','legal_recipes']))
+                        modules=(modules if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4') and modules is not None else ['train_evidence','legal_recipes']))
             body['context_policy'].setdefault('evidence', True)
             body['context_policy'].setdefault('risks', True)
         if client_request_id is not None:
@@ -394,7 +412,7 @@ class AutoAIClient:
                 body = dict(model_id=recipe['model_id'], normalization=recipe['preprocessing']['normalization'], class_balance=recipe['class_balance'],
                     model_params=dict(locked['capability_snapshot']['model_configs'][recipe['model_id']]),
                     rationale=rationale, client_request_id=client_request_id)
-            if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3'):
+            if self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
                 from .knowledge import KnowledgeWire
                 if knowledge_refs is None:
                     raise AgentContractError('knowledge_refs is required')

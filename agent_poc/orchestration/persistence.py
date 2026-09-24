@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -92,6 +93,13 @@ class CallJournal:
             kind TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
             started_at REAL NOT NULL, ended_at REAL, input_tokens INTEGER,
             output_tokens INTEGER, error_code TEXT)''')
+        self.connection.execute('''CREATE TABLE IF NOT EXISTS orchestration_monitor_waits_v1 (
+            id INTEGER PRIMARY KEY, thread_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+            run_id TEXT NOT NULL, task_id TEXT, session_id TEXT,
+            status TEXT NOT NULL, started_at_utc TEXT NOT NULL,
+            started_at_epoch REAL NOT NULL, ended_at_utc TEXT, duration_seconds REAL,
+            duration_clock TEXT NOT NULL, reason_code TEXT,
+            UNIQUE(thread_id,operation_id))''')
         self.connection.commit()
         # Nullable additions preserve old settled rows: do not invent totals or
         # change their historical State token-status projection during upgrade.
@@ -99,12 +107,25 @@ class CallJournal:
             self.connection.execute('BEGIN IMMEDIATE')
             columns = {row[1] for row in self.connection.execute(
                 'PRAGMA table_info(orchestration_calls_v1)')}
-            for name, kind in (('total_tokens', 'INTEGER'), ('token_status', 'TEXT'), ('proposal_json','TEXT')):
+            for name, kind in (('total_tokens', 'INTEGER'), ('token_status', 'TEXT'), ('proposal_json','TEXT'),
+                               ('attempt_index','INTEGER'),('request_started_at_utc','TEXT'),
+                               ('response_ended_at_utc','TEXT'),('request_duration_seconds','REAL'),
+                               ('measurement_version','TEXT'),('model_id_sha256','TEXT'),('model_id','TEXT'),
+                               ('protocol','TEXT'),('phase','TEXT'),('request_outcome','TEXT'),
+                               ('task_id','TEXT'),('session_id','TEXT'),('run_id','TEXT')):
                 if name not in columns:
                     self.connection.execute(f'ALTER TABLE orchestration_calls_v1 ADD COLUMN {name} {kind}')
+            wait_columns={row[1] for row in self.connection.execute(
+                'PRAGMA table_info(orchestration_monitor_waits_v1)')}
+            for name in ('task_id','session_id'):
+                if name not in wait_columns:
+                    self.connection.execute(
+                        f'ALTER TABLE orchestration_monitor_waits_v1 ADD COLUMN {name} TEXT')
 
     def begin(self, *, operation_id: str, kind: str, name: str, maximum: int,
-              max_attempts: int, deadline: float, now: float | None = None) -> int:
+              max_attempts: int, deadline: float, now: float | None = None,
+              task_id: str | None = None, session_id: str | None = None,
+              run_id: str | None = None) -> int:
         now = time.time() if now is None else now
         if now >= deadline:
             raise PersistenceError('deadline_exceeded')
@@ -121,22 +142,33 @@ class CallJournal:
             if attempts >= max_attempts:
                 raise PersistenceError('operation_attempt_limit')
             cursor = self.connection.execute('''INSERT INTO orchestration_calls_v1
-                (thread_id,operation_id,kind,name,status,started_at) VALUES (?,?,?,?,?,?)''',
-                (self.thread_id, operation_id, kind, name, 'dispatched', now))
+                (thread_id,operation_id,kind,name,status,started_at,attempt_index,
+                 task_id,session_id,run_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (self.thread_id, operation_id, kind, name, 'dispatched', now, attempts,
+                 task_id,session_id,run_id))
             return int(cursor.lastrowid)
 
     def finish(self, call_id: int, *, error_code: str | None = None,
                input_tokens: int | None = None, output_tokens: int | None = None,
                total_tokens: int | None = None, token_status: str | None = None,
-               proposal: dict | None = None):
+               proposal: dict | None = None, measurement: dict | None = None):
         # A second completion notification cannot rewrite settled measurements.
         with self.connection:
+            measurement = measurement or {}
             self.connection.execute('''UPDATE orchestration_calls_v1 SET status=?,ended_at=?,
-                input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?,proposal_json=?
+                input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?,proposal_json=?,
+                request_started_at_utc=?,response_ended_at_utc=?,request_duration_seconds=?,
+                measurement_version=?,model_id_sha256=?,model_id=?,protocol=?,phase=?,request_outcome=?
                 WHERE id=? AND thread_id=? AND status='dispatched' ''',
                 ('failed' if error_code else 'confirmed', time.time(), input_tokens,
                  output_tokens, total_tokens, token_status, error_code,
                  json.dumps(proposal,ensure_ascii=True,allow_nan=False) if proposal is not None else None,
+                 measurement.get('request_started_at_utc'),measurement.get('response_ended_at_utc'),
+                 measurement.get('request_duration_seconds'),
+                 'llm-client-request-v1' if measurement else None,
+                 measurement.get('model_id_sha256'),measurement.get('model_id'),measurement.get('protocol'),
+                 measurement.get('phase'),measurement.get('outcome'),
                  call_id, self.thread_id))
 
     def proposal(self, operation_id: str) -> str | None:
@@ -151,11 +183,67 @@ class CallJournal:
 
     def snapshot(self):
         rows = self.connection.execute('''SELECT id,operation_id,kind,name,status,started_at,
-            input_tokens,output_tokens,error_code,total_tokens,token_status FROM orchestration_calls_v1
+            input_tokens,output_tokens,error_code,total_tokens,token_status,attempt_index,
+            request_started_at_utc,response_ended_at_utc,request_duration_seconds,
+            measurement_version,model_id_sha256,model_id,protocol,phase,request_outcome,
+            task_id,session_id,run_id FROM orchestration_calls_v1
             WHERE thread_id=? ORDER BY id''', (self.thread_id,)).fetchall()
         keys = ('id','operation_id','kind','name','status','started_at',
-                'input_tokens','output_tokens','error_code','total_tokens','token_status')
+                'input_tokens','output_tokens','error_code','total_tokens','token_status',
+                'attempt_index','request_started_at_utc','response_ended_at_utc',
+                'request_duration_seconds','measurement_version','model_id_sha256','model_id',
+                'protocol','phase','request_outcome','task_id','session_id','run_id')
         return [dict(zip(keys, row)) for row in rows]
+
+    def export_llm_requests(self) -> list[dict]:
+        return [dict(thread_id=self.thread_id,task_id=row['task_id'],
+                     session_id=row['session_id'],run_id=row['run_id'],call_id=row['id'],
+                     operation_id=row['operation_id'], retry_index=row['attempt_index'],
+                     phase=row['phase'] or row['name'], status=row['status'],
+                     request_started_at_utc=row['request_started_at_utc'],
+                     response_ended_at_utc=row['response_ended_at_utc'],
+                     request_duration_seconds=row['request_duration_seconds'],
+                     measurement_version=row['measurement_version'] or 'legacy-wrapper-unknown',
+                     model_id_sha256=row['model_id_sha256'],model_id=row['model_id'],protocol=row['protocol'],
+                     request_outcome=row['request_outcome'],input_tokens=row['input_tokens'],
+                     output_tokens=row['output_tokens'],total_tokens=row['total_tokens'],
+                     token_status=row['token_status'] or 'unknown',error_code=row['error_code'])
+                for row in self.snapshot() if row['kind']=='llm']
+
+    def begin_monitor_wait(self, *, operation_id: str, run_id: str,
+                           reason_code: str | None = None, task_id: str | None = None,
+                           session_id: str | None = None) -> None:
+        now=time.time()
+        started=datetime.fromtimestamp(now,timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute('''INSERT OR IGNORE INTO orchestration_monitor_waits_v1
+                (thread_id,operation_id,run_id,task_id,session_id,status,
+                 started_at_utc,started_at_epoch,duration_clock,reason_code)
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (self.thread_id,operation_id,run_id,task_id,session_id,'running',started,now,
+                 'utc_wall_same_host_estimate',reason_code))
+
+    def end_monitor_wait(self, *, operation_id: str, status: str = 'succeeded') -> None:
+        if status not in ('succeeded','interrupted'):
+            raise ValueError('invalid wait status')
+        now=time.time()
+        ended=datetime.fromtimestamp(now,timezone.utc).isoformat()
+        with self.connection:
+            self.connection.execute('''UPDATE orchestration_monitor_waits_v1
+                SET status=CASE WHEN ?>=started_at_epoch THEN ? ELSE 'unknown' END,
+                    ended_at_utc=?,duration_seconds=CASE WHEN ?>=started_at_epoch
+                        THEN ?-started_at_epoch ELSE NULL END
+                WHERE thread_id=? AND operation_id=? AND status='running' ''',
+                (now,status,ended,now,now,self.thread_id,operation_id))
+
+    def export_monitor_waits(self) -> list[dict]:
+        rows=self.connection.execute('''SELECT operation_id,run_id,task_id,session_id,status,started_at_utc,
+            ended_at_utc,duration_seconds,duration_clock,reason_code
+            FROM orchestration_monitor_waits_v1 WHERE thread_id=? ORDER BY id''',
+            (self.thread_id,)).fetchall()
+        keys=('operation_id','run_id','task_id','session_id','status','started_at_utc','ended_at_utc',
+              'duration_seconds','duration_clock','reason_code')
+        return [dict(thread_id=self.thread_id,**dict(zip(keys,row))) for row in rows]
 
     def close(self):
         self.connection.close()
