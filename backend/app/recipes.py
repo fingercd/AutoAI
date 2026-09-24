@@ -18,7 +18,7 @@ REVISION='agent-recipes-revision-v1'
 
 class Recipe(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    recipe_schema_version: Literal['execution-recipe-v1','execution-recipe-v2']='execution-recipe-v1'
+    recipe_schema_version: Literal['execution-recipe-v1','execution-recipe-v2','execution-recipe-v3']='execution-recipe-v1'
     recipe_id: str
     recipe_digest: str
     model_id: str
@@ -32,6 +32,8 @@ class Recipe(BaseModel):
     search_strategy_ref: str
     search_strategy_version: str
     search_strategy_digest: str
+    search_plan_digest: str | None = None
+    search_policy_version: str | None = None
     hard_constraints: list[str]
     evidence_applicability: Literal['eligible']='eligible'
     cost_description: str
@@ -41,6 +43,9 @@ class Recipe(BaseModel):
         result=handler(self)
         if self.recipe_schema_version == 'execution-recipe-v1':
             result.pop('processing_policy_version', None)
+        if self.recipe_schema_version != 'execution-recipe-v3':
+            result.pop('search_plan_digest', None)
+            result.pop('search_policy_version', None)
         return result
 
     @model_validator(mode='after')
@@ -54,7 +59,7 @@ class Recipe(BaseModel):
 
 class RecipeCatalog(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True,frozen=True)
-    catalog_version: Literal['recipe-catalog-v1','recipe-catalog-v2']='recipe-catalog-v1'
+    catalog_version: Literal['recipe-catalog-v1','recipe-catalog-v2','recipe-catalog-v3']='recipe-catalog-v1'
     catalog_digest: str
     dataset_sha256: str
     plan_digest: str
@@ -64,6 +69,8 @@ class RecipeCatalog(BaseModel):
     excluded_models: dict[str,str]
     processing_mode: Literal['fixed','dynamic'] | None = None
     fixed_processing: dict[str,dict[str,str]] | None = None
+    search_mode: Literal['fixed','bounded'] | None = None
+    max_trials: int | None = None
 
     @model_serializer(mode='wrap')
     def legacy_shape(self, handler):
@@ -71,6 +78,9 @@ class RecipeCatalog(BaseModel):
         if self.catalog_version == 'recipe-catalog-v1':
             result.pop('processing_mode', None)
             result.pop('fixed_processing', None)
+        if self.catalog_version != 'recipe-catalog-v3':
+            result.pop('search_mode', None)
+            result.pop('max_trials', None)
         return result
 
 
@@ -85,13 +95,14 @@ def canonical_execution(value):
 
 
 def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: TrainEvidence,
-                           evaluation_plan: EvaluationPlan) -> RecipeCatalog:
+                           evaluation_plan: EvaluationPlan, *, search_plans: dict | None = None) -> RecipeCatalog:
     if evidence.plan_digest!=evaluation_plan.plan_digest or evidence.dataset_sha256!=evaluation_plan.dataset_sha256:
         raise ValueError('recipe_evidence_binding_mismatch')
     policies={m['id']:m for m in frozen_capabilities['models']}
     recipes=[];excluded={};allowed=sorted(set(task['allowed_models']))
     if len(allowed)!=len(task['allowed_models']):raise ValueError('duplicate_allowed_model')
-    modern = task.get('protocol_revision') == 'agent-recipes-revision-v3'
+    search_revision = task.get('protocol_revision') == 'agent-recipes-revision-v4'
+    modern = task.get('protocol_revision') in ('agent-recipes-revision-v3','agent-recipes-revision-v4')
     processing_mode = task.get('processing_mode', 'fixed') if modern else None
     fixed_processing = freeze_fixed_processing(allowed, task.get('fixed_processing')) if modern else None
     class_count = len(evidence.statistics.classes)
@@ -116,9 +127,22 @@ def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: Trai
         else:
             choices = (('zscore','none'),)
         for normalization, balance in choices:
+            plan = None
+            if search_revision:
+                from .search_policy import build_search_plan
+                plan = build_search_plan(model_id=model_id, baseline=params,
+                    mode=task['search_mode'], max_trials=task['max_trials'],
+                    train_count=stats.observation_count, feature_count=stats.feature_count,
+                    class_count=class_count, dataset_sha256=evidence.dataset_sha256,
+                    evaluation_plan_digest=evaluation_plan.plan_digest,
+                    normalization=normalization, class_balance=balance, seed=task['seed'],
+                    architecture_version=policy['architecture_version'],
+                    processing_policy_version=PROCESSING_POLICY_VERSION)
+                if search_plans is not None:
+                    search_plans[plan['plan_digest']] = plan
             config=canonical_execution(dict(model_type=model_id,normalization=normalization,class_balance=balance,
                 seed=task['seed'],feature_selection_enabled=False,**task['evaluation'],**params))
-            body=dict(recipe_schema_version='execution-recipe-v2' if modern else 'execution-recipe-v1',
+            body=dict(recipe_schema_version='execution-recipe-v3' if search_revision else 'execution-recipe-v2' if modern else 'execution-recipe-v1',
                 model_id=model_id,architecture_version=policy['architecture_version'],
                 preprocessing={'normalization':normalization,'implementation_ref':
                     'finite-processing-v1' if modern else 'backend-train-feature-zscore-v1'},
@@ -127,10 +151,12 @@ def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: Trai
                 search_strategy_ref=search['ref'],search_strategy_version=search['version'],search_strategy_digest=search['digest'])
             if modern:
                 body['processing_policy_version']=PROCESSING_POLICY_VERSION
+            if search_revision:
+                body.update(search_plan_digest=plan['plan_digest'], search_policy_version=plan['policy_version'])
             key=digest(body)
             recipes.append(Recipe(**body,recipe_id='recipe_'+key,recipe_digest=key,
                 hard_constraints=['classification','class-complete-group-holdout'],
-                cost_description='Existing bounded validation/OOB search' if policy['execution_family']=='traditional_ml'
+                cost_description=('One fixed candidate' if task['search_mode']=='fixed' else 'At most '+str(plan['effective_trials'])+' candidates') if search_revision else 'Existing bounded validation/OOB search' if policy['execution_family']=='traditional_ml'
                                  else 'Bounded epochs; runtime and memory depend on data and architecture'))
     recipes=sorted(recipes,key=lambda r:r.recipe_id)
     if not recipes:raise ValueError('no_legal_recipes')
@@ -141,8 +167,12 @@ def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: Trai
     if modern:
         binding.update(processing_mode=processing_mode,fixed_processing=fixed_processing,
                        processing_policy_version=PROCESSING_POLICY_VERSION)
-    return RecipeCatalog(catalog_version='recipe-catalog-v2' if modern else 'recipe-catalog-v1',
+    if search_revision:
+        binding.update(search_mode=task['search_mode'],max_trials=task['max_trials'])
+    return RecipeCatalog(catalog_version='recipe-catalog-v3' if search_revision else 'recipe-catalog-v2' if modern else 'recipe-catalog-v1',
         processing_mode=processing_mode,fixed_processing=fixed_processing,
+        search_mode=task.get('search_mode') if search_revision else None,
+        max_trials=task.get('max_trials') if search_revision else None,
         catalog_digest=digest(binding),dataset_sha256=evidence.dataset_sha256,
         plan_digest=evaluation_plan.plan_digest,evidence_digest=evidence.evidence_digest,
         allowed_models=allowed,recipes=recipes,excluded_models=excluded)
@@ -156,9 +186,11 @@ def validate_catalog_binding(catalog, snapshot):
         frozen_policies=[{k:v for k,v in policies[m].items() if k not in
             ('display_name','available','reason_code','availability_basis')} for m in allowed],
         recipe_digests=[r.recipe_digest for r in catalog.recipes])
-    if catalog.catalog_version == 'recipe-catalog-v2':
+    if catalog.catalog_version in ('recipe-catalog-v2','recipe-catalog-v3'):
         binding.update(processing_mode=catalog.processing_mode,fixed_processing=catalog.fixed_processing,
                        processing_policy_version=PROCESSING_POLICY_VERSION)
+    if catalog.catalog_version == 'recipe-catalog-v3':
+        binding.update(search_mode=catalog.search_mode,max_trials=catalog.max_trials)
     if (allowed!=sorted(set(allowed)) or catalog.catalog_digest!=digest(binding)
             or [r.recipe_id for r in catalog.recipes]!=sorted(set(r.recipe_id for r in catalog.recipes))):
         raise ValueError('catalog binding mismatch')

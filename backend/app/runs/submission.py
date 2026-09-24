@@ -207,7 +207,8 @@ class RunSubmissionService:
     ) -> RunSubmissionResult:
         """提交已由 HTTP 兼容层解析的数据引用，供旧路由保持注入点兼容。"""
         audit_fields={'execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest',
-            'execution_processing_policy_version','execution_processing_digest'}
+            'execution_processing_policy_version','execution_processing_digest','execution_search_plan',
+            'search_mode','max_trials'}
         if submission_source!='agent' and audit_fields.intersection(raw_config):
             raise RunSubmissionError('invalid_training_config','Execution recipe audit is server-owned')
         if prepared_evaluation is not None:

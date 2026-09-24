@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import pickle
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1109,6 +1110,12 @@ def _select_traditional_config(
     x_valid: np.ndarray,
     y_valid: np.ndarray,
     label_names: list[str],
+    *,
+    planned_candidates: list[dict[str, Any]] | None = None,
+    accounting: Any | None = None,
+    fold_index: int = 1,
+    parent_span: str | None = None,
+    cancel_check: Any | None = None,
 ) -> TraditionalSelection:
     """传统模型超参选择主循环：逐候选 fit(train) → 评估 valid，以
         balanced_accuracy 为选择指标（类别不均衡时比 accuracy 更公平）。
@@ -1123,23 +1130,32 @@ def _select_traditional_config(
             x_valid,
             y_valid,
             label_names,
+            planned_candidates=planned_candidates, accounting=accounting,
+            fold_index=fold_index, parent_span=parent_span, cancel_check=cancel_check,
         )
     best_model: Any | None = None
     best_config = config
     best_eval: dict[str, Any] | None = None
     best_balanced_accuracy: float | None = None
     search_rows: list[dict[str, Any]] = []
-    candidates = _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train)
-    for candidate in candidates:
-        model = build_traditional_model(candidate, y_train, len(label_names))
-        model.fit(x_train, y_train)
-        valid_eval = _evaluate_traditional_model(
-            model,
-            x_valid,
-            y_valid,
-            list(range(len(y_valid))),
-            label_names,
-        )
+    candidates = ([_clone_config(config, **item['params']) for item in planned_candidates]
+                  if planned_candidates is not None else
+                  _traditional_candidate_configs(config, model_type, x_train.shape[1], y_train))
+    best_index = None
+    for index, candidate in enumerate(candidates):
+        scope = (accounting.trial(fold_index, planned_candidates[index], parent_span=parent_span)
+                 if accounting is not None else nullcontext({}))
+        with scope as trial_fact:
+            if cancel_check is not None: cancel_check()
+            model = build_traditional_model(candidate, y_train, len(label_names))
+            model.fit(x_train, y_train)
+            if cancel_check is not None: cancel_check()
+            valid_eval = _evaluate_traditional_model(
+                model, x_valid, y_valid, list(range(len(y_valid))), label_names)
+            trial_fact['selection_score'] = float(valid_eval['balanced_accuracy'])
+            if accounting is not None:
+                trial_fact['artifact_digest'] = accounting.save_traditional_candidate(
+                    fold_index=fold_index,trial_index=index,model=model)
         params = _traditional_params(candidate, model_type)
         balanced_accuracy = float(valid_eval["balanced_accuracy"])
         macro_f1 = float(valid_eval["macro_f1"])
@@ -1156,6 +1172,7 @@ def _select_traditional_config(
                 "oob_balanced_accuracy": None,
                 "params": params,
                 "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+                **({'trial_index': index} if planned_candidates is not None else {}),
             }
         )
         if best_balanced_accuracy is None or balanced_accuracy > best_balanced_accuracy + 1e-12:
@@ -1163,9 +1180,10 @@ def _select_traditional_config(
             best_config = candidate
             best_eval = valid_eval
             best_balanced_accuracy = balanced_accuracy
+            best_index = index
     if best_model is None or best_eval is None or best_balanced_accuracy is None:
         raise ValueError("传统模型验证集搜索未产生可用模型")
-    selected_index = max(
+    selected_index = best_index if planned_candidates is not None else max(
         range(len(search_rows)),
         key=lambda index: (
             float(search_rows[index]["valid_balanced_accuracy"]),
@@ -1205,6 +1223,12 @@ def _select_random_forest_config(
     x_valid: np.ndarray,
     y_valid: np.ndarray,
     label_names: list[str],
+    *,
+    planned_candidates: list[dict[str, Any]] | None = None,
+    accounting: Any | None = None,
+    fold_index: int = 1,
+    parent_span: str | None = None,
+    cancel_check: Any | None = None,
 ) -> TraditionalSelection:
     """随机森林专用选择：用 OOB balanced_accuracy 选参（不消耗 valid，等价于
         免费的交叉验证），胜出后再补一次 valid 评估写入审计行，与其他模型的
@@ -1214,11 +1238,25 @@ def _select_random_forest_config(
     best_key: tuple[float, float, int] | None = None
     best_index: int | None = None
     search_rows: list[dict[str, Any]] = []
-    candidates = _traditional_candidate_configs(config, "random_forest", x_train.shape[1], y_train)
+    candidates = ([_clone_config(config, random_forest_oob_score=True, **item['params'])
+                   for item in planned_candidates] if planned_candidates is not None else
+                  _traditional_candidate_configs(config, "random_forest", x_train.shape[1], y_train))
     for index, candidate in enumerate(candidates):
-        model = build_traditional_model(candidate, y_train, len(label_names))
-        model.fit(x_train, y_train)
-        oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
+        scope = (accounting.trial(fold_index, planned_candidates[index], parent_span=parent_span)
+                 if accounting is not None else nullcontext({}))
+        with scope as trial_fact:
+            if cancel_check is not None: cancel_check()
+            model = build_traditional_model(candidate, y_train, len(label_names))
+            model.fit(x_train, y_train)
+            if cancel_check is not None: cancel_check()
+            oob_accuracy, oob_balanced_accuracy = _random_forest_oob_metrics(model, y_train)
+            trial_fact['selection_score'] = oob_balanced_accuracy
+            trial_fact['oob_accuracy'] = oob_accuracy
+            probabilities = np.asarray(model.oob_decision_function_, dtype=float)
+            trial_fact['oob_coverage'] = float(np.mean(np.isfinite(probabilities).all(axis=1) & (probabilities.sum(axis=1) > 0)))
+            if accounting is not None:
+                trial_fact['artifact_digest'] = accounting.save_traditional_candidate(
+                    fold_index=fold_index,trial_index=index,model=model)
         params = _traditional_params(candidate, "random_forest")
         search_rows.append(
             {
@@ -1233,6 +1271,7 @@ def _select_random_forest_config(
                 "oob_balanced_accuracy": oob_balanced_accuracy,
                 "params": params,
                 "params_json": json.dumps(params, ensure_ascii=False, sort_keys=True, default=str),
+                **({'trial_index': index, 'oob_coverage': trial_fact['oob_coverage']} if planned_candidates is not None else {}),
             }
         )
         candidate_key = (oob_balanced_accuracy, oob_accuracy, -index)
@@ -1277,6 +1316,9 @@ def _fit_traditional_fold(
     y: np.ndarray,
     splits: dict[str, list[int]],
     label_names: list[str],
+    *, planned_candidates: list[dict[str, Any]] | None = None,
+    accounting: Any | None = None, fold_index: int = 1,
+    parent_span: str | None = None, cancel_check: Any | None = None,
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
     """单个训练折的传统模型拟合：只在 train/valid 上完成候选搜索，
         返回胜出模型、胜出配置、valid 评估与全部搜索审计行。"""
@@ -1288,6 +1330,8 @@ def _fit_traditional_fold(
         x[splits["valid"]],
         y[splits["valid"]],
         label_names,
+        planned_candidates=planned_candidates, accounting=accounting,
+        fold_index=fold_index, parent_span=parent_span, cancel_check=cancel_check,
     )
     return selection.model, selection.config, selection.valid_eval, selection.search_rows
 
@@ -1587,6 +1631,17 @@ def _run_legacy_training(
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    search_plan = raw_config.get('execution_search_plan')
+    search_accounting = None
+    preparation_stage = None
+    if search_plan is not None:
+        from .search_accounting import SearchAccounting
+        search_accounting = SearchAccounting(run_dir, search_plan, run_id)
+        search_accounting.record_queue_wait(record.created_at if record else None,
+                                            record.started_at if record else None)
+        with search_accounting.span('monitor_wait', applicable=False):
+            pass
+        preparation_stage = search_accounting.start_stage('data_preparation')
     status_file = run_dir / "status.json"
     previous_status: dict[str, Any] = {}
     if status_file.exists():
@@ -1694,6 +1749,23 @@ def _run_legacy_training(
     feature_x_axis = dataset.x_axis[0] if dataset.x_axis else list(range(x_raw.shape[1]))
     combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
     x_axis_warning = _x_axis_warning(combined_axes, x_raw.shape[1])
+    if search_accounting is not None:
+        from .search_policy import validate_search_plan
+        from .processing_policy import PROCESSING_POLICY_VERSION
+        if evaluation_plan is None or len(folds) != 1 or evaluation_strategy != 'stratified_holdout':
+            raise ValueError('finite search requires a frozen single holdout plan')
+        validate_search_plan(search_plan, model_id=model_type, config=config.__dict__,
+            train_count=len(folds[0]['splits']['train']), feature_count=x_raw.shape[1],
+            class_count=len(label_names), dataset_sha256=evaluation_plan.dataset_sha256,
+            evaluation_plan_digest=evaluation_plan.plan_digest,
+            architecture_version=ARCHITECTURE_VERSION,
+            processing_policy_version=PROCESSING_POLICY_VERSION)
+        search_accounting.end_stage(preparation_stage)
+        with search_accounting.span('actual_preprocessing', applicable=False):
+            pass
+        if model_family(model_type) == 'deep_learning':
+            with search_accounting.span('final_refit', applicable=False):
+                pass
 
         # ── 阶段 2：初始化跨折累加器（预测明细、折指标、训练历史、OOF 汇总等） ──
     prediction_rows: list[dict[str, Any]] = []
@@ -1710,6 +1782,8 @@ def _run_legacy_training(
     deep_sample_results: list[dict[str, Any]] = []
     traditional_sample_results: list[dict[str, Any]] = []
     best_search_rows: list[dict[str, Any]] = []
+    selected_trials: list[dict[str, Any]] = []
+    final_refit_count = 0
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
 
@@ -1793,7 +1867,15 @@ def _run_legacy_training(
                 # 传统模型分支：搜索选参（train/valid）→ train+valid 重训 → 评估三个集合
                 # → 可选窗口遮挡解释性；深度分支：训练整折 → 评估 → 收集解释性上下文。
         if model_family(model_type) == "traditional_ml":
-            model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
+            if search_accounting is not None:
+                with search_accounting.span('parameter_search', fold_index=fold_index) as search_stage:
+                    model, selected_config, valid_eval, search_rows = _fit_traditional_fold(
+                        config, model_type, x, y_model, splits, label_names,
+                        planned_candidates=search_plan['candidates'][:search_plan['effective_trials']],
+                        accounting=search_accounting, fold_index=fold_index,
+                        parent_span=search_stage['span_id'], cancel_check=check_run_active)
+            else:
+                model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
             best_search_rows.extend({**row, "fold_index": fold_index} for row in search_rows)
             fold_best_params = _traditional_params(selected_config, model_type)
@@ -1802,24 +1884,32 @@ def _run_legacy_training(
             fold_selection_score = float(
                 selected_search_row.get("selection_score", valid_eval["balanced_accuracy"])
             )
+            if search_accounting is not None:
+                selected_trials.append(dict(fold_index=fold_index,
+                    trial_index=selected_search_row['trial_index'], params=fold_best_params,
+                    selection_score=fold_selection_score))
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
-            final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
-                selected_config=selected_config,
-                model_type=model_type,
-                x_raw=x_model_raw,
-                y=y_model,
-                train_valid_indices=train_valid_indices,
-                normalization=config.normalization,
-                label_names=label_names,
-            )
+            refit_scope = search_accounting.span('final_refit', fold_index=fold_index) if search_accounting else nullcontext()
+            with refit_scope:
+                check_run_active()
+                final_model, final_normalizer, fold_final_fit_indices = _fit_final_traditional_model(
+                    selected_config=selected_config, model_type=model_type,
+                    x_raw=x_model_raw, y=y_model, train_valid_indices=train_valid_indices,
+                    normalization=config.normalization, label_names=label_names)
+                check_run_active()
+                if search_accounting is not None:
+                    final_refit_count += 1
             processing_stages.append(_processing_stage_audit(
                 stage='final_train_valid', indices=fold_final_fit_indices,
                 normalizer=final_normalizer, y=y_model, label_names=label_names,
                 model_type=model_type, class_balance=config.class_balance,
             ))
             final_x = _transform_x_with_normalizer(x_model_raw, final_normalizer)
-            test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
+            eval_scope = search_accounting.span('final_evaluation', fold_index=fold_index) if search_accounting else nullcontext()
+            with eval_scope:
+                check_run_active()
+                test_eval = _evaluate_traditional_model(final_model, final_x, y_model, splits["test"], label_names)
             model = final_model
             normalizer = final_normalizer
             if config.feature_selection_enabled:
@@ -1857,24 +1947,74 @@ def _run_legacy_training(
                     extra=stage_progress,
                 )
 
-            model, history = _fit_deep_fold(
-                config=config,
-                model_type=model_type,
-                x=x,
-                y=y_model,
-                splits=splits,
-                label_names=label_names,
-                run_dir=run_dir,
-                sample_count=int(len(splits["train"])),
-                cancel_check=check_run_active,
-                progress_callback=report_deep_stage,
-            )
+            if search_accounting is None:
+                model, history = _fit_deep_fold(
+                    config=config, model_type=model_type, x=x, y=y_model,
+                    splits=splits, label_names=label_names, run_dir=run_dir,
+                    sample_count=int(len(splits['train'])), cancel_check=check_run_active,
+                    progress_callback=report_deep_stage)
+            else:
+                import hashlib
+                best_model = None
+                best_history = None
+                best_trial_index = None
+                best_loss = float('inf')
+                with search_accounting.span('parameter_search', fold_index=fold_index) as search_stage:
+                    for candidate in search_plan['candidates'][:search_plan['effective_trials']]:
+                        check_run_active()
+                        trial_config = _clone_config(config, **candidate['params'])
+                        trial_dir = run_dir / f"trial_{fold_index}_{candidate['index']}"
+                        trial_dir.mkdir(exist_ok=True)
+                        # Every candidate starts from the same seed and a fresh
+                        # model, optimizer and scheduler in _fit_deep_fold.
+                        torch.manual_seed(config.seed)
+                        np.random.seed(config.seed)
+                        with search_accounting.trial(fold_index, candidate,
+                                parent_span=search_stage['span_id']) as trial_fact:
+                            trial_model, trial_history = _fit_deep_fold(
+                                config=trial_config, model_type=model_type, x=x, y=y_model,
+                                splits=splits, label_names=label_names, run_dir=trial_dir,
+                                sample_count=int(len(splits['train'])),
+                                cancel_check=check_run_active,
+                                progress_callback=report_deep_stage)
+                            if not trial_history:
+                                raise ValueError('deep trial produced no training history')
+                            score = float(trial_history[-1]['best_valid_loss'])
+                            if not np.isfinite(score):
+                                raise ValueError('deep trial produced nonfinite valid loss')
+                            trial_fact['selection_score'] = score
+                            trial_fact['actual_epochs'] = len(trial_history)
+                            trial_fact['training_batches'] = int(np.ceil(len(splits['train']) / trial_config.batch_size)) * len(trial_history)
+                            weight_file = trial_dir / 'model.pt'
+                            torch.save(trial_model.state_dict(), weight_file)
+                            trial_fact['artifact_digest'] = hashlib.sha256(weight_file.read_bytes()).hexdigest()
+                            (trial_dir / 'history.json').write_text(json.dumps(trial_history, ensure_ascii=False), encoding='utf-8')
+                        if score < best_loss - 1e-8:
+                            best_model, best_history, best_loss = trial_model, trial_history, score
+                            best_trial_index = candidate['index']
+                if best_model is None or best_history is None or best_trial_index is None:
+                    raise ValueError('deep search produced no selected model')
+                model, history = best_model, best_history
+                selected_trials.append(dict(fold_index=fold_index, trial_index=best_trial_index,
+                    params=search_plan['candidates'][best_trial_index]['params'], selection_score=best_loss))
+                fold_best_params = {'learning_rate': search_plan['candidates'][best_trial_index]['params']['learning_rate'],
+                                    'weight_decay': search_plan['candidates'][best_trial_index]['params']['weight_decay']}
+                fold_selection_metric = 'best_valid_loss'
+                fold_selection_score = best_loss
+                if model_type == 'pca_mlp':
+                    from shutil import copyfile
+                    source = run_dir / f'trial_{fold_index}_{best_trial_index}' / 'pca_mlp_pca.joblib'
+                    if source.is_file():
+                        copyfile(source, run_dir / 'pca_mlp_pca.joblib')
             check_run_active()
             for row in history:
                 history_rows.append({**row, "fold_index": fold_index})
             train_eval = _evaluate(model, x, y_model, splits["train"], label_names)
             valid_eval = _evaluate(model, x, y_model, splits["valid"], label_names)
-            test_eval = _evaluate(model, x, y_model, splits["test"], label_names)
+            eval_scope = search_accounting.span('final_evaluation', fold_index=fold_index) if search_accounting else nullcontext()
+            with eval_scope:
+                check_run_active()
+                test_eval = _evaluate(model, x, y_model, splits["test"], label_names)
             final_deep_context = {
                 "model": model,
                 "x": x,
@@ -1971,6 +2111,8 @@ def _run_legacy_training(
         write_progress(fold_index, fold_index, fold)
 
         # ── 阶段 4：汇总指标（test 主值 = pooled OOF）、合并解释性并落盘全部产物 ──
+    search_summary = (search_accounting.finish(selected=selected_trials, refit_count=final_refit_count)
+                      if search_accounting is not None else None)
     metrics, cv_summary = _build_metrics_payload(fold_split_evals, label_names, evaluation_strategy)
     cv_metrics = {
         "strategy": evaluation_strategy,
@@ -2030,6 +2172,9 @@ def _run_legacy_training(
     }
     processing_summary['digest'] = semantic_digest(processing_summary)
     execution_audit = {'processing_execution': processing_summary}
+    if search_summary is not None:
+        execution_audit['finite_search'] = dict(plan_digest=search_plan['plan_digest'],
+            source_digest=search_plan['source_digest'], summary=search_summary)
     if evaluation_plan is not None:
         from .evaluation_plan import digest as plan_hash
         consumed = {name:list(rows) for name,rows in folds[0]['splits'].items()}
@@ -2066,6 +2211,8 @@ def _run_legacy_training(
             or explainability
         ),
     }
+    if search_summary is not None:
+        model_metadata['search_summary'] = search_summary
     parameter = next(last_model.parameters(), None) if last_model_family == "deep_learning" else None
     model_metadata["execution_device"] = (str(parameter.device) if parameter is not None else None) if last_model_family == "deep_learning" else "cpu"
     if last_model_family == "deep_learning":
@@ -2179,6 +2326,8 @@ def _run_legacy_training(
         "test_data_path": str(Path(test_data_path).resolve()) if test_data_path else None,
         "completed_at": _now_iso(),
     }
+    if search_summary is not None:
+        status_payload['search_summary'] = search_summary
     if repository is None or record is None:
         (run_dir / "status.json").write_text(json.dumps(status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {**status_payload, "run_dir": str(run_dir.resolve())}

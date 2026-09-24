@@ -124,6 +124,19 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         'error': public_error,
         'extensions': {},
     }
+    if record.state == 'succeeded' and validation_status == 'ready':
+        try:
+            summary_file = RunArtifactWriter(run_dir).resolve_download('search_summary.json')
+            summary = json.loads(summary_file.read_text(encoding='utf-8'))
+            if summary.get('schema_version') == 'search-summary-v1' and summary.get('integrity') == 'complete':
+                response['extensions']['finite_search'] = {
+                    key: summary[key] for key in ('mode','planned_trials','completed_trials',
+                        'effective_search','selection_metric','selected','candidate_fit_count',
+                        'final_refit_count','actual_epochs')
+                }
+        except (FileNotFoundError, ManifestCorruptError, ArtifactIntegrityError,
+                OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, ValueError):
+            pass
     if contract_version == 'agent-session-v2':
         from .metadata import resolved_execution
         response['resolved_execution'] = resolved_execution(run_dir, record)

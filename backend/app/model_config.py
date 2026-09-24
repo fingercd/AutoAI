@@ -38,7 +38,7 @@ def _parameter(name, kind, default, *, minimum=None, maximum=None, exclusive_min
                 role='operator_fixed', applies_to=[], condition_refs=[])
 
 
-def model_policy(model_id: str) -> dict[str, Any]:
+def model_policy(model_id: str, *, search_revision: bool = False) -> dict[str, Any]:
     model = MODELS_BY_ID[model_id]
     parameters = []
     rules = []
@@ -54,10 +54,17 @@ def model_policy(model_id: str) -> dict[str, Any]:
                     exclusive_minimum=None if name == 'weight_decay' else 0,
                     exclusive_maximum=1 if name == 'scheduler_factor' else None))
         rules.append('train-only-profile-v2')
+        if search_revision:
+            for parameter in parameters:
+                if parameter['name'] in ('learning_rate', 'weight_decay'):
+                    parameter['role'] = 'search_baseline'
+                    parameter['choices'] = ([0.0003, 0.001, 0.003] if parameter['name'] == 'learning_rate'
+                                             else [0.0, 0.0001])
+                    parameter['default'] = 0.001 if parameter['name'] == 'learning_rate' else 0.0001
     defaults = TRADITIONAL_TRAINING_DEFAULTS
     if model_id == 'random_forest':
         parameters += [_parameter('random_forest_n_estimators', 'integer', defaults.random_forest_n_estimators, minimum=50, maximum=1000),
-                       _parameter('random_forest_search_iterations', 'integer', defaults.random_forest_search_iterations, minimum=1, maximum=18)]
+                       *([] if search_revision else [_parameter('random_forest_search_iterations', 'integer', defaults.random_forest_search_iterations, minimum=1, maximum=18)])]
         rules.append('rf-oob-balanced-accuracy-accuracy-stable-order-v1')
     elif model_id == 'xgboost':
         parameters.append(_parameter('xgboost_gamma', 'number', defaults.xgboost_gamma, minimum=0))
@@ -66,7 +73,31 @@ def model_policy(model_id: str) -> dict[str, Any]:
         rules.append(model_id + '-train-bounded-validation-search-v2')
     for parameter in parameters:
         parameter['applies_to'] = [model_id]
-    policy = dict(config_policy_version='agent-model-config-v2' if model.implemented and model.execution_family == 'deep_learning' else CONFIG_POLICY_VERSION,
+    if search_revision and model_id in MODELS_BY_ID and model.implemented:
+        from .search_policy import baseline_fields
+        from .search_policy import DOMAINS
+        baseline = baseline_fields(model_id)
+        existing = {p['name']: p for p in parameters}
+        for name, default in baseline.items():
+            if name in existing:
+                item = existing[name]
+                item['default'] = default
+                item['role'] = 'search_baseline'
+                if name == 'random_forest_max_features':
+                    item['value_type'] = 'scalar'
+                if name not in ('learning_rate', 'weight_decay'):
+                    item['choices'] = list(dict.fromkeys(row[name] for row in DOMAINS[model_id] if name in row)) if any(name in row for row in DOMAINS[model_id]) else [default]
+            else:
+                kind = ('scalar' if name == 'random_forest_max_features' else
+                        'integer' if type(default) is int else 'number' if type(default) is float else 'string')
+                item = _parameter(name, kind, default)
+                item['role'] = 'search_baseline' if name not in ('xgboost_learning_rate','xgboost_subsample','xgboost_colsample_bytree','xgboost_reg_lambda','svm_kernel','svm_gamma') else 'operator_fixed'
+                item['choices'] = list(dict.fromkeys(row[name] for row in DOMAINS[model_id] if name in row)) if any(name in row for row in DOMAINS[model_id]) else [default]
+                item['applies_to'] = [model_id]
+                parameters.append(item)
+        rules.append('finite-hpo-v1')
+    policy = dict(config_policy_version=('agent-model-config-v3' if search_revision else
+        'agent-model-config-v2' if model.implemented and model.execution_family == 'deep_learning' else CONFIG_POLICY_VERSION),
         fixed_execution_defaults={p['name']: p['default'] for p in parameters},
         parameters=parameters, compatibility_rules=rules)
     policy['config_policy_digest'] = semantic_digest(policy)
@@ -80,7 +111,7 @@ def resolve_model_params(model_id: str, overrides: dict[str, Any] | None = None,
         overrides = {}
     if type(overrides) is not dict:
         raise ValueError('model_params must be an object')
-    specs = {p['name']:p for p in policy['parameters'] if p['role'] == 'operator_fixed'}
+    specs = {p['name']:p for p in policy['parameters'] if p['role'] in ('operator_fixed', 'search_baseline')}
     if set(overrides) - set(specs):
         raise ValueError('unknown or inapplicable model parameter')
     resolved = dict(policy['fixed_execution_defaults'])
@@ -89,9 +120,10 @@ def resolve_model_params(model_id: str, overrides: dict[str, Any] | None = None,
         kind = spec['value_type']
         if value is None or (kind == 'integer' and type(value) is not int) or (
             kind == 'number' and type(value) not in (float, int)) or (
-            kind == 'string' and type(value) is not str):
+            kind == 'string' and type(value) is not str) or (
+            kind == 'scalar' and type(value) not in (str, float, int)):
             raise ValueError('invalid parameter type: ' + name)
-        if kind in ('integer', 'number'):
+        if kind in ('integer', 'number') or kind == 'scalar' and type(value) in (int, float):
             if not math.isfinite(value):
                 raise ValueError('parameter must be finite: ' + name)
             for key, invalid in [('minimum', lambda x: value < x), ('maximum', lambda x: value > x),
@@ -104,14 +136,14 @@ def resolve_model_params(model_id: str, overrides: dict[str, Any] | None = None,
     return resolved
 
 
-def model_capability_snapshot() -> dict[str, Any]:
+def model_capability_snapshot(*, search_revision: bool = False) -> dict[str, Any]:
     models = []
     semantic = []
     availability = []
     for m in MODEL_DECLARATIONS:
         item = dict(id=m.id, display_name=m.display_name, family=m.family,
                     execution_family=m.execution_family, architecture_version=ARCHITECTURE_VERSION,
-                    implemented=m.implemented, **model_policy(m.id))
+                    implemented=m.implemented, **model_policy(m.id, search_revision=search_revision))
         semantic.append(dict(item))
         available, reason = model_availability(m.id)
         availability.append(dict(id=m.id, available=available, reason_code=reason))
@@ -138,7 +170,7 @@ def compatible_frozen_policy(model_id, frozen, params, *, current=None):
         if frozen['config_policy_digest'] != semantic_digest(legacy):
             return False
     try:
-        return resolve_model_params(model_id, params) == params
+        return resolve_model_params(model_id, params, policy=current) == params
     except ValueError:
         return False
 
@@ -293,6 +325,24 @@ _DEFAULT_PROCESSING_BINDING_COMPAT = {
     'xgboost': ('34db4c1acf3bbb9511a1f2acfc103d79e6738c9350653ed5415dcb0fa657bfea', 'f9e28eb729ee27249e7e3b2e79707fd9c06f3f45e90f0521fba12f81cac73600'),
 }
 
+# The finite-search addition changes the AST binding of traditional selection
+# functions while retaining their legacy path.  Preserve the accepted v5
+# digest for old frozen Sessions; only default processing is compatible.
+_PRE_FINITE_SEARCH_BINDINGS = {
+    model_id: pair[1] for model_id, pair in _DEFAULT_PROCESSING_BINDING_COMPAT.items()
+}
+_CURRENT_FINITE_BINDINGS = {
+    'logistic_regression': 'ef21f8243c98f8ec5af36ffc1ea435aff52f15bb5f49043c9b7d0abfe15cb693',
+    'pca_lda': '444712b20b98121110ef3b885b4f8c0b5c1bb321d28e496c6ce2b5230b1e156d',
+    'pls_da': '1f3091014975e4553367c41dc89617c8b0b6db1ad13dac792ec0a0bafef61222',
+    'random_forest': '5b4d4ccf95a18b05868adc4be0fa1d158027ed45c5795de68b99748ec6097d14',
+    'svm': '65ef9983b6b8a8694a63388d47b27d32be9c7e4ccea6469388e09091bcb03e8c',
+    'xgboost': 'e3f408c8d8615ea6949020a9e8429e24a697fc1ca16ff5a16ac348b9d1344f91',
+}
+for _model_id, _digest in _CURRENT_FINITE_BINDINGS.items():
+    _old, _previous = _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id]
+    _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id] = (_old, _digest)
+
 
 def compatible_search_strategy_binding(model_id: str, frozen_digest: str,
                                        normalization: str, class_balance: str) -> bool:
@@ -300,5 +350,7 @@ def compatible_search_strategy_binding(model_id: str, frozen_digest: str,
     if frozen_digest == current:
         return True
     return (normalization, class_balance) == ('zscore', 'none') and (
-        frozen_digest, current
-    ) == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id)
+        (frozen_digest, current) == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id)
+        or frozen_digest == _PRE_FINITE_SEARCH_BINDINGS.get(model_id)
+        and current == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id, (None, None))[1]
+    )

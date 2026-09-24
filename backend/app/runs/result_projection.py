@@ -573,6 +573,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             'family': model_family,
             'architecture_version': status.get('architecture_version') or model_metadata.get('architecture_version'),
             'artifact_note': status.get('model_artifact_note'),
+            'search': _without_paths(model_metadata.get('search_summary')) if is_succeeded else None,
         },
         'evaluation': {
             'strategy': strategy,
