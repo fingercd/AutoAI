@@ -1,5 +1,6 @@
 """The new search protocol fits actual candidates in one scoped Run."""
 from datetime import datetime, timezone
+from dataclasses import replace
 import json
 import sqlite3
 from pathlib import Path
@@ -17,9 +18,69 @@ from backend.app.runs.repository import RunRepository
 from backend.app.runs.worker import RunWorker
 from backend.app.runs.execution import execute_claimed_run
 from backend.app.runs.artifacts import RunArtifactWriter
+from backend.app.model_config import model_policy, persisted_model_params, resolve_model_params
+from backend.app.contracts import TrainingSpec, TrainingConfigValidationError
+from backend.app.agent.metadata import run_metadata_v2
 
 
 HEADERS = {'X-AutoAI-Agent-Revision': 'agent-recipes-revision-v4'}
+
+
+@pytest.mark.parametrize('candidate', [3, 5])
+def test_xgboost_v4_integer_survives_submission_and_replay(api, candidate):
+    client, storage, dataset = api
+    request = search_session_request(dataset, ['xgboost'],
+        model_configs={'xgboost': {'xgboost_min_child_weight': candidate}},
+        client_request_id=f'xgb-{candidate}')
+    created = client.post('/api/agent/v2/sessions', headers=HEADERS, json=request)
+    assert created.status_code == 201, created.text
+    session_id = created.json()['session_id']
+    frozen = created.json()['locked_config']['capability_snapshot']['model_configs']['xgboost']
+    assert type(frozen['xgboost_min_child_weight']) is int
+    path = f'/api/agent/v2/sessions/{session_id}/experiments'
+    catalog = created.json()['locked_config']['preparation']['catalog']
+    recipe = catalog['recipes'][0]
+    payload = {'recipe_id': recipe['recipe_id'], 'recipe_digest':recipe['recipe_digest'],
+        'catalog_digest':catalog['catalog_digest'], 'client_request_id': 'same',
+        'rationale':'finite choice', 'knowledge_refs':[]}
+    first = client.post(path, headers=HEADERS, json=payload)
+    assert first.status_code == 202, first.text
+    assert first.json()['effective_config_status'] == 'ready'
+    assert type(first.json()['effective_config']['model_params']['xgboost_min_child_weight']) is int
+    run = RunRepository(storage/'runs.sqlite3').get(first.json()['run_id'])
+    assert type(run.config['xgboost_min_child_weight']) is int
+    legacy=replace(run,config={**run.config,'xgboost_min_child_weight':float(candidate)})
+    legacy_projection=run_metadata_v2(legacy,
+        snapshot=created.json()['locked_config']['capability_snapshot'])
+    assert legacy_projection['effective_config_status']=='ready'
+    assert legacy_projection['effective_config']['model_params']['xgboost_min_child_weight']==candidate
+    replay = client.post(path, headers=HEADERS, json=payload)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()['idempotent_replay'] is True
+    assert replay.json()['run_id'] == first.json()['run_id']
+    assert replay.json()['effective_config_status'] == 'ready'
+    assert len(RunRepository(storage/'runs.sqlite3').list()) == 1
+
+
+@pytest.mark.parametrize('bad', [3.0, 3.5, 4, 0, True, '3'])
+def test_xgboost_v4_invalid_candidate_is_rejected(bad):
+    policy = model_policy('xgboost', search_revision=True)
+    with pytest.raises((ValueError, TrainingConfigValidationError)):
+        resolve_model_params('xgboost', {'xgboost_min_child_weight': bad}, policy=policy)
+    with pytest.raises(TrainingConfigValidationError):
+        TrainingSpec({'model_type':'xgboost',
+            'agent_config_policy_version':'agent-model-config-v3',
+            'xgboost_min_child_weight':bad}).validated(has_external_test=False)
+
+
+@pytest.mark.parametrize('persisted', [3.0, 5.0])
+def test_xgboost_v4_exact_legacy_float_reads_as_integer(persisted):
+    policy = model_policy('xgboost', search_revision=True)
+    params = persisted_model_params('xgboost', {'xgboost_min_child_weight': persisted}, policy=policy)
+    assert resolve_model_params('xgboost', params, policy=policy)['xgboost_min_child_weight'] == int(persisted)
+    with pytest.raises(ValueError):
+        resolve_model_params('xgboost', persisted_model_params('xgboost',
+            {'xgboost_min_child_weight': 3.5}, policy=policy), policy=policy)
 
 
 def low_feature_api(monkeypatch, tmp_path, feature_count):

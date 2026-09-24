@@ -6,10 +6,12 @@ from AUTOAI_API_TOKEN / AUTOAI_LLM_TOKEN. Public records never contain those val
 from __future__ import annotations
 import argparse
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import time
 from contextlib import contextmanager
@@ -604,6 +606,111 @@ def _confirm_terminal_decision(storage,row,record):
             raise ValueError('completed decision lacks confirmed finalization')
 
 
+def _failed_search_evidence(storage,row,record,plan,backend_url,scope_key,token):
+    """Inspect a terminal failure without changing its checkpoint or reading Test."""
+    from agent_poc.orchestration.runtime import read_status
+
+    if record.get('status') not in ('failed','needs_attention','cancelled','timed_out') or record.get('offline_test'):
+        raise ValueError('failure settlement requires an excluded terminal decision')
+    try:
+        state=read_status(storage=storage/row['experiment_id']/'checkpoints',
+            thread_id=row['experiment_id'])
+    except Exception as error:
+        raise ValueError('failure checkpoint unavailable') from error
+    identity=state.get('identity') or {}
+    task=state.get('task') or {}
+    lifecycle=state.get('lifecycle') or {}
+    execution=state.get('execution') or {}
+    recovery=state.get('recovery') or {}
+    pending=recovery.get('pending_operation') or {}
+    principal_binding='\0'.join(('agent-principal-binding-v1',backend_url,scope_key))
+    expected_principal=hmac.new((token or 'agent-local-scope-v1').encode(),
+        principal_binding.encode(),hashlib.sha256).hexdigest()
+    if (identity.get('thread_id')!=row['experiment_id'] or
+            identity.get('backend_fingerprint')!=hashlib.sha256(backend_url.encode()).hexdigest() or
+            digest(scope_key)!=plan['conditions']['scope_binding'] or
+            identity.get('principal_fingerprint')!=expected_principal or
+            identity.get('principal_fingerprint')!=record.get('principal_fingerprint') or
+            not identity.get('session_id') or identity.get('session_id')!=record.get('session_id') or
+            identity.get('experiment_request_id')!=record.get('experiment_request_id') or
+            task.get('dataset_id')!=row['dataset_id'] or
+            task.get('dataset_fingerprint')!=row['dataset_sha256'] or
+            record.get('dataset_digest')!=row['dataset_sha256'] or
+            task.get('processing_mode')!='fixed' or task.get('search_mode')!=row['search_mode'] or
+            lifecycle.get('status')!=record['status'] or lifecycle.get('next_action') is not None or
+            lifecycle.get('ended_at') is None or execution.get('run_id')!=record.get('run_id') or
+            pending.get('status') in ('prepared','in_flight') or
+            (pending.get('status') not in (None,'confirmed','failed','unknown')) or
+            (pending.get('status')=='unknown' and pending.get('kind') not in ('llm','experiment')) or
+            record.get('source',{}).get('source_digest')!=plan['conditions']['source_binding']):
+        raise ValueError('failure checkpoint or source differs from registered experiment')
+    if pending.get('kind')=='experiment':
+        if (pending.get('request_id')!=identity['experiment_request_id'] or
+                (pending.get('content') or {}).get('session_id')!=identity['session_id']):
+            raise ValueError('pending experiment differs from bound Session')
+    journal_path=storage/row['experiment_id']/'checkpoints'/'calls.sqlite'
+    try:
+        with sqlite3.connect(journal_path.resolve().as_uri()+'?mode=ro',uri=True) as connection:
+            rows=connection.execute('''SELECT operation_id,kind,status,ended_at,session_id,run_id
+                FROM orchestration_calls_v1 WHERE thread_id=? ORDER BY id''',
+                (row['experiment_id'],)).fetchall()
+            waits=connection.execute('''SELECT status,ended_at_utc FROM orchestration_monitor_waits_v1
+                WHERE thread_id=? ORDER BY id''',(row['experiment_id'],)).fetchall()
+    except (sqlite3.Error,OSError) as error:
+        raise ValueError('failure call journal unavailable') from error
+    if not rows or any(status not in ('confirmed','failed') or ended is None or
+            (session_id is not None and session_id!=identity['session_id']) or
+            (run_id is not None and run_id!=record.get('run_id'))
+            for _,_,status,ended,session_id,run_id in rows):
+        raise ValueError('failure call journal has unsettled or foreign operations')
+    if any(status not in ('succeeded','interrupted') or ended is None
+           for status,ended in waits):
+        raise ValueError('failure monitor wait is unsettled')
+    if pending.get('status')=='unknown':
+        matches=[item for item in rows if item[0]==pending.get('operation_id') and
+            item[1]==('llm' if pending.get('kind')=='llm' else 'api')]
+        if (not matches or
+                (pending.get('kind')=='llm' and any(item[2]!='failed' for item in matches)) or
+                (pending.get('kind')=='experiment' and not any(item[2]=='confirmed' for item in matches))):
+            raise ValueError('unknown pending operation lacks settled call evidence')
+    return dict(schema_version='failed-search-settlement-v1',
+        plan_digest=plan['plan_digest'],experiment_id=row['experiment_id'],
+        source_digest=record['source']['source_digest'],record_digest=digest(record),
+        checkpoint_digest=digest(state),journal_digest=digest(dict(calls=rows,waits=waits)),
+        principal_fingerprint=identity['principal_fingerprint'],
+        session_id=identity['session_id'],record_run_id=record.get('run_id'),
+        pending_operation_status=pending.get('status'),
+        call_count=len(rows),terminal_status=record['status'])
+
+
+def _confirm_failed_search_backend(client,row,record,evidence):
+    """The scoped Session must contain exactly one bound, terminal Run."""
+    response=client.get('/api/agent/v2/sessions/'+evidence['session_id'],
+        headers={'X-AutoAI-Agent-Revision':'agent-recipes-revision-v4'})
+    response.raise_for_status()
+    session=response.json()
+    locked=session.get('locked_config') or {}
+    experiments=session.get('experiments') or []
+    if (session.get('session_id')!=evidence['session_id'] or
+            locked.get('dataset_id')!=row['dataset_id'] or
+            (locked.get('dataset_sha256') or locked.get('dataset_fingerprint'))!=row['dataset_sha256'] or
+            locked.get('max_runs')!=1 or session.get('remaining_runs')!=0 or
+            len(experiments)!=1):
+        raise ValueError('failed decision backend Session is not uniquely settled')
+    experiment=experiments[0]
+    run_id=experiment.get('run_id')
+    if (experiment.get('binding_state')!='bound' or not run_id or
+            experiment.get('state') not in ('succeeded','failed','cancelled') or
+            (record.get('run_id') is not None and record['run_id']!=run_id)):
+        raise ValueError('failed decision Run is active or bound to another experiment')
+    evidence.update(settled_run_id=run_id,run_state=experiment['state'],
+        backend_session_digest=digest(dict(session_id=session['session_id'],
+            state=session['state'],locked_config=locked,remaining_runs=0,
+            experiments=[dict(run_id=run_id,binding_state=experiment['binding_state'],
+                state=experiment['state'])])))
+    return evidence
+
+
 def collect_processing_plan(plan_path,storage,backend_url):
     """Read Test only after all 40 decisions have a durable terminal status."""
     import httpx
@@ -657,15 +764,19 @@ def collect_processing_plan(plan_path,storage,backend_url):
     return summary
 
 
-def collect_search_plan(plan_path,storage,backend_url):
-    """Collect Test only after all forty registered search decisions close."""
+def collect_search_plan(plan_path,storage,backend_url,scope_key):
+    """Settle failed rows first; collect Test only for confirmed completed rows."""
     import httpx
     plan=load_search_plan(plan_path)
     if plan_path.resolve()!=storage.resolve()/plan['experiment_id']/'plan.json':
         raise ValueError('search plan and row storage differ')
     if digest(backend_url)!=plan['conditions']['backend_binding']:
         raise ValueError('collection backend differs from registration')
+    if digest(scope_key)!=plan['conditions']['scope_binding']:
+        raise ValueError('collection scope differs from registration')
+    token=os.environ.get('AUTOAI_API_TOKEN')
     records={}
+    failed_evidence={}
     for row in plan['rows']:
         path=storage/row['experiment_id']/'record.json'
         if not path.exists():
@@ -686,11 +797,31 @@ def collect_search_plan(plan_path,storage,backend_url):
                 any(config.get(key)!=plan['conditions'][key]
                     for key in ('backend_binding','scope_binding','llm_binding'))):
             raise ValueError('record differs from registered search plan')
-        _confirm_terminal_decision(storage,row,record)
+        if record.get('status')=='completed':
+            _confirm_terminal_decision(storage,row,record)
+        else:
+            failed_evidence[row['experiment_id']]=_failed_search_evidence(
+                storage,row,record,plan,backend_url,scope_key,token)
         records[row['experiment_id']]=record
-    token=os.environ.get('AUTOAI_API_TOKEN')
     headers={'Authorization':'Bearer '+token} if token else {}
     with httpx.Client(base_url=backend_url,headers=headers,timeout=30,trust_env=False) as client:
+        # Validate every failure before any Test access or settlement write.
+        for row in plan['rows']:
+            evidence=failed_evidence.get(row['experiment_id'])
+            if evidence is not None:
+                _confirm_failed_search_backend(client,row,records[row['experiment_id']],evidence)
+        for experiment_id,evidence in failed_evidence.items():
+            path=storage/experiment_id/'failure-settlement.json'
+            if path.exists() and json.loads(path.read_text(encoding='utf-8'))!=evidence:
+                raise ValueError('existing failure settlement differs from live evidence')
+        for experiment_id,evidence in failed_evidence.items():
+            path=storage/experiment_id/'failure-settlement.json'
+            with experiment_lock(storage,experiment_id):
+                if path.exists():
+                    if json.loads(path.read_text(encoding='utf-8'))!=evidence:
+                        raise ValueError('existing failure settlement differs from live evidence')
+                else:
+                    save(path,evidence)
         for row in plan['rows']:
             record=records[row['experiment_id']]
             if record['status']!='completed' or not record.get('run_id') or record.get('offline_test'):
@@ -943,8 +1074,9 @@ def main(argv=None):
         q.add_argument('--plan',type=Path,required=True)
         q.add_argument('--storage',type=Path,required=True)
         q.add_argument('--backend-url',required=True)
+        q.add_argument('--scope-key',required=True,help='Original operator scope identity; never a token')
         a=q.parse_args(argv[1:])
-        summary=collect_search_plan(a.plan,a.storage,a.backend_url)
+        summary=collect_search_plan(a.plan,a.storage,a.backend_url,a.scope_key)
         print(json.dumps(dict(complete=summary['complete'],paired_count=summary['paired_count'])))
         return 0
     p=argparse.ArgumentParser(description=__doc__)

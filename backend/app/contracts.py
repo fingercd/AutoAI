@@ -159,6 +159,22 @@ class TrainingSpec:
         }
         for field in positive_fields:
             if field in values:
+                if (field == 'xgboost_min_child_weight' and
+                        values.get('agent_config_policy_version') == 'agent-model-config-v3' and
+                        values['model_type'] == 'xgboost'):
+                    # The v4 finite search policy freezes integer candidates. Keep
+                    # that type in the queued Run instead of converting it to float.
+                    if type(values[field]) is not int or values[field] <= 0:
+                        raise TrainingConfigValidationError(
+                            'xgboost_min_child_weight 必须是大于 0 的整数'
+                        )
+                    from .model_config import model_policy, resolve_model_params
+                    try:
+                        resolve_model_params('xgboost', {field: values[field]},
+                            policy=model_policy('xgboost', search_revision=True))
+                    except ValueError as exc:
+                        raise TrainingConfigValidationError(str(exc)) from exc
+                    continue
                 number = _finite_number(values[field], field=field)
                 if number <= 0:
                     raise TrainingConfigValidationError(f'{field} 必须大于 0')
