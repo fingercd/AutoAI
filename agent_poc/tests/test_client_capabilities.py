@@ -65,3 +65,25 @@ def test_resolved_execution_closes_test_and_path_fields():
         with pytest.raises(ValueError):
             ResolvedExecution.model_validate({'status':'ready','parameters':params})
     assert ResolvedExecution.model_validate({'status':'ready','parameters':{'execution_device':'cpu'}}).status=='ready'
+
+
+def test_search_tool_schema_accepts_explicit_baselines_and_scalar_choices(api):
+    transport, _, dataset = api
+    client = AutoAIClient('http://backend.invalid', transport=BackendTransport(transport),
+                          api_version='v2', execution_profile='train-evidence-recipes-v1',
+                          protocol_revision='agent-recipes-revision-v4')
+    client.inspect_ml_capabilities()
+    request = dict(dataset_id=dataset, selection_metric='macro_f1', max_runs=1,
+                   allowed_models=['logistic_regression', 'random_forest'],
+                   model_configs={'logistic_regression': {'logistic_c': 1.0},
+                                  'random_forest': {'random_forest_max_features': 'sqrt'}})
+    assert validate_tool_arguments('start_ml_session', request, client.tool_schemas) == request
+    for invalid in (-1, True, 'not-a-choice'):
+        changed = deepcopy(request)
+        changed['model_configs']['random_forest']['random_forest_max_features'] = invalid
+        with pytest.raises(AgentContractError):
+            validate_tool_arguments('start_ml_session', changed, client.tool_schemas)
+    changed = deepcopy(request)
+    changed['model_configs']['logistic_regression']['logistic_c'] = -1
+    with pytest.raises(AgentContractError):
+        validate_tool_arguments('start_ml_session', changed, client.tool_schemas)

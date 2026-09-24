@@ -69,7 +69,15 @@ def validate_tool_arguments(name: str, arguments: dict[str, Any], schemas: dict 
         if isinstance(kind, list):
             if value is None and 'null' in kind:
                 return
-            kind = next(k for k in kind if k != 'null')
+            for candidate in kind:
+                if candidate == 'null':
+                    continue
+                try:
+                    check({**schema, 'type': candidate}, value)
+                    return
+                except ValueError:
+                    pass
+            raise ValueError
         if kind == 'object':
             if type(value) is not dict or set(value) - set(schema['properties']):
                 raise ValueError
@@ -153,15 +161,16 @@ def build_tool_schemas(capabilities: dict[str, Any]) -> dict[str, dict[str, Any]
     start['allowed_models']['items']['enum'] = ids
     start['max_runs'] = {'type':'integer','minimum':1,'maximum':1}
     def parameter_schema(p):
-        value={'type':p.value_type}
+        value={'type':['integer','number','string'] if p.value_type=='scalar' else p.value_type}
         for source,target in [('minimum','minimum'),('maximum','maximum'),('exclusive_minimum','exclusiveMinimum'),('exclusive_maximum','exclusiveMaximum'),('choices','enum')]:
             item=getattr(p,source)
             if item is not None:
                 value[target]=item
         if p.nullable:
-            value['type']=[p.value_type,'null']
+            value['type']=(value['type'] if isinstance(value['type'],list) else [value['type']])+['null']
         return value
-    per_model={m.id:{p.name:parameter_schema(p) for p in m.parameters if p.role=='operator_fixed'} for m in models}
+    per_model={m.id:{p.name:parameter_schema(p) for p in m.parameters
+                     if p.role in ('operator_fixed','search_baseline')} for m in models}
     start['model_configs']=_schema({name:_schema(params,[]) for name,params in per_model.items()},[])
     submit['model_type']['enum']=ids
     submit['normalization']['enum']=['zscore']
