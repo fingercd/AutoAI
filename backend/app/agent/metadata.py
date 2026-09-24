@@ -87,7 +87,7 @@ import json
 import math
 from pathlib import Path
 from ..model_catalog import MODELS_BY_ID, RETIRED_MODEL_ALIASES
-from ..model_config import model_policy, resolve_model_params
+from ..model_config import model_policy, resolve_model_params, persisted_model_params
 from ..runs.artifacts import RunArtifactWriter, ManifestCorruptError, ArtifactIntegrityError
 
 class SafeEffectiveConfigV2(SafeEffectiveConfig):
@@ -116,7 +116,8 @@ def run_metadata_v2(record, *, pending=False, snapshot=None):
     if raw.get('agent_config_policy_digest') != policy['config_policy_digest']:
         return response
     try:
-        params = {name:raw[name] for name in policy['fixed_execution_defaults']}
+        params = persisted_model_params(raw['model_type'],
+            {name:raw[name] for name in policy['fixed_execution_defaults']}, policy=policy)
         params = resolve_model_params(raw['model_type'], params, policy=policy)
         config = SafeEffectiveConfigV2.model_validate({
             **persisted_config_projection(record),

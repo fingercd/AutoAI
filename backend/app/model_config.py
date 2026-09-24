@@ -136,6 +136,16 @@ def resolve_model_params(model_id: str, overrides: dict[str, Any] | None = None,
     return resolved
 
 
+def persisted_model_params(model_id: str, values: dict[str, Any], *, policy: dict[str, Any]) -> dict[str, Any]:
+    """Read exact legacy v4 XGBoost integer candidates without widening the policy."""
+    result = dict(values)
+    if model_id == 'xgboost' and policy['config_policy_version'] == 'agent-model-config-v3':
+        value = result.get('xgboost_min_child_weight')
+        if type(value) is float and math.isfinite(value) and value.is_integer():
+            result['xgboost_min_child_weight'] = int(value)
+    return result
+
+
 def model_capability_snapshot(*, search_revision: bool = False) -> dict[str, Any]:
     models = []
     semantic = []
