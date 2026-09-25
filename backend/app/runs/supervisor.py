@@ -246,7 +246,11 @@ def supervise(
 
         # A successful child result is still provisional until the caller's
         # claim/budget/deadline checks and repository success transaction.
-        if _active_job_processes(job):
+        # Windows can signal the main process just before Job accounting drops
+        # its active count. Allow a bounded accounting drain, never accept a
+        # nonempty tree as a successful exit.
+        drain_seconds = max(0.0, min(0.1, monotonic_deadline - time.monotonic()))
+        if not _await_empty_job(job, seconds=drain_seconds):
             if not _kernel.TerminateJobObject(job, 1) or not _await_empty_job(
                     job, seconds=termination_grace_seconds):
                 raise SupervisionUncertain(TerminationEvidence(
@@ -265,6 +269,18 @@ def supervise(
         if not isinstance(envelope, dict) or type(envelope.get('ok')) is not bool:
             raise ChildExecutionError('ChildProtocolError', 'invalid training child result')
         if not envelope['ok']:
+            if envelope.get('error_type') == 'GuardError':
+                from .guard import GuardError
+                details = envelope.get('guard', {})
+                # The child carries only registered fields, never exception prose.
+                from pydantic import TypeAdapter
+                from .guard import Stage
+                stage = TypeAdapter(Stage).validate_python(details.get('stage'))
+                ref = details.get('report_id')
+                import re
+                if ref is not None and (not isinstance(ref, str) or not re.fullmatch('guard-[a-f0-9]{64}', ref)):
+                    raise ChildExecutionError('ChildProtocolError', 'invalid guard reference')
+                raise GuardError(details.get('code'), stage=stage, report_id=ref)
             raise ChildExecutionError(str(envelope.get('error_type', 'ChildExecutionError')),
                                       str(envelope.get('message', 'training child failed')))
         result = envelope.get('result')
@@ -353,6 +369,10 @@ def _child_main() -> None:
         envelope = {'ok': True, 'result': result}
     except Exception as exc:
         envelope = {'ok': False, 'error_type': type(exc).__name__, 'message': str(exc)}
+        from .guard import GuardError
+        if isinstance(exc, GuardError):
+            envelope = dict(ok=False, error_type='GuardError', guard=dict(
+                code=exc.code, stage=exc.stage, report_id=exc.report_id))
     original_stdout.write(json.dumps(envelope, separators=(',', ':')))
     original_stdout.flush()
 

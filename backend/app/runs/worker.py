@@ -51,6 +51,10 @@ def _error_details(exc: Exception) -> dict[str, Any]:
     """
     error_type = type(exc).__name__
     message = public_error_message(exc)
+    from .guard import GuardError
+    if isinstance(exc, GuardError):
+        return dict(code=exc.code, stage=exc.stage, report_id=exc.report_id,
+                    message='训练完整性检查未通过', type='GuardError', retryable=False)
     # 数据集在 queued 之后被改动（SHA-256 校验失败）：独立 code，便于前端给出针对性提示
     if error_type == 'DatasetIntegrityError':
         code = 'dataset_changed'
@@ -238,16 +242,28 @@ class RunWorker:
                 )
                 # 真正的训练执行（耗时主体）；期间的取消由 execution 内部的 cancel_check 感知
                 result = self.execute(run)
-            # 携带原 claim_token 提交成功；若 lease 已丢失会抛 InvalidRunTransition，结果随之丢弃
-            deadline_text = result.get('_work_deadline_at')
-            finished = self.repository.finish_success(
-                run.run_id,
-                claim_token=run.claim_token or '',
-                now=self.now(),
-                manifest_name=str(result['manifest_name']),
-                **({'deadline_at': datetime.fromisoformat(deadline_text)}
-                   if deadline_text else {}),
-            )
+                # Hash I/O and the final publication fence remain under lease renewal.
+                deadline_text = result.get('_work_deadline_at')
+                publication = None
+                if run.guard_policy is not None:
+                    from .guard import check_outputs, GuardError
+                    from .contracts import Principal
+                    def active():
+                        self.repository.assert_active(run.run_id, claim_token=run.claim_token or '', now=self.now())
+                        if deadline_text and datetime.now(timezone.utc) >= datetime.fromisoformat(deadline_text):
+                            raise RunDeadlineExceeded('publication deadline exceeded')
+                    child = self.repository.get_guard_report(result.get('guard_report_id'),
+                        principal=Principal(run.owner_id, run.tenant_id))
+                    publication = check_outputs(record=run, repository=self.repository,
+                        run_dir=self.repository.database_path.parent/'runs'/run.run_id,
+                        stage='publication', active=active, usage=result.get('_guard_usage'))
+                    if child.stage != 'pre_publish' or child.status != 'passed' or child.bindings != publication.bindings:
+                        raise GuardError('guard_report_binding_mismatch', stage='publication')
+                finished = self.repository.finish_success(
+                    run.run_id, claim_token=run.claim_token or '', now=self.now(),
+                    manifest_name=str(result['manifest_name']),
+                    **({'publication_report': publication} if publication is not None else {}),
+                    **({'deadline_at': datetime.fromisoformat(deadline_text)} if deadline_text else {}))
             if self.project_status is not None:
                 self.project_status(finished)
             self.repository.record_worker_heartbeat(
@@ -269,6 +285,10 @@ class RunWorker:
                 # 失败提交同样携带 claim_token；错误详情收敛后写入仓库供结果页展示
                 logger.exception('Run %s failed during worker execution', run.run_id)
                 details = _error_details(exc)
+                if run.guard_policy is not None:
+                    # Unexpected I/O/model exceptions are not a public evidence
+                    # channel, even when their text happens not to contain a path.
+                    details['message'] = '训练检查或执行未完成；详细信息仅记录在服务器日志中'
                 failed = self.repository.finish_failure(
                     run.run_id,
                     claim_token=run.claim_token or '',
@@ -305,6 +325,7 @@ def execute_with_budget_supervision(record: Any, *, repository: RunRepository,
     from ..agent.training_budget import TrainingBudget, load_training_binding
     from .execution import execute_claimed_run
     from .supervisor import supervise
+    from .guard import GuardError
 
     binding = load_training_binding(agent_database, record,
                                     runs_database=repository.database_path)
@@ -342,7 +363,7 @@ def execute_with_budget_supervision(record: Any, *, repository: RunRepository,
     try:
         result = supervise(payload, deadline_at=deadline, active=active,
                            on_stop=ledger.record_termination)
-    except (SupervisionStopped, ChildExecutionError):
+    except (SupervisionStopped, ChildExecutionError, GuardError):
         ledger.settle(exit_confirmed=True)
         raise
     except SupervisionUncertain:
@@ -354,7 +375,8 @@ def execute_with_budget_supervision(record: Any, *, repository: RunRepository,
             'supervisor_error', datetime.now(timezone.utc).isoformat(),
             None, None, None)) from exc
     ledger.settle(exit_confirmed=True)
-    return {**result, '_work_deadline_at': deadline.isoformat()}
+    return {**result, '_work_deadline_at': deadline.isoformat(),
+            **({'_guard_usage': ledger.guard_snapshot(settled=True)} if record.guard_policy is not None else {})}
 
 
 def main() -> None:

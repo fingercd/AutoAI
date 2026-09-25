@@ -97,6 +97,8 @@ class RunRecord:
     updated_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    guard_policy: dict[str, Any] | None = None
+    publication_report_id: str | None = None
 
     # legacy_status 是派生只读视图：库中只存规范 state，旧词表在读取时即时映射。
     @property

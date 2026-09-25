@@ -15,9 +15,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 from typing import Any
 
 from .artifacts import RunArtifactWriter
@@ -60,8 +60,7 @@ class TrainingExecution:
     ) -> dict[str, Any]:
         """调用 training 模块的实际训练入口。
 
-        把独立测试集路径注入 config（test_data_path），并用 dataclasses.replace
-        生成带新 config 的 record 副本，不修改原 record。
+        独立测试集路径只注入本次配置视图；Guard 始终绑定数据库原 record。
         """
         from ..training import _run_legacy_training
         # 延迟导入：本模块被 worker 长驻加载，training 的重依赖（torch/sklearn）只在真正训练时引入
@@ -69,14 +68,12 @@ class TrainingExecution:
         config = dict(record.config)
         if test_data_path is not None:
             config['test_data_path'] = str(test_data_path)
-        execution_record = replace(record, config=config)
-        # replace 生成副本而不改原 record：test_data_path 注入只影响本次执行的视图
         return _run_legacy_training(
             data_path=data_path,
             config_data=config,
-            run_id=execution_record.run_id,
+            run_id=record.run_id,
             repository=self.repository,
-            record=execution_record,
+            record=record,
             output_dir=self.run_dir,
             training_budget=self.training_budget,
         )
@@ -144,11 +141,43 @@ class TrainingExecution:
             for key in ('model_type', 'model_family', 'evaluation_strategy', 'fold_count')
             if key in result
         }
-        writer.finalize(run_id=record.run_id, metadata=metadata)
-        return {'manifest_name': 'manifest.json'}
+        result = {'manifest_name': 'manifest.json'}
+        io_deadline = time.monotonic() + 60
+        def publication_active():
+            from .guard import GuardError
+            self.cancel_check(record)
+            if time.monotonic() > io_deadline:
+                raise GuardError('guard_resource_limit', stage='pre_publish')
+        def validate(encoded):
+            from .guard import check_outputs
+            usage = self.training_budget.guard_snapshot(settled=False) if self.training_budget else None
+            checked = check_outputs(record=record, repository=self.repository,
+                run_dir=self.run_dir, stage='pre_publish', active=publication_active,
+                usage=usage, manifest_bytes=encoded)
+            result['guard_report_id'] = checked.report_id
+        writer.finalize(run_id=record.run_id, metadata=metadata,
+                        active=publication_active,
+                        validate=validate if record.guard_policy is not None else None)
+        return result
 
 
 def execute_claimed_run(record: RunRecord, *, repository: Any,
+                        storage_root: Path | None = None,
+                        training_budget: Any | None = None) -> dict[str, str]:
+    from ..datasets.repository import DatasetIntegrityError
+    from .guard import GuardError, report
+    try:
+        return _execute_claimed_run(record, repository=repository,
+            storage_root=storage_root, training_budget=training_budget)
+    except DatasetIntegrityError as exc:
+        if record.guard_policy is None:
+            raise
+        value = report(record, 'pre_fit', reason='guard_dataset_changed')
+        repository.save_guard_report(value)
+        raise GuardError('guard_dataset_changed', report_id=value.report_id) from exc
+
+
+def _execute_claimed_run(record: RunRecord, *, repository: Any,
                         storage_root: Path | None = None,
                         training_budget: Any | None = None) -> dict[str, str]:
     """执行一个已 claim 的 Run，并在 Manifest 提交后返回完成信息。

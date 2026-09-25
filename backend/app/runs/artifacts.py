@@ -132,10 +132,11 @@ def discard_run_artifacts(run_dir: str | Path) -> bool:
 
 # 分块（1 MiB）流式计算文件的 sha256，避免把大 artifact 一次性读入内存。
 # Manifest 登记的就是这个值；下载前会重新计算并比对，作为内容完整性校验。
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, active=lambda: None) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            active()
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -323,10 +324,11 @@ class RunArtifactWriter:
     # - volatile 条目（status.json）额外打标，表示终态后仍会被刷新，校验时豁免。
     # - metadata（如 model_family/model_type）随 Manifest 保存，供 _is_applicable 使用。
     # manifest.json 本身也用 _atomic_write 发布——读者要么看到完整新版，要么看到旧版。
-    def finalize(self, *, run_id: str, metadata: dict[str, object] | None = None) -> dict[str, object]:
+    def finalize(self, *, run_id: str, metadata: dict[str, object] | None = None, validate=None, active=lambda: None) -> dict[str, object]:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         entries: dict[str, dict[str, object]] = {}
         for path in sorted(self.run_dir.iterdir(), key=lambda item: item.name):
+            active()
             if not path.is_file() or path.name == 'manifest.json' or path.name.endswith('.tmp'):
                 continue
             policy = _catalog_policy(path.name)
@@ -335,7 +337,7 @@ class RunArtifactWriter:
                 path.name == 'config.json' and _json_contains_path_fields(path)
             )
             entry: dict[str, object] = {
-                'sha256': _sha256(path),
+                'sha256': _sha256(path, active),
                 'size_bytes': path.stat().st_size,
                 'downloadable': (
                     bool(policy.get('downloadable'))
@@ -361,6 +363,8 @@ class RunArtifactWriter:
         if metadata:
             manifest['metadata'] = metadata
         encoded = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
+        if validate is not None:
+            validate(encoded)
         self._atomic_write('manifest.json', encoded)
         return manifest
 
