@@ -45,6 +45,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'execution_recipe_digest', 'execution_catalog_digest', 'execution_evidence_digest', 'execution_search_digest',
         'execution_processing_policy_version', 'execution_processing_digest',
         'execution_search_plan',
+        'execution_budget_task_id', 'execution_budget_policy_digest',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
     }
@@ -93,6 +94,15 @@ class TrainingSpec:
                 raise TrainingConfigValidationError('invalid execution search plan')
             if 'random_forest_search_iterations' in values:
                 raise TrainingConfigValidationError('random_forest_search_iterations is legacy; use max_trials')
+        if ('execution_budget_task_id' in values or
+                'execution_budget_policy_digest' in values):
+            import re
+            if (type(values.get('execution_budget_task_id')) is not str or
+                    not values['execution_budget_task_id'] or
+                    type(values.get('execution_budget_policy_digest')) is not str or
+                    re.fullmatch('[a-f0-9]{64}', values['execution_budget_policy_digest']) is None or
+                    'execution_search_plan' not in values):
+                raise TrainingConfigValidationError('invalid execution budget binding')
         for field in ('execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest','execution_processing_digest'):
             if field in values:
                 import re

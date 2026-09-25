@@ -58,6 +58,10 @@ class InvalidRunTransition(RuntimeError):
     pass
 
 
+class RunDeadlineExceeded(RuntimeError):
+    """A supervised Run finished after its frozen work deadline."""
+
+
 class RunNotFound(KeyError):
     """请求的 run_id 在当前仓库和 Principal 范围内不存在。"""
     pass
@@ -567,8 +571,11 @@ class RunRepository:
         claim_token: str,
         now: datetime,
         manifest_name: str = 'manifest.json',
+        deadline_at: datetime | None = None,
     ) -> RunRecord:
-        return self._finish(run_id, claim_token=claim_token, now=now, state='succeeded', manifest_name=manifest_name)
+        return self._finish(run_id, claim_token=claim_token, now=now,
+                            state='succeeded', manifest_name=manifest_name,
+                            deadline_at=deadline_at)
 
     # 失败终态的薄封装：错误摘要进 error 列，结构化详情（异常类型、堆栈等）进
     # error_json，最终都委托给 _finish；finish_success 则额外登记 manifest_name，
@@ -605,10 +612,14 @@ class RunRepository:
         manifest_name: str | None = None,
         error: str | None = None,
         error_details: dict[str, Any] | None = None,
+        deadline_at: datetime | None = None,
     ) -> RunRecord:
         now_text = _timestamp(now)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            if (state == 'succeeded' and deadline_at is not None and
+                    (datetime.now(timezone.utc) >= deadline_at or now >= deadline_at)):
+                raise RunDeadlineExceeded('Run work deadline elapsed before success publication')
             changed = connection.execute(
                 '''
                 UPDATE runs
@@ -616,6 +627,7 @@ class RunRepository:
                     manifest_name = ?, error = ?, error_json = ?, updated_at = ?,
                     finished_at = ?
                 WHERE run_id = ? AND state = 'running' AND claim_token = ?
+                  AND (? IS NULL OR lease_expires_at > ?)
                 ''',
                 (
                     state,
@@ -626,6 +638,8 @@ class RunRepository:
                     now_text,
                     run_id,
                     claim_token,
+                    now_text if deadline_at is not None else None,
+                    now_text,
                 ),
             ).rowcount
             if changed != 1:

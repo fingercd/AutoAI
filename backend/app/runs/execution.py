@@ -33,9 +33,11 @@ class TrainingExecution:
             便于测试用假对象替换。
         run_dir: 该 Run 的产物目录（storage/runs/<run_id>），所有 artifact 写入这里。
     """
-    def __init__(self, *, repository: Any, run_dir: Path) -> None:
+    def __init__(self, *, repository: Any, run_dir: Path,
+                 training_budget: Any | None = None) -> None:
         self.repository = repository
         self.run_dir = Path(run_dir)
+        self.training_budget = training_budget
 
     def cancel_check(self, record: RunRecord) -> None:
         """确认本 worker 仍持有该 Run 的 claim，否则抛 InvalidRunTransition。
@@ -75,6 +77,8 @@ class TrainingExecution:
             run_id=execution_record.run_id,
             repository=self.repository,
             record=execution_record,
+            output_dir=self.run_dir,
+            training_budget=self.training_budget,
         )
 
     def execute(
@@ -145,7 +149,8 @@ class TrainingExecution:
 
 
 def execute_claimed_run(record: RunRecord, *, repository: Any,
-                        storage_root: Path | None = None) -> dict[str, str]:
+                        storage_root: Path | None = None,
+                        training_budget: Any | None = None) -> dict[str, str]:
     """执行一个已 claim 的 Run，并在 Manifest 提交后返回完成信息。
 
     职责：解析主数据集与可选独立测试集（server 模式只认 dataset_id，
@@ -178,7 +183,8 @@ def execute_claimed_run(record: RunRecord, *, repository: Any,
             test_dataset,
             expected_sha256=record.config.get('test_dataset_sha256'),
         )
-    execution = TrainingExecution(repository=repository, run_dir=runs_dir / record.run_id)
+    execution = TrainingExecution(repository=repository, run_dir=runs_dir / record.run_id,
+                                  training_budget=training_budget)
     return execution.execute(
         record,
         data_path=dataset.path,

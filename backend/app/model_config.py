@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 import hashlib
 import json
 import math
+import sys
 from typing import Any
 
 from .classification_policy import DEEP_TRAINING_DEFAULTS
@@ -356,7 +357,45 @@ _CURRENT_TIMED_BINDINGS = {
     'tcn1d': '387ba4cc71cacdf934ff83aeeabe1d60ea1a281eecd1dc797b4497e047983977',
     'xgboost': 'd8f76b507fe03a619e5fa122c8555d378c93a9f563ef53e8f1430064f7c10da9',
 }
-for _model_id, _digest in _CURRENT_TIMED_BINDINGS.items():
+# The training-source changes place durable budget events
+# immediately around existing fit/epoch calls.  Legacy Runs pass no meter, so
+# their scientific computations remain the same.  No digest is accepted unless
+# the currently loaded implementation has this exact source fingerprint.
+_TRAINING_BUDGET_BINDINGS_PY313 = {
+    'pls_da': 'fc7c4d0233673dd9db560f766050f5c850bbd073302c9ea8c1263ae501aad71d',
+    'pca_lda': 'a747e61149d430a59269d72acc361527969990b08e5b2df1cfbe0b549dca9230',
+    'logistic_regression': '7dcb099862cccfe558506cd763336822a999083080936fbd7f67cee15080e946',
+    'svm': 'bcbb56a900bd74ad516311b61ea898b0b3e720b6f64ca29bee96678370081685',
+    'random_forest': 'ca237e787d0a15a645e5bed5410a52c7b4819ded647a36bb466ec7ae4552e587',
+    'xgboost': 'd483d803458afe403bc33ccd4e67b541be65857259b4346b2e2b3595bf131dc7',
+    'pca_mlp': 'f2bfc6f48b0d00d9627e5c5edf9dc3208c1a6f3cc5fb5f0c182083ad815c5666',
+    'cnn1d': '8488231bfb1e171210cbd01735e07f998d32f64141092dc3505dd45392c6e0b7',
+    'cnn1d_se': 'a5304dbad0882d204e9f322f3d9d6b4950b4ceadb05c96edb0296fa0dc8ecb4d',
+    'resnet1d': '348b4aea03157f39e03d352f90657ae5a511fe68e9934a812d26e5309e412b0b',
+    'inception1d': '6ce2af31f3270e4ada7ab295bb1fccc1160c0f4a4b3b985de616fa916616773a',
+    'tcn1d': '26818ffd0194830d2605306daa1224b698630de1b63585e87f4de07dee6e0d5e',
+    'cnn_transformer1d': '38082949bbfc511b72f4590463b127fc8812b1626d2777c7d0a81153ca17d7ed',
+}
+_TRAINING_BUDGET_BINDINGS_PY312 = {
+    'pls_da': '6ea239564febf17314347ac621d919b55529f7e99455a731adecc4496ca26b77',
+    'pca_lda': '2c3c0e99c49113dd9de1c97a074854a63d725dc289f92cd09f1a6c7fdd92b042',
+    'logistic_regression': '2a74e23b1ecc1a925b3363806744dffb55065cc6528cedf21851c47a0ccefa63',
+    'svm': 'e58ca8baaa421159d457c51e89959a57e9b405dc6f8319cb6173d0279e9be578',
+    'random_forest': 'da729ab340eab9bee180a69a07450b0918ba2f44e848b34311283b7d781b766a',
+    'xgboost': 'aa72342acbe901959dc18c693ccedede25976b2b91d175192a21b4cd448de7b0',
+    'pca_mlp': '05f450ab99a3d2082251a58ab6e1e6269500dad87491268ae211fdac1f8dd522',
+    'cnn1d': 'f37e3e266bb839dd4a87becab091ec3034945ebe3eedbe91898088a0e5e53a9d',
+    'cnn1d_se': '86db79c6d54480cd34196a7d887b2c548d8f3fb802ea5a2991e8c1c7994a307e',
+    'resnet1d': '49f838e0e072f43c357ea183a560536a56a8327d2973abc679610df1a3c0cf30',
+    'inception1d': '0d5e3c05dfe5a3a94111d92d7604d1784e1d2b2c4f31f3cd5d3491e1794270f0',
+    'tcn1d': 'b3f2bc105307301167190f987aef5ee571c0f2d8bde329198f430f76a0e2cea4',
+    'cnn_transformer1d': '61d45022301a4f5b3835b6d693148da5d00ca3841a0efce86e917d9dbef9e516',
+}
+_TRAINING_BUDGET_BINDINGS = {
+    (3, 12): _TRAINING_BUDGET_BINDINGS_PY312,
+    (3, 13): _TRAINING_BUDGET_BINDINGS_PY313,
+}.get(sys.version_info[:2], {})
+for _model_id, _digest in _TRAINING_BUDGET_BINDINGS.items():
     _old, _previous = _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id]
     _DEFAULT_PROCESSING_BINDING_COMPAT[_model_id] = (_old, _digest)
 
@@ -366,8 +405,14 @@ def compatible_search_strategy_binding(model_id: str, frozen_digest: str,
     current = search_strategy_binding(model_id)['digest']
     if frozen_digest == current:
         return True
+    if (current == _TRAINING_BUDGET_BINDINGS.get(model_id) and
+            frozen_digest == _CURRENT_TIMED_BINDINGS.get(model_id)):
+        return True
     return (normalization, class_balance) == ('zscore', 'none') and (
         (frozen_digest, current) == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id)
         or frozen_digest == _PRE_FINITE_SEARCH_BINDINGS.get(model_id)
         and current == _DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id, (None, None))[1]
+        or current == _TRAINING_BUDGET_BINDINGS.get(model_id)
+        and frozen_digest in (*_DEFAULT_PROCESSING_BINDING_COMPAT.get(model_id, ()),
+                              _PRE_FINITE_SEARCH_BINDINGS.get(model_id))
     )

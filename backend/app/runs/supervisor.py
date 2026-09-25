@@ -77,6 +77,17 @@ if sys.platform == 'win32':
                     ('PeakJobMemoryUsed', ctypes.c_size_t)]
 
 
+    class _BasicAccounting(ctypes.Structure):
+        _fields_ = [('TotalUserTime', ctypes.c_longlong),
+                    ('TotalKernelTime', ctypes.c_longlong),
+                    ('ThisPeriodTotalUserTime', ctypes.c_longlong),
+                    ('ThisPeriodTotalKernelTime', ctypes.c_longlong),
+                    ('TotalPageFaultCount', wintypes.DWORD),
+                    ('TotalProcesses', wintypes.DWORD),
+                    ('ActiveProcesses', wintypes.DWORD),
+                    ('TotalTerminatedProcesses', wintypes.DWORD)]
+
+
     _kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     _kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     _kernel.CreateJobObjectW.restype = wintypes.HANDLE
@@ -87,6 +98,10 @@ if sys.platform == 'win32':
     _kernel.AssignProcessToJobObject.restype = wintypes.BOOL
     _kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     _kernel.TerminateJobObject.restype = wintypes.BOOL
+    _kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                  wintypes.LPVOID, wintypes.DWORD,
+                                                  ctypes.POINTER(wintypes.DWORD)]
+    _kernel.QueryInformationJobObject.restype = wintypes.BOOL
     _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel.CloseHandle.restype = wintypes.BOOL
 
@@ -115,6 +130,25 @@ def _child_environment() -> dict[str, str]:
         'PYTHONPATH', 'VIRTUAL_ENV', 'CONDA_PREFIX',
     }
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
+
+
+def _active_job_processes(job: int) -> int:
+    info = _BasicAccounting()
+    size = wintypes.DWORD()
+    if not _kernel.QueryInformationJobObject(job, 1, ctypes.byref(info),
+                                              ctypes.sizeof(info), ctypes.byref(size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return info.ActiveProcesses
+
+
+def _await_empty_job(job: int, *, seconds: float) -> bool:
+    until = time.monotonic() + seconds
+    while True:
+        if _active_job_processes(job) == 0:
+            return True
+        if time.monotonic() >= until:
+            return False
+        time.sleep(0.02)
 
 
 def supervise(
@@ -197,6 +231,12 @@ def supervise(
                 if on_stop is not None:
                     on_stop(evidence)
                 raise SupervisionUncertain(evidence) from exc
+            if not _await_empty_job(job, seconds=termination_grace_seconds):
+                evidence = TerminationEvidence(stop_reason, requested_at.isoformat(),
+                                                None, None, process.returncode)
+                if on_stop is not None:
+                    on_stop(evidence)
+                raise SupervisionUncertain(evidence)
             evidence = TerminationEvidence(stop_reason, requested_at.isoformat(),
                                             datetime.now(timezone.utc).isoformat(),
                                             time.monotonic() - start, process.returncode)
@@ -206,6 +246,14 @@ def supervise(
 
         # A successful child result is still provisional until the caller's
         # claim/budget/deadline checks and repository success transaction.
+        if _active_job_processes(job):
+            if not _kernel.TerminateJobObject(job, 1) or not _await_empty_job(
+                    job, seconds=termination_grace_seconds):
+                raise SupervisionUncertain(TerminationEvidence(
+                    'child_tree_active', datetime.now(timezone.utc).isoformat(),
+                    None, None, process.returncode))
+            raise ChildExecutionError('ChildTreeStillActive',
+                                      'training child left active descendants')
         assert process.stdout is not None
         output = process.stdout.read()
         if process.returncode != 0:
@@ -277,10 +325,29 @@ def _child_main() -> None:
             record = repository.get(run_id)
             if record.claim_token != claim_token:
                 raise ValueError('supervised Run claim changed')
-            repository.assert_active(run_id, claim_token=claim_token,
-                                     now=datetime.now(timezone.utc))
+            def check_claim() -> None:
+                repository.assert_active(run_id, claim_token=claim_token,
+                                         now=datetime.now(timezone.utc))
+
+            check_claim()
+            training_budget = None
+            binding = payload.get('training_budget')
+            if binding is not None:
+                if not isinstance(binding, dict):
+                    raise ValueError('invalid supervised budget binding')
+                from ..agent.training_budget import TrainingBudget
+
+                training_budget = TrainingBudget(
+                    Path(str(binding['agent_database'])),
+                    task_id=str(binding['task_id']),
+                    policy_digest=str(binding['policy_digest']),
+                    reservation_id=str(binding['reservation_id']),
+                    run_id=run_id, claim_token=claim_token,
+                    claim_check=check_claim)
+                training_budget.bind()
             result = execute_claimed_run(record, repository=repository,
-                                         storage_root=repository.database_path.parent)
+                                         storage_root=repository.database_path.parent,
+                                         training_budget=training_budget)
         else:
             raise ValueError('unknown supervised child request')
         envelope = {'ok': True, 'result': result}

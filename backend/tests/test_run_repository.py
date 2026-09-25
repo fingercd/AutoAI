@@ -8,8 +8,39 @@ from backend.app.runs.repository import (
     InvalidRunTransition,
     RunNotFound,
     RunRepository,
+    RunDeadlineExceeded,
     RunSubmissionKeyConflict,
 )
+
+
+def test_success_publication_rechecks_supervised_deadline(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    created = repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
+    claim = repo.claim_next(worker_id='deadline', now=datetime.now(timezone.utc))
+    assert claim is not None
+    with pytest.raises(RunDeadlineExceeded):
+        repo.finish_success(created.run_id, claim_token=claim.claim_token or '',
+                            now=datetime.now(timezone.utc),
+                            deadline_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert repo.get(created.run_id).state == 'running'
+    repo.finish_failure(created.run_id, claim_token=claim.claim_token or '',
+                        now=datetime.now(timezone.utc), error='deadline')
+    assert repo.get(created.run_id).state == 'failed'
+
+
+def test_supervised_success_requires_live_lease(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    created = repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
+    started = datetime.now(timezone.utc)
+    claim = repo.claim_next(worker_id='deadline', now=started, lease_seconds=1)
+    assert claim is not None
+    with pytest.raises(InvalidRunTransition):
+        repo.finish_success(created.run_id, claim_token=claim.claim_token or '',
+                            now=started + timedelta(seconds=2),
+                            deadline_at=started + timedelta(seconds=60))
+    assert repo.get(created.run_id).state == 'running'
 
 
 def test_cancelled_run_cannot_be_reclaimed_or_completed(tmp_path):

@@ -28,7 +28,9 @@ from threading import Event, Thread
 from typing import Any
 
 from .contracts import public_error_message
-from .repository import InvalidRunTransition, RunRepository
+from .repository import InvalidRunTransition, RunDeadlineExceeded, RunRepository
+from .supervisor import (ChildExecutionError, SupervisionStopped,
+                         SupervisionUncertain, TerminationEvidence)
 from ..version import WORKER_CONTRACT_VERSION
 
 
@@ -54,6 +56,18 @@ def _error_details(exc: Exception) -> dict[str, Any]:
         code = 'dataset_changed'
         stage = 'dataset_validation'
         retryable = False
+    elif isinstance(exc, (SupervisionStopped, RunDeadlineExceeded)):
+        code = 'budget_deadline_exceeded' if (
+            isinstance(exc, RunDeadlineExceeded) or
+            exc.evidence.reason == 'deadline') else 'run_claim_lost'
+        stage = 'training_supervision'
+        retryable = False
+        message = '训练已达到冻结截止时间' if code == 'budget_deadline_exceeded' else '训练执行权已失效'
+    elif getattr(exc, 'code', None) == 'budget_deadline_exceeded':
+        code = 'budget_deadline_exceeded'
+        stage = 'training_supervision'
+        retryable = False
+        message = '训练已达到冻结截止时间'
     # 数据文件丢失/无权限：用固定中文提示覆盖 message，避免把服务器存储路径暴露给浏览器
     elif isinstance(exc, (FileNotFoundError, PermissionError)):
         code = 'dataset_unavailable'
@@ -170,6 +184,7 @@ class RunWorker:
         project_status: Callable[[Any], None] | None = None,
         discard_artifacts: Callable[[str], None] | None = None,
         on_lease_lost: Callable[[str], None] | None = None,
+        on_stopped_run: Callable[[str], None] | None = None,
     ) -> None:
         self.repository = repository
         self.worker_id = worker_id
@@ -179,6 +194,7 @@ class RunWorker:
         self.project_status = project_status
         self.discard_artifacts = discard_artifacts
         self.on_lease_lost = on_lease_lost
+        self.on_stopped_run = on_stopped_run
 
     def run_once(self) -> bool:
         """执行一轮"领取 → 训练 → 提交"循环。
@@ -195,6 +211,8 @@ class RunWorker:
         )
         # 租约失效代表原训练执行已中断：统一记为 STOP，不再静默重跑。
         for stopped_run_id in self.repository.stop_expired(now=self.now()):
+            if self.on_stopped_run is not None:
+                self.on_stopped_run(stopped_run_id)
             if self.discard_artifacts is not None:
                 self.discard_artifacts(stopped_run_id)
         # 事务性 claim：同一 Run 只会被一个 worker 领到，claim_token 是后续所有写操作的凭证
@@ -221,11 +239,14 @@ class RunWorker:
                 # 真正的训练执行（耗时主体）；期间的取消由 execution 内部的 cancel_check 感知
                 result = self.execute(run)
             # 携带原 claim_token 提交成功；若 lease 已丢失会抛 InvalidRunTransition，结果随之丢弃
+            deadline_text = result.get('_work_deadline_at')
             finished = self.repository.finish_success(
                 run.run_id,
                 claim_token=run.claim_token or '',
                 now=self.now(),
                 manifest_name=str(result['manifest_name']),
+                **({'deadline_at': datetime.fromisoformat(deadline_text)}
+                   if deadline_text else {}),
             )
             if self.project_status is not None:
                 self.project_status(finished)
@@ -235,6 +256,10 @@ class RunWorker:
                 contract_version=WORKER_CONTRACT_VERSION,
             )
         # lease 丢失/状态被并发改写：本 worker 的结果作废，返回 True 继续下一轮
+        except SupervisionUncertain:
+            # Exit was not confirmed.  Never schedule another Run in this
+            # execution slot or claim that the held training capacity is free.
+            raise
         except InvalidRunTransition:
             if self.discard_artifacts is not None and 'execution_search_plan' not in run.config:
                 self.discard_artifacts(run.run_id)
@@ -273,6 +298,65 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def execute_with_budget_supervision(record: Any, *, repository: RunRepository,
+                                    agent_database: Any) -> dict[str, Any]:
+    """Route only a server-bound budget Run through the child supervisor."""
+    from ..agent.budget import BudgetError
+    from ..agent.training_budget import TrainingBudget, load_training_binding
+    from .execution import execute_claimed_run
+    from .supervisor import supervise
+
+    binding = load_training_binding(agent_database, record,
+                                    runs_database=repository.database_path)
+    if binding is None:
+        return execute_claimed_run(record, repository=repository)
+
+    def check_claim() -> None:
+        repository.assert_active(record.run_id, claim_token=record.claim_token or '',
+                                 now=datetime.now(timezone.utc))
+
+    def active() -> bool:
+        try:
+            check_claim()
+        except InvalidRunTransition:
+            return False
+        return True
+
+    ledger = TrainingBudget(binding.agent_database, task_id=binding.task_id,
+                            policy_digest=binding.policy_digest,
+                            reservation_id=binding.reservation_id,
+                            run_id=record.run_id,
+                            claim_token=record.claim_token or '',
+                            claim_check=check_claim)
+    try:
+        ledger.bind()
+    except BudgetError as exc:
+        if exc.code == 'budget_deadline_exceeded':
+            ledger.settle_unstarted()
+        raise
+    deadline = datetime.fromtimestamp(binding.work_deadline_at, timezone.utc)
+    payload = dict(kind='training-run-v1', run_id=record.run_id,
+                   claim_token=record.claim_token,
+                   runs_database=str(repository.database_path),
+                   training_budget=binding.child_payload())
+    try:
+        result = supervise(payload, deadline_at=deadline, active=active,
+                           on_stop=ledger.record_termination)
+    except (SupervisionStopped, ChildExecutionError):
+        ledger.settle(exit_confirmed=True)
+        raise
+    except SupervisionUncertain:
+        ledger.settle(exit_confirmed=False)
+        raise
+    except BaseException as exc:
+        ledger.settle(exit_confirmed=False)
+        raise SupervisionUncertain(TerminationEvidence(
+            'supervisor_error', datetime.now(timezone.utc).isoformat(),
+            None, None, None)) from exc
+    ledger.settle(exit_confirmed=True)
+    return {**result, '_work_deadline_at': deadline.isoformat()}
+
+
 def main() -> None:
     """解析轮询/lease 参数并持续运行 worker，直到进程被终止。
 
@@ -300,12 +384,13 @@ def main() -> None:
     from ..paths import RUNS_DATABASE, RUNS_DIR
     from .artifacts import discard_run_artifacts
     from .status_projection import project_status
+    from ..agent.training_budget import reconcile_orphaned_run
 
     # 同样延迟导入 execution/training：worker 空闲时不加载 torch/sklearn 等重依赖
     def execute_claimed(record: Any) -> dict[str, str]:
-        from .execution import execute_claimed_run
-
-        return execute_claimed_run(record, repository=repository)
+        from ..paths import AGENT_DATABASE
+        return execute_with_budget_supervision(record, repository=repository,
+                                               agent_database=AGENT_DATABASE)
 
     repository = RunRepository(RUNS_DATABASE)
     repository.initialize()
@@ -316,7 +401,16 @@ def main() -> None:
         except OSError:
             logger.warning('Run %s stopped but artifact cleanup must be retried', run_id)
 
+    def reconcile_stopped(run_id: str) -> None:
+        from ..paths import AGENT_DATABASE
+        reconcile_orphaned_run(AGENT_DATABASE, repository.get(run_id),
+                               runs_database=repository.database_path)
+
     def exit_after_lease_loss(run_id: str) -> None:
+        if repository.get(run_id).config.get('execution_budget_task_id'):
+            # The supervisor polls this claim every 0.25s and owns the child
+            # Job Object; os._exit here would skip its termination evidence.
+            return
         # AggMap/SciPy 等原生调用无法可靠地用 Python 异常打断。停止状态已由
         # SQLite 提交后，退出 worker 才能立即释放 CPU/GPU；启动器会重新拉起。
         discard_artifacts(run_id)
@@ -325,6 +419,7 @@ def main() -> None:
     # 上一次异常退出可能留下 STOP Run 的半成品，worker 启动时补做清理。
     for stopped_record in repository.list():
         if stopped_record.state == 'cancelled':
+            reconcile_stopped(stopped_record.run_id)
             discard_artifacts(stopped_record.run_id)
     worker = RunWorker(
         repository=repository,
@@ -335,6 +430,7 @@ def main() -> None:
         project_status=lambda record: project_status(RUNS_DIR / record.run_id, record),
         discard_artifacts=discard_artifacts,
         on_lease_lost=exit_after_lease_loss,
+        on_stopped_run=reconcile_stopped,
     )
     while worker.run_once() or not args.once:
         # 领到任务立即进入下一轮（可能还有积压）；空闲且非 once 模式则休眠后重试

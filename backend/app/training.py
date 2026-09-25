@@ -1152,7 +1152,11 @@ def _select_traditional_config(
                 trial_index=index, parent_span=trial_fact['span_id'],
                 measurement_scope='train') if accounting is not None else nullcontext())
             with fit_scope:
+                fit_event = (accounting.enter_fit(fold_index, index, 'trial')
+                             if accounting is not None else None)
                 model.fit(x_train, y_train)
+                if accounting is not None:
+                    accounting.complete_fit(fit_event)
             if cancel_check is not None: cancel_check()
             valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
                 trial_index=index, parent_span=trial_fact['span_id'],
@@ -1259,7 +1263,11 @@ def _select_random_forest_config(
                 trial_index=index, parent_span=trial_fact['span_id'],
                 measurement_scope='train') if accounting is not None else nullcontext())
             with fit_scope:
+                fit_event = (accounting.enter_fit(fold_index, index, 'trial')
+                             if accounting is not None else None)
                 model.fit(x_train, y_train)
+                if accounting is not None:
+                    accounting.complete_fit(fit_event)
             if cancel_check is not None: cancel_check()
             valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
                 trial_index=index, parent_span=trial_fact['span_id'],
@@ -1386,7 +1394,11 @@ def _fit_final_traditional_model(
         normalizer = _fit_x_normalizer(x_raw[final_indices.tolist()], normalization)
         x_final = _transform_x_with_normalizer(x_raw, normalizer)
     model = build_traditional_model(selected_config, y[final_indices], len(label_names))
+    fit_event = (accounting.enter_fit(fold_index, None, 'final_refit')
+                 if accounting is not None else None)
     model.fit(x_final[final_indices], y[final_indices])
+    if accounting is not None:
+        accounting.complete_fit(fit_event)
     return model, normalizer, final_indices
 
 
@@ -1467,11 +1479,18 @@ def _fit_deep_fold(
             parent_span=trial_fact['span_id'], measurement_scope='train' if name=='trial_fit' else 'valid')
             if accounting is not None else nullcontext())
 
+    fit_event = None
     for epoch in range(1, config.epochs + 1):
         if progress_callback is not None:
             progress_callback("epoch_training", f"正在训练 Epoch {epoch}/{config.epochs}", epoch)
         if cancel_check is not None:
             cancel_check()
+        if accounting is not None:
+            if epoch == 1:
+                fit_event = accounting.enter_fit(trial_fact['fold_index'],
+                                                 trial_fact['trial_index'], 'trial')
+            epoch_event = accounting.enter_epoch(trial_fact['fold_index'],
+                                                 trial_fact['trial_index'], epoch)
         with phase('trial_fit', epoch):
             model.train()
             losses = []
@@ -1520,6 +1539,7 @@ def _fit_deep_fold(
         )
         if accounting is not None:
             accounting.record_trial_progress(trial_fact, actual_epochs=epoch)
+            accounting.complete_epoch(epoch_event)
         if cancel_check is not None:
             cancel_check()
         if config.early_stopping_patience > 0 and bad_epochs >= config.early_stopping_patience:
@@ -1527,6 +1547,8 @@ def _fit_deep_fold(
             break
     if best_state is not None:
         model.load_state_dict(best_state)
+    if accounting is not None:
+        accounting.complete_fit(fit_event)
     return model, history
 
 
@@ -1649,6 +1671,8 @@ def _run_legacy_training(
     *,
     repository: RunRepository | None = None,
     record: RunRecord | None = None,
+    output_dir: Path | None = None,
+    training_budget: Any | None = None,
 ) -> dict[str, Any]:
     """执行完整训练闭环并写出一组可由 Manifest 发布的 Run 产物。
 
@@ -1674,14 +1698,15 @@ def _run_legacy_training(
     model_type = canonical_model_type(config.model_type)
     evaluation_strategy = policy.strategy
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
-    run_dir = RUNS_DIR / run_id
+    run_dir = Path(output_dir) if output_dir is not None else RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     search_plan = raw_config.get('execution_search_plan')
     search_accounting = None
     preparation_stage = None
     if search_plan is not None:
         from .search_accounting import SearchAccounting
-        search_accounting = SearchAccounting(run_dir, search_plan, run_id)
+        search_accounting = SearchAccounting(run_dir, search_plan, run_id,
+                                             training_budget=training_budget)
         search_accounting.record_queue_wait(record.created_at if record else None,
                                             record.started_at if record else None)
         with search_accounting.span('monitor_wait', applicable=False):

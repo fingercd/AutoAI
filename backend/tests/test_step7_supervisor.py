@@ -7,6 +7,7 @@ from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import time
@@ -15,6 +16,9 @@ import pytest
 
 from backend.app.runs.supervisor import SupervisionStopped, _child_environment, supervise
 from backend.app.runs.repository import RunRepository
+from backend.app.runs.worker import RunWorker, execute_with_budget_supervision
+from backend.app.agent.budget import (BudgetPolicy, DIMENSIONS, dimension_summary,
+                                      freeze_policy)
 from backend.tests.test_agent_model_sessions import api
 from backend.tests.test_finite_search import search_session_request, HEADERS
 
@@ -80,6 +84,9 @@ def test_claim_loss_kills_child_and_grandchild(tmp_path):
                   poll_seconds=0.05, on_stop=evidence.append)
     assert caught.value.evidence.reason == 'claim_inactive'
     ids = json.loads(identity.read_text())
+    until = time.monotonic() + 2
+    while (_live(ids['child']) or _live(ids['grandchild'])) and time.monotonic() < until:
+        time.sleep(0.02)
     assert not _live(ids['child'])
     assert not _live(ids['grandchild'])
 
@@ -119,13 +126,33 @@ def test_parent_crash_closes_job_and_kills_process_tree(tmp_path):
             parent.wait(timeout=5)
 
 
-def test_supervised_child_uses_existing_training_execution(api):
+@pytest.mark.parametrize('model,params,fit_limit,epoch_limit', [
+    ('logistic_regression', {}, 2, 0),
+    ('cnn1d', {'epochs': 1, 'batch_size': 8}, 1, 1),
+])
+def test_supervised_child_uses_existing_training_execution(
+        api, model, params, fit_limit, epoch_limit):
     client, storage, dataset_id = api
     created = client.post('/api/agent/v2/sessions', headers=HEADERS,
-                          json=search_session_request(dataset_id, ['logistic_regression']))
+                          json=search_session_request(dataset_id, [model],
+                              **({'model_configs': {model: params}} if params else {})))
     assert created.status_code == 201, created.text
     locked = created.json()['locked_config']
     recipe = locked['preparation']['catalog']['recipes'][0]
+    agent_database = storage / 'agent.sqlite3'
+    now = time.time()
+    limits = {name: 100 for name in DIMENSIONS}
+    limits.update(experiments=1, model_fits=fit_limit, training_epochs=epoch_limit,
+                  llm_calls=6, api_calls=12, input_tokens=None,
+                  cached_tokens=None, output_tokens=6144)
+    policy = BudgetPolicy('supervised-fit-task', now - 1, now + 90,
+                          now + 80, limits)
+    with sqlite3.connect(agent_database) as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        freeze_policy(connection, policy, owner='backend')
+        connection.execute('''UPDATE agent_sessions_v1 SET
+            budget_task_id=?,budget_policy_digest=? WHERE session_id=?''',
+            (policy.task_id, policy.digest, created.json()['session_id']))
     submitted = client.post(
         f"/api/agent/v2/sessions/{created.json()['session_id']}/experiments",
         headers=HEADERS, json={
@@ -135,24 +162,37 @@ def test_supervised_child_uses_existing_training_execution(api):
             'knowledge_refs': [], 'client_request_id': 'supervised-real-run',
         })
     assert submitted.status_code == 202, submitted.text
+    with sqlite3.connect(agent_database) as connection:
+        reservation_id = connection.execute('''SELECT reservation_id FROM
+            agent_experiment_reservations_v1 WHERE run_id=?''',
+            (submitted.json()['run_id'],)).fetchone()[0]
+        prepared = json.loads(connection.execute('''SELECT compiled_config_json FROM
+            agent_experiment_reservations_v1 WHERE reservation_id=?''',
+            (reservation_id,)).fetchone()[0])
+        assert prepared['execution_budget_task_id'] == policy.task_id
+        assert prepared['execution_budget_policy_digest'] == policy.digest
     repository = RunRepository(storage / 'runs.sqlite3')
-    run = repository.claim_next(worker_id='supervisor-test',
-                                now=datetime.now(timezone.utc), lease_seconds=120)
-    assert run is not None and run.run_id == submitted.json()['run_id']
-
-    def active() -> bool:
-        repository.assert_active(run.run_id, claim_token=run.claim_token or '',
-                                 now=datetime.now(timezone.utc))
-        return True
-
-    result = supervise({
-        'kind': 'training-run-v1', 'run_id': run.run_id,
-        'claim_token': run.claim_token, 'runs_database': str(repository.database_path),
-    }, deadline_at=_deadline(90), active=active)
-    assert result['manifest_name'] == 'manifest.json'
-    assert repository.get(run.run_id).state == 'running'
-    repository.finish_success(run.run_id, claim_token=run.claim_token or '',
-                              now=datetime.now(timezone.utc),
-                              manifest_name=str(result['manifest_name']))
-    assert repository.get(run.run_id).state == 'succeeded'
-    assert (storage / 'runs' / run.run_id / 'manifest.json').is_file()
+    assert repository.get(submitted.json()['run_id']).config['execution_budget_task_id'] == policy.task_id
+    worker = RunWorker(repository=repository, worker_id='supervisor-test',
+        execute=lambda record: execute_with_budget_supervision(
+            record, repository=repository, agent_database=agent_database),
+        now=lambda: datetime.now(timezone.utc), heartbeat_seconds=1)
+    assert worker.run_once()
+    run_id = submitted.json()['run_id']
+    assert repository.get(run_id).state == 'succeeded'
+    assert (storage / 'runs' / run_id / 'manifest.json').is_file()
+    assert (storage / 'runs' / run_id / 'search_summary.json').is_file()
+    with sqlite3.connect(agent_database) as connection:
+        actual = dimension_summary(connection, task_id=policy.task_id,
+                                   owner='backend', dimension='model_fits')
+        assert (actual['known_actual'], actual['held_reserved']) == (fit_limit, 0)
+        epochs = dimension_summary(connection, task_id=policy.task_id,
+                                   owner='backend', dimension='training_epochs')
+        assert (epochs['known_actual'], epochs['held_reserved']) == (epoch_limit, 0)
+        events = connection.execute('''SELECT kind,status FROM task_training_events_v1
+            WHERE reservation_id=? ORDER BY event_id''', (reservation_id,)).fetchall()
+        assert events == ([('final_refit', 'completed'), ('trial', 'completed')]
+                          if model == 'logistic_regression' else
+                          [('trial', 'completed'), ('trial', 'completed')])
+    assert not (Path(__file__).resolve().parents[2] / 'storage' / 'runs' /
+                run_id).exists()

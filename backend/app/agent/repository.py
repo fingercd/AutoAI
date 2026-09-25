@@ -228,6 +228,8 @@ class AgentSessionRepository:
             connection.execute('''CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_budget_task_v1
                 ON agent_sessions_v1(budget_task_id) WHERE budget_task_id IS NOT NULL''')
             initialize_ledger(connection)
+            from .training_budget import initialize_training_budget
+            initialize_training_budget(connection)
             for column in ('compiled_config_json', 'scientific_digest', 'decision_metadata_json'):
                 existing = {str(row['name']) for row in connection.execute('PRAGMA table_info(agent_experiment_reservations_v1)')}
                 if column not in existing:
