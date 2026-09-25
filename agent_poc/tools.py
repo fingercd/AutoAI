@@ -143,9 +143,12 @@ class ToolDispatcher:
             'finalize_ml_session': client.finalize_ml_session,
         }
 
-    def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def dispatch(self, name: str, arguments: dict[str, Any], *,
+                 trusted_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
         validated = validate_tool_arguments(name, arguments, self.client.tool_schemas if getattr(self.client, 'api_version', 'v1') == 'v2' else None)
-        return self._calls[name](**validated)
+        if trusted_kwargs is not None and name != 'start_ml_session':
+            raise ValueError('trusted Session configuration is only valid at creation')
+        return self._calls[name](**validated, **(trusted_kwargs or {}))
 
 
 def build_tool_schemas(capabilities: dict[str, Any]) -> dict[str, dict[str, Any]]:

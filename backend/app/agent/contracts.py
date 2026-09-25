@@ -126,6 +126,14 @@ class FinalizeAgentSessionRequest(BaseModel):
     selected_run_id: str = Field(..., min_length=1, max_length=128)
 
 
+class TerminateAgentSessionRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+
+    client_request_id: str = Field(..., min_length=1, max_length=128)
+    reason: Literal['no_candidates', 'budget_exhausted', 'no_valid_run',
+                    'operator_stop', 'deadline']
+
+
 class ReconcileAgentSessionRequest(BaseModel):
     """显式空请求体；任何客户端提供的恢复参数都被拒绝。"""
 
@@ -174,6 +182,8 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
     fixed_processing: dict[str, dict[str, str]] | None = None
     search_mode: Literal['fixed', 'bounded'] | None = None
     max_trials: int | None = Field(default=None, strict=True, ge=1, le=18)
+    budget_policy: dict[str, Any] | None = None
+    budget_awareness: Literal['on', 'off'] | None = None
 
     @model_serializer(mode='wrap')
     def preserve_request_shape(self, handler):
@@ -182,33 +192,36 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
             result.pop('decision_mode', None)
         if self.knowledge_query is None:
             result.pop('knowledge_query', None)
-        if self.protocol_revision not in ('agent-recipes-revision-v3', 'agent-recipes-revision-v4'):
+        if self.protocol_revision not in ('agent-recipes-revision-v3', 'agent-recipes-revision-v4', 'agent-recipes-revision-v5'):
             result.pop('processing_mode', None)
             result.pop('fixed_processing', None)
-        if self.protocol_revision != 'agent-recipes-revision-v4':
+        if self.protocol_revision not in ('agent-recipes-revision-v4', 'agent-recipes-revision-v5'):
             result.pop('search_mode', None)
             result.pop('max_trials', None)
+        if self.protocol_revision != 'agent-recipes-revision-v5':
+            result.pop('budget_policy', None)
+            result.pop('budget_awareness', None)
         return result
 
     execution_profile: Literal['train-evidence-recipes-v1'] | None = None
-    protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'] | None = None
+    protocol_revision: Literal['agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'] | None = None
     context_policy: AgentContextPolicy | RecipeContextPolicy = Field(default_factory=AgentContextPolicy)
 
     @model_validator(mode='after')
     def profile_consistency(self):
-        knowledge_capable = self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4')
+        knowledge_capable = self.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5')
         if self.knowledge_query is not None and not knowledge_capable:
             raise ValueError('knowledge query requires knowledge-capable protocol')
         if self.decision_mode is not None and not knowledge_capable:
             raise ValueError('decision mode requires the knowledge-capable recipe protocol')
-        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
             from ..processing_policy import freeze_fixed_processing
             self.processing_mode = self.processing_mode or 'fixed'
             self.decision_mode = self.decision_mode or 'recipe_id'
             self.fixed_processing = freeze_fixed_processing(self.allowed_models, self.fixed_processing)
         elif self.processing_mode is not None or self.fixed_processing is not None:
             raise ValueError('processing configuration requires revision v3')
-        if self.protocol_revision == 'agent-recipes-revision-v4':
+        if self.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
             from ..search_policy import validate_search_options
             self.search_mode = self.search_mode or 'fixed'
             self.max_trials = validate_search_options(self.search_mode, self.max_trials)
@@ -216,6 +229,11 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
                 raise ValueError('random_forest_search_iterations is legacy; use max_trials')
         elif self.search_mode is not None or self.max_trials is not None:
             raise ValueError('search configuration requires revision v4')
+        if self.protocol_revision == 'agent-recipes-revision-v5':
+            if self.budget_policy is None or self.budget_awareness is None:
+                raise ValueError('revision v5 requires a frozen budget policy and awareness mode')
+        elif self.budget_policy is not None or self.budget_awareness is not None:
+            raise ValueError('budget configuration requires revision v5')
         if (self.execution_profile is None) != (self.protocol_revision is None):
             raise ValueError('profile requires negotiated protocol revision')
         if self.execution_profile:
@@ -223,13 +241,13 @@ class CreateAgentSessionRequestV2(CreateAgentSessionRequest):
             allowed = [['train_evidence','legal_recipes']]
             if knowledge_capable:
                 allowed.append(['train_evidence','legal_recipes','knowledge'])
-            if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
+            if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
                 expected = {'train_evidence','legal_recipes'}
                 if 'knowledge' in self.modules:
                     expected.add('knowledge')
                 if self.processing_mode == 'dynamic':
                     expected.add('dynamic_preprocessing')
-                if self.protocol_revision == 'agent-recipes-revision-v4' and self.search_mode == 'bounded':
+                if self.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5') and self.search_mode == 'bounded':
                     expected.add('bounded_hpo')
                 valid = set(self.modules) == expected and len(self.modules) == len(expected)
             else:

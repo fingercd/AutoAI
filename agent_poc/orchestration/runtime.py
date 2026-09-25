@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import hmac
@@ -22,6 +22,7 @@ from langsmith.run_helpers import tracing_context
 from pydantic import ValidationError
 
 from agent_poc.clients.autoai_client import AutoAIClient, validate_base_url, validate_identifier
+from backend.app.agent.budget import BudgetPolicy, DIMENSIONS
 from .llm import LLMAdapter, LLMConfig, LLMError, LLM_CONFIG_VERSION, PROMPT_VERSION
 from .persistence import CallJournal, JSONSerializer, PersistenceError, thread_lock
 from .projection import CONTEXT_VERSION
@@ -29,6 +30,64 @@ from .state import GraphState, StateModel, apply_patch, fingerprint, new_state, 
 
 
 DEFAULT_STORAGE = Path('storage') / 'orchestration'
+
+
+def _journal_path_digest(directory: Path) -> str:
+    canonical = os.path.normcase(str((directory / 'calls.sqlite').resolve()))
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+
+def _require_existing_budget_journal(directory: Path, state: GraphState) -> BudgetPolicy:
+    path = directory / 'calls.sqlite'
+    task = state['task']
+    if (_journal_path_digest(directory) != task['canonical_journal_sha256'] or
+            not path.is_file()):
+        raise RuntimeErrorCode('budget_journal_binding_mismatch')
+    policy = BudgetPolicy.from_dict(task['budget_policy'])
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            row = db.execute('''SELECT task_id,thread_id,canonical_path,policy_digest
+                FROM task_budget_journal_bindings_v1 WHERE task_id=?''',
+                (policy.task_id,)).fetchone()
+    except sqlite3.Error as exc:
+        raise RuntimeErrorCode('budget_journal_binding_mismatch') from exc
+    expected = (policy.task_id, state['identity']['thread_id'],
+                os.path.normcase(str(path.resolve())), policy.digest)
+    if row != expected:
+        raise RuntimeErrorCode('budget_journal_binding_mismatch')
+    return policy
+
+
+def _default_budget_policy(*, task_id: str, started_at: float,
+                           timeout_seconds: float, allowed_models: list[str],
+                           model_configs: dict | None, max_trials: int,
+                           max_llm_calls: int, max_api_calls: int,
+                           max_repair_attempts: int, max_operation_attempts: int,
+                           max_output_tokens: int) -> BudgetPolicy:
+    from backend.app.model_config import model_policy
+    fits, epochs = 0, 0
+    for model in allowed_models:
+        defaults = model_policy(model, search_revision=True)['fixed_execution_defaults']
+        if 'epochs' in defaults:
+            requested = (model_configs or {}).get(model, {}).get('epochs', defaults['epochs'])
+            if type(requested) is not int or requested < 1:
+                raise RuntimeErrorCode('budget_model_epoch_invalid')
+            fits = max(fits, max_trials)
+            epochs = max(epochs, max_trials * requested)
+        else:
+            fits = max(fits, max_trials + 1)
+    limits = {name: 0 for name in DIMENSIONS}
+    limits.update(experiments=1, model_fits=fits, training_epochs=epochs,
+                  llm_calls=max_llm_calls, api_calls=max_api_calls,
+                  input_tokens=None, cached_tokens=None,
+                  output_tokens=max_llm_calls * max_output_tokens,
+                  output_repairs=max_llm_calls * max_repair_attempts,
+                  network_retries=max_api_calls)
+    return BudgetPolicy(task_id, started_at,
+        started_at + timeout_seconds, started_at + timeout_seconds - 60,
+        limits, max_operation_attempts=max_operation_attempts,
+        max_repair_attempts=max_repair_attempts,
+        max_output_tokens_per_call=max_output_tokens)
 
 
 class RuntimeErrorCode(RuntimeError):
@@ -178,7 +237,7 @@ def _build(config: RuntimeConfig, saver: SqliteSaver, journal: CallJournal, *,
     from .graph import Dependencies, build_graph
     deps = Dependencies(client=client or AutoAIClient(config.backend_url, token=config.backend_token,
                                                      timeout=config.api_timeout, max_retries=0, api_version=api_version,execution_profile=execution_profile,protocol_revision=protocol_revision),
-                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-search-v1' if protocol_revision=='agent-recipes-revision-v4' else 'agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
+                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-budget-v1' if protocol_revision=='agent-recipes-revision-v5' else 'agent-decision-search-v1' if protocol_revision=='agent-recipes-revision-v4' else 'agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
                         journal=journal, clock=clock)
     return (graph_factory or build_graph)(deps, saver)
 
@@ -232,10 +291,13 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                execution_profile: str | None = None, evidence_context: bool = True, risk_context: bool = True, knowledge: bool | None = None, decision_mode: str | None = None, knowledge_query: dict | None = None,
                processing_mode: str | None = None, fixed_processing: dict | None = None,
                search_mode: str | None = None, max_trials: int | None = None,
+               budget_policy: dict | None = None, budget_awareness: str | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
     directory = Path(storage)
+    budget_revision = (getattr(client, 'protocol_revision', None) == 'agent-recipes-revision-v5'
+                       or budget_policy is not None or budget_awareness is not None)
     api_version = api_version or (getattr(client, 'api_version', 'v1') if client is not None else 'v2')
     if api_version not in ('v1','v2'):
         raise RuntimeErrorCode('unknown_api_version')
@@ -261,11 +323,14 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('model_configs_require_v2')
     if execution_profile:
         factory=new_state
-        if processing_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
+        if processing_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
             processing_mode=getattr(client,'processing_mode','fixed')
-        if search_mode is None and getattr(client,'protocol_revision',None)=='agent-recipes-revision-v4':
+        if search_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
             search_mode=getattr(client,'search_mode','fixed')
             max_trials=getattr(client,'max_trials',1)
+        if budget_revision:
+            search_mode = search_mode or 'fixed'
+            processing_mode = processing_mode or 'fixed'
         if search_mode is not None:
             from backend.app.search_policy import validate_search_options
             max_trials=validate_search_options(search_mode,max_trials)
@@ -273,12 +338,49 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         processing = processing_mode is not None
         searching = search_mode is not None
         modern = knowledge is not None or client is None or decision_mode is not None or knowledge_query is not None
-        extra.update(wire_version='agent-state-v6' if searching else 'agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
+        extra.update(wire_version='agent-state-v7' if budget_revision else 'agent-state-v6' if searching else 'agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
             evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),
             decision_mode=decision_mode or ('recipe_id' if processing else None),knowledge_query=knowledge_query,
             processing_mode=processing_mode,fixed_processing=fixed_processing,
             search_mode=search_mode,max_trials=max_trials)
-        llm_config=replace(llm_config,prompt_version='agent-decision-search-v1' if searching else 'agent-decision-processing-v1' if processing else 'agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
+        llm_config=replace(llm_config,prompt_version='agent-decision-budget-v1' if budget_revision else 'agent-decision-search-v1' if searching else 'agent-decision-processing-v1' if processing else 'agent-decision-knowledge-v1' if modern else 'agent-decision-recipes-v1')
+    elif budget_revision:
+        raise RuntimeErrorCode('budget_requires_recipe_profile')
+    started_at = clock()
+    frozen_policy = None
+    if budget_revision:
+        if budget_awareness is None:
+            budget_awareness = 'on'
+        if budget_awareness not in ('on', 'off'):
+            raise RuntimeErrorCode('budget_awareness_invalid')
+        if budget_policy is None:
+            task_id = task_id or str(uuid.uuid4())
+            try:
+                frozen_policy = _default_budget_policy(task_id=task_id,
+                    started_at=started_at, timeout_seconds=timeout_seconds,
+                    allowed_models=allowed_models, model_configs=model_configs,
+                    max_trials=max_trials or 1, max_llm_calls=max_llm_calls,
+                    max_api_calls=max_api_calls,
+                    max_repair_attempts=max_repair_attempts,
+                    max_operation_attempts=max_operation_attempts,
+                    max_output_tokens=llm_config.max_tokens)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeErrorCode('budget_policy_invalid') from exc
+        else:
+            try:
+                frozen_policy = BudgetPolicy.from_dict(budget_policy)
+            except ValueError as exc:
+                raise RuntimeErrorCode('budget_policy_invalid') from exc
+            if (task_id is not None and task_id != frozen_policy.task_id or
+                    frozen_policy.deadline_at - frozen_policy.started_at != timeout_seconds or
+                    frozen_policy.limits['llm_calls'] != max_llm_calls or
+                    frozen_policy.limits['api_calls'] != max_api_calls):
+                raise RuntimeErrorCode('budget_policy_configuration_mismatch')
+            task_id = frozen_policy.task_id
+            started_at = frozen_policy.started_at
+        extra.update(budget_policy=frozen_policy.as_dict(),
+                     budget_awareness=budget_awareness,
+                     canonical_journal_sha256=_journal_path_digest(directory))
     if knowledge or processing_mode is not None:
         # Validate the adapter actually used, before checkpoints or remote effects.
         adapter = llm if llm is not None else LLMAdapter(llm_config, token=config.llm_token)
@@ -300,7 +402,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                       max_llm_calls=max_llm_calls, max_api_calls=max_api_calls,
                       max_operation_attempts=max_operation_attempts,
                       max_repair_attempts=max_repair_attempts, timeout_seconds=timeout_seconds,
-                      now=clock(), prompt_version=llm_config.prompt_version,
+                      now=started_at, prompt_version=llm_config.prompt_version,
                       llm_config_version=LLM_CONFIG_VERSION, source_role=source_role)
     try:
         with thread_lock(directory / 'locks', thread_id), checkpoint_store(directory) as saver:
@@ -308,6 +410,8 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                 raise RuntimeErrorCode('thread_already_exists_use_resume')
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
+                if frozen_policy is not None:
+                    journal.bind_budget(frozen_policy)
                 graph = _build(config, saver, journal, client=client, llm=llm,
                                clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'),protocol_revision=state['versions'].get('protocol_revision','agent-recipes-revision-v1'))
                 with tracing_context(enabled=False):
@@ -332,10 +436,14 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
             if state is None:
                 raise RuntimeErrorCode('thread_not_found')
             _verify_binding(state, config, thread_id)
+            frozen_policy = (_require_existing_budget_journal(directory, state)
+                             if state['versions']['state'] == 'agent-state-v7' else None)
             if state['lifecycle']['next_action'] is None:
                 return state
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
+                if frozen_policy is not None:
+                    journal.bind_budget(frozen_policy)
                 graph = _build(config, saver, journal, client=client, llm=llm,
                                clock=clock, graph_factory=graph_factory, api_version=state['versions']['api'].removeprefix('agent-session-'),execution_profile=state['task'].get('execution_profile'),protocol_revision=state['versions'].get('protocol_revision','agent-recipes-revision-v1'))
                 with tracing_context(enabled=False):
@@ -428,6 +536,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument('--max-api-calls', type=int, default=60)
             command.add_argument('--max-operation-attempts', type=int, default=3)
             command.add_argument('--max-repair-attempts', type=int, default=2)
+            command.add_argument('--budget-awareness', choices=('on','off'))
+            command.add_argument('--budget-policy', type=json.loads)
             command.add_argument('--timeout-seconds', type=float, default=3600.0)
             command.add_argument('--source-role', choices=('development', 'benchmark', 'domain'), default='development')
     return parser
@@ -486,7 +596,9 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    processing_mode=args.processing_mode if args.execution_profile!='direct_action' else None,
                                    fixed_processing=args.fixed_processing if args.execution_profile!='direct_action' else None,
                                    search_mode=args.search_mode if args.execution_profile!='direct_action' else None,
-                                   max_trials=args.max_trials if args.execution_profile!='direct_action' else None)
+                                   max_trials=args.max_trials if args.execution_profile!='direct_action' else None,
+                                   budget_awareness=args.budget_awareness if args.execution_profile!='direct_action' else None,
+                                   budget_policy=args.budget_policy if args.execution_profile!='direct_action' else None)
             else:
                 state = resume_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait)
         print(json.dumps(state if args.full else state_summary(state), ensure_ascii=False, allow_nan=False))

@@ -189,7 +189,7 @@ class ExperimentSummary(ExperimentMetadata):
 
 class SessionResponse(Versioned):
     session_id: Identifier
-    state: Literal['open', 'finalized']
+    state: Literal['open', 'finalized', 'terminated']
     locked_config: LockedConfig
     remaining_runs: NonNegative
     best_run_id: Identifier | None

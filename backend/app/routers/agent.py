@@ -29,6 +29,7 @@ from ..agent.contracts import (
     CreateAgentExperimentRequest,
     CreateAgentSessionRequest,
     FinalizeAgentSessionRequest,
+    TerminateAgentSessionRequest,
     ReconcileAgentSessionRequest,
 )
 from ..agent.repository import (
@@ -245,14 +246,14 @@ def call(method, principal, revision=None, **kwargs):
 @current_router.get('/health')
 def current_health(revision: str | None = Depends(revision_header)):
     result = agent_health()
-    snapshot = model_capability_snapshot(search_revision=revision == 'agent-recipes-revision-v4')
+    snapshot = model_capability_snapshot(search_revision=revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'))
     result.update(contract_version=V2, **snapshot)
     result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
     if not any(m['available'] for m in snapshot['models']):
         result['status'] = 'unavailable'
-    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
         result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
         from ..agent.capabilities import module_catalog
         result['modules'] = module_catalog(revision)
     return result
@@ -281,6 +282,15 @@ def current_feedback(session_id: str, run_id: str, principal: Principal = Depend
 @current_router.post('/sessions/{session_id}/finalize')
 def current_finalize(session_id: str, payload: FinalizeAgentSessionRequest, principal: Principal = Depends(get_principal), revision: str | None = Depends(revision_header)):
     return call('finalize_session', principal, revision=revision, session_id=session_id, selected_run_id=payload.selected_run_id)
+
+
+@current_router.post('/sessions/{session_id}/terminate')
+def current_terminate(session_id: str, payload: TerminateAgentSessionRequest,
+                      principal: Principal = Depends(get_principal),
+                      revision: str | None = Depends(revision_header)):
+    return call('terminate_session', principal, revision=revision,
+                session_id=session_id, request_id=payload.client_request_id,
+                reason=payload.reason)
 
 
 @current_router.post('/sessions/{session_id}/reconcile')

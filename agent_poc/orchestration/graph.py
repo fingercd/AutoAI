@@ -24,7 +24,7 @@ from .persistence import CallJournal, PersistenceError
 from .projection import selection_context, finalization_context, recipe_selection_context
 from .state import (
     GraphState, StateModel, SessionRequest, ExperimentRequest, FinalizeRequest,
-    Candidate, DecisionState, HistoryEvent, UsageRecord, OperationAttempts,
+    Candidate, DecisionState, HistoryEvent, UsageRecord, OperationAttempts, TerminateRequest,
     apply_patch, fingerprint, validate_state,
 )
 
@@ -42,7 +42,8 @@ TOOLS = {
     'inspect_session': 'inspect_ml_session', 'choose': 'submit_ml_experiment',
     'submit': 'submit_ml_experiment', 'observe': 'observe_ml_experiment',
     'finalize_decision': 'finalize_ml_session', 'finalize': 'finalize_ml_session',
-    'confirm': 'inspect_ml_session', 'reconcile': None,
+    'confirm': 'inspect_ml_session', 'terminate': 'terminate_ml_session',
+    'confirm_termination': 'inspect_ml_session', 'reconcile': None,
 }
 
 
@@ -131,12 +132,12 @@ class Nodes:
 
     @staticmethod
     def preparation(state):
-        if state['versions']['state'] not in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') or state['evidence']['content'] is None:
+        if state['versions']['state'] not in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') or state['evidence']['content'] is None:
             return None
         return dict(evaluation_plan=state['recipes']['evaluation_plan'],
                     evidence=state['evidence']['content'],catalog=state['recipes']['catalog'],
-                    **({'knowledge':state['knowledge']['snapshot']} if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6') else {}),
-                    **({'search_plans':state['search_plans']} if state['versions']['state']=='agent-state-v6' else {}))
+                    **({'knowledge':state['knowledge']['snapshot']} if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else {}),
+                    **({'search_plans':state['search_plans']} if state['versions']['state'] in ('agent-state-v6','agent-state-v7') else {}))
 
     def restore_client_contract(self, state):
         """Rehydrate only checkpointed facts, including when prepare is skipped."""
@@ -153,11 +154,11 @@ class Nodes:
                 health = {k:v for k,v in source.items() if k != 'model_configs'}
                 health.update(contract_version='agent-session-v2',status='ready',modules={},capabilities=dict(create_session=True,create_experiment=True,read_session=True,read_feedback=True,finalize_session=True))
                 self.deps.client.tool_schemas = build_tool_schemas(health)
-                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
                     self.deps.client._recipe_tools()
             frozen = state['capabilities']['frozen_snapshot']
             if frozen is not None and state['identity']['session_id'] is not None:
-                self.deps.client.restore_frozen_session(state['identity']['session_id'], frozen, **({'preparation':self.preparation(state)} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else {}))
+                self.deps.client.restore_frozen_session(state['identity']['session_id'], frozen, **({'preparation':self.preparation(state)} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else {}))
 
     def prepare(self, raw):
         state = validate_state(raw).model_dump(mode='json')
@@ -171,7 +172,11 @@ class Nodes:
                  self.deps.clock() >= state['budget']['deadline_at'])):
             previous=state['recovery']['pending_operation']
             if previous is not None:
-                self.deps.journal.end_monitor_wait(operation_id=previous['operation_id'],
+                wait_id = (f"{previous['operation_id']}-wait-{len(state['history']['events'])}"
+                    if state['versions']['state']=='agent-state-v7' and
+                       previous['operation_id'].startswith('final-observe-')
+                    else previous['operation_id'])
+                self.deps.journal.end_monitor_wait(operation_id=wait_id,
                     status='interrupted' if self.deps.clock()>=state['budget']['deadline_at'] else 'succeeded')
         if action is None:
             return state
@@ -179,6 +184,20 @@ class Nodes:
             return _stop(state, 'deadline_exceeded', self.deps.clock(), status='timed_out',
                          uncertain=state['execution']['run_status'] in ('queued', 'running')
                          or state['recovery']['pending_operation'] is not None)
+        if (state['versions']['state']=='agent-state-v7' and
+                self.deps.clock() >= state['task']['budget_policy']['work_deadline_at'] and
+                action in ('capabilities','session','choose','submit')):
+            if (state['identity']['session_id'] is not None and
+                    state['execution']['run_id'] is None and action == 'choose'):
+                state = apply_patch(state, {'finalization':{
+                    'status':'unselected','termination_reason':'deadline'},
+                    'lifecycle':{'next_action':'terminate','reason_code':'deadline'},
+                    'recovery':{'next_wake_at':None}})
+                action = 'terminate'
+            else:
+                return _stop(state, 'work_deadline_exceeded', self.deps.clock(),
+                             status='needs_attention' if action=='submit' else 'timed_out',
+                             uncertain=action=='submit')
         if action not in TOOLS:
             return _stop(state, 'unknown_graph_action', self.deps.clock())
         wake = state['recovery']['next_wake_at']
@@ -189,9 +208,16 @@ class Nodes:
         content = None
         request_id = None
         kind = {'session':'session', 'submit':'experiment', 'finalize':'finalize',
+                'terminate':'terminate',
                 'reconcile':'reconcile', 'observe':'observe', 'choose':'llm',
                 'finalize_decision':'llm'}.get(action, 'inspect')
         op_id = _key(action, identity['task_id'], f"-{len(state['history']['events'])}")
+        if (state['versions']['state']=='agent-state-v7' and
+                action in ('confirm','confirm_termination')):
+            op_id = _key(action, identity['task_id'])
+        if (state['versions']['state']=='agent-state-v7' and action=='observe' and
+                self.deps.clock() >= state['task']['budget_policy']['work_deadline_at']):
+            op_id = _key('final-observe', identity['task_id'])
         if action == 'session':
             op_id = identity['session_operation_id'] or _key('session', identity['task_id'])
             request_id = identity['session_request_id'] or op_id
@@ -200,25 +226,30 @@ class Nodes:
             request_extra = {}
             if state['versions']['api'] == 'agent-session-v2':
                 from .state import SessionRequestV2 as request_type
-                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+                if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
                     from .state import RecipeSessionRequest as request_type
-                    if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+                    if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
                         from .state import KnowledgeSessionRequest as request_type
-                    if state['versions']['state'] in ('agent-state-v5','agent-state-v6'):
+                    if state['versions']['state'] in ('agent-state-v5','agent-state-v6','agent-state-v7'):
                         from .state import ProcessingSessionRequest as request_type
-                    if state['versions']['state']=='agent-state-v6':
+                    if state['versions']['state'] in ('agent-state-v6','agent-state-v7'):
                         from .state import SearchSessionRequest as request_type
+                    if state['versions']['state'] == 'agent-state-v7':
+                        from .state import BudgetSessionRequest as request_type
                 request_extra['model_configs'] = {k:v for k,v in task['model_configs'].items() if k in state['capabilities']['eligible_models']}
             if task.get('knowledge_query') is not None:
                 request_extra['knowledge_query'] = task['knowledge_query']
             if task.get('decision_mode') is not None:
                 request_extra['decision_mode'] = task['decision_mode']
-            if state['versions']['state'] in ('agent-state-v5','agent-state-v6'):
+            if state['versions']['state'] in ('agent-state-v5','agent-state-v6','agent-state-v7'):
                 request_extra.update(processing_mode=task['processing_mode'],
                     fixed_processing={key:value for key,value in task['fixed_processing'].items()
                                       if key in state['capabilities']['eligible_models']})
-            if state['versions']['state']=='agent-state-v6':
+            if state['versions']['state'] in ('agent-state-v6','agent-state-v7'):
                 request_extra.update(search_mode=task['search_mode'],max_trials=task['max_trials'])
+            if state['versions']['state'] == 'agent-state-v7':
+                request_extra.update(budget_policy=task['budget_policy'],
+                                     budget_awareness=task['budget_awareness'])
             content = request_type(**request_extra, dataset_id=task['dataset_id'], selection_metric=task['selection_metric'],
                 allowed_models=state['capabilities']['eligible_models'], seed=task['seed'],
                 client_request_id=request_id, context_policy=state['module_policy']['context_policy']).model_dump(mode='json')
@@ -239,6 +270,12 @@ class Nodes:
             identity_patch['finalize_operation_id'] = op_id
             content = FinalizeRequest(session_id=identity['session_id'],
                 selected_run_id=state['finalization']['selected_run_id']).model_dump(mode='json')
+        elif action == 'terminate':
+            op_id = _key('terminate', identity['task_id'])
+            request_id = op_id
+            content = TerminateRequest(session_id=identity['session_id'],
+                client_request_id=request_id,
+                reason=state['finalization']['termination_reason']).model_dump(mode='json')
         elif action == 'reconcile':
             op_id = _key('reconcile', identity['task_id'])
         previous = state['recovery']['pending_operation']
@@ -262,7 +299,13 @@ class Nodes:
             max_attempts=state['budget']['max_operation_attempts'],
             deadline=state['budget']['deadline_at'], now=self.deps.clock(),
             task_id=state['identity']['task_id'],session_id=state['identity']['session_id'],
-            run_id=state['execution']['run_id'])
+            run_id=state['execution']['run_id'],
+            phase='finalization' if state['versions']['state']=='agent-state-v7' and (
+                state['lifecycle']['stage'] in ('finalize_decision','finalize','confirm',
+                    'terminate','confirm_termination','reconcile') or
+                state['lifecycle']['stage'] in ('observe','inspect_session') and
+                self.deps.clock() >= state['task']['budget_policy']['work_deadline_at'])
+                else 'work')
         original_timeout = getattr(self.deps.client, 'timeout', None)
         original_dispatch = getattr(self.deps.client, 'on_dispatch', None)
         if self.deps.journal.budget_policy is not None:
@@ -273,6 +316,13 @@ class Nodes:
         try:
             if name == 'reconcile_ml_session':
                 result = self.deps.client.reconcile_ml_session(arguments['session_id'])
+            elif name == 'terminate_ml_session':
+                result = self.deps.client.terminate_ml_session(**arguments)
+            elif name == 'start_ml_session' and state['versions']['state'] == 'agent-state-v7':
+                base = dict(arguments)
+                trusted = {key: base.pop(key) for key in
+                           ('budget_policy', 'budget_awareness')}
+                result = self.dispatcher.dispatch(name, base, trusted_kwargs=trusted)
             else:
                 result = self.dispatcher.dispatch(name, arguments)
         except AgentClientError as error:
@@ -293,7 +343,7 @@ class Nodes:
         return result
 
     def llm_call(self, state, phase, context):
-        modern=state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6')
+        modern=state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7')
         if modern:
             from .llm import StoredProposal, store_proposal
             stored=self.deps.journal.proposal(state['recovery']['pending_operation']['operation_id'])
@@ -305,7 +355,9 @@ class Nodes:
             max_attempts=state['budget']['max_repair_attempts'] + 1,
             deadline=state['budget']['deadline_at'], now=self.deps.clock(),
             task_id=state['identity']['task_id'],session_id=state['identity']['session_id'],
-            run_id=state['execution']['run_id'])
+            run_id=state['execution']['run_id'],
+            phase='finalization' if state['versions']['state']=='agent-state-v7' and
+                state['lifecycle']['stage']=='finalize_decision' else 'work')
         try:
             if isinstance(self.deps.llm, LLMAdapter):
                 operation_id = state['recovery']['pending_operation']['operation_id']
@@ -399,7 +451,10 @@ class Nodes:
                 state = apply_patch(state, {'history': {'events': [event]}})
         if (state['lifecycle']['status']=='waiting' and state['lifecycle']['next_action']=='observe'
                 and state['execution']['run_id']):
-            self.deps.journal.begin_monitor_wait(operation_id=operation_id,
+            wait_id = (f"{operation_id}-wait-{len(state['history']['events'])}"
+                if state['versions']['state']=='agent-state-v7' and
+                   operation_id.startswith('final-observe-') else operation_id)
+            self.deps.journal.begin_monitor_wait(operation_id=wait_id,
                 run_id=state['execution']['run_id'],reason_code=state['execution']['run_status'],
                 task_id=state['identity']['task_id'],session_id=state['identity']['session_id'])
         return state
@@ -455,24 +510,29 @@ class Nodes:
             'seed':task['seed'], 'evaluation_config':task['evaluation_config'], 'modules':[],
             'context_policy':{key:state['module_policy']['context_policy'][key]
                               for key in ('source_role','case_write')}}
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             expected['modules']=['train_evidence','legal_recipes']
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6') and state['module_policy']['knowledge']['enabled']:
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and state['module_policy']['knowledge']['enabled']:
                 expected['modules'].append('knowledge')
-            if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and state['module_policy']['dynamic_preprocessing']['enabled']:
+            if state['versions']['state'] in ('agent-state-v5','agent-state-v6','agent-state-v7') and state['module_policy']['dynamic_preprocessing']['enabled']:
                 expected['modules'].append('dynamic_preprocessing')
-            if state['versions']['state']=='agent-state-v6' and state['module_policy']['bounded_hpo']['enabled']:
+            if state['versions']['state'] in ('agent-state-v6','agent-state-v7') and state['module_policy']['bounded_hpo']['enabled']:
                 expected['modules'].append('bounded_hpo')
             expected['context_policy'].update({k:state['module_policy']['context_policy'][k] for k in ('evidence','risks')})
-        if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and (
+        if state['versions']['state'] in ('agent-state-v5','agent-state-v6','agent-state-v7') and (
                 locked.get('processing_mode') != task['processing_mode'] or
                 locked.get('fixed_processing') != {key:value for key,value in task['fixed_processing'].items()
                     if key in state['capabilities']['eligible_models']}):
             raise ValueError('locked processing differs from frozen task')
-        if state['versions']['state']=='agent-state-v6' and (
+        if state['versions']['state'] in ('agent-state-v6','agent-state-v7') and (
                 locked.get('search_mode') != task['search_mode'] or
                 locked.get('max_trials') != task['max_trials']):
             raise ValueError('locked search differs from frozen task')
+        if state['versions']['state'] == 'agent-state-v7' and (
+                locked.get('budget_policy') != task['budget_policy'] or
+                locked.get('budget_policy_digest') != task['budget_policy_digest'] or
+                locked.get('budget_awareness') != task['budget_awareness']):
+            raise ValueError('locked budget differs from frozen task')
         if locked.get('decision_mode') != task.get('decision_mode'):
             raise ValueError('locked decision mode mismatch')
         if any(locked[key] != value for key,value in expected.items()):
@@ -489,15 +549,15 @@ class Nodes:
                     resolved = {**model.fixed_execution_defaults, **validate_params(model,overrides)}
                     if resolved != frozen.model_configs[name]:
                         raise ValueError('operator parameters changed')
-            self.deps.client.restore_frozen_session(response['session_id'], locked['capability_snapshot'], **({'preparation':locked['preparation']} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else {}))
+            self.deps.client.restore_frozen_session(response['session_id'], locked['capability_snapshot'], **({'preparation':locked['preparation']} if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else {}))
         task_extra={}
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             prepared=locked['preparation']
             extra.update(evidence={'status':'ready','content':prepared['evidence']},
                 recipes={'status':'ready','catalog':prepared['catalog'],'evaluation_plan':prepared['evaluation_plan']})
-            if state['versions']['state']=='agent-state-v6':
+            if state['versions']['state'] in ('agent-state-v6','agent-state-v7'):
                 extra['search_plans']=prepared['search_plans']
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
                 knowledge=prepared['knowledge']
                 extra['knowledge']=dict(status=knowledge['status'],prior_version=knowledge['knowledge_set_version'],
                     matches=knowledge['matches'],snapshot=knowledge)
@@ -512,12 +572,12 @@ class Nodes:
     def session(self, state):
         content = dict(state['recovery']['pending_operation']['content'])
         content.pop('evaluation')  # Client alone translates the fixed public request to HTTP.
-        content['context_policy'] = {k:content['context_policy'][k] for k in (('source_role','case_write','evidence','risks') if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') else ('source_role','case_write'))}
-        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+        content['context_policy'] = {k:content['context_policy'][k] for k in (('source_role','case_write','evidence','risks') if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else ('source_role','case_write'))}
+        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             content['modules']=['train_evidence','legal_recipes']+(['knowledge'] if state['module_policy']['knowledge']['enabled'] else [])
-        if state['versions']['state'] in ('agent-state-v5','agent-state-v6') and state['module_policy']['dynamic_preprocessing']['enabled']:
+        if state['versions']['state'] in ('agent-state-v5','agent-state-v6','agent-state-v7') and state['module_policy']['dynamic_preprocessing']['enabled']:
             content['modules'].append('dynamic_preprocessing')
-        if state['versions']['state']=='agent-state-v6' and state['module_policy']['bounded_hpo']['enabled']:
+        if state['versions']['state'] in ('agent-state-v6','agent-state-v7') and state['module_policy']['bounded_hpo']['enabled']:
             content['modules'].append('bounded_hpo')
         response = self.call(state, 'start_ml_session', content)
         state = self.check_locked(state, response)
@@ -527,7 +587,7 @@ class Nodes:
         keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
         action = {k:response['effective_action'][k] for k in keys}
         expected = state['execution']['submission_content']
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             recipe=next(r for r in state['recipes']['catalog']['recipes'] if r['recipe_id']==expected['recipe_id'])
             expected={**recipe['fixed_execution_config'],'model_params':state['capabilities']['frozen_snapshot']['model_configs'][recipe['model_id']]}
         if action != {k:expected[k] for k in action}:
@@ -563,16 +623,84 @@ class Nodes:
         return _next(state, 'submit' if state['execution']['submission_content'] else 'choose')
 
     def choose(self, state):
+        if (state['versions']['state']=='agent-state-v7' and
+                self.deps.clock() >= state['task']['budget_policy']['work_deadline_at']):
+            state = apply_patch(state, {'finalization':{
+                'status':'unselected','termination_reason':'deadline'}})
+            return _next(state, 'terminate', reason='deadline')
+        budget_card = None
+        if state['versions']['state'] == 'agent-state-v7':
+            from backend.app.agent.budget import training_upper_bound
+            policy = state['task']['budget_policy']
+            call_balances = self.deps.journal.budget_summary()
+            fits = policy['dimensions']['model_fits']['limit']
+            epochs = policy['dimensions']['training_epochs']['limit']
+            recipes = []
+            configs = state['capabilities']['frozen_snapshot']['model_configs']
+            for recipe in state['recipes']['catalog']['recipes']:
+                plan = state['search_plans'][recipe['search_plan_digest']]
+                candidate = configs[recipe['model_id']]
+                bound = training_upper_bound(plan,
+                    epochs=candidate.get('epochs') if
+                    plan['fit_strategy'] == 'train_best_epoch_no_refit' else None)
+                recipes.append(dict(recipe_id=recipe['recipe_id'],
+                    model_fits_upper=bound['model_fits'],
+                    training_epochs_upper=bound['training_epochs'],
+                    feasible=(bound['model_fits'] <= fits and
+                              bound['training_epochs'] <= epochs),
+                    estimated_seconds=None))
+            budget_card = dict(model_fits_remaining=fits,
+                training_epochs_remaining=epochs,
+                llm_calls_remaining=call_balances['llm_calls']['remaining'],
+                api_calls_remaining=call_balances['api_calls']['remaining'],
+                llm_calls_unknown_held=call_balances['llm_calls']['held_unknown'],
+                api_calls_unknown_held=call_balances['api_calls']['held_unknown'],
+                work_seconds_remaining=max(0.0, policy['work_deadline_at']-self.deps.clock()),
+                finalization_llm_calls_protected=policy['finalization']['llm_calls'],
+                finalization_api_calls_protected=policy['finalization']['api_calls'],
+                recipes=recipes)
+            if not any(item['feasible'] for item in recipes):
+                state = apply_patch(state, {'finalization':{
+                    'status':'unselected', 'termination_reason':'budget_exhausted'}})
+                return _next(state, 'terminate', reason='budget_exhausted')
+            if state['task']['budget_awareness'] == 'off':
+                budget_card = None
         context = selection_context(task=state['task'], models=state['capabilities']['eligible_models'],
             session_id=state['identity']['session_id'], client_request_id=state['identity']['experiment_request_id'],
             model_configs=state['capabilities']['frozen_snapshot']['model_configs'] if state['versions']['api'] == 'agent-session-v2' else None)
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             context=recipe_selection_context(task=state['task'],session_id=state['identity']['session_id'],
                 preparation=self.preparation(state),context_policy=state['module_policy']['context_policy'],
-                model_configs=state['capabilities']['frozen_snapshot']['model_configs'])
-        if isinstance(self.deps.llm, LLMAdapter):
+                model_configs=state['capabilities']['frozen_snapshot']['model_configs'],
+                budget_card=budget_card)
+        stored_context = None
+        if state['versions']['state']=='agent-state-v7':
+            from .llm import StoredProposal
+            raw = self.deps.journal.proposal(state['recovery']['pending_operation']['operation_id'])
+            if raw is not None:
+                stored_context = StoredProposal.model_validate_json(raw).displayed_context
+                if (stored_context is None or
+                        {k:v for k,v in stored_context.items() if k!='budget_card'} !=
+                        {k:v for k,v in context.items() if k!='budget_card'}):
+                    raise ValueError('stored decision context differs from frozen session')
+                context = stored_context
+        if stored_context is None and isinstance(self.deps.llm, LLMAdapter):
             context = self.deps.llm.prepare_context('submit', context)
         proposal = self.llm_call(state, 'submit', context)
+        if proposal.tool_name == 'stop_ml_session':
+            if (state['versions']['state'] != 'agent-state-v7' or
+                    state['task']['budget_awareness'] != 'on' or
+                    proposal.arguments.get('session_id') != state['identity']['session_id']):
+                raise ValueError('stop is outside frozen budget decision')
+            decision = DecisionState(status='ready',
+                decision_id=_key('budget-stop',state['identity']['task_id']),
+                kind='budget_stop', rationale=proposal.rationale,
+                validation_status='ready', reason_code='operator_stop',
+                tool_name='stop_ml_session', tool_call_id=proposal.tool_call_id,
+                response_id=proposal.response_id).model_dump(mode='json')
+            state = apply_patch(state, {'decision':decision,'finalization':{
+                'status':'unselected','termination_reason':'operator_stop'}})
+            return _next(state, 'terminate', reason='operator_stop')
         if proposal.tool_name != 'submit_ml_experiment':
             raise ValueError('wrong decision tool')
         request_type, decision_type = ExperimentRequest, DecisionState
@@ -584,9 +712,9 @@ class Nodes:
             arguments = normalize_structured_arguments(arguments, context)
         if state['task'].get('decision_mode') is not None:
             arguments['decision_mode'] = state['task']['decision_mode']
-        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             from .state import RecipeExperimentRequest as request_type
-            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+            if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
                 from .state import KnowledgeExperimentRequest as request_type, KnowledgeDecisionState as decision_type
             if 'client_request_id' in arguments:
                 raise ValueError('request ID is controlled by runner')
@@ -594,15 +722,19 @@ class Nodes:
         content = request_type.model_validate(arguments).model_dump(mode='json')
         if any(content[k] != value for k,value in context['bindings'].items()):
             raise ValueError('decision binding mismatch')
-        recipe_profile=state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6')
+        recipe_profile=state['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7')
         if not recipe_profile and content['model_type'] not in context['capabilities']['models']:
             raise ValueError('decision model not permitted')
         keys = ('model_type','normalization','class_balance') + (('model_params',) if state['versions']['api'] == 'agent-session-v2' else ())
         action = None if recipe_profile else {k:content[k] for k in keys}
         if recipe_profile and content['recipe_id'] not in {r['recipe_id'] for r in context['recipes']}:
             raise ValueError('recipe outside frozen catalog')
+        if state['versions']['state']=='agent-state-v7':
+            if not any(item['recipe_id']==content['recipe_id'] and item['feasible']
+                       for item in recipes):
+                raise ValueError('recipe exceeds current training budget')
         knowledge_decision={}
-        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+        if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             snapshot=state['knowledge']['snapshot']
             versions={e['entry_id']:e['entry_version'] for e in snapshot['projection']['entries']}
             if set(content['knowledge_refs'])-versions.keys():
@@ -658,6 +790,10 @@ class Nodes:
             return _next(state, 'observe', status='waiting',
                          wake=self.deps.clock()+response['retry_after_seconds'])
         if response['state'] in ('failed','cancelled'):
+            if state['versions']['state']=='agent-state-v7':
+                state = apply_patch(state, {'finalization':{
+                    'status':'unselected','termination_reason':'no_valid_run'}})
+                return _next(state, 'terminate', reason='no_valid_run')
             return _stop(state, f"run_{response['state']}", self.deps.clock(), status=response['state'])
         eligible = valid == 'ready' and response['validation_score'] is not None and 'finalize_ml_session' in response['allowed_actions']
         checks = [{'check_id':'manifest-validation', 'phase':'post', 'kind':'manifest',
@@ -666,6 +802,10 @@ class Nodes:
              'version':state['versions']['observation'], 'status':'passed' if eligible else 'failed'}]
         state = apply_patch(state, {'guard':{'checks':checks, 'candidate_eligible':eligible}})
         if not eligible:
+            if state['versions']['state']=='agent-state-v7':
+                state = apply_patch(state, {'finalization':{
+                    'status':'unselected','termination_reason':'no_valid_run'}})
+                return _next(state, 'terminate', reason='no_valid_run')
             return _stop(state, 'no_valid_candidate', self.deps.clock())
         candidate = Candidate(candidate_id=f"candidate-{state['execution']['run_id']}",
             session_id=state['identity']['session_id'], run_id=state['execution']['run_id'],
@@ -675,11 +815,48 @@ class Nodes:
         return _next(state, 'finalize_decision')
 
     def finalize_decision(self, state):
+        budget_balance = None
+        if (state['versions']['state']=='agent-state-v7' and
+                state['task']['budget_awareness']=='on'):
+            balances = self.deps.journal.budget_summary()
+            budget_balance = dict(
+                llm_calls_remaining=balances['llm_calls']['remaining'],
+                api_calls_remaining=balances['api_calls']['remaining'],
+                llm_calls_unknown_held=balances['llm_calls']['held_unknown'],
+                api_calls_unknown_held=balances['api_calls']['held_unknown'],
+                task_seconds_remaining=max(0.0,
+                    state['task']['budget_policy']['deadline_at']-self.deps.clock()))
         context = finalization_context(task=state['task'], session_id=state['identity']['session_id'],
             run_id=state['execution']['run_id'], validation=state['feedback']['validation_metrics'],
             validation_score=state['feedback']['selection_score'], allowed_actions=state['feedback']['allowed_actions'],
-            context_version=state['versions']['context_projection'])
+            context_version=state['versions']['context_projection'],
+            budget_awareness=state['task'].get('budget_awareness'),
+            budget_balance=budget_balance)
+        if state['versions']['state']=='agent-state-v7':
+            from .llm import StoredProposal
+            raw = self.deps.journal.proposal(state['recovery']['pending_operation']['operation_id'])
+            if raw is not None:
+                displayed = StoredProposal.model_validate_json(raw).displayed_context
+                if (displayed is None or
+                        {k:v for k,v in displayed.items() if k!='budget_balance'} !=
+                        {k:v for k,v in context.items() if k!='budget_balance'}):
+                    raise ValueError('stored final decision context differs from frozen session')
+                context = displayed
         proposal = self.llm_call(state, 'finalize', context)
+        if proposal.tool_name == 'stop_ml_session':
+            if (state['versions']['state']!='agent-state-v7' or
+                    state['task']['budget_awareness']!='on' or
+                    proposal.arguments.get('session_id')!=state['identity']['session_id']):
+                raise ValueError('invalid finalization stop')
+            decision = DecisionState(status='ready',
+                decision_id=_key('final-stop', state['identity']['task_id']),
+                kind='budget_stop', rationale=proposal.rationale,
+                validation_status='ready', reason_code='operator_stop',
+                tool_name='stop_ml_session',tool_call_id=proposal.tool_call_id,
+                response_id=proposal.response_id).model_dump(mode='json')
+            state = apply_patch(state, {'decision':decision,
+                'finalization':{'status':'unselected','termination_reason':'operator_stop'}})
+            return _next(state, 'terminate', reason='operator_stop')
         if proposal.tool_name != 'finalize_ml_session' or proposal.arguments != context['bindings']:
             raise ValueError('invalid finalize decision')
         decision = DecisionState(status='ready', decision_id=_key('final-decision', state['identity']['task_id']),
@@ -701,6 +878,38 @@ class Nodes:
             return self.lock_confirmed(state, response)
         self.call(state, 'finalize_ml_session', state['recovery']['pending_operation']['content'])
         return _next(state, 'confirm')
+
+    def terminate(self, state):
+        response = self.call(state, 'inspect_ml_session',
+                             {'session_id':state['identity']['session_id']}, suffix='-inspect')
+        state = self.check_locked(state, response)
+        if response['state'] == 'terminated':
+            return self.termination_confirmed(state, response)
+        if response['state'] != 'open' or state['execution']['run_status'] in ('queued','running'):
+            raise ValueError('termination conflicts with active experiment')
+        self.call(state, 'terminate_ml_session',
+                  state['recovery']['pending_operation']['content'])
+        return _next(state, 'confirm_termination')
+
+    def confirm_termination(self, state):
+        response = self.call(state, 'inspect_ml_session',
+                             {'session_id':state['identity']['session_id']})
+        state = self.check_locked(state, response)
+        if response['state'] != 'terminated':
+            return _next(state, 'terminate', status='recovering')
+        return self.termination_confirmed(state, response)
+
+    def termination_confirmed(self, state, response):
+        if (response.get('termination_reason') != state['finalization']['termination_reason'] or
+                response.get('selected_run_id') is not None):
+            return _stop(state, 'backend_termination_conflict', self.deps.clock(),
+                         status='needs_attention', uncertain=True)
+        return apply_patch(state, {'finalization':{'status':'unselected',
+            'backend_session_state':'terminated'}, 'lifecycle':{'status':'completed',
+            'stage':'terminated','next_action':None,'ended_at':self.deps.clock(),
+            'reason_code':response['termination_reason']},
+            'recovery':{'pending_operation':None,'next_wake_at':None,
+                        'needs_human_review':False}})
 
     def confirm(self, state):
         response = self.call(state, 'inspect_ml_session', {'session_id':state['identity']['session_id']})

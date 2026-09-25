@@ -263,6 +263,17 @@ class RunRepository:
                 connection.execute(
                     'ALTER TABLE worker_heartbeats ADD COLUMN contract_version TEXT'
                 )
+            # An older worker binary may still open this SQLite file directly.
+            # Guard the state transition in the database, after its heartbeat,
+            # so it cannot claim a Run whose budget protocol it does not know.
+            connection.execute('''CREATE TRIGGER IF NOT EXISTS budget_run_claim_contract_v1
+                BEFORE UPDATE OF state ON runs
+                WHEN NEW.state='running' AND OLD.state='queued'
+                  AND json_extract(NEW.config_json,'$.execution_budget_task_id') IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM worker_heartbeats
+                      WHERE worker_id=NEW.worker_id
+                        AND contract_version='training-worker-budget-v1')
+                BEGIN SELECT RAISE(ABORT,'budget_worker_contract_required'); END''')
 
     # 创建 queued Run。HTTP 训练请求只做到这一步（入队），不直接启动训练——
     # 真正的执行由 worker 通过 claim_next 领取。owner/tenant 只来自服务端注入的
