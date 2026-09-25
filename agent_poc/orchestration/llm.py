@@ -493,7 +493,11 @@ class LLMAdapter:
         if self._token:
             headers['Authorization'] = f'Bearer {self._token}'
         if on_dispatch is not None:
-            on_dispatch()
+            remaining = on_dispatch()
+            if remaining is not None:
+                if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
+                    raise LLMError('llm_timeout') from None
+                request_timeout = min(request_timeout, remaining)
         sent_at = datetime.now(timezone.utc).isoformat()
         started = time.monotonic()
         try:

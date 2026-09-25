@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -153,7 +154,33 @@ class CallJournal:
                     (task_id,thread_id,canonical_path,policy_digest) VALUES(?,?,?,?)''', expected)
             elif tuple(row) != expected:
                 raise PersistenceError('budget_journal_binding_conflict')
+            leaked = self.connection.execute('''SELECT 1 FROM orchestration_calls_v1
+                WHERE thread_id=? AND (budget_phase IS NULL OR task_id IS NOT ?) LIMIT 1''',
+                (self.thread_id, policy.task_id)).fetchone()
+            if leaked is not None:
+                raise PersistenceError('budget_unmetered_call_conflict')
         self.budget_policy = policy
+
+    def _require_budget_binding(self, task_id: str | None = None) -> None:
+        """A persisted budget cannot silently turn into legacy accounting on reopen."""
+        row = self.connection.execute('''SELECT task_id,thread_id,canonical_path,policy_digest
+            FROM task_budget_journal_bindings_v1 WHERE thread_id=? OR task_id IS ?''',
+            (self.thread_id, task_id)).fetchone()
+        if row is None:
+            if self.budget_policy is not None:
+                raise PersistenceError('budget_journal_binding_missing')
+            return
+        if row[1] != self.thread_id or row[2] != self.canonical_path:
+            raise PersistenceError('budget_journal_binding_conflict')
+        if self.budget_policy is None:
+            raise PersistenceError('budget_binding_required')
+        if row[0] != self.budget_policy.task_id or row[3] != self.budget_policy.digest:
+            raise PersistenceError('budget_journal_binding_conflict')
+        try:
+            dimension_summary(self.connection, task_id=self.budget_policy.task_id,
+                              owner='journal', dimension='api_calls')
+        except BudgetError as error:
+            raise PersistenceError(error.code) from None
 
     def budget_summary(self) -> dict[str, dict]:
         if self.budget_policy is None:
@@ -180,6 +207,7 @@ class CallJournal:
               task_id: str | None = None, session_id: str | None = None,
               run_id: str | None = None, phase: str = 'work') -> int:
         now = time.time() if now is None else now
+        self._require_budget_binding(task_id)
         if now >= deadline:
             raise PersistenceError('deadline_exceeded')
         if self.budget_policy is not None:
@@ -221,26 +249,43 @@ class CallJournal:
                  task_id,session_id,run_id,phase if self.budget_policy is not None else None))
             return int(cursor.lastrowid)
 
-    def mark_dispatched(self, call_id: int) -> None:
+    def mark_dispatched(self, call_id: int, *, now: float | None = None) -> float | None:
         """Persist the send boundary; a later crash remains an unknown hold."""
+        self._require_budget_binding()
+        now = time.time() if now is None else now
+        if type(now) not in (int, float) or not math.isfinite(now):
+            raise PersistenceError('budget_invalid_deadline')
+        expired = False
+        remaining = None
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
-            row = self.connection.execute('''SELECT task_id,operation_id,attempt_index,kind,status
+            row = self.connection.execute('''SELECT task_id,operation_id,attempt_index,kind,status,budget_phase
                 FROM orchestration_calls_v1 WHERE id=? AND thread_id=?''',
                 (call_id, self.thread_id)).fetchone()
             if row is None:
                 raise PersistenceError('call_missing')
-            task_id, operation_id, attempt, kind, status = row
+            task_id, operation_id, attempt, kind, status, phase = row
             if status == 'dispatched':
-                return
+                return None
             if status != 'prepared' or self.budget_policy is None:
                 raise PersistenceError('call_dispatch_conflict')
+            if phase not in ('work', 'finalization'):
+                raise PersistenceError('budget_phase_invalid')
+            deadline = (self.budget_policy.work_deadline_at if phase == 'work'
+                        else self.budget_policy.deadline_at)
+            expired = now >= deadline
             for dimension in self._call_amounts(kind):
                 transition(self.connection, task_id=task_id, owner='journal',
                            operation_id=operation_id, attempt_id=str(attempt),
-                           dimension=dimension, status='dispatched')
-            self.connection.execute('''UPDATE orchestration_calls_v1 SET status='dispatched'
-                WHERE id=? AND thread_id=?''', (call_id, self.thread_id))
+                           dimension=dimension, status='released' if expired else 'dispatched')
+            self.connection.execute('''UPDATE orchestration_calls_v1
+                SET status=?,ended_at=?,error_code=? WHERE id=? AND thread_id=?''',
+                ('prepare_failed' if expired else 'dispatched', now if expired else None,
+                 'budget_deadline_exceeded' if expired else None, call_id, self.thread_id))
+            remaining = deadline - now
+        if expired:
+            raise PersistenceError('budget_deadline_exceeded')
+        return remaining
 
     def finish(self, call_id: int, *, error_code: str | None = None,
                input_tokens: int | None = None, output_tokens: int | None = None,
@@ -248,6 +293,7 @@ class CallJournal:
                cached_tokens: int | None = None,
                proposal: dict | None = None, measurement: dict | None = None):
         # A second completion notification cannot rewrite settled measurements.
+        self._require_budget_binding()
         with self.connection:
             measurement = measurement or {}
             if self.budget_policy is not None:
@@ -258,6 +304,8 @@ class CallJournal:
                 if row is None:
                     raise PersistenceError('call_missing')
                 task_id, operation_id, attempt, kind, status = row
+                if status in ('prepare_failed', 'confirmed', 'failed'):
+                    return
                 if status == 'prepared':
                     for dimension in self._call_amounts(kind):
                         transition(self.connection, task_id=task_id, owner='journal',

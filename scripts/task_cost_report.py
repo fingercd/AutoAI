@@ -99,6 +99,74 @@ def _bound_session(agent_db: Path, *, session_id: str, run_id: str | None,
         db.close()
 
 
+def _bound_run(runs_db: Path, *, run_id: str, run_dir: Path,
+               owner_id: str | None, tenant_id: str | None) -> dict:
+    """Resolve one Run from its read-only registry; never trust a supplied directory alone."""
+    if not run_id or Path(run_id).name != run_id or run_id in ('.', '..'):
+        raise ValueError('cost_report_run_mismatch')
+    expected = (runs_db.parent / 'runs').resolve() / run_id
+    if run_dir.resolve() != expected or not expected.is_dir():
+        raise ValueError('cost_report_run_source_mismatch')
+    db = readonly_snapshot(runs_db)
+    try:
+        row = db.execute('''SELECT state,owner_id,tenant_id,config_json,manifest_name
+            FROM runs WHERE run_id=?''', (run_id,)).fetchone()
+        if row is None or (row['owner_id'], row['tenant_id']) != (owner_id, tenant_id):
+            raise ValueError('cost_report_run_source_mismatch')
+        config = json.loads(row['config_json'])
+        plan = config.get('execution_search_plan')
+        if not isinstance(plan, dict) or not isinstance(plan.get('plan_digest'), str):
+            raise ValueError('cost_report_plan_unverified')
+        return dict(state=row['state'], manifest_name=row['manifest_name'], plan=plan)
+    finally:
+        db.close()
+
+
+def _verified_search_files(run_dir: Path, run_id: str, run: dict) -> tuple[Any, Any, Any]:
+    plan = _json(run_dir / 'search_plan.json')
+    summary = _json(run_dir / 'search_summary.json')
+    trials = _json(run_dir / 'search_trials.json')
+    timeline = _json(run_dir / 'search_timeline.json')
+    if plan != run['plan']:
+        raise ValueError('cost_report_plan_mismatch')
+    digest = plan['plan_digest']
+    if summary is not None and (type(summary) is not dict or
+            summary.get('schema_version') != 'search-summary-v1' or
+            summary.get('run_id') != run_id or summary.get('plan_digest') != digest):
+        raise ValueError('cost_report_search_source_mismatch')
+    if trials is not None and (type(trials) is not list or any(
+            type(item) is not dict or item.get('run_id') != run_id for item in trials)):
+        raise ValueError('cost_report_search_source_mismatch')
+    if timeline is not None and (type(timeline) is not dict or
+            timeline.get('schema_version') != 'search-timeline-v1' or
+            timeline.get('run_id') != run_id or type(timeline.get('spans')) is not list or
+            any(type(span) is not dict or span.get('run_id') != run_id
+                for span in timeline['spans'])):
+        raise ValueError('cost_report_search_source_mismatch')
+    if run['state'] == 'succeeded':
+        if (run['manifest_name'] != 'manifest.json' or
+                summary is None or trials is None or timeline is None or
+                summary.get('integrity') != 'complete'):
+            raise ValueError('cost_report_manifest_unverified')
+        from backend.app.runs.artifacts import RunArtifactWriter
+        reader = RunArtifactWriter(run_dir)
+        try:
+            manifest = reader.load_manifest()
+            if manifest.get('run_id') != run_id:
+                raise ValueError('cost_report_manifest_unverified')
+            for name in ('search_plan.json', 'search_summary.json',
+                         'search_trials.json', 'search_timeline.json'):
+                entry, path = reader._resolve_manifest_entry(manifest, name)
+                if (type(entry.get('size_bytes')) is not int or
+                        type(entry.get('sha256')) is not str or
+                        len(entry['sha256']) != 64):
+                    raise ValueError('cost_report_manifest_unverified')
+                reader._verify_entry(path, entry, verify_hash=True)
+        except (OSError, ValueError) as error:
+            raise ValueError('cost_report_manifest_unverified') from error
+    return summary, trials, timeline
+
+
 def _measure(rows: list[dict], field: str, *, applicable=lambda row: True) -> dict:
     selected = [row for row in rows if applicable(row)]
     known = [row[field] for row in selected if row[field] is not None]
@@ -122,14 +190,26 @@ def _csv(name: str, rows: list[dict], fields: tuple[str, ...]) -> tuple[str, str
 def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                  session_id: str, task_id: str | None,
                  owner_id: str | None, tenant_id: str | None,
-                 run_id: str | None = None, run_dir: Path | None = None) -> dict[str, str]:
+                 run_id: str | None = None, run_dir: Path | None = None,
+                 runs_db: Path | None = None) -> dict[str, str]:
     _bound_session(agent_db, session_id=session_id, run_id=run_id,
                    owner_id=owner_id, tenant_id=tenant_id, task_id=task_id)
     calls, waits = call_rows(journal, thread_id)
-    if any(row['session_id'] not in (None, session_id) or
-           row['task_id'] not in (None, task_id) or
+    if any(row['session_id'] != session_id or
+           row['task_id'] != task_id or
            row['run_id'] not in (None, run_id) for row in calls):
         raise ValueError('cost_report_call_binding_mismatch')
+    if any((wait['task_id'], wait['session_id'], wait['run_id']) !=
+           (task_id, session_id, run_id) for wait in waits):
+        raise ValueError('cost_report_wait_binding_mismatch')
+    if run_dir is not None:
+        if run_id is None or runs_db is None:
+            raise ValueError('cost_report_run_source_required')
+        run = _bound_run(runs_db, run_id=run_id, run_dir=run_dir,
+                         owner_id=owner_id, tenant_id=tenant_id)
+        summary, trials, timeline = _verified_search_files(run_dir, run_id, run)
+    else:
+        summary = trials = timeline = None
     requests = []
     attempts = []
     for row in calls:
@@ -159,13 +239,10 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                              'cached_tokens': row['cached_tokens'],
                              'cached_token_status': 'known' if row['cached_tokens'] is not None else 'unknown',
                              'token_status': row['token_status'] or 'unknown'})
-    summary = _json(run_dir / 'search_summary.json') if run_dir else None
-    trials = _json(run_dir / 'search_trials.json') if run_dir else None
-    timeline = _json(run_dir / 'search_timeline.json') if run_dir else None
     training = []
     for trial in trials or []:
         training.append(dict(event_id=f"trial-{trial.get('fold_index')}-{trial.get('trial_index')}",
-            run_id=run_id, fold_index=trial.get('fold_index'), trial_index=trial.get('trial_index'),
+            run_id=trial['run_id'], fold_index=trial.get('fold_index'), trial_index=trial.get('trial_index'),
             fit_purpose='candidate', state=trial.get('state'),
             fit_started=True if trial.get('state') == 'succeeded' else None,
             fit_start_status='known' if trial.get('state') == 'succeeded' else 'unknown',
@@ -209,6 +286,8 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                                             summary.get('selection_metric') == 'best_valid_loss'))
     cost_summary = dict(schema_version=SCHEMA, aggregation_version='task-cost-reduction-v1',
         source=dict(journal_sha256=_sha(journal), agent_db_sha256=_sha(agent_db),
+                    runs_db_sha256=_sha(runs_db) if run_dir is not None else None,
+                    run_plan_digest=run['plan']['plan_digest'] if run_dir is not None else None,
                     journal_wal_sha256=_optional_sha(journal.with_name(journal.name + '-wal')),
                     agent_wal_sha256=_optional_sha(agent_db.with_name(agent_db.name + '-wal')),
                     search_summary_sha256=_optional_sha(run_dir / 'search_summary.json') if run_dir else None,
@@ -268,12 +347,13 @@ def main(argv=None) -> int:
     parser.add_argument('--tenant-id')
     parser.add_argument('--run-id')
     parser.add_argument('--run-dir', type=Path)
+    parser.add_argument('--runs-db', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args(argv)
     export_report(args.output, journal=args.journal, agent_db=args.agent_db,
                   thread_id=args.thread_id, session_id=args.session_id,
                   task_id=args.task_id, owner_id=args.owner_id, tenant_id=args.tenant_id,
-                  run_id=args.run_id, run_dir=args.run_dir)
+                  run_id=args.run_id, run_dir=args.run_dir, runs_db=args.runs_db)
     return 0
 
 
