@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 
 import pytest
+from backend.tests.test_agent_model_sessions import api
 
 from scripts.task_cost_report import build_report, export_report
 
@@ -273,7 +274,7 @@ def test_live_report_uses_durable_fit_entry_and_preserves_unknown_hold(tmp_path)
     report = build_report(**options)
     summary = json.loads(report['cost_summary.json'])
     fits = summary['budget_dimensions']['model_fits']
-    assert summary['schema_version'] == 'task-cost-snapshot-v2'
+    assert summary['schema_version'] == 'task-cost-report-v1'
     assert summary['budget_dimensions']['llm_calls']['limit'] == policy.limits['llm_calls']
     assert (fits['known_actual'], fits['held_reserved'], fits['held_unknown']) == (1, 1, 0)
     assert fits['known_subtotal'] == 1 and fits['actual_total'] is None
@@ -290,3 +291,62 @@ def test_live_report_uses_durable_fit_entry_and_preserves_unknown_hold(tmp_path)
     with pytest.raises(ValueError, match='cost_report_training_source_mismatch'):
         export_report(tmp_path / 'invalid-report', **options)
     assert not (tmp_path / 'invalid-report').exists()
+
+
+def test_terminated_without_run_has_settled_v1_report(api, tmp_path):
+    from backend.tests.test_step7_v5_session import _request, HEADERS
+    from backend.app.agent.budget import BudgetPolicy
+    from agent_poc.orchestration.persistence import CallJournal
+
+    client, storage, dataset = api
+    request = _request(dataset, awareness='off')
+    created = client.post('/api/agent/v2/sessions', headers=HEADERS, json=request)
+    assert created.status_code == 201, created.text
+    session_id = created.json()['session_id']
+    stopped = client.post(f'/api/agent/v2/sessions/{session_id}/terminate',
+        headers=HEADERS, json={'client_request_id':'report-stop',
+                               'reason':'budget_exhausted'})
+    assert stopped.status_code == 200, stopped.text
+    journal_path = tmp_path / 'calls.sqlite3'
+    journal = CallJournal(journal_path, 'report-thread')
+    journal.bind_budget(BudgetPolicy.from_dict(request['budget_policy']))
+    journal.close()
+    report = build_report(journal=journal_path,
+        agent_db=storage / 'agent.sqlite3', thread_id='report-thread',
+        session_id=session_id, task_id='session-budget-v5',
+        owner_id=None, tenant_id=None)
+    summary = json.loads(report['cost_summary.json'])
+    assert summary['schema_version'] == 'task-cost-report-v1'
+    assert summary['task_status'] == 'terminated'
+    assert summary['report_status'] == 'settled'
+    assert summary['duration_scopes']['task_wall_duration']['known_count'] == 1
+
+
+def test_training_events_and_termination_are_scoped_to_requested_task(tmp_path):
+    from backend.tests.test_step7_training_budget import _setup
+    from scripts.task_cost_report import _backend_budget
+
+    agent, policy, reservation, ledger = _setup(tmp_path)
+    ledger.bind()
+    ledger.enter('own-fit', dimension='model_fits', kind='trial')
+    with sqlite3.connect(agent) as db:
+        session = db.execute('SELECT session_id FROM agent_sessions_v1 WHERE budget_task_id=?',
+                             (policy.task_id,)).fetchone()[0]
+        db.execute('''INSERT INTO task_training_executions_v1
+            VALUES('foreign-reservation','other-task','other-run','other-claim',
+                   'unknown_pending','2026-09-27T00:00:00+00:00',NULL)''')
+        payload = hashlib.sha256(json.dumps({'dimension':'model_fits','kind':'trial'},
+                                            sort_keys=True).encode()).hexdigest()
+        db.execute('''INSERT INTO task_training_events_v1 VALUES
+            ('foreign-reservation','other-fit',?,'model_fits','trial','entered',
+             '2026-09-27T00:00:00+00:00',NULL)''', (payload,))
+        db.execute('''INSERT INTO task_training_terminations_v1 VALUES
+            ('foreign-reservation','guardian_lost','2026-09-27T00:00:00+00:00',NULL,NULL,NULL)''')
+    result = _backend_budget(agent, session_id=session, task_id=policy.task_id, run_id='run-1')
+    assert [row['event_id'] for row in result['events']] == ['own-fit']
+    assert result['terminations'] == []
+    assert result['dimensions']['model_fits']['known_actual'] == 1
+    with sqlite3.connect(agent) as db:
+        db.execute("UPDATE task_training_events_v1 SET payload_digest='corrupt' WHERE event_id='own-fit'")
+    with pytest.raises(ValueError, match='cost_report_training_source_mismatch'):
+        _backend_budget(agent, session_id=session, task_id=policy.task_id, run_id='run-1')
