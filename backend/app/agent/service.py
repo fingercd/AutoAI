@@ -293,6 +293,9 @@ class AgentService:
                 if session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v4':
                     plan_digest = command.recipe['search_plan_digest']
                     prepared['execution_search_plan'] = session.frozen_preparation['preparation']['search_plans'][plan_digest]
+            if session.budget_task_id is not None:
+                prepared['execution_budget_task_id'] = session.budget_task_id
+                prepared['execution_budget_policy_digest'] = session.budget_policy_digest
             full_digest = policy.command_digest(session, command)
         if session.state != 'open':
             raise AgentSessionClosed()

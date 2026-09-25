@@ -44,11 +44,13 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 
 class SearchAccounting:
-    def __init__(self, run_dir: Path, plan: dict[str, Any], run_id: str):
+    def __init__(self, run_dir: Path, plan: dict[str, Any], run_id: str,
+                 *, training_budget: Any | None = None):
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.plan = plan
         self.run_id = run_id
+        self.training_budget = training_budget
         self.trials: list[dict[str, Any]] = []
         self.spans: list[dict[str, Any]] = []
         self._starts: dict[str, float] = {}
@@ -58,6 +60,30 @@ class SearchAccounting:
             raise ValueError('interrupted search has no verified trial checkpoint')
         _atomic_json(self.run_dir / 'search_plan.json', plan)
         self._flush()
+
+    def enter_fit(self, fold_index: int, trial_index: int | None,
+                  purpose: str) -> str | None:
+        if self.training_budget is None:
+            return None
+        event_id = f'{self.run_id}:fit:{fold_index}:{purpose}:{trial_index}'
+        self.training_budget.enter(event_id, dimension='model_fits', kind=purpose)
+        return event_id
+
+    def complete_fit(self, event_id: str | None) -> None:
+        if event_id is not None:
+            self.training_budget.complete(event_id)
+
+    def enter_epoch(self, fold_index: int, trial_index: int,
+                    epoch: int) -> str | None:
+        if self.training_budget is None:
+            return None
+        event_id = f'{self.run_id}:epoch:{fold_index}:{trial_index}:{epoch}'
+        self.training_budget.enter(event_id, dimension='training_epochs', kind='trial')
+        return event_id
+
+    def complete_epoch(self, event_id: str | None) -> None:
+        if event_id is not None:
+            self.training_budget.complete(event_id)
 
     def _flush(self) -> None:
         _atomic_json(self.run_dir / 'search_trials.json', self.trials)

@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from backend.app.runs.repository import RunRepository
 from backend.app.runs.worker import RunWorker
+from backend.app.runs.supervisor import SupervisionUncertain, TerminationEvidence
 
 
 def test_run_once_claims_and_finishes_one_queued_run(tmp_path):
@@ -18,6 +21,25 @@ def test_run_once_claims_and_finishes_one_queued_run(tmp_path):
     assert worker.run_once() is True
     assert calls == [created.run_id]
     assert repo.get(created.run_id).state == 'succeeded'
+
+
+def test_uncertain_child_exit_quarantines_worker_slot(tmp_path):
+    repo = RunRepository(tmp_path / 'runs.sqlite3')
+    repo.initialize()
+    first = repo.create_queued(dataset_id='ds_1', config={'model_type': 'pls_da'})
+    second = repo.create_queued(dataset_id='ds_2', config={'model_type': 'pls_da'})
+    evidence = TerminationEvidence('deadline', datetime.now(timezone.utc).isoformat(),
+                                   None, None, None)
+
+    def uncertain(_):
+        raise SupervisionUncertain(evidence)
+
+    worker = RunWorker(repository=repo, worker_id='uncertain-worker',
+                       execute=uncertain, now=lambda: datetime.now(timezone.utc))
+    with pytest.raises(SupervisionUncertain):
+        worker.run_once()
+    assert repo.get(first.run_id).state == 'running'
+    assert repo.get(second.run_id).state == 'queued'
 
 
 def test_run_once_leaves_cancelled_run_cancelled(tmp_path):
