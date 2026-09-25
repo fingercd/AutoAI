@@ -21,6 +21,7 @@ CALL_FIELDS = ('id', 'thread_id', 'operation_id', 'kind', 'name', 'status',
                'response_ended_at_utc', 'request_duration_seconds',
                'measurement_version', 'model_id_sha256', 'model_id', 'protocol', 'phase',
                'request_outcome', 'budget_phase')
+CALL_FIELDS += ('cached_tokens', 'prepare_duration_seconds', 'parse_duration_seconds')
 WAIT_FIELDS = ('operation_id', 'run_id', 'task_id', 'session_id', 'status',
                'started_at_utc', 'ended_at_utc', 'duration_seconds',
                'duration_clock', 'reason_code')
@@ -150,11 +151,13 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                              'model_id_sha256': row['model_id_sha256'],
                              'measurement_version': row['measurement_version'],
                              'request_outcome': row['request_outcome'],
+                             'prepare_duration_seconds': row['prepare_duration_seconds'],
+                             'parse_duration_seconds': row['parse_duration_seconds'],
                              'input_tokens': row['input_tokens'],
                              'output_tokens': row['output_tokens'],
                              'total_tokens': row['total_tokens'],
-                             'cached_tokens': None,
-                             'cached_token_status': 'unknown',
+                             'cached_tokens': row['cached_tokens'],
+                             'cached_token_status': 'known' if row['cached_tokens'] is not None else 'unknown',
                              'token_status': row['token_status'] or 'unknown'})
     summary = _json(run_dir / 'search_summary.json') if run_dir else None
     trials = _json(run_dir / 'search_trials.json') if run_dir else None

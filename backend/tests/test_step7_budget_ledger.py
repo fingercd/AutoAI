@@ -20,7 +20,7 @@ def policy(*, task_id='task-1', fits=2, calls=12):
     limits = {name: 100 for name in DIMENSIONS}
     limits.update(experiments=1, model_fits=fits, training_epochs=12,
                   llm_calls=6, api_calls=calls, input_tokens=None,
-                  cached_tokens=None)
+                  cached_tokens=None, output_tokens=6144)
     return BudgetPolicy(task_id, 100.0, 200.0, 140.0, limits)
 
 
@@ -107,6 +107,10 @@ def test_policy_validation_tampering_owner_and_tail(tmp_path):
         BudgetPolicy('task-1', 100.0, float('nan'), 140.0, policy().limits)
     with pytest.raises(BudgetError, match='budget_finalization_insufficient'):
         policy(calls=8)
+    hard_input = dict(policy().limits)
+    hard_input['input_tokens'] = 6000
+    with pytest.raises(BudgetError, match='budget_input_bound_unverified'):
+        BudgetPolicy('task-1', 100.0, 200.0, 140.0, hard_input)
     db = open_ledger(tmp_path / 'budget.sqlite', policy())
     db.execute('BEGIN IMMEDIATE')
     with pytest.raises(BudgetError, match='budget_dimension_owner_mismatch'):
