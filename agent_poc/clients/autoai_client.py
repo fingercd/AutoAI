@@ -183,14 +183,21 @@ class AutoAIClient:
         if self.token:
             headers['Authorization'] = f'Bearer {self.token}'
         attempts = 1 + (self.max_retries if method == 'GET' or idempotent else 0)
+        if getattr(self, 'on_dispatch', None) is not None and attempts != 1:
+            raise AgentContractError('计量请求必须逐次记录，不能使用隐藏重试')
         for index in range(attempts):
+            callback = getattr(self, 'on_dispatch', None)
+            remaining = callback() if callback is not None else None
+            if remaining is not None and (type(remaining) not in (int, float) or
+                                          not math.isfinite(remaining)):
+                raise AgentContractError('计量请求的剩余时限无效')
+            request_timeout = min(self.timeout, remaining) if remaining is not None else self.timeout
+            if request_timeout <= 0:
+                raise AgentTimeoutError('SpecAutoAI 请求超时')
             try:
                 assert self.transport is not None
-                callback = getattr(self, 'on_dispatch', None)
-                if callback is not None:
-                    callback()
                 response = self.transport.request(
-                    method, self.base_url + path, headers=headers, json=body, timeout=self.timeout)
+                    method, self.base_url + path, headers=headers, json=body, timeout=request_timeout)
                 break
             except ResponseTooLarge:
                 raise AgentContractError('服务端响应超过大小上限') from None

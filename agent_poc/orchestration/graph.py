@@ -266,7 +266,8 @@ class Nodes:
         original_timeout = getattr(self.deps.client, 'timeout', None)
         original_dispatch = getattr(self.deps.client, 'on_dispatch', None)
         if self.deps.journal.budget_policy is not None:
-            self.deps.client.on_dispatch = lambda: self.deps.journal.mark_dispatched(call_id)
+            self.deps.client.on_dispatch = lambda: self.deps.journal.mark_dispatched(
+                call_id, now=self.deps.clock())
         if original_timeout is not None:
             self.deps.client.timeout = min(original_timeout, state['budget']['deadline_at'] - self.deps.clock())
         try:
@@ -313,7 +314,8 @@ class Nodes:
                 proposal = self.deps.llm.propose(phase, context,
                     timeout_seconds=state['budget']['deadline_at'] - self.deps.clock(),
                     repair_code=repair_code,
-                    **({'on_dispatch': lambda: self.deps.journal.mark_dispatched(call_id)}
+                    **({'on_dispatch': lambda: self.deps.journal.mark_dispatched(
+                        call_id, now=self.deps.clock())}
                        if self.deps.journal.budget_policy is not None else {}))
             else:
                 proposal = self.deps.llm.propose(phase, context)
