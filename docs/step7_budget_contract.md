@@ -21,6 +21,12 @@ CallJournal 扣账。预约上界和已发生用量分开记录。调度到训�
 拒绝旧 worker 合同领取预算 Run。worker 退出证据不明确时保留未知 hold，不能将
 Run 发布为成功。
 
+同一 operation 的再次发送按此前最后一次已发送记录分类：LLM 无效/过大输出后的
+再次请求计入 output_repairs，其余再次请求（包括未知发送后的重试）计入
+network_retries。两者都同时消耗对应的 LLM/API call 额度，不是额外免费调用。
+分类和预约在同一事务持久化；发送前失败释放预约，发送后中断保留未知占用，
+恢复结算不重复扣减。旧记录不事后回填未采集的修复/重试消耗。
+
 普通工作截止后不开始新的模型选择或提交；任务总截止后不发新网络请求。受保护的
 收尾额度供反馈、对账、Finalize/terminate 及确认使用。Session terminate 请求包含
 稳定 `client_request_id` 和枚举 reason，仅当无活动 Run 且后端预算已结算时成功。
