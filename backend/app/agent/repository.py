@@ -224,7 +224,7 @@ class AgentSessionRepository:
             for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json', 'frozen_preparation_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
-            for column in ('budget_task_id', 'budget_policy_digest'):
+            for column in ('budget_task_id', 'budget_policy_digest', 'selected_guard_snapshot_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
             for column in ('termination_request_id', 'termination_payload_digest',
@@ -323,7 +323,7 @@ class AgentSessionRepository:
         if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):
             raise AgentDomainError('agent_preparation_failed',
                 'session 冻结准备包缺失，无法恢复配方契约', status_code=409)
-        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v5':
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v5','agent-recipes-revision-v6'):
             body = frozen.get('budget_policy')
             try:
                 parsed = BudgetPolicy.from_dict(body)
@@ -335,7 +335,7 @@ class AgentSessionRepository:
                     parsed.digest != record.budget_policy_digest):
                 raise AgentDomainError('budget_policy_conflict',
                     'Session 冻结预算绑定不一致', status_code=409)
-        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
             from ..knowledge import KnowledgeError
             snapshot = frozen['preparation']['knowledge']
             if ('knowledge' in record.modules) != (snapshot.status == 'ready'):
@@ -372,7 +372,7 @@ class AgentSessionRepository:
             raise AgentSessionNotFound()
         session = self._session(session_row)
         frozen = session.frozen_preparation
-        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
             from ..knowledge import KnowledgeError, resolve_decision
             metadata = record.decision_metadata
             if metadata is None:
@@ -731,7 +731,7 @@ class AgentSessionRepository:
     count_experiments_scoped = count_budget_scoped
 
     def finalize_session(self, *, session_id: str, selected_run_id: str,
-                         principal: Principal) -> AgentSessionRecord:
+                         principal: Principal, guard_snapshot=None) -> AgentSessionRecord:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -740,6 +740,39 @@ class AgentSessionRepository:
                 (session_id, owner, tenant),
             ).fetchone()
             if row is None: connection.rollback(); raise AgentSessionNotFound()
+            frozen = _decode_preparation(row['frozen_preparation_json'])
+            if frozen and frozen.get('protocol_revision') == 'agent-recipes-revision-v6' and guard_snapshot is None:
+                raise AgentDomainError('guard_report_missing', 'Candidate snapshot required', status_code=409)
+            if guard_snapshot is not None:
+                from ..runs.guard import GuardReport, digest
+                checked = GuardReport.model_validate(guard_snapshot)
+                bound = connection.execute('''SELECT compiled_config_json FROM agent_experiment_reservations_v1
+                    WHERE session_id=? AND run_id=? AND state='bound' AND owner_id IS ? AND tenant_id IS ?''',
+                    (session_id, selected_run_id, owner, tenant)).fetchone()
+                if (checked.stage != 'finalize' or checked.eligibility != 'eligible' or
+                        checked.bindings.run_id != selected_run_id or
+                        checked.bindings.scope_digest != digest([owner, tenant]) or bound is None):
+                    raise AgentDomainError('guard_report_binding_mismatch', 'Candidate snapshot differs', status_code=409)
+                # Legacy v1 reservations predate compiled_config_json. Their
+                # current Run can still have a Guard publication after upgrade.
+                compiled = json.loads(bound['compiled_config_json'] or '{}')
+                if (frozen and frozen.get('protocol_revision') == 'agent-recipes-revision-v6'
+                        and compiled.get('execution_guard_policy') != frozen['guard_policy']):
+                    raise AgentDomainError('guard_report_binding_mismatch', 'Candidate policy missing', status_code=409)
+                if compiled.get('execution_guard_policy') is not None and checked.bindings.policy_digest != digest(compiled['execution_guard_policy']):
+                    raise AgentDomainError('guard_report_binding_mismatch', 'Candidate policy differs', status_code=409)
+                if compiled.get('execution_budget_task_id'):
+                    execution = connection.execute('SELECT state FROM task_training_executions_v1 WHERE run_id=? AND task_id=?',
+                        (selected_run_id, compiled['execution_budget_task_id'])).fetchone()
+                    if execution is None or execution['state'] != 'settled' or not checked.bindings.usage_digest:
+                        raise AgentDomainError('guard_usage_unresolved', 'Candidate usage unresolved', status_code=409)
+                if row['selected_guard_snapshot_json'] is not None:
+                    old = GuardReport.model_validate_json(row['selected_guard_snapshot_json'])
+                    if old.bindings != checked.bindings:
+                        raise AgentDomainError('guard_report_binding_mismatch', 'Selected snapshot differs', status_code=409)
+                else:
+                    connection.execute('UPDATE agent_sessions_v1 SET selected_guard_snapshot_json=? WHERE session_id=?',
+                        (checked.model_dump_json(), session_id))
             if row['terminated_at'] is not None:
                 connection.rollback(); raise AgentSessionClosed('session 已 terminated')
             if row['state']=='finalized':
@@ -770,7 +803,7 @@ class AgentSessionRepository:
             if row is None:
                 raise AgentSessionNotFound()
             frozen = _decode_preparation(row['frozen_preparation_json'])
-            if frozen is None or frozen['protocol_revision'] != 'agent-recipes-revision-v5':
+            if frozen is None or frozen['protocol_revision'] not in ('agent-recipes-revision-v5','agent-recipes-revision-v6'):
                 raise AgentDomainError('agent_version_incompatible',
                     '终止路径需要预算协议 v5', status_code=409)
             if row['terminated_at'] is not None:
@@ -819,15 +852,20 @@ def _decode_preparation(raw):
     if 'decision_mode' in frozen and frozen['decision_mode'] not in ('recipe_id', 'structured_config'):
         raise AgentDomainError('agent_preparation_failed', 'Invalid frozen decision mode', status_code=409)
     revision = frozen['protocol_revision']
-    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision == 'agent-recipes-revision-v6':
+        from ..runs.guard import GuardPolicy, digest
+        policy = GuardPolicy.model_validate(frozen.get('guard_policy'))
+        if digest(policy.model_dump()) != frozen.get('guard_policy_digest'):
+            raise AgentDomainError('guard_report_binding_mismatch', 'Invalid guard policy', status_code=409)
+    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         raise AgentDomainError('agent_version_incompatible', 'Unknown frozen revision', status_code=409)
-    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         catalog = frozen['preparation']['catalog']
         if (frozen.get('processing_mode') not in ('fixed','dynamic') or
                 frozen.get('processing_mode') != catalog.get('processing_mode') or
                 frozen.get('fixed_processing') != catalog.get('fixed_processing')):
             raise AgentDomainError('agent_preparation_failed', 'Frozen processing differs from catalog', status_code=409)
-    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         from ..search_policy import validate_search_options, POLICY_VERSION
         from ..model_config import semantic_digest
         prepared = frozen['preparation']
@@ -848,7 +886,7 @@ def _decode_preparation(raw):
                     raise ValueError('search plan mismatch')
         except (KeyError, TypeError, ValueError) as exc:
             raise AgentDomainError('agent_preparation_failed', 'Frozen search differs from catalog', status_code=409) from exc
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         from ..knowledge import decode_snapshot, KnowledgeError
         prepared = frozen['preparation']
         if 'knowledge' not in prepared:

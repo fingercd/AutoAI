@@ -1,5 +1,8 @@
 # 第七步预算协议与运行边界
 
+第八步增量见 [训练检查协议](step8_guard_contract.md)。新 Guard Run 使用 guard-v1 worker；
+旧预算 Run 的 SQL 领取闸门同时接受 budget-v1 和 guard-v1，下文 v5/v7 为历史协议描述。
+
 ## 新任务与旧任务
 
 配方协议 `agent-recipes-revision-v5` 使用 `agent-state-v7`、

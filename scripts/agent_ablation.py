@@ -145,6 +145,16 @@ def baseline(client, record, path, timeout):
 
 def terminal_results(client,record):
     """Offline only: call after a fixed baseline or finalized Agent decision."""
+    if record.get('session_id'):
+        revision = record.get('versions', {}).get('protocol_revision')
+        headers = {'X-AutoAI-Agent-Revision':revision} if revision else {}
+        response = client.get('/api/agent/v2/sessions/'+record['session_id'], headers=headers)
+        response.raise_for_status()
+        session = response.json()
+        selected = next((e for e in session.get('experiments', []) if e.get('run_id') == record['run_id']), None)
+        if (session.get('state') != 'finalized' or session.get('selected_run_id') != record['run_id']
+                or selected is None or selected.get('validation_score') is None):
+            raise ValueError('Selected candidate is currently unavailable')
     response=client.get('/api/training/runs/'+record['run_id']+'/result');response.raise_for_status()
     result=response.json()
     metrics=result.get('metrics',{})

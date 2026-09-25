@@ -1,6 +1,9 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v4，知识默认关闭；v1/v2/v3 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [Agent 契约](agent_step2_contract.md)。
+> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v8，知识默认关闭；v1–v7 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [第八步协议](step8_guard_contract.md)。
 
 # LangGraph 编排节点与恢复契约
+
+当前新 CLI 任务使用 State v8 / revision v6，Guard 失败沿既有预算 terminate/reconciliation
+路径收尾，不引入自动重规划。confirm 复核当前候选。见 [第八步协议](step8_guard_contract.md)。
 
 本文件描述 `agent_poc/orchestration/graph.py` 的实际第一步实现，图名为
 `agent-single-experiment-v1`。完整字段、冻结规则、启动/恢复命令及配置说明见

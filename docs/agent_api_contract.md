@@ -2,6 +2,8 @@
 
 # Agent API 接口契约（agent-session-v1）
 
+新 Guard revision v6 及候选复查见 [第八步协议](step8_guard_contract.md)；本页 v1 wire 保持不变。
+
 Agent API 是 LLM/Orchestrator 与稳定训练引擎之间的有限适配层。它只允许创建冻结的 Session、提交受限实验、读取 Validation Observation 和 Finalize；不允许读取服务器文件、数据库、Test 指标、预测、解释性结果或 artifact。它不实现自动选模、Prompt、Memory、诊断、重规划和论文创新算法。
 
 ## 版本与端点
