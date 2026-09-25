@@ -472,6 +472,7 @@ def test_compensation_running_stays_occupied(tmp_path):
         reservation.experiment_id, run_id=run.run_id,
         failure_code='binding_failed', principal=Principal(),
     )
+    runs.record_worker_heartbeat(worker_id='worker-a', now=datetime.now(timezone.utc), contract_version='training-worker-guard-v1')
     claimed = runs.claim_next(worker_id='worker-a', now=datetime.now(timezone.utc))
     assert claimed and claimed.run_id == run.run_id
 
@@ -522,11 +523,15 @@ def test_compensation_terminal_run_is_bound_without_rewriting_terminal(tmp_path,
         reservation.experiment_id, run_id=run.run_id,
         failure_code='binding_failed', principal=Principal(),
     )
+    runs.record_worker_heartbeat(worker_id='worker-a', now=datetime.now(timezone.utc), contract_version='training-worker-guard-v1')
     claim = runs.claim_next(worker_id='worker-a', now=datetime.now(timezone.utc))
     assert claim is not None
     if terminal_state == 'succeeded':
+        from backend.app.runs.guard import report
+        # Synthetic publication fact for reconciliation only, not model validation.
         runs.finish_success(
             run.run_id, claim_token=claim.claim_token,
+            publication_report=report(claim, 'publication', manifest_digest='a'*64),
             now=datetime.now(timezone.utc),
         )
     else:
@@ -551,6 +556,7 @@ def test_started_cancelled_run_is_bound_and_budget_is_not_released(tmp_path):
         reservation.experiment_id, run_id=run.run_id,
         failure_code='binding_failed', principal=Principal(),
     )
+    runs.record_worker_heartbeat(worker_id='worker-a', now=datetime.now(timezone.utc), contract_version='training-worker-guard-v1')
     claim = runs.claim_next(worker_id='worker-a', now=datetime.now(timezone.utc))
     assert claim is not None
     runs.cancel_scoped(run.run_id, now=datetime.now(timezone.utc), principal=Principal())

@@ -210,6 +210,7 @@ class RunSubmissionService:
             'execution_processing_policy_version','execution_processing_digest','execution_search_plan',
             'search_mode','max_trials'}
         audit_fields.update({'execution_budget_task_id', 'execution_budget_policy_digest'})
+        audit_fields.update({'execution_guard_policy', 'execution_guard_policy_digest'})
         if submission_source!='agent' and audit_fields.intersection(raw_config):
             raise RunSubmissionError('invalid_training_config','Execution recipe audit is server-owned')
         if prepared_evaluation is not None:
@@ -321,12 +322,15 @@ class RunSubmissionService:
             config['test_dataset_sha256'] = test_snapshot['sha256']
 
         try:
+            from .guard import GuardPolicy
             record = self.runs.create_queued(
                 dataset_id=reference.dataset_id,
                 legacy_data_path=reference.legacy_path,
                 config=config,
                 dataset_snapshot=dataset_snapshot,
                 principal=principal,
+                guard_policy=GuardPolicy.model_validate(raw_config.get('execution_guard_policy',
+                    {'fail_fast_guard': 'off'})).model_dump(),
                 submission_key=submission_key,
                 submission_source=(submission_source if submission_key is not None else None),
                 submission_payload_hash=(

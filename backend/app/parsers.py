@@ -92,7 +92,7 @@ class WideModelingFrameResult:
     output_precision: dict[str, int | str | bool]
 
 
-def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[str]]:
+def _read_modeling_csv_flexible(path: str | Path, *, content: bytes | None = None) -> tuple[pd.DataFrame, list[str]]:
     """读取宽表并保留原始表头，避免 pandas 静默改写重复列名。"""
 
     # 参数：建模 CSV 路径。返回：(DataFrame[全字符串], 原始表头列表)。
@@ -105,7 +105,9 @@ def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[st
     last_error: Exception | None = None
     for encoding in encodings:
         try:
-            with path.open("r", encoding=encoding, newline="") as handle:
+            import io
+            with (io.StringIO(content.decode(encoding)) if content is not None
+                  else path.open("r", encoding=encoding, newline="")) as handle:
                 header_line = handle.readline()
             if not header_line:
                 raise ValueError(f"建模 CSV {path.name} 为空")
@@ -118,7 +120,7 @@ def _read_modeling_csv_flexible(path: str | Path) -> tuple[pd.DataFrame, list[st
             # dtype=str + keep_default_na=False：全部按原文本读入，
             # 数值解析与空值判定留到后面的显式校验，避免 pandas 抢先转换
             frame = pd.read_csv(
-                path,
+                io.BytesIO(content) if content is not None else path,
                 sep=dialect.delimiter,
                 engine="python",
                 encoding=encoding,
@@ -199,14 +201,14 @@ def _parse_wide_axis_headers(
     return axis
 
 
-def load_modeling_csv(path: str | Path) -> ModelingDataset:
+def load_modeling_csv(path: str | Path, *, content: bytes | None = None) -> ModelingDataset:
     """解析 v2 带 Name 宽表或兼容的 v1 宽表，返回训练数据结构。"""
     # 建模数据读取主入口。校验链：表头唯一 → 拒绝旧六列数组格式 → 固定前缀
     # → 判定 v1/v2 → 解析共享轴 → 元数据非空/Index 唯一/Name 非空 → Label 与
     # Sample_ID 逐行非空 → 强度全部有限 → Sample_ID 分组一致性。
     # 异常：任一环节不满足契约即抛 ValueError，训练入口不做二次猜测。
     path = Path(path)
-    raw_frame, raw_header = _read_modeling_csv_flexible(path)
+    raw_frame, raw_header = _read_modeling_csv_flexible(path, content=content)
     stripped_header = [item.strip() for item in raw_header]
     if len(set(stripped_header)) != len(stripped_header):
         duplicates = sorted(

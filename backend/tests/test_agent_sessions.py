@@ -20,7 +20,11 @@ from backend.tests.modeling_data_factory import write_grouped_classification_csv
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch, tmp_path):
+    from backend.tests.test_agent_end_to_end import _isolate_storage
+    storage, _, runs = _isolate_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(__import__(__name__, fromlist=['RUNS_DATABASE']), 'RUNS_DATABASE', storage/'runs.sqlite3')
+    monkeypatch.setattr(__import__(__name__, fromlist=['RUNS_DIR']), 'RUNS_DIR', runs)
     from fastapi.testclient import TestClient
     return TestClient(app)
 
@@ -174,19 +178,9 @@ def _claim_and_finish(repo: RunRepository, run_id: str) -> None:
     from backend.app.runs.worker import RunWorker
 
     def execute(record):
-        writer = RunArtifactWriter(RUNS_DIR / record.run_id)
-        if not (RUNS_DIR / record.run_id / 'metrics.json').is_file():
-            writer.write_json('metrics.json', {'valid': {'macro_f1': 0.5, 'balanced_accuracy': 0.5}})
-        for name in ('cv_metrics.json', 'model_metadata.json', 'label_map.json', 'split.json'):
-            if not (RUNS_DIR / record.run_id / name).is_file():
-                writer.write_json(name, {})
-        if not (RUNS_DIR / record.run_id / 'config.json').is_file():
-            writer.write_json('config.json', {'model_type': record.config.get('model_type')})
-        for name in ('fold_metrics.csv', 'predictions.csv'):
-            if not (RUNS_DIR / record.run_id / name).is_file():
-                writer.write_bytes(name, b'a,b\n1,2\n')
-        writer.finalize(run_id=record.run_id, metadata={'model_family': 'traditional_ml'})
-        return {'manifest_name': 'manifest.json'}
+        # New submissions require real pre-fit and publication evidence.
+        from backend.app.runs.execution import execute_claimed_run
+        return execute_claimed_run(record, repository=repo)
 
     worker = RunWorker(
         repository=repo, worker_id='agent-test-worker', execute=execute,

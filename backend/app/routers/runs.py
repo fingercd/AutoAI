@@ -618,6 +618,12 @@ def cancel_run(run_id: str, principal: Principal = Depends(get_principal)) -> di
 @router.delete('/api/training/runs/{run_id}')
 def delete_run(run_id: str, principal: Principal = Depends(get_principal)) -> dict[str, object]:
     """只删除终态 Run；目录先原子移入隔离区，DB 失败时可恢复。"""
+    from ..runs.locking import run_lock
+    with run_lock(get_run_repository().database_path, run_id):
+        return _delete_run_locked(run_id, principal)
+
+
+def _delete_run_locked(run_id, principal):
     repository = get_run_repository()
     _reconcile_interrupted_runs(repository)
     try:

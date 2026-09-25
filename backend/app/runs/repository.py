@@ -174,6 +174,8 @@ class RunRepository:
             updated_at=row['updated_at'] if 'updated_at' in columns else None,
             started_at=row['started_at'] if 'started_at' in columns else None,
             finished_at=row['finished_at'] if 'finished_at' in columns else None,
+            guard_policy=_decode_json(row['guard_policy_json'], None) if 'guard_policy_json' in columns else None,
+            publication_report_id=row['publication_report_id'] if 'publication_report_id' in columns else None,
         )
 
     # 建表 + 轻量迁移 + 索引，幂等可重复执行（启动时调用）。
@@ -266,14 +268,8 @@ class RunRepository:
             # An older worker binary may still open this SQLite file directly.
             # Guard the state transition in the database, after its heartbeat,
             # so it cannot claim a Run whose budget protocol it does not know.
-            connection.execute('''CREATE TRIGGER IF NOT EXISTS budget_run_claim_contract_v1
-                BEFORE UPDATE OF state ON runs
-                WHEN NEW.state='running' AND OLD.state='queued'
-                  AND json_extract(NEW.config_json,'$.execution_budget_task_id') IS NOT NULL
-                  AND NOT EXISTS (SELECT 1 FROM worker_heartbeats
-                      WHERE worker_id=NEW.worker_id
-                        AND contract_version='training-worker-budget-v1')
-                BEGIN SELECT RAISE(ABORT,'budget_worker_contract_required'); END''')
+            from .guard_store import initialize as initialize_guard
+            initialize_guard(connection)
 
     # 创建 queued Run。HTTP 训练请求只做到这一步（入队），不直接启动训练——
     # 真正的执行由 worker 通过 claim_next 领取。owner/tenant 只来自服务端注入的
@@ -289,6 +285,7 @@ class RunRepository:
         submission_key: str | None = None,
         submission_source: str | None = None,
         submission_payload_hash: str | None = None,
+        guard_policy: dict | None = None,
     ) -> RunRecord:
         mapping_values = (submission_key, submission_source, submission_payload_hash)
         if any(value is not None for value in mapping_values):
@@ -351,6 +348,11 @@ class RunRepository:
                     now,
                 ),
             )
+            if guard_policy is not None:
+                from .guard import GuardPolicy
+                policy = GuardPolicy.model_validate(guard_policy)
+                connection.execute('UPDATE runs SET guard_policy_json=? WHERE run_id=?',
+                    (policy.model_dump_json(), run_id))
             if submission_key is not None:
                 connection.execute(
                     '''
@@ -373,6 +375,34 @@ class RunRepository:
             connection.commit()
         assert row is not None
         return self._record(row)
+
+    def save_guard_report(self, value):
+        from .guard_store import insert, validate_binding
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            if value.bindings.run_id is not None:
+                row = connection.execute('SELECT * FROM runs WHERE run_id=?', (value.bindings.run_id,)).fetchone()
+                if row is None:
+                    raise KeyError(value.bindings.run_id)
+                validate_binding(value, self._record(row))
+            insert(connection, value)
+            connection.commit()
+
+    def get_guard_report(self, report_id, *, principal):
+        from .guard import GuardReport, digest
+        with self._connection() as connection:
+            row = connection.execute('SELECT report_json FROM run_guard_reports_v1 WHERE report_id=? AND scope_digest=?',
+                (report_id, digest([principal.owner_id, principal.tenant_id]))).fetchone()
+        if row is None:
+            raise KeyError('guard report unavailable')
+        return GuardReport.model_validate_json(row[0])
+
+    def guard_reports_for_stage(self, run_id, stage, *, principal):
+        from .guard import GuardReport, digest
+        with self._connection() as connection:
+            rows = connection.execute('SELECT report_json FROM run_guard_reports_v1 WHERE run_id=? AND stage=? AND scope_digest=?',
+                (run_id, stage, digest([principal.owner_id, principal.tenant_id]))).fetchall()
+        return [GuardReport.model_validate_json(row[0]) for row in rows]
 
     def lookup_submission_mapping(
         self,
@@ -583,10 +613,11 @@ class RunRepository:
         now: datetime,
         manifest_name: str = 'manifest.json',
         deadline_at: datetime | None = None,
+        publication_report=None,
     ) -> RunRecord:
         return self._finish(run_id, claim_token=claim_token, now=now,
                             state='succeeded', manifest_name=manifest_name,
-                            deadline_at=deadline_at)
+                            deadline_at=deadline_at, publication_report=publication_report)
 
     # 失败终态的薄封装：错误摘要进 error 列，结构化详情（异常类型、堆栈等）进
     # error_json，最终都委托给 _finish；finish_success 则额外登记 manifest_name，
@@ -624,10 +655,22 @@ class RunRepository:
         error: str | None = None,
         error_details: dict[str, Any] | None = None,
         deadline_at: datetime | None = None,
+        publication_report=None,
     ) -> RunRecord:
         now_text = _timestamp(now)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            if state == 'succeeded':
+                current = connection.execute('SELECT * FROM runs WHERE run_id=?', (run_id,)).fetchone()
+                if current is not None and current['guard_policy_json'] is not None:
+                    from .guard import GuardError
+                    from .guard_store import insert, validate_binding
+                    if publication_report is None:
+                        raise GuardError('guard_report_missing', stage='publication')
+                    validate_binding(publication_report, self._record(current), publication=True)
+                    insert(connection, publication_report)
+                    connection.execute('UPDATE runs SET publication_report_id=? WHERE run_id=?',
+                        (publication_report.report_id, run_id))
             if (state == 'succeeded' and deadline_at is not None and
                     (datetime.now(timezone.utc) >= deadline_at or now >= deadline_at)):
                 raise RunDeadlineExceeded('Run work deadline elapsed before success publication')
@@ -649,7 +692,7 @@ class RunRepository:
                     now_text,
                     run_id,
                     claim_token,
-                    now_text if deadline_at is not None else None,
+                    now_text if deadline_at is not None or publication_report is not None else None,
                     now_text,
                 ),
             ).rowcount

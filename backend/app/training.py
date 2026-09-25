@@ -1664,23 +1664,35 @@ def _external_test_fold(
     }
 
 
-def _run_legacy_training(
-    data_path: str | Path,
-    config_data: dict[str, Any] | None = None,
-    run_id: str | None = None,
-    *,
-    repository: RunRepository | None = None,
-    record: RunRecord | None = None,
-    output_dir: Path | None = None,
-    training_budget: Any | None = None,
-) -> dict[str, Any]:
-    """执行完整训练闭环并写出一组可由 Manifest 发布的 Run 产物。
+@dataclass(frozen=True)
+class PreparedTrainingInputs:
+    """The exact parsed arrays and partitions consumed by training; no fit occurs here."""
+    config: TrainConfig
+    model_type: str
+    evaluation_strategy: str
+    dataset: Any
+    evaluation_plan: Any
+    sample_count: int
+    x_raw: np.ndarray
+    label_names: list[str]
+    y: np.ndarray
+    sample_id: np.ndarray
+    test_dataset: Any
+    test_sample_count: int
+    x_model_raw: np.ndarray
+    y_model: np.ndarray
+    folds: list[dict[str, Any]]
+    metadata: list[dict[str, Any]]
+    feature_x_axis: Any
+    x_axis_warning: dict[str, Any]
 
-    名称保留 ``legacy`` 是为了兼容既有调用者；函数内部执行的是当前
-    classification-v2 模型、三种评估策略和现行解释性契约。
-    """
-        # ── 阶段 0：解析请求 → EvaluationPolicy；只有 TrainConfig 认识的键才进入配置 ──
+
+def prepare_training_inputs(data_path, config_data=None, *, repository=None, record=None):
     raw_config = dict(config_data or {})
+    from .contracts import TrainingSpec
+    from .model_config import model_availability
+    from .runs.guard import GuardError
+    TrainingSpec.from_legacy(raw_config).validated(has_external_test=bool(raw_config.get('test_data_path')))
     test_data_path = raw_config.get("test_data_path")
     policy = resolve_evaluation_policy(raw_config, has_external_test=bool(test_data_path))
     config_input = {key: value for key, value in raw_config.items() if key in TrainConfig().__dict__}
@@ -1696,7 +1708,144 @@ def _run_legacy_training(
     )
     _validate_split_ratio_config(policy)
     model_type = canonical_model_type(config.model_type)
+    if not model_availability(model_type)[0]:
+        raise GuardError('guard_capability_unavailable')
     evaluation_strategy = policy.strategy
+    search_plan = raw_config.get('execution_search_plan')
+    from .runs.guard import load_bound_dataset
+    dataset, actual_sha256 = load_bound_dataset(data_path,
+        record.dataset_snapshot.get('sha256') if record else None)
+    evaluation_plan = None
+    if raw_config.get('evaluation_plan_digest'):
+        from .evaluation_plan import DatasetView, validate_plan, evaluation_config
+        from .runs.contracts import Principal
+        if repository is None or record is None:
+            raise ValueError('evaluation plan requires a persisted scoped Run')
+        evaluation_plan = repository.get_evaluation_plan(raw_config['evaluation_plan_digest'],
+            principal=Principal(record.owner_id,record.tenant_id))
+        view = DatasetView.loaded(dataset,actual_sha256)
+        validate_plan(evaluation_plan,view,evaluation_config(config.__dict__),config.seed)
+    if raw_config.get('execution_search_digest'):
+        from .model_config import compatible_search_strategy_binding
+        if not compatible_search_strategy_binding(
+            model_type, raw_config['execution_search_digest'],
+            config.normalization, config.class_balance,
+        ):
+            raise ValueError('execution search policy mismatch')
+    if ('execution_processing_policy_version' in raw_config or
+            'execution_processing_digest' in raw_config):
+        from .processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
+        if (raw_config.get('execution_processing_policy_version') != PROCESSING_POLICY_VERSION or
+                raw_config.get('execution_processing_digest') != processing_execution_digest(
+                    model_type, config.normalization, config.class_balance)):
+            raise ValueError('execution processing policy mismatch')
+    sample_count = int(len(dataset.labels))
+    x_raw = np.asarray(dataset.intensity, dtype=np.float32)
+    if not np.isfinite(x_raw).all():
+        raise ValueError("training float32 input must be finite")
+    label_names = sorted(set(dataset.labels))
+    from .processing_policy import validate_processing
+    validate_processing(model_type, config.normalization, config.class_balance, class_count=len(label_names))
+    label_to_id = {label: idx for idx, label in enumerate(label_names)}
+    y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
+    sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
+    test_dataset = (load_bound_dataset(test_data_path, raw_config.get('test_dataset_sha256'))[0]
+                    if test_data_path else None)
+    test_sample_count = 0
+        # 有独立测试集：先校验同轴，再把主数据与测试数据纵向拼接成一个矩阵，
+        # 外部样本行号排在主数据之后，fold 用行号区间引用它们。
+    if test_dataset is not None:
+        _validate_external_test_dataset(
+            label_names,
+            x_raw.shape[1],
+            dataset.x_axis[0] if dataset.x_axis else [],
+            test_dataset,
+        )
+        test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
+        if not np.isfinite(test_x_raw).all():
+            raise ValueError("training float32 input must be finite")
+        test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
+        test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()
+        test_sample_count = int(len(test_y))
+        x_model_raw = np.vstack([x_raw, test_x_raw])
+        y_model = np.concatenate([y, test_y])
+        internal_splits = _split_indices(y, sample_id, config, label_names)
+        _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
+        external_indices = list(range(len(y), len(y_model)))
+        folds = [
+            _external_test_fold(
+                splits=internal_splits,
+                sample_id=sample_id,
+                external_test_indices=external_indices,
+                external_sample_id=test_sample_id,
+            )
+        ]
+        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
+    else:
+        x_model_raw = x_raw
+        y_model = y
+        if evaluation_strategy == "leave_one_sample_id_cv":
+            folds = _leave_one_sample_id_folds(y, sample_id, config)
+        else:
+            splits = ({k:list(v) for k,v in evaluation_plan.indices.items()} if evaluation_plan is not None
+                      else _split_indices(y, sample_id, config, label_names))
+            _validate_required_splits(splits, y, label_names, ("train", "valid", "test"))
+            folds = [_holdout_fold(splits, sample_id, strategy=evaluation_strategy)]
+        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
+    feature_x_axis = dataset.x_axis[0] if dataset.x_axis else list(range(x_raw.shape[1]))
+    combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
+    x_axis_warning = _x_axis_warning(combined_axes, x_raw.shape[1])
+    if search_plan is not None:
+        from .search_policy import validate_search_plan
+        from .processing_policy import PROCESSING_POLICY_VERSION
+        if evaluation_plan is None or len(folds) != 1 or evaluation_strategy != 'stratified_holdout':
+            raise ValueError('finite search requires a frozen single holdout plan')
+        validate_search_plan(search_plan, model_id=model_type, config=config.__dict__,
+            train_count=len(folds[0]['splits']['train']), feature_count=x_raw.shape[1],
+            class_count=len(label_names), dataset_sha256=evaluation_plan.dataset_sha256,
+            evaluation_plan_digest=evaluation_plan.plan_digest,
+            architecture_version=ARCHITECTURE_VERSION,
+            processing_policy_version=PROCESSING_POLICY_VERSION)
+    return PreparedTrainingInputs(
+        config=config,
+        model_type=model_type,
+        evaluation_strategy=evaluation_strategy,
+        dataset=dataset,
+        evaluation_plan=evaluation_plan,
+        sample_count=sample_count,
+        x_raw=x_raw,
+        label_names=label_names,
+        y=y,
+        sample_id=sample_id,
+        test_dataset=test_dataset,
+        test_sample_count=test_sample_count,
+        x_model_raw=x_model_raw,
+        y_model=y_model,
+        folds=folds,
+        metadata=metadata,
+        feature_x_axis=feature_x_axis,
+        x_axis_warning=x_axis_warning,
+    )
+
+
+def _run_legacy_training(
+    data_path: str | Path,
+    config_data: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    *,
+    repository: RunRepository | None = None,
+    record: RunRecord | None = None,
+    output_dir: Path | None = None,
+    training_budget: Any | None = None,
+) -> dict[str, Any]:
+    """执行完整训练闭环并写出一组可由 Manifest 发布的 Run 产物。
+
+    名称保留 ``legacy`` 是为了兼容既有调用者；函数内部执行的是当前
+    classification-v2 模型、三种评估策略和现行解释性契约。
+    """
+    # Establish audit storage before the shared no-fit preparation.
+    raw_config = dict(config_data or {})
+    test_data_path = raw_config.get("test_data_path")
     run_id = run_id or (record.run_id if record is not None else uuid.uuid4().hex[:12])
     run_dir = Path(output_dir) if output_dir is not None else RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1734,102 +1883,31 @@ def _run_legacy_training(
 
         # ── 阶段 1：固定随机种子并读取宽表；Label 按字典序编成类别 id（即使为
         # 数字也按类别名处理），Sample_ID 作为分组单位取出 ──
+    from .runs.guard import check_preflight
+    prepared = check_preflight(
+        record=record, repository=repository,
+        prepare=lambda: prepare_training_inputs(data_path, raw_config, repository=repository, record=record))
+    config = prepared.config
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
-    dataset = load_modeling_csv(data_path)
-    evaluation_plan = None
-    if raw_config.get('evaluation_plan_digest'):
-        from .evaluation_plan import DatasetView, validate_plan, evaluation_config
-        from .runs.contracts import Principal
-        if repository is None or record is None:
-            raise ValueError('evaluation plan requires a persisted scoped Run')
-        evaluation_plan = repository.get_evaluation_plan(raw_config['evaluation_plan_digest'],
-            principal=Principal(record.owner_id,record.tenant_id))
-        import hashlib
-        with Path(data_path).open('rb') as source:
-            actual_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
-        if actual_sha256 != record.dataset_snapshot['sha256']:
-            raise ValueError('dataset changed before plan consumption')
-        view = DatasetView.loaded(dataset,actual_sha256)
-        validate_plan(evaluation_plan,view,evaluation_config(config.__dict__),config.seed)
-    if raw_config.get('execution_search_digest'):
-        from .model_config import compatible_search_strategy_binding
-        if not compatible_search_strategy_binding(
-            model_type, raw_config['execution_search_digest'],
-            config.normalization, config.class_balance,
-        ):
-            raise ValueError('execution search policy mismatch')
-    if ('execution_processing_policy_version' in raw_config or
-            'execution_processing_digest' in raw_config):
-        from .processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
-        if (raw_config.get('execution_processing_policy_version') != PROCESSING_POLICY_VERSION or
-                raw_config.get('execution_processing_digest') != processing_execution_digest(
-                    model_type, config.normalization, config.class_balance)):
-            raise ValueError('execution processing policy mismatch')
-    sample_count = int(len(dataset.labels))
-    x_raw = np.asarray(dataset.intensity, dtype=np.float32)
-    if not np.isfinite(x_raw).all():
-        raise ValueError("training float32 input must be finite")
-    label_names = sorted(set(dataset.labels))
-    from .processing_policy import validate_processing
-    validate_processing(model_type, config.normalization, config.class_balance, class_count=len(label_names))
-    label_to_id = {label: idx for idx, label in enumerate(label_names)}
-    y = np.asarray([label_to_id[label] for label in dataset.labels], dtype=np.int64)
-    sample_id = dataset.frame["Sample_ID"].astype(str).to_numpy()
-    test_dataset = load_modeling_csv(test_data_path) if test_data_path else None
-    test_sample_count = 0
-        # 有独立测试集：先校验同轴，再把主数据与测试数据纵向拼接成一个矩阵，
-        # 外部样本行号排在主数据之后，fold 用行号区间引用它们。
-    if test_dataset is not None:
-        _validate_external_test_dataset(
-            label_names,
-            x_raw.shape[1],
-            dataset.x_axis[0] if dataset.x_axis else [],
-            test_dataset,
-        )
-        test_x_raw = np.asarray(test_dataset.intensity, dtype=np.float32)
-        test_y = np.asarray([label_to_id[label] for label in test_dataset.labels], dtype=np.int64)
-        test_sample_id = test_dataset.frame["Sample_ID"].astype(str).to_numpy()
-        test_sample_count = int(len(test_y))
-        x_model_raw = np.vstack([x_raw, test_x_raw])
-        y_model = np.concatenate([y, test_y])
-        internal_splits = _split_indices(y, sample_id, config, label_names)
-        _validate_required_splits(internal_splits, y, label_names, ("train", "valid"))
-        external_indices = list(range(len(y), len(y_model)))
-        folds = [
-            _external_test_fold(
-                splits=internal_splits,
-                sample_id=sample_id,
-                external_test_indices=external_indices,
-                external_sample_id=test_sample_id,
-            )
-        ]
-        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1]) + _sample_metadata(test_dataset.frame, list(test_dataset.x_axis), x_raw.shape[1])
-    else:
-        x_model_raw = x_raw
-        y_model = y
-        if evaluation_strategy == "leave_one_sample_id_cv":
-            folds = _leave_one_sample_id_folds(y, sample_id, config)
-        else:
-            splits = ({k:list(v) for k,v in evaluation_plan.indices.items()} if evaluation_plan is not None
-                      else _split_indices(y, sample_id, config, label_names))
-            _validate_required_splits(splits, y, label_names, ("train", "valid", "test"))
-            folds = [_holdout_fold(splits, sample_id, strategy=evaluation_strategy)]
-        metadata = _sample_metadata(dataset.frame, list(dataset.x_axis), x_raw.shape[1])
-    feature_x_axis = dataset.x_axis[0] if dataset.x_axis else list(range(x_raw.shape[1]))
-    combined_axes = list(dataset.x_axis) + (list(test_dataset.x_axis) if test_dataset is not None else [])
-    x_axis_warning = _x_axis_warning(combined_axes, x_raw.shape[1])
+    model_type = prepared.model_type
+    evaluation_strategy = prepared.evaluation_strategy
+    dataset = prepared.dataset
+    evaluation_plan = prepared.evaluation_plan
+    sample_count = prepared.sample_count
+    x_raw = prepared.x_raw
+    label_names = prepared.label_names
+    y = prepared.y
+    sample_id = prepared.sample_id
+    test_dataset = prepared.test_dataset
+    test_sample_count = prepared.test_sample_count
+    x_model_raw = prepared.x_model_raw
+    y_model = prepared.y_model
+    folds = prepared.folds
+    metadata = prepared.metadata
+    feature_x_axis = prepared.feature_x_axis
+    x_axis_warning = prepared.x_axis_warning
     if search_accounting is not None:
-        from .search_policy import validate_search_plan
-        from .processing_policy import PROCESSING_POLICY_VERSION
-        if evaluation_plan is None or len(folds) != 1 or evaluation_strategy != 'stratified_holdout':
-            raise ValueError('finite search requires a frozen single holdout plan')
-        validate_search_plan(search_plan, model_id=model_type, config=config.__dict__,
-            train_count=len(folds[0]['splits']['train']), feature_count=x_raw.shape[1],
-            class_count=len(label_names), dataset_sha256=evaluation_plan.dataset_sha256,
-            evaluation_plan_digest=evaluation_plan.plan_digest,
-            architecture_version=ARCHITECTURE_VERSION,
-            processing_policy_version=PROCESSING_POLICY_VERSION)
         search_accounting.end_stage(preparation_stage)
         with search_accounting.span('upstream_spectral_preprocessing', applicable=False):
             pass

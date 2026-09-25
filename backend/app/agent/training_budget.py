@@ -121,6 +121,13 @@ def load_training_binding(agent_database: Path, record: object, *,
                 row['reservation_tenant'] != record.tenant_id):
             raise BudgetError('budget_training_binding_invalid')
         prepared = json.loads(row['compiled_config_json'])
+        if prepared.get('execution_guard_policy') is not None:
+            from ..contracts import TrainingSpec
+            expected = TrainingSpec.from_legacy(prepared).values
+            if any(config.get(key) != value for key, value in expected.items()):
+                raise BudgetError('budget_training_binding_invalid')
+        if prepared.get('execution_guard_policy') is not None and record.guard_policy != prepared['execution_guard_policy']:
+            raise BudgetError('budget_training_binding_invalid')
         if (prepared.get('execution_search_plan') != config.get('execution_search_plan') or
                 prepared.get('execution_budget_task_id') != task_id or
                 prepared.get('execution_budget_policy_digest') != digest):
@@ -398,3 +405,26 @@ class TrainingBudget:
             connection.execute('''INSERT INTO task_training_terminations_v1
                 (reservation_id,reason,requested_at,exited_at,latency_seconds,exit_code)
                 VALUES(?,?,?,?,?,?)''', (self.reservation_id, *values))
+
+    def guard_snapshot(self, *, settled: bool) -> dict:
+        """Read the existing ledger in one transaction; never charge on checks."""
+        from ..runs.guard import GuardError
+        with self._connect() as connection:
+            connection.execute('BEGIN')
+            self._binding(connection)
+            execution = self._execution(connection)
+            if execution['state'] != ('settled' if settled else 'active'):
+                raise GuardError('guard_usage_unresolved')
+            result = {}
+            for dimension in ('model_fits', 'training_epochs'):
+                row = connection.execute('''SELECT amount,actual,held,status FROM task_budget_reservations_v1
+                    WHERE task_id=? AND owner='backend' AND operation_id=? AND attempt_id='0' AND dimension=?''',
+                    (self.task_id, self.reservation_id, dimension)).fetchone()
+                events = connection.execute('''SELECT status FROM task_training_events_v1
+                    WHERE reservation_id=? AND dimension=?''', (self.reservation_id, dimension)).fetchall()
+                if (row is None or any(e['status'] != 'completed' for e in events) or
+                        (row['actual'] or 0) != len(events) or len(events) > row['amount'] or
+                        (settled and (row['status'] != 'settled' or row['held'] != 0))):
+                    raise GuardError('guard_usage_mismatch')
+                result[dimension] = len(events)
+            return result
