@@ -6,6 +6,8 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 当前状态
 
+- 第八步训练检查：新任务为 State v8 / recipes revision v6，Guard on/off 仅控制额外准入；worker、发布和候选完整性始终检查。当前 worker 合同为 `training-worker-guard-v1`。见 `docs/step8_guard_contract.md`，待架构独立验收。
+
 - 后端使用 FastAPI，前端静态页面由后端一起托管。
 - 公共启动器是 `run.py`；本地使用 `run_classic.py` 打开经典前端，使用 `run_v2.py` 打开 v2 工作台。
 - 主要代码在 `backend/` 和 `static/`；经典前端为 `static/index.html`，并行 v2 工作台为 `static/v2/index.html`。

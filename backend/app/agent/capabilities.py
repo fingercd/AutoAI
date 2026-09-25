@@ -25,14 +25,17 @@ def module_catalog(revision: str | None = None) -> dict[str, dict[str, Any]]:
         }
         for name in _PLANNED_MODULES
     }
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         result['knowledge'] = dict(available=True, status='ready', schema_version='knowledge-snapshot-rag-v1', reason=None)
-    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         result['dynamic_preprocessing'] = dict(available=True, status='ready',
             schema_version='finite-processing-v1', reason=None)
-    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
+    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
         result['bounded_hpo'] = dict(available=True, status='ready',
             schema_version='finite-hpo-v1', reason=None)
+    if revision == 'agent-recipes-revision-v6':
+        result['fail_fast_guard'] = dict(available=True, status='ready',
+            schema_version='training-guard-policy-v1', reason=None)
     return result
 
 

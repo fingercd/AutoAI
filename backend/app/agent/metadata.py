@@ -157,16 +157,18 @@ def _scalars(raw):
     return result
 
 
-def resolved_execution(run_dir: Path, record):
+def resolved_execution(run_dir: Path, record, *, assessment=None):
     empty = dict(status='pending' if record.state in ('queued','running') else 'unavailable', parameters=None)
     if record.state != 'succeeded':
         return empty
     from .observation import validation_from_manifest
-    if validation_from_manifest(run_dir, run_id=record.run_id)[0] != 'ready':
+    if (assessment.status if assessment else validation_from_manifest(run_dir, run_id=record.run_id)[0]) != 'ready':
         return empty
     writer = RunArtifactWriter(run_dir)
     try:
         def read(name):
+            if assessment is not None:
+                return assessment.documents[name]
             return json.loads(writer.resolve_download(name).read_text(encoding='utf-8-sig'))
         model = read('model_metadata.json')
         if model.get('model_type') != record.config['model_type']:

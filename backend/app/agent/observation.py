@@ -32,34 +32,14 @@ def safe_progress(record: RunRecord) -> dict[str, Any]:
 
 def validation_from_manifest(run_dir: Path, *, run_id: str) -> tuple[str, dict[str, float], str | None]:
     """只读取通过 v2 Manifest 大小和 SHA-256 校验的 metrics.valid。"""
-    writer = RunArtifactWriter(run_dir)
+    from ..runs.guard import inspect_artifacts, validation_metrics
+    from ..runs.artifacts import ARTIFACT_CATALOG
     try:
-        _manifest, descriptors = writer.descriptors(run_id=run_id)
-        damaged = any(
-            item.get('integrity') in {'missing', 'corrupt'}
-            and (item.get('required') or item.get('applicable'))
-            for item in descriptors
-        )
-        if damaged:
-            return 'unavailable', {}, 'agent_manifest_incomplete'
-        metrics_path = writer.resolve_download('metrics.json')
-        payload = json.loads(metrics_path.read_text(encoding='utf-8-sig'))
-    except FileNotFoundError:
-        return 'unavailable', {}, 'agent_manifest_missing'
-    except (ManifestCorruptError, ArtifactIntegrityError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        snapshot = inspect_artifacts(run_dir, run_id,
+            required={k for k,v in ARTIFACT_CATALOG.items() if v.get('required')})
+        return 'ready', validation_metrics(snapshot.documents.get('metrics.json')), None
+    except Exception:
         return 'unavailable', {}, 'agent_manifest_invalid'
-    if not isinstance(payload, dict) or not isinstance(payload.get('valid'), dict):
-        return 'unavailable', {}, 'agent_validation_unavailable'
-    metrics: dict[str, float] = {}
-    for key in VALIDATION_METRICS:
-        value = payload['valid'].get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            number = float(value)
-            if math.isfinite(number):
-                metrics[key] = number
-    if not metrics:
-        return 'unavailable', {}, 'agent_validation_unavailable'
-    return 'ready', metrics, None
 
 
 def allowed_actions(*, session_state: str, run_state: str, validation_status: str,
@@ -78,13 +58,16 @@ def allowed_actions(*, session_state: str, run_state: str, validation_status: st
 
 def build_observation(*, session_id: str, session_state: str, selection_metric: str,
                       run_dir: Path, record: RunRecord, attempt: int,
-                      effective_action: dict[str, Any], remaining_runs: int, contract_version: str = AGENT_API_CONTRACT_VERSION, capability_snapshot: dict | None = None) -> dict[str, Any]:
+                      effective_action: dict[str, Any], remaining_runs: int, contract_version: str = AGENT_API_CONTRACT_VERSION, capability_snapshot: dict | None = None, assessment=None, guard_projection=False) -> dict[str, Any]:
     validation_status, metrics, validation_error = ('pending', {}, None)
     public_error: dict[str, Any] | None = None
     if record.state == 'succeeded':
-        validation_status, metrics, validation_error = validation_from_manifest(
-            run_dir, run_id=record.run_id
-        )
+        if assessment is not None:
+            validation_status, metrics, validation_error = assessment.status, assessment.metrics, assessment.reason
+        else:
+            validation_status, metrics, validation_error = validation_from_manifest(run_dir, run_id=record.run_id)
+        if validation_status == 'ready' and selection_metric not in metrics:
+            validation_status, metrics, validation_error = 'unavailable', {}, 'agent_validation_unavailable'
         if validation_error:
             public_error = {
                 'code': validation_error,
@@ -124,10 +107,16 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
         'error': public_error,
         'extensions': {},
     }
+    if guard_projection and assessment is not None and assessment.report is not None:
+        from ..runs.guard import project_guard
+        response['extensions']['guard'] = project_guard(assessment.report)
     if record.state == 'succeeded' and validation_status == 'ready':
         try:
-            summary_file = RunArtifactWriter(run_dir).resolve_download('search_summary.json')
-            summary = json.loads(summary_file.read_text(encoding='utf-8'))
+            if assessment is not None:
+                summary = assessment.documents.get('search_summary.json', {})
+            else:
+                summary_file = RunArtifactWriter(run_dir).resolve_download('search_summary.json')
+                summary = json.loads(summary_file.read_text(encoding='utf-8'))
             if summary.get('schema_version') == 'search-summary-v1' and summary.get('integrity') == 'complete':
                 response['extensions']['finite_search'] = {
                     key: summary[key] for key in ('mode','planned_trials','completed_trials',
@@ -139,7 +128,7 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
             pass
     if contract_version == 'agent-session-v2':
         from .metadata import resolved_execution
-        response['resolved_execution'] = resolved_execution(run_dir, record)
+        response['resolved_execution'] = resolved_execution(run_dir, record, assessment=assessment)
         # Free progress/error prose is untrusted and never crosses the v2 boundary.
         response['progress'] = {'stage': record.state}
         for key in ('epoch', 'epochs'):

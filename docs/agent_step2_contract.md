@@ -1,5 +1,8 @@
 # 全模型单实验协议与训练证据配方
 
+当前增量：State v8 / recipes revision v6 提供冻结的 Guard on/off 和 Observation v2
+`extensions.guard`；旧协议保持原 wire。见 [第八步训练检查](step8_guard_contract.md)。
+
 第二步直接动作任务使用 `/api/agent/v2`、`agent-session-v2`、`agent-observation-v2`、`agent-metadata-v2` 和 `agent-state-v2`。图仍为 `agent-single-experiment-v1`，每个 Session 只运行一次分类实验。旧客户端、旧检查点及人工训练保留原路径与语义。第三步新任务默认协商下文的训练证据配方 profile。
 
 ## 模型与配置

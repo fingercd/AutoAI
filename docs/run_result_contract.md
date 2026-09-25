@@ -1,5 +1,8 @@
 # 建模结果接口契约（run-result-v1）
 
+新 Run 发布增加 Guard 报告与 succeeded 同事务关联；结果页 wire 不变。
+历史 succeeded/selected 事实与当前 Agent 候选资格分开，见 [第八步协议](step8_guard_contract.md)。
+
 > 最近核对：2026-07-17。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
 
 前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。

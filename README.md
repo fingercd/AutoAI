@@ -1,5 +1,7 @@
 # SpecAutoAI
 
+当前训练检查与 Agent v8/revision v6 增量见 [第八步协议](docs/step8_guard_contract.md)。
+
 SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
 
 当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
