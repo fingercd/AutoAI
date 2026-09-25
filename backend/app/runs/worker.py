@@ -361,6 +361,14 @@ def execute_with_budget_supervision(record: Any, *, repository: RunRepository,
                    runs_database=str(repository.database_path),
                    training_budget=binding.child_payload())
     try:
+        if record.guard_policy is not None:
+            from .guard import require_current_policy, report
+            try:
+                require_current_policy(record.guard_policy)
+            except GuardError as exc:
+                checked = report(record, 'pre_fit', reason=exc.code)
+                repository.save_guard_report(checked)
+                raise GuardError(exc.code, report_id=checked.report_id) from exc
         result = supervise(payload, deadline_at=deadline, active=active,
                            on_stop=ledger.record_termination)
     except (SupervisionStopped, ChildExecutionError, GuardError):

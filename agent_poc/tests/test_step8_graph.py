@@ -7,7 +7,7 @@ from agent_poc.tests.test_review_recovery import CountTransport
 import pytest
 
 
-def test_v8_graph_freezes_guard_and_submits(api, tmp_path, budget_config):
+def test_v8_graph_freezes_guard_and_submits(api, tmp_path, budget_config, monkeypatch):
     test_client, _, dataset = api
     config = LLMConfig('http://scripted.invalid/v1','fixture', prompt_version='agent-decision-budget-v1', **budget_config)
     runtime = RuntimeConfig('http://backend.invalid','local',config)
@@ -28,10 +28,24 @@ def test_v8_graph_freezes_guard_and_submits(api, tmp_path, budget_config):
     from agent_poc.orchestration.state import apply_patch
     with pytest.raises(ValueError):
         apply_patch(state, {'module_policy':{'fail_fast_guard':{'enabled':False}}})
+    import copy
+    from agent_poc.orchestration.state import validate_state
+    corrupt = copy.deepcopy(state)
+    corrupt['task']['guard_policy']['rules_digest'] = '0' * 64
+    with pytest.raises(ValueError):
+        validate_state(corrupt)
+    from backend.app.runs import guard
+    from agent_poc.orchestration.runtime import read_status, resume_task, RuntimeErrorCode
+    monkeypatch.setattr(guard, 'RULES_DIGEST', 'f' * 64)
+    assert read_status(storage=tmp_path/'graph', thread_id='v8-graph') == state
+    before = len(transport.requests)
+    with pytest.raises(RuntimeErrorCode, match='guard_check_unavailable'):
+        resume_task(runtime, storage=tmp_path/'graph', thread_id='v8-graph', client=client, llm=llm)
+    assert len(transport.requests) == before
 
 
 @pytest.mark.parametrize('outcome', ['success','damaged','prefit_failure'])
-def test_v8_real_run_finalization_or_no_candidate_termination(api, tmp_path, budget_config, outcome):
+def test_v8_real_run_finalization_or_no_candidate_termination(api, tmp_path, budget_config, outcome, monkeypatch):
     from datetime import datetime, timezone
     from backend.app.datasets.repository import DatasetRepository
     from backend.app.runs.repository import RunRepository
@@ -67,3 +81,13 @@ def test_v8_real_run_finalization_or_no_candidate_termination(api, tmp_path, bud
     assert final['finalization']['backend_session_state'] == ('finalized' if outcome=='success' else 'terminated')
     assert final['guard']['reports']
     assert len(provider.contexts) == (2 if outcome=='success' else 1)
+    if outcome == 'success':
+        from backend.app.runs import guard
+        from agent_poc.orchestration.runtime import read_status
+        before = len(transport.requests)
+        monkeypatch.setattr(guard, 'RULES_DIGEST', 'f' * 64)
+        assert read_status(storage=root, thread_id='v8-complete') == final
+        assert resume_task(runtime, storage=root, thread_id='v8-complete', client=client, llm=llm) == final
+        assert len(transport.requests) == before
+        historical = client.inspect_ml_session(final['identity']['session_id'])
+        assert historical['selected_run_id'] == run_id and historical['best_run_id'] is None

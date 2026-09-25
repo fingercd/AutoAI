@@ -413,7 +413,13 @@ class Nodes:
             else:
                 state = _next(state, action, status='waiting', reason=error.code, wake=self.deps.clock()+1)
         except AgentHTTPError as error:
-            if error.code == 'agent_request_released':
+            if (action == 'submit' and state['versions']['state'] == 'agent-state-v8' and
+                    error.status_code == 422 and error.guard is not None):
+                confirmed = True
+                state = apply_patch(state, {'guard': {'reports': [error.guard]},
+                    'finalization': {'status': 'unselected', 'termination_reason': 'no_valid_run'}})
+                state = _next(state, 'terminate', reason=error.code)
+            elif error.code == 'agent_request_released':
                 state = _stop(state, error.code, self.deps.clock())
             elif error.code in ('agent_compensation_required', 'agent_active_run_exists'):
                 state = _next(state, 'reconcile', status='recovering', reason=error.code)
@@ -629,6 +635,9 @@ class Nodes:
             state = self.bind_execution(state, item)
             state = self.remaining(state, response)
             return _next(state, 'observe')
+        if any(r['stage'] == 'admission' and r['status'] == 'failed'
+               for r in state['guard'].get('reports', [])):
+            return _next(state, 'terminate', reason='no_valid_run')
         return _next(state, 'submit' if state['execution']['submission_content'] else 'choose')
 
     def choose(self, state):
@@ -896,6 +905,11 @@ class Nodes:
         state = self.check_locked(state, response)
         if response['state'] == 'terminated':
             return self.termination_confirmed(state, response)
+        if any(item['binding_state'] in ('reserved', 'compensation_required')
+               for item in response['experiments']):
+            return _next(state, 'reconcile', status='recovering')
+        if any(item.get('state') in ('queued', 'running') for item in response['experiments']):
+            return _next(state, 'inspect_session', status='recovering')
         if response['state'] != 'open' or state['execution']['run_status'] in ('queued','running'):
             raise ValueError('termination conflicts with active experiment')
         self.call(state, 'terminate_ml_session',

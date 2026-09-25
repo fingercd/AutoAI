@@ -293,6 +293,12 @@ class AgentService:
                         bound = current
                     return self._experiment_response(session, bound, record, replay=True)
             if not mapping_exists:
+                if session.frozen_preparation and session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v6':
+                    from ..runs.guard import require_current_policy, GuardError
+                    try:
+                        require_current_policy(session.frozen_preparation['guard_policy'])
+                    except GuardError as exc:
+                        raise AgentDomainError(exc.code, 'Frozen guard implementation unavailable', status_code=409) from exc
                 policy.admit_command(session, command)
             prepared = (replay_reservation.compiled_config if replay_reservation else None)
             if prepared is None:
@@ -335,7 +341,9 @@ class AgentService:
                             check_preflight(record=admission, repository=self.runs, stage='admission',
                                 prepare=lambda: prepare_training_inputs(source.path, prepared, repository=self.runs, record=admission))
                         except GuardError as exc:
-                            raise AgentDomainError(exc.code, 'Training preflight failed', status_code=422) from exc
+                            from .contracts import GuardAdmissionRejected
+                            checked = self.runs.get_guard_report(exc.report_id, principal=principal)
+                            raise GuardAdmissionRejected(checked) from exc
                     else:
                         self.runs.save_guard_report(report(admission, 'admission', status='disabled'))
             full_digest = policy.command_digest(session, command)

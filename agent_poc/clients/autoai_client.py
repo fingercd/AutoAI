@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import math
 import re
 from typing import Any, Protocol
+from typing import get_args
+from backend.app.runs.guard import Reason
 from urllib.parse import urlsplit
 
 from .contracts import ErrorResponse, RESPONSE_MODELS
@@ -13,7 +15,7 @@ from .http_transport import ResponseTooLarge, bounded_request
 CONTRACT_VERSION = 'agent-session-v1'
 OBSERVATION_VERSION = 'agent-observation-v1'
 _IDENTIFIER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
-_KNOWN_ERRORS = frozenset({
+_KNOWN_ERRORS = frozenset(get_args(Reason)) | frozenset({
     'model_retired','agent_recipe_invalid','agent_preparation_failed','evaluation_plan_invalid','preparation_resource_exhausted',
     'agent_session_not_found', 'agent_experiment_not_found', 'dataset_unavailable',
     'agent_session_finalized', 'agent_duplicate_config', 'agent_active_run_exists',
@@ -47,10 +49,11 @@ class AgentContractError(AgentClientError):
 
 class AgentHTTPError(AgentClientError):
     def __init__(self, message: str, *, status_code: int, code: str | None,
-                 retryable: bool, allowed_actions: list[str]) -> None:
+                 retryable: bool, allowed_actions: list[str], guard: dict | None = None) -> None:
         super().__init__(message)
         self.status_code, self.code = status_code, code
         self.retryable, self.allowed_actions = retryable, list(allowed_actions)
+        self.guard = guard
 
 
 def validate_base_url(value: str) -> str:
@@ -219,7 +222,8 @@ class AutoAIClient:
                 raise AgentContractError('服务端错误响应结构不符合契约') from None
             raise AgentHTTPError(f'SpecAutoAI 请求失败（HTTP {status}）', status_code=status,
                                  code=safe_error_code(detail.code), retryable=detail.retryable,
-                                 allowed_actions=list(detail.allowed_actions)) from None
+                                 allowed_actions=list(detail.allowed_actions),
+                                 guard=detail.guard.model_dump(mode='json') if detail.guard else None) from None
         try:
             result = self.response_models[operation].model_validate(payload).model_dump(
                 mode='json', exclude_unset=True)

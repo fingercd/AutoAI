@@ -41,14 +41,19 @@ class GuardPolicy(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
     schema_version: Literal['training-guard-policy-v1'] = 'training-guard-policy-v1'
     rules_version: Literal['training-guard-rules-v1'] = RULES_VERSION
-    rules_digest: str = Field(default=RULES_DIGEST, pattern=r'^[a-f0-9]{64}$')
+    rules_digest: str = Field(default_factory=lambda: RULES_DIGEST, pattern=r'^[a-f0-9]{64}$')
     fail_fast_guard: Literal['on', 'off'] = 'on'
 
-    @model_validator(mode='after')
-    def current_rules(self):
-        if self.rules_digest != RULES_DIGEST:
-            raise ValueError('Guard rules source changed')
-        return self
+
+def require_current_policy(value) -> GuardPolicy:
+    """Execution admission, separate from historical storage/wire decoding."""
+    try:
+        policy = GuardPolicy.model_validate(value)
+    except ValueError as exc:
+        raise GuardError('guard_report_binding_mismatch') from exc
+    if policy.rules_digest != RULES_DIGEST:
+        raise GuardError('guard_check_unavailable')
+    return policy
 
 
 class GuardCheck(BaseModel):
@@ -126,7 +131,7 @@ def report(record, stage: Stage, *, reason: Reason | None = None,
         manifest_digest=manifest_digest, usage_digest=usage_digest)
     body = dict(schema_version='training-guard-report-v1', rules_version=RULES_VERSION,
         stage=stage, status=status,
-        eligibility=('ineligible' if reason else 'unavailable' if status == 'unavailable' else 'eligible' if stage in ('publication', 'observation', 'finalize') and status == 'passed' else 'pending'),
+        eligibility=('unavailable' if status == 'unavailable' else 'ineligible' if reason else 'eligible' if stage in ('publication', 'observation', 'finalize') and status == 'passed' else 'pending'),
         bindings=bindings.model_dump(), checks=[dict(code='inputs' if stage in ('pre_fit','admission') else 'outputs', status=status, reason_code=reason)])
     return GuardReport(**body, report_id='guard-'+digest(body), created_at=datetime.now(timezone.utc).isoformat())
 
@@ -136,7 +141,7 @@ def project_guard(value: GuardReport) -> dict:
     return dict(schema_version='agent-guard-projection-v1', report_id=value.report_id,
         stage=value.stage, status=value.status, eligibility=value.eligibility,
         checks=[dict(code=c.code, status=c.status,
-            reason_code=('guard_artifact_integrity_failed' if c.reason_code and value.stage not in ('pre_fit','admission') else c.reason_code)) for c in value.checks])
+            reason_code=('guard_artifact_integrity_failed' if c.reason_code and c.reason_code != 'guard_check_unavailable' and value.stage not in ('pre_fit','admission') else c.reason_code)) for c in value.checks])
 
 
 def load_bound_dataset(path, expected_sha=None):
@@ -158,6 +163,8 @@ def load_bound_dataset(path, expected_sha=None):
 
 def check_preflight(*, record, repository, prepare: Callable, stage: Stage = 'pre_fit'):
     try:
+        if record is not None and record.guard_policy is not None:
+            require_current_policy(record.guard_policy)
         prepared = prepare()
     except Exception as exc:
         from ..contracts import TrainingConfigValidationError
@@ -275,6 +282,72 @@ def validation_metrics(payload, selection_metric=None, *, complete=False):
     return result
 
 
+def check_fit_audit(fold, actual, *, finite_search=False, selected_params=None):
+    """Validate facts against trainer semantics, never against another projection alone."""
+    from ..models import model_family
+    from ..training import TrainConfig, _traditional_params
+    from ..contracts import TrainingSpec
+    from ..model_config import semantic_digest
+    from ..processing_policy import PROCESSING_POLICY_VERSION
+
+    def reject():
+        raise GuardError('guard_execution_audit_mismatch')
+
+    def indices(value, *, empty=False):
+        if (type(value) is not list or (not empty and not value) or
+                any(type(i) is not int or i < 0 for i in value) or len(set(value)) != len(value)):
+            reject()
+        return set(value)
+
+    traditional = model_family(actual['model_type']) == 'traditional_ml'
+    external = actual['evaluation_strategy'] == 'external_test_holdout'
+    splits = fold.get('splits')
+    if type(splits) is not dict or set(splits) != {'train', 'valid', 'test'}:
+        reject()
+    train, valid = indices(splits['train']), indices(splits['valid'])
+    test = indices(splits['test'], empty=external)
+    outside = indices(fold.get('external_test_indices'), empty=not external)
+    if (train & valid or train & test or valid & test or
+            (external and test) or (not external and outside)):
+        reject()
+    internal = train | valid | test
+    if internal != set(range(len(internal))) or outside & internal:
+        reject()
+    if external and outside != set(range(len(internal), len(internal) + len(outside))):
+        reject()
+    final = indices(fold.get('final_fit_indices'), empty=not traditional)
+    if final != (train | valid if traditional else set()):
+        reject()
+
+    best = fold.get('best_params')
+    defaults = TrainConfig()
+    keys = (set(_traditional_params(defaults, actual['model_type'])) if traditional else
+            {'learning_rate', 'weight_decay'} if finite_search else set())
+    if type(best) is not dict or set(best) != keys:
+        reject()
+    # Validate observed values without filling in absent execution evidence.
+    TrainingSpec.from_legacy({**actual, **best}).validated(has_external_test=external)
+    if any(type(v) is bool or (isinstance(v, float) and not math.isfinite(v)) for v in best.values()):
+        reject()
+    if selected_params is not None and (not keys <= selected_params.keys() or
+            any(best[k] != selected_params[k] for k in keys)):
+        reject()
+
+    processing = fold.get('processing_execution', {})
+    expected = [('selection_train', train), ('final_train_valid', train | valid)] if traditional else [('train', train)]
+    stages = processing.get('stages')
+    if (type(stages) is not list or len(stages) != len(expected) or
+            any(processing.get(k) != actual[k] for k in ('normalization', 'class_balance'))):
+        reject()
+    for stage, (name, rows) in zip(stages, expected, strict=True):
+        scope = {'area': 'per_sample', 'none': 'identity'}.get(actual['normalization'], name)
+        if (stage.get('stage') != name or stage.get('fit_scope') != scope or
+                stage.get('policy_version') != PROCESSING_POLICY_VERSION or
+                type(stage.get('fit_count')) is not int or stage['fit_count'] != len(rows) or
+                stage.get('fit_indices_digest') != semantic_digest(sorted(rows))):
+            reject()
+
+
 def check_output_semantics(snapshot, record, repository):
     from ..training import TrainConfig
     from ..models import ARCHITECTURE_VERSION, model_family
@@ -299,6 +372,8 @@ def check_output_semantics(snapshot, record, repository):
         raise GuardError('guard_config_mismatch')
     cv = docs['cv_metrics.json']
     folds = docs['split.json']
+    if type(folds) is not list or not folds or [f.get('fold_index') for f in folds] != list(range(1, len(folds) + 1)):
+        raise GuardError('guard_execution_audit_mismatch')
     if cv.get('metrics') != metrics or cv.get('folds') != folds or cv.get('strategy') != actual.get('evaluation_strategy'):
         raise GuardError('guard_execution_audit_mismatch')
     is_cv = actual.get('evaluation_strategy') == 'leave_one_sample_id_cv'
@@ -310,6 +385,9 @@ def check_output_semantics(snapshot, record, repository):
             or any(metrics.get(k) != metrics['test'][k] or metrics['test'][k] != summary.get('pooled_test', {}).get(k) for k in METRICS)):
         raise GuardError('guard_execution_audit_mismatch')
     audit = metadata.get('execution_audit', {})
+    if (audit.get('initial_fit_scope') != 'train' or audit.get('final_fit_scope') !=
+            ('train+valid' if metadata['model_family'] == 'traditional_ml' else 'train')):
+        raise GuardError('guard_execution_audit_mismatch')
     if config.get('evaluation_plan_digest'):
         from .contracts import Principal
         plan = repository.get_evaluation_plan(config['evaluation_plan_digest'],
@@ -328,6 +406,9 @@ def check_output_semantics(snapshot, record, repository):
     if semantic_digest({k:v for k,v in processing.items() if k != 'digest'}) != processing.get('digest'):
         raise GuardError('guard_execution_audit_mismatch')
     for fold, summary in zip(folds, processing.get('folds', []), strict=True):
+        check_fit_audit(fold, actual, finite_search=config.get('execution_search_plan') is not None)
+        if summary.get('fold_index') != fold.get('fold_index'):
+            raise GuardError('guard_execution_audit_mismatch')
         stages = fold.get('processing_execution', {}).get('stages', [])
         projected = []
         for stage in stages:
@@ -360,17 +441,18 @@ def check_output_semantics(snapshot, record, repository):
             if type(index) is not int or not 0 <= index < len(trials):
                 raise GuardError('guard_execution_audit_mismatch')
             trial = trials[index]
+            check_fit_audit(fold, actual, finite_search=True, selected_params=trial['params'])
             score = trial.get('selection_score')
             if (type(score) not in (int, float) or not math.isfinite(score)
                     or selected.get('params') != trial['params'] or selected.get('selection_score') != score
-                    or fold.get('selection_score') != score
-                    or any(selected['params'].get(k) != v for k, v in fold.get('best_params', {}).items())):
+                    or fold.get('selection_score') != score):
                 raise GuardError('guard_execution_audit_mismatch')
     return validation
 
 
 def check_outputs(*, record, repository, run_dir, stage: Stage, active=lambda: None, usage=None, manifest_bytes=None):
     try:
+        require_current_policy(record.guard_policy)
         from .contracts import Principal
         expected = report(record, 'pre_fit').bindings
         prior = repository.guard_reports_for_stage(record.run_id, 'pre_fit', principal=Principal(record.owner_id, record.tenant_id))
@@ -425,6 +507,15 @@ def assess_candidate(*, record, repository, run_dir, selection_metric, stage: St
                 return CandidateAssessment('unavailable', {}, 'guard_check_unavailable')
         return CandidateAssessment(status, {}, None, value)
     try:
+        if record.guard_policy is not None:
+            try:
+                require_current_policy(record.guard_policy)
+            except GuardError as exc:
+                # Keep historical publication and lock facts immutable. This release
+                # cannot certify results under a different source policy.
+                value = report(record, stage, reason=exc.code, status='unavailable')
+                repository.save_guard_report(value)
+                return CandidateAssessment('unavailable', {}, exc.code, value)
         snapshot = inspect_artifacts(run_dir, record.run_id,
             required=required_artifacts(record.config) if record.guard_policy else
                 {k for k,v in ARTIFACT_CATALOG.items() if v.get('required')})
