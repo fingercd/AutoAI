@@ -15,6 +15,10 @@ CLI 新任务默认 `--fail-fast-guard on`；`off` 只跳过提交前额外的�
 Session/State 冻结 `training-guard-policy-v1`、`training-guard-rules-v1`、
 规则源码 digest 和开关，恢复不能换策略。旧未执行搜索计划遇源码摘要变化明确拒绝，
 不放宽 `search_policy` 的完整摘要验证。规则源码变化也不能复用旧 Guard 策略执行。
+策略的存储/wire 解码只校验版本、字段和自身摘要；执行准入单独要求当前源码摘要。
+旧终态 Session 和 checkpoint 可只读查看，保留原规则来源和选定 Run。当前实现不能
+认证旧策略时，在线候选返回 `unavailable`，不改写历史 publication 或伪造新 passed。
+非终态 resume 与 worker 启动前均拒绝不兼容策略；终态 resume 仅返回历史快照。
 人工 HTTP 提交同样创建 Guard Run，默认 admission off，不要求 Agent Session/预算/LLM。
 holdout、Sample_ID CV 和 external_test 保留原评估及 Train-only 拟合口径。
 
@@ -45,6 +49,13 @@ worker 重新读取有大小限制的数据字节，对同一份字节验 SHA、
 
 指标要求有限、非 bool、范围合法且选择指标存在；正常零分及低分有效。
 实际 config、架构、划分、processing 审计、搜索计划/候选/选参及 ledger 用量必须一致。
+每折传统模型的 final_fit_indices 必须恰为 Train+Valid，深度模型保留无重拟合的空列表；
+索引必须是非负整数、无重复、分区互斥且范围完整。external_test 的索引单独检查。
+processing 的阶段数量、顺序、类型、fit_scope、fit_count 和索引摘要按真实训练语义核对，
+不能仅比较两份可能同时缺失的投影；metadata 同时记录 initial/final_fit_scope。
+best_params 按模型要求完整字段：传统模型复用训练器的参数投影；有限深度搜索明确
+记录 learning_rate/weight_decay。与所选 trial 的对应字段全量比较，不从请求补造实际参数。
+人工深度训练没有有限搜索时，沿原语义保留显式空 best_params，字段本身仍不可缺失。
 子进程 pre_publish 后才能写 Manifest，但这仍不是 Run 成功。
 预算父进程必须确认整个子进程树退出、settle 后复查，且子报告绑定必须与父报告相同。
 父检查与最终状态事务处于 LeaseGuard 内，继续执行 claim/lease/deadline 约束。
@@ -59,6 +70,10 @@ budget-v1/guard-v1 worker 领取，新 Guard Run 仅允许 guard-v1。旧 worker
 admission 不预约训练额度。已绑定尝试不因 pre-fit 失败返还 experiment；
 fit/epoch 已 entered 的事实沿第七步账本结算。退出未知保留 unknown hold，禁止发布；
 检查不新增免费重试或重规划。Guard 子异常只传注册 code/stage/report_id。
+确定性 admission 422 携带安全 `guard` 投影和已落库报告引用。Graph 保存该事实及
+已经发生的调用用量，重新 inspect 确认没有活动或未决实验后走既有 terminate。
+网络丢响应、未知 mapping 继续 inspect/reconciliation；没有可靠拒绝事实不走此分支。
+收尾额度不足则保留 needs_attention，不循环调用、不自动换配方。重复恢复终态不发新请求。
 
 Observation、Session best、Finalize 使用同一 `assess_candidate`，每次核验当前产物。
 发布后同大小损坏也会令候选 unavailable；历史 succeeded、selected_run_id、费用仍保留。

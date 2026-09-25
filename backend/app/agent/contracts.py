@@ -42,6 +42,18 @@ class AgentDomainError(RuntimeError):
         }
 
 
+class GuardAdmissionRejected(AgentDomainError):
+    """Only emitted before reservation; includes a safe, persisted check reference."""
+    def __init__(self, checked):
+        from ..runs.guard import project_guard
+        self.guard = project_guard(checked)
+        super().__init__(checked.checks[0].reason_code, 'Training preflight failed',
+                         status_code=422, allowed_actions=('inspect_ml_session',))
+
+    def detail(self):
+        return {**super().detail(), 'guard': self.guard}
+
+
 class AgentEvaluationBlock(BaseModel):
     model_config = ConfigDict(extra='forbid')
 

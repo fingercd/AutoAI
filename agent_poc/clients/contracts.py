@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+from backend.app.runs.guard import GuardProjection
 
 ModelName = Literal['logistic_regression', 'svm', 'random_forest']
 MetricName = Literal['macro_f1', 'balanced_accuracy']
@@ -278,6 +279,16 @@ class FinalizeResponse(Versioned):
 
 class ErrorDetail(SafeError):
     allowed_actions: list[ToolName]
+    # Present only for a deterministic failure before an experiment reservation.
+    guard: GuardProjection | None = None
+
+    @model_validator(mode='after')
+    def admission_failure(self):
+        if self.guard is not None and (self.retryable or self.guard.stage != 'admission' or
+                self.guard.status != 'failed' or self.guard.eligibility != 'ineligible' or
+                len(self.guard.checks) != 1 or self.guard.checks[0].reason_code != self.code):
+            raise ValueError('invalid admission rejection')
+        return self
 
 
 class ErrorResponse(ClosedModel):

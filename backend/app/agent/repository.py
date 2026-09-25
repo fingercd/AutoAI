@@ -741,6 +741,12 @@ class AgentSessionRepository:
             ).fetchone()
             if row is None: connection.rollback(); raise AgentSessionNotFound()
             frozen = _decode_preparation(row['frozen_preparation_json'])
+            if frozen and frozen.get('protocol_revision') == 'agent-recipes-revision-v6':
+                from ..runs.guard import require_current_policy, GuardError
+                try:
+                    require_current_policy(frozen['guard_policy'])
+                except GuardError as exc:
+                    raise AgentDomainError(exc.code, 'Frozen guard implementation unavailable', status_code=409) from exc
             if frozen and frozen.get('protocol_revision') == 'agent-recipes-revision-v6' and guard_snapshot is None:
                 raise AgentDomainError('guard_report_missing', 'Candidate snapshot required', status_code=409)
             if guard_snapshot is not None:
@@ -854,7 +860,10 @@ def _decode_preparation(raw):
     revision = frozen['protocol_revision']
     if revision == 'agent-recipes-revision-v6':
         from ..runs.guard import GuardPolicy, digest
-        policy = GuardPolicy.model_validate(frozen.get('guard_policy'))
+        try:
+            policy = GuardPolicy.model_validate(frozen.get('guard_policy'))
+        except ValueError as exc:
+            raise AgentDomainError('guard_report_binding_mismatch', 'Invalid guard policy', status_code=409) from exc
         if digest(policy.model_dump()) != frozen.get('guard_policy_digest'):
             raise AgentDomainError('guard_report_binding_mismatch', 'Invalid guard policy', status_code=409)
     if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):

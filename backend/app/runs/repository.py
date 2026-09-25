@@ -349,8 +349,8 @@ class RunRepository:
                 ),
             )
             if guard_policy is not None:
-                from .guard import GuardPolicy
-                policy = GuardPolicy.model_validate(guard_policy)
+                from .guard import require_current_policy
+                policy = require_current_policy(guard_policy)
                 connection.execute('UPDATE runs SET guard_policy_json=? WHERE run_id=?',
                     (policy.model_dump_json(), run_id))
             if submission_key is not None:
@@ -663,10 +663,11 @@ class RunRepository:
             if state == 'succeeded':
                 current = connection.execute('SELECT * FROM runs WHERE run_id=?', (run_id,)).fetchone()
                 if current is not None and current['guard_policy_json'] is not None:
-                    from .guard import GuardError
+                    from .guard import GuardError, require_current_policy
                     from .guard_store import insert, validate_binding
                     if publication_report is None:
                         raise GuardError('guard_report_missing', stage='publication')
+                    require_current_policy(_decode_json(current['guard_policy_json'], None))
                     validate_binding(publication_report, self._record(current), publication=True)
                     insert(connection, publication_report)
                     connection.execute('UPDATE runs SET publication_report_id=? WHERE run_id=?',

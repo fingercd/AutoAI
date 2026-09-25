@@ -2330,7 +2330,9 @@ def _run_legacy_training(
         ],
     }
     processing_summary['digest'] = semantic_digest(processing_summary)
-    execution_audit = {'processing_execution': processing_summary}
+    execution_audit = {'processing_execution': processing_summary,
+        'initial_fit_scope': 'train',
+        'final_fit_scope': 'train+valid' if last_model_family == 'traditional_ml' else 'train'}
     if search_summary is not None:
         execution_audit['finite_search'] = dict(plan_digest=search_plan['plan_digest'],
             source_digest=search_plan['source_digest'], summary=search_summary)

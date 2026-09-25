@@ -444,6 +444,12 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
                              if state['versions']['state'] in ('agent-state-v7','agent-state-v8') else None)
             if state['lifecycle']['next_action'] is None:
                 return state
+            if state['versions']['state'] == 'agent-state-v8':
+                from backend.app.runs.guard import require_current_policy, GuardError
+                try:
+                    require_current_policy(state['task']['guard_policy'])
+                except GuardError as exc:
+                    raise RuntimeErrorCode(exc.code) from None
             journal = CallJournal(directory / 'calls.sqlite', thread_id)
             try:
                 if frozen_policy is not None:
