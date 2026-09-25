@@ -238,3 +238,55 @@ def test_successful_run_requires_verifiable_manifest(tmp_path):
     with pytest.raises(ValueError, match='cost_report_manifest_unverified'):
         build_report(**options)
     live.close()
+
+
+def test_live_report_uses_durable_fit_entry_and_preserves_unknown_hold(tmp_path):
+    from backend.tests.test_step7_training_budget import _setup
+    from agent_poc.orchestration.persistence import CallJournal
+
+    agent, policy, reservation, ledger = _setup(tmp_path)
+    ledger.bind()
+    ledger.enter('run-1:fit:0:trial:0', dimension='model_fits', kind='trial')
+    journal = tmp_path / 'journal.sqlite3'
+    call_journal = CallJournal(journal, 'thread-fit')
+    call_journal.bind_budget(policy)
+    call_journal.close()
+    run_dir = tmp_path / 'runs' / 'run-1'
+    run_dir.mkdir(parents=True)
+    with sqlite3.connect(agent) as db:
+        session_id = db.execute('''SELECT session_id FROM agent_sessions_v1
+            WHERE budget_task_id=?''', (policy.task_id,)).fetchone()[0]
+        plan = json.loads(db.execute('''SELECT compiled_config_json FROM
+            agent_experiment_reservations_v1 WHERE reservation_id=?''',
+            (reservation.experiment_id,)).fetchone()[0])['execution_search_plan']
+    (run_dir / 'search_plan.json').write_text(json.dumps(plan), encoding='utf-8')
+    runs_db = tmp_path / 'runs.sqlite3'
+    with sqlite3.connect(runs_db) as db:
+        db.execute('''CREATE TABLE runs (run_id TEXT,state TEXT,owner_id TEXT,
+            tenant_id TEXT,config_json TEXT,manifest_name TEXT)''')
+        db.execute('INSERT INTO runs VALUES(?,?,?,?,?,?)',
+                   ('run-1', 'running', None, None,
+                    json.dumps({'execution_search_plan': plan}), None))
+    options = dict(journal=journal, agent_db=agent, thread_id='thread-fit',
+        session_id=session_id, task_id=policy.task_id, owner_id=None,
+        tenant_id=None, run_id='run-1', run_dir=run_dir, runs_db=runs_db)
+    report = build_report(**options)
+    summary = json.loads(report['cost_summary.json'])
+    fits = summary['budget_dimensions']['model_fits']
+    assert summary['schema_version'] == 'task-cost-snapshot-v2'
+    assert summary['budget_dimensions']['llm_calls']['limit'] == policy.limits['llm_calls']
+    assert (fits['known_actual'], fits['held_reserved'], fits['held_unknown']) == (1, 1, 0)
+    assert fits['known_subtotal'] == 1 and fits['actual_total'] is None
+    usage = list(csv.DictReader(report['training_usage.csv'].splitlines()))
+    assert usage[0]['event_id'] == 'run-1:fit:0:trial:0'
+    assert usage[0]['state'] == 'entered'
+    ledger.settle(exit_confirmed=False)
+    held = json.loads(build_report(**options)['cost_summary.json'])
+    assert held['budget_dimensions']['model_fits']['held_unknown'] == 1
+    assert held['budget_dimensions']['model_fits']['actual_total'] is None
+    assert held['report_status'] == 'partial'
+    with sqlite3.connect(agent) as db:
+        db.execute("UPDATE task_training_events_v1 SET payload_digest='corrupt'")
+    with pytest.raises(ValueError, match='cost_report_training_source_mismatch'):
+        export_report(tmp_path / 'invalid-report', **options)
+    assert not (tmp_path / 'invalid-report').exists()

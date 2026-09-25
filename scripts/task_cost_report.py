@@ -13,7 +13,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA = 'task-cost-snapshot-v1'
+SCHEMA = 'task-cost-snapshot-v2'
 CALL_FIELDS = ('id', 'thread_id', 'operation_id', 'kind', 'name', 'status',
                'started_at', 'ended_at', 'attempt_index', 'task_id', 'session_id',
                'run_id', 'input_tokens', 'output_tokens', 'total_tokens',
@@ -95,6 +95,98 @@ def _bound_session(agent_db: Path, *, session_id: str, run_id: str | None,
                 (session_id, run_id, owner_id, tenant_id)).fetchone()
             if found is None:
                 raise ValueError('cost_report_run_mismatch')
+    finally:
+        db.close()
+
+
+def _backend_budget(agent_db: Path, *, session_id: str,
+                    task_id: str | None, run_id: str | None) -> dict | None:
+    """Read one consistent backend snapshot without migrating the source DB."""
+    db = readonly_snapshot(agent_db)
+    try:
+        columns = {item['name'] for item in db.execute('PRAGMA table_info(agent_sessions_v1)')}
+        if 'budget_task_id' not in columns:
+            return None
+        session = db.execute('''SELECT state,budget_task_id,budget_policy_digest FROM
+            agent_sessions_v1 WHERE session_id=?''', (session_id,)).fetchone()
+        if session is None or session['budget_task_id'] is None:
+            return None
+        if session['budget_task_id'] != task_id:
+            raise ValueError('cost_report_task_mismatch')
+        from backend.app.agent.budget import DIMENSIONS, BudgetError, dimension_summary
+        try:
+            policy = db.execute('''SELECT policy_json,policy_digest FROM
+                task_budget_policies_v1 WHERE task_id=? AND owner='backend' ''',
+                (task_id,)).fetchone()
+            if policy is None or policy['policy_digest'] != session['budget_policy_digest']:
+                raise ValueError('cost_report_policy_mismatch')
+            dimensions = {name: dimension_summary(db, task_id=task_id,
+                owner='backend', dimension=name) for name, (_, owner) in DIMENSIONS.items()
+                if owner == 'backend'}
+        except (sqlite3.OperationalError, KeyError, BudgetError) as exc:
+            raise ValueError('cost_report_policy_mismatch') from exc
+        reservations = _rows(db, 'task_budget_reservations_v1',
+            ('operation_id','attempt_id','dimension','amount','actual','held','status','source_ref'),
+            where="WHERE task_id=? AND owner='backend' ORDER BY operation_id,dimension",
+            params=(task_id,))
+        ids = {row['operation_id'] for row in reservations if row['dimension'] == 'model_fits'}
+        mapped = {row['reservation_id']: row['run_id'] for row in db.execute('''
+            SELECT reservation_id,run_id FROM agent_experiment_reservations_v1
+            WHERE session_id=? AND state IN ('bound','compensation_required')''',
+            (session_id,))}
+        executions = _rows(db, 'task_training_executions_v1',
+            ('reservation_id','task_id','run_id','state','started_at','finished_at'),
+            where='WHERE task_id=? ORDER BY reservation_id', params=(task_id,))
+        if any(row['reservation_id'] not in ids or
+               mapped.get(row['reservation_id']) != row['run_id'] for row in executions):
+            raise ValueError('cost_report_training_source_mismatch')
+        if run_id is not None and any(row['run_id'] != run_id for row in executions):
+            raise ValueError('cost_report_training_source_mismatch')
+        event_ids = tuple(row['reservation_id'] for row in executions)
+        events = _rows(db, 'task_training_events_v1',
+            ('reservation_id','event_id','payload_digest','dimension','kind','status','entered_at','completed_at'),
+            where='ORDER BY reservation_id,event_id')
+        if any(row['reservation_id'] not in event_ids or
+               row['dimension'] not in ('model_fits','training_epochs') or
+               row['payload_digest'] != hashlib.sha256(json.dumps({
+                   'dimension': row['dimension'], 'kind': row['kind']},
+                   sort_keys=True).encode('utf-8')).hexdigest() for row in events):
+            raise ValueError('cost_report_training_source_mismatch')
+        terminations = _rows(db, 'task_training_terminations_v1',
+            ('reservation_id','reason','requested_at','exited_at','latency_seconds','exit_code'),
+            where='ORDER BY reservation_id')
+        if any(row['reservation_id'] not in event_ids for row in terminations):
+            raise ValueError('cost_report_training_source_mismatch')
+        return dict(task_status=session['state'], policy=json.loads(policy['policy_json']),
+                    policy_digest=policy['policy_digest'], dimensions=dimensions,
+                    reservations=reservations, executions=executions,
+                    events=events, terminations=terminations)
+    finally:
+        db.close()
+
+
+def _journal_budget(journal: Path, *, thread_id: str, task_id: str | None,
+                    policy_digest: str | None) -> dict | None:
+    db = readonly_snapshot(journal)
+    try:
+        if db.execute('''SELECT 1 FROM sqlite_master WHERE type='table'
+            AND name='task_budget_journal_bindings_v1' ''').fetchone() is None:
+            return None
+        row = db.execute('''SELECT task_id,canonical_path,policy_digest FROM
+            task_budget_journal_bindings_v1 WHERE thread_id=?''',
+            (thread_id,)).fetchone()
+        if row is None:
+            return None
+        if (row['task_id'] != task_id or row['policy_digest'] != policy_digest or
+                Path(row['canonical_path']).resolve() != journal.resolve()):
+            raise ValueError('cost_report_journal_binding_mismatch')
+        from backend.app.agent.budget import DIMENSIONS, BudgetError, dimension_summary
+        try:
+            return {name: dimension_summary(db, task_id=task_id,
+                owner='journal', dimension=name) for name, (_, owner) in DIMENSIONS.items()
+                if owner == 'journal'}
+        except (sqlite3.OperationalError, KeyError, BudgetError) as exc:
+            raise ValueError('cost_report_journal_policy_mismatch') from exc
     finally:
         db.close()
 
@@ -181,10 +273,24 @@ def _json(path: Path) -> Any:
 
 def _csv(name: str, rows: list[dict], fields: tuple[str, ...]) -> tuple[str, str]:
     output = io.StringIO(newline='')
-    writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+    writer = csv.DictWriter(output, fieldnames=_fields(rows, fields), extrasaction='ignore')
     writer.writeheader()
     writer.writerows(rows)
     return name, output.getvalue()
+
+
+def _fields(rows: list[dict], fallback: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(key for row in rows for key in row)) if rows else fallback
+
+
+def _report_dimension(value: dict) -> dict:
+    unknown = (value['unknown_count'] > 0 or value['held_unknown'] > 0 or
+               value['held_reserved'] > 0)
+    return {**value, 'known_subtotal': value['known_actual'],
+            'actual_total': None if unknown else value['known_actual'],
+            'measurement_status': 'partial' if unknown else
+                'not_started' if value['known_count'] == 0 else 'known',
+            'not_applicable_count': 0, 'source_version': 'task-budget-ledger-v1'}
 
 
 def build_report(*, journal: Path, agent_db: Path, thread_id: str,
@@ -194,6 +300,12 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                  runs_db: Path | None = None) -> dict[str, str]:
     _bound_session(agent_db, session_id=session_id, run_id=run_id,
                    owner_id=owner_id, tenant_id=tenant_id, task_id=task_id)
+    backend_budget = _backend_budget(agent_db, session_id=session_id,
+                                     task_id=task_id, run_id=run_id)
+    journal_dimensions = _journal_budget(journal, thread_id=thread_id,
+        task_id=task_id, policy_digest=backend_budget['policy_digest'] if backend_budget else None)
+    if backend_budget is None and journal_dimensions is not None:
+        raise ValueError('cost_report_policy_mismatch')
     calls, waits = call_rows(journal, thread_id)
     if any(row['session_id'] != session_id or
            row['task_id'] != task_id or
@@ -242,12 +354,16 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
     training = []
     for trial in trials or []:
         training.append(dict(event_id=f"trial-{trial.get('fold_index')}-{trial.get('trial_index')}",
+            **({'record_type': 'search_trial'} if backend_budget is not None else {}),
             run_id=trial['run_id'], fold_index=trial.get('fold_index'), trial_index=trial.get('trial_index'),
             fit_purpose='candidate', state=trial.get('state'),
-            fit_started=True if trial.get('state') == 'succeeded' else None,
-            fit_start_status='known' if trial.get('state') == 'succeeded' else 'unknown',
-            entered_epochs=trial.get('actual_epochs') if trial.get('state') == 'succeeded' else None,
-            completed_epochs=trial.get('actual_epochs') if trial.get('state') == 'succeeded' else None,
+            fit_started=True if backend_budget is None and trial.get('state') == 'succeeded' else None,
+            fit_start_status=('known' if trial.get('state') == 'succeeded' else 'unknown')
+                if backend_budget is None else 'see_budget_events',
+            entered_epochs=trial.get('actual_epochs') if backend_budget is None and
+                trial.get('state') == 'succeeded' else None,
+            completed_epochs=trial.get('actual_epochs') if backend_budget is None and
+                trial.get('state') == 'succeeded' else None,
             training_batches=trial.get('training_batches'),
             started_at=trial.get('started_at'), ended_at=trial.get('ended_at'),
             duration_seconds=trial.get('duration_seconds'),
@@ -255,7 +371,7 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                                'oob_balanced_accuracy_then_accuracy' else
                                'valid_loss' if summary and summary.get('selection_metric') == 'best_valid_loss'
                                else 'valid' if summary else None)))
-    if summary is not None and summary.get('integrity') == 'complete':
+    if backend_budget is None and summary is not None and summary.get('integrity') == 'complete':
         for index in range(summary.get('final_refit_count') or 0):
             training.append(dict(event_id=f'final-refit-{index}', run_id=run_id,
                 fold_index=None, trial_index=None, fit_purpose='final_refit',
@@ -263,6 +379,21 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                 entered_epochs=None, completed_epochs=None, training_batches=None,
                 started_at=None, ended_at=None, duration_seconds=None,
                 measurement_scope='train_valid_refit'))
+    if backend_budget is not None:
+        execution_runs = {row['reservation_id']: row['run_id']
+                          for row in backend_budget['executions']}
+        for entry in backend_budget['events']:
+            training.append(dict(event_id=entry['event_id'], record_type='budget_event',
+                run_id=execution_runs[entry['reservation_id']],
+                reservation_id=entry['reservation_id'], dimension=entry['dimension'],
+                fit_purpose=entry['kind'] if entry['dimension'] == 'model_fits' else None,
+                state=entry['status'], fit_started=True if entry['dimension'] == 'model_fits' else None,
+                fit_start_status='known' if entry['dimension'] == 'model_fits' else 'not_applicable',
+                entered_epochs=1 if entry['dimension'] == 'training_epochs' else None,
+                completed_epochs=(1 if entry['status'] == 'completed' else 0)
+                    if entry['dimension'] == 'training_epochs' else None,
+                started_at=entry['entered_at'], ended_at=entry['completed_at'],
+                duration_seconds=None, measurement_scope='train'))
     events = []
     for wait in waits:
         events.append(dict(event_id=f"wait-{wait['operation_id']}", parent_event_id=None,
@@ -281,10 +412,26 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                  'request_duration_seconds')}
     coverage.update(trial_duration=_measure(training, 'duration_seconds'),
                     entered_epochs=_measure(training, 'entered_epochs',
-                                            applicable=lambda row: row['fit_purpose'] == 'candidate' and
+                                            applicable=lambda row: row.get('dimension') == 'training_epochs'
+                                            if backend_budget is not None else
+                                            row['fit_purpose'] == 'candidate' and
                                             summary is not None and
                                             summary.get('selection_metric') == 'best_valid_loss'))
-    cost_summary = dict(schema_version=SCHEMA, aggregation_version='task-cost-reduction-v1',
+    dimensions = ({name: _report_dimension(value) for name, value in
+                   {**backend_budget['dimensions'], **journal_dimensions}.items()}
+        if backend_budget is not None and journal_dimensions is not None else
+        {name: _report_dimension(value) for name, value in
+         backend_budget['dimensions'].items()} if backend_budget is not None else None)
+    settled = (backend_budget is not None and
+        journal_dimensions is not None and
+        backend_budget['task_status'] in ('finalized', 'terminated') and
+        (not backend_budget['executions'] or run_dir is not None and
+         run['state'] in ('succeeded', 'failed', 'cancelled')) and
+        all(row['held_reserved'] == 0 and row['held_unknown'] == 0
+            for row in dimensions.values()) and
+        all(row['state'] == 'settled' for row in backend_budget['executions']))
+    cost_summary = dict(schema_version=SCHEMA if backend_budget else 'task-cost-snapshot-v1',
+        aggregation_version='task-cost-reduction-v1',
         source=dict(journal_sha256=_sha(journal), agent_db_sha256=_sha(agent_db),
                     runs_db_sha256=_sha(runs_db) if run_dir is not None else None,
                     run_plan_digest=run['plan']['plan_digest'] if run_dir is not None else None,
@@ -297,11 +444,20 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                         ensure_ascii=True, allow_nan=False).encode('utf-8')).hexdigest()),
         binding=dict(thread_id=thread_id, task_id=task_id, session_id=session_id,
                      run_id=run_id, owner_id=owner_id, tenant_id=tenant_id),
+        **(dict(task_status=backend_budget['task_status'],
+            budget_policy_digest=backend_budget['policy_digest'],
+            budget_dimensions=dimensions,
+            training_executions=backend_budget['executions'],
+            training_terminations=backend_budget['terminations'])
+            if backend_budget else {}),
         call_records=len(calls), llm_request_records=len(requests),
         training_trial_records=len(training), search_summary=summary,
-        metrics=coverage, report_status='partial_budget_settlement_unverified',
+        metrics=coverage, report_status=('settled' if settled else 'partial')
+            if backend_budget else 'partial_budget_settlement_unverified',
         warnings=['旧 journal 状态不证明实际物理发送；未知用量未按零计算。',
-                  '父子时间段重叠，不能直接相加；货币、GPU 秒不可用。'])
+                  '父子时间段重叠，不能直接相加；货币、GPU 秒不可用。'] +
+                 (['后端与调用账本是独立 SQLite 快照，跨库没有原子时间点。']
+                  if backend_budget else []))
     markdown = (f'# 任务成本报告\n\n任务：{task_id or "历史未绑定"}；Session：{session_id}；'
                 f'Run：{run_id or "无"}。\n\n'
                 f'LLM 记录 {len(requests)} 条；训练 trial 记录 {len(training)} 条。'
