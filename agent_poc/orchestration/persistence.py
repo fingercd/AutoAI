@@ -90,6 +90,7 @@ class CallJournal:
 
     def __init__(self, path: Path, thread_id: str):
         self.thread_id = thread_id
+        self.canonical_path = os.path.normcase(str(Path(path).resolve()))
         self.budget_policy: BudgetPolicy | None = None
         self.connection = sqlite3.connect(path, timeout=10)
         self.connection.execute('PRAGMA journal_mode=WAL')
@@ -107,6 +108,9 @@ class CallJournal:
             duration_clock TEXT NOT NULL, reason_code TEXT,
             UNIQUE(thread_id,operation_id))''')
         initialize_ledger(self.connection)
+        self.connection.execute('''CREATE TABLE IF NOT EXISTS task_budget_journal_bindings_v1 (
+            task_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
+            canonical_path TEXT NOT NULL, policy_digest TEXT NOT NULL)''')
         self.connection.commit()
         # Nullable additions preserve old settled rows: do not invent totals or
         # change their historical State token-status projection during upgrade.
@@ -136,6 +140,19 @@ class CallJournal:
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
             freeze_policy(self.connection, policy, owner='journal')
+            row = self.connection.execute('''SELECT task_id,thread_id,canonical_path,policy_digest
+                FROM task_budget_journal_bindings_v1 WHERE task_id=? OR thread_id=?''',
+                (policy.task_id, self.thread_id)).fetchone()
+            expected = (policy.task_id, self.thread_id, self.canonical_path, policy.digest)
+            if row is None:
+                prior = self.connection.execute('''SELECT 1 FROM orchestration_calls_v1
+                    WHERE thread_id=? LIMIT 1''', (self.thread_id,)).fetchone()
+                if prior is not None:
+                    raise PersistenceError('budget_binding_after_calls')
+                self.connection.execute('''INSERT INTO task_budget_journal_bindings_v1
+                    (task_id,thread_id,canonical_path,policy_digest) VALUES(?,?,?,?)''', expected)
+            elif tuple(row) != expected:
+                raise PersistenceError('budget_journal_binding_conflict')
         self.budget_policy = policy
 
     def budget_summary(self) -> dict[str, dict]:
