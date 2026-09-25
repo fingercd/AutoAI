@@ -253,6 +253,66 @@ def test_provider_cached_and_total_only_usage_are_distinct():
             'prompt_tokens_details': {'cached_tokens': 11}}})
 
 
+@pytest.mark.parametrize('kind,error,dimension', [
+    ('api', 'api_unavailable', 'network_retries'),
+    ('llm', 'llm_timeout', 'network_retries'),
+    ('llm', 'llm_output_invalid', 'output_repairs'),
+])
+def test_retry_dimension_is_enforced_and_recovery_does_not_double_charge(
+        tmp_path, kind, error, dimension):
+    from dataclasses import replace
+    frozen = policy()
+    frozen = replace(frozen, limits={**frozen.limits, dimension: 1})
+    path = tmp_path / 'retry.sqlite'
+    journal = CallJournal(path, 'retry-thread')
+    journal.bind_budget(frozen)
+
+    def start(current):
+        return current.begin(operation_id='same-operation', kind=kind, name='request',
+            maximum=frozen.limits[kind + '_calls'], max_attempts=3,
+            deadline=200.0, now=101.0, task_id=frozen.task_id)
+
+    first = start(journal)
+    journal.mark_dispatched(first, now=101.0)
+    journal.finish(first, error_code=error, output_tokens=1)
+    assert journal.budget_summary()[dimension]['known_actual'] == 0
+    second = start(journal)
+    assert journal.budget_summary()[dimension]['held_reserved'] == 1
+    journal.mark_dispatched(second, now=101.0)
+    journal.close()
+    journal = CallJournal(path, 'retry-thread')
+    journal.bind_budget(frozen)
+    assert journal.budget_summary()[dimension]['held_unknown'] == 1
+    journal.finish(second, error_code=error, output_tokens=1)
+    journal.finish(second, error_code=error, output_tokens=1)
+    assert journal.budget_summary()[dimension]['known_actual'] == 1
+    with pytest.raises(PersistenceError, match='budget_insufficient'):
+        start(journal)
+    assert len(journal.snapshot()) == 2
+    journal.close()
+
+
+def test_unstarted_repair_releases_hold_without_erasing_repair_classification(tmp_path):
+    journal = CallJournal(tmp_path / 'prepare-retry.sqlite', 'repair-thread')
+    journal.bind_budget(policy())
+    def start():
+        return journal.begin(operation_id='choose', kind='llm', name='submit',
+            maximum=6, max_attempts=3, deadline=200.0, now=101.0, task_id='task-journal')
+    first = start()
+    journal.mark_dispatched(first, now=101.0)
+    journal.finish(first, error_code='llm_output_invalid', output_tokens=1)
+    second = start()
+    journal.finish(second, error_code='llm_context_invalid')
+    summary = journal.budget_summary()['output_repairs']
+    assert summary['held_reserved'] == summary['known_actual'] == 0
+    third = start()
+    assert journal.budget_summary()['output_repairs']['held_reserved'] == 1
+    journal.mark_dispatched(third, now=101.0)
+    journal.finish(third, output_tokens=1)
+    assert journal.budget_summary()['output_repairs']['known_actual'] == 1
+    journal.close()
+
+
 def test_llm_timing_is_split_at_actual_request_boundary():
     payload = envelope(json.dumps(action()))
     payload['usage']['prompt_tokens_details'] = {'cached_tokens': 6}

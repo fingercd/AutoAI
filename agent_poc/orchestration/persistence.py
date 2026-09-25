@@ -202,6 +202,13 @@ class CallJournal:
                 amounts['cached_tokens'] = self.budget_policy.input_tokens_per_call_bound
         return amounts
 
+    def _reserved_dimensions(self, task_id: str, operation_id: str, attempt: int) -> set[str]:
+        # Replay the reservation actually committed for this attempt, including
+        # repair/retry classification. Do not reclassify after a crash.
+        return {row[0] for row in self.connection.execute('''SELECT dimension
+            FROM task_budget_reservations_v1 WHERE task_id=? AND owner='journal'
+            AND operation_id=? AND attempt_id=?''', (task_id, operation_id, str(attempt)))}
+
     def begin(self, *, operation_id: str, kind: str, name: str, maximum: int,
               max_attempts: int, deadline: float, now: float | None = None,
               task_id: str | None = None, session_id: str | None = None,
@@ -232,10 +239,19 @@ class CallJournal:
             if self.budget_policy is not None:
                 if task_id != self.budget_policy.task_id:
                     raise PersistenceError('budget_task_mismatch')
+                amounts = self._call_amounts(kind)
+                previous = self.connection.execute('''SELECT status,error_code
+                    FROM orchestration_calls_v1 WHERE thread_id=? AND operation_id=?
+                    AND status IN ('dispatched','confirmed','failed')
+                    ORDER BY id DESC LIMIT 1''', (self.thread_id, operation_id)).fetchone()
+                if previous is not None:
+                    dimension = ('output_repairs' if kind == 'llm' and previous[1] in
+                                 ('llm_output_invalid', 'llm_output_too_large') else 'network_retries')
+                    amounts[dimension] = 1
                 try:
                     reserve(self.connection, task_id=task_id, owner='journal',
                             operation_id=operation_id, attempt_id=str(attempts),
-                            amounts=self._call_amounts(kind),
+                            amounts=amounts,
                             payload={'kind': kind, 'name': name, 'session_id': session_id,
                                      'run_id': run_id}, phase=phase, now=now)
                 except BudgetError as error:
@@ -274,7 +290,7 @@ class CallJournal:
             deadline = (self.budget_policy.work_deadline_at if phase == 'work'
                         else self.budget_policy.deadline_at)
             expired = now >= deadline
-            for dimension in self._call_amounts(kind):
+            for dimension in self._reserved_dimensions(task_id, operation_id, attempt):
                 transition(self.connection, task_id=task_id, owner='journal',
                            operation_id=operation_id, attempt_id=str(attempt),
                            dimension=dimension, status='released' if expired else 'dispatched')
@@ -307,7 +323,7 @@ class CallJournal:
                 if status in ('prepare_failed', 'confirmed', 'failed'):
                     return
                 if status == 'prepared':
-                    for dimension in self._call_amounts(kind):
+                    for dimension in self._reserved_dimensions(task_id, operation_id, attempt):
                         transition(self.connection, task_id=task_id, owner='journal',
                                    operation_id=operation_id, attempt_id=str(attempt),
                                    dimension=dimension, status='released')
@@ -317,15 +333,21 @@ class CallJournal:
                         (time.time(), error_code or 'prepare_failed', call_id, self.thread_id))
                     return
                 if status == 'dispatched':
+                    dimensions = self._reserved_dimensions(task_id, operation_id, attempt)
                     transition(self.connection, task_id=task_id, owner='journal',
                                operation_id=operation_id, attempt_id=str(attempt),
                                dimension=kind + '_calls', status='settled', actual=1,
                                source_ref=f'call-{call_id}')
+                    for dimension in dimensions & {'output_repairs', 'network_retries'}:
+                        transition(self.connection, task_id=task_id, owner='journal',
+                                   operation_id=operation_id, attempt_id=str(attempt),
+                                   dimension=dimension, status='settled', actual=1,
+                                   source_ref=f'call-{call_id}')
                     if kind == 'llm':
                         for dimension, value in (('input_tokens', input_tokens),
                                                  ('output_tokens', output_tokens),
                                                  ('cached_tokens', cached_tokens)):
-                            if dimension not in self._call_amounts(kind):
+                            if dimension not in dimensions:
                                 continue
                             transition(self.connection, task_id=task_id, owner='journal',
                                 operation_id=operation_id, attempt_id=str(attempt),
