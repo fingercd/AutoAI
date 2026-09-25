@@ -144,7 +144,8 @@ class TrainingExecution:
         return {'manifest_name': 'manifest.json'}
 
 
-def execute_claimed_run(record: RunRecord, *, repository: Any) -> dict[str, str]:
+def execute_claimed_run(record: RunRecord, *, repository: Any,
+                        storage_root: Path | None = None) -> dict[str, str]:
     """执行一个已 claim 的 Run，并在 Manifest 提交后返回完成信息。
 
     职责：解析主数据集与可选独立测试集（server 模式只认 dataset_id，
@@ -154,7 +155,13 @@ def execute_claimed_run(record: RunRecord, *, repository: Any) -> dict[str, str]
     from ..datasets.repository import DatasetRepository
     from ..paths import DATASETS_DATABASE, RUNS_DIR, STORAGE_DIR
 
-    dataset_repository = DatasetRepository(DATASETS_DATABASE, storage_root=STORAGE_DIR)
+    # A supervised child receives the same repository storage root explicitly;
+    # the ordinary worker and existing direct callers retain the shared paths.
+    root = Path(storage_root) if storage_root is not None else STORAGE_DIR
+    datasets_database = root / 'datasets.sqlite3' if storage_root is not None else DATASETS_DATABASE
+    runs_dir = root / 'runs' if storage_root is not None else RUNS_DIR
+
+    dataset_repository = DatasetRepository(datasets_database, storage_root=root)
     dataset_repository.initialize()
     # 每次执行独立建 DatasetRepository：worker 是长驻进程，避免跨 Run 共享连接状态
     dataset = dataset_repository.resolve_system(record.dataset_id, legacy_path=record.legacy_data_path)
@@ -171,7 +178,7 @@ def execute_claimed_run(record: RunRecord, *, repository: Any) -> dict[str, str]
             test_dataset,
             expected_sha256=record.config.get('test_dataset_sha256'),
         )
-    execution = TrainingExecution(repository=repository, run_dir=RUNS_DIR / record.run_id)
+    execution = TrainingExecution(repository=repository, run_dir=runs_dir / record.run_id)
     return execution.execute(
         record,
         data_path=dataset.path,
