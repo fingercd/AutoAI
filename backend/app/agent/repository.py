@@ -100,6 +100,8 @@ class AgentSessionRecord:
     payload_hash: str | None = None
     budget_task_id: str | None = None
     budget_policy_digest: str | None = None
+    termination_reason: str | None = None
+    terminated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,10 @@ class AgentSessionRepository:
             for column in ('budget_task_id', 'budget_policy_digest'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
+            for column in ('termination_request_id', 'termination_payload_digest',
+                           'termination_reason', 'terminated_at'):
+                if column not in session_columns:
+                    connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
             connection.execute('''CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_budget_task_v1
                 ON agent_sessions_v1(budget_task_id) WHERE budget_task_id IS NOT NULL''')
             initialize_ledger(connection)
@@ -296,7 +302,9 @@ class AgentSessionRepository:
     @staticmethod
     def _session(row: sqlite3.Row) -> AgentSessionRecord:
         record = AgentSessionRecord(
-            session_id=row['session_id'], state=row['state'], dataset_id=row['dataset_id'],
+            session_id=row['session_id'],
+            state='terminated' if row['terminated_at'] is not None else row['state'],
+            dataset_id=row['dataset_id'],
             selection_metric=row['selection_metric'],
             allowed_models=tuple(_decode(row['allowed_models_json'], [])), max_runs=int(row['max_runs']),
             seed=int(row['seed']), evaluation_config=dict(_decode(row['evaluation_config_json'], {})),
@@ -309,12 +317,25 @@ class AgentSessionRepository:
             frozen_preparation=_decode_preparation(row['frozen_preparation_json']),
             payload_hash=row['payload_hash'],
             budget_task_id=row['budget_task_id'], budget_policy_digest=row['budget_policy_digest'],
+            termination_reason=row['termination_reason'], terminated_at=row['terminated_at'],
         )
         frozen = record.frozen_preparation
         if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):
             raise AgentDomainError('agent_preparation_failed',
                 'session 冻结准备包缺失，无法恢复配方契约', status_code=409)
-        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+        if frozen is not None and frozen['protocol_revision'] == 'agent-recipes-revision-v5':
+            body = frozen.get('budget_policy')
+            try:
+                parsed = BudgetPolicy.from_dict(body)
+            except (BudgetError, TypeError):
+                parsed = None
+            if (parsed is None or parsed.task_id != record.budget_task_id or
+                    frozen.get('budget_policy_digest') != record.budget_policy_digest or
+                    frozen.get('budget_awareness') not in ('on', 'off') or
+                    parsed.digest != record.budget_policy_digest):
+                raise AgentDomainError('budget_policy_conflict',
+                    'Session 冻结预算绑定不一致', status_code=409)
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
             from ..knowledge import KnowledgeError
             snapshot = frozen['preparation']['knowledge']
             if ('knowledge' in record.modules) != (snapshot.status == 'ready'):
@@ -351,7 +372,7 @@ class AgentSessionRepository:
             raise AgentSessionNotFound()
         session = self._session(session_row)
         frozen = session.frozen_preparation
-        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+        if frozen is not None and frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
             from ..knowledge import KnowledgeError, resolve_decision
             metadata = record.decision_metadata
             if metadata is None:
@@ -500,7 +521,8 @@ class AgentSessionRepository:
                 (session_id, owner, tenant),
             ).fetchone()
             if session_row is None: connection.rollback(); raise AgentSessionNotFound()
-            if session_row['state'] != 'open': connection.rollback(); raise AgentSessionClosed()
+            if session_row['state'] != 'open' or session_row['terminated_at'] is not None:
+                connection.rollback(); raise AgentSessionClosed()
             if client_request_id:
                 row = connection.execute(
                     '''SELECT * FROM agent_experiment_reservations_v1 WHERE session_id=?
@@ -718,6 +740,8 @@ class AgentSessionRepository:
                 (session_id, owner, tenant),
             ).fetchone()
             if row is None: connection.rollback(); raise AgentSessionNotFound()
+            if row['terminated_at'] is not None:
+                connection.rollback(); raise AgentSessionClosed('session 已 terminated')
             if row['state']=='finalized':
                 if row['selected_run_id'] != selected_run_id:
                     connection.rollback(); raise AgentSessionClosed('session 已由另一个 run finalize')
@@ -730,6 +754,54 @@ class AgentSessionRepository:
             row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?', (session_id,)).fetchone()
             connection.commit()
         return self._session(row)
+
+    def terminate_session(self, *, session_id: str, request_id: str,
+                          reason: str, run_states: dict[str, str],
+                          principal: Principal) -> AgentSessionRecord:
+        """Close only a v5 Session with no active or unresolved experiment."""
+        import hashlib
+        digest = hashlib.sha256(_json({'reason': reason}).encode('utf-8')).hexdigest()
+        owner, tenant = self._scope(principal)
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('''SELECT * FROM agent_sessions_v1
+                WHERE session_id=? AND owner_id IS ? AND tenant_id IS ?''',
+                (session_id, owner, tenant)).fetchone()
+            if row is None:
+                raise AgentSessionNotFound()
+            frozen = _decode_preparation(row['frozen_preparation_json'])
+            if frozen is None or frozen['protocol_revision'] != 'agent-recipes-revision-v5':
+                raise AgentDomainError('agent_version_incompatible',
+                    '终止路径需要预算协议 v5', status_code=409)
+            if row['terminated_at'] is not None:
+                if (row['termination_request_id'], row['termination_payload_digest']) != (
+                        request_id, digest):
+                    raise AgentIdempotencyConflict()
+                return self._session(row)
+            if row['state'] != 'open':
+                raise AgentSessionClosed()
+            reservations = connection.execute('''SELECT state,run_id FROM
+                agent_experiment_reservations_v1 WHERE session_id=?''',
+                (session_id,)).fetchall()
+            if any(item['state'] in ('reserved', 'compensation_required') or
+                   item['state'] == 'bound' and
+                   run_states.get(item['run_id']) not in ('succeeded','failed','cancelled')
+                   for item in reservations):
+                raise AgentActiveRunExists()
+            unsettled = connection.execute('''SELECT 1 FROM task_budget_reservations_v1
+                WHERE task_id=? AND owner='backend' AND status IN ('reserved','dispatched')
+                LIMIT 1''', (row['budget_task_id'],)).fetchone()
+            if unsettled is not None:
+                raise AgentDomainError('budget_settlement_pending',
+                    '训练预算尚未结算', status_code=409)
+            connection.execute('''UPDATE agent_sessions_v1 SET
+                termination_request_id=?,termination_payload_digest=?,
+                termination_reason=?,terminated_at=? WHERE session_id=?''',
+                (request_id, digest, reason, _timestamp(), session_id))
+            updated = connection.execute('''SELECT * FROM agent_sessions_v1
+                WHERE session_id=?''', (session_id,)).fetchone()
+            connection.commit()
+            return self._session(updated)
 
 
 def collect_run_states(repository: RunRepository, run_ids: list[str]) -> dict[str, str]:
@@ -747,15 +819,15 @@ def _decode_preparation(raw):
     if 'decision_mode' in frozen and frozen['decision_mode'] not in ('recipe_id', 'structured_config'):
         raise AgentDomainError('agent_preparation_failed', 'Invalid frozen decision mode', status_code=409)
     revision = frozen['protocol_revision']
-    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+    if revision not in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
         raise AgentDomainError('agent_version_incompatible', 'Unknown frozen revision', status_code=409)
-    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
+    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
         catalog = frozen['preparation']['catalog']
         if (frozen.get('processing_mode') not in ('fixed','dynamic') or
                 frozen.get('processing_mode') != catalog.get('processing_mode') or
                 frozen.get('fixed_processing') != catalog.get('fixed_processing')):
             raise AgentDomainError('agent_preparation_failed', 'Frozen processing differs from catalog', status_code=409)
-    if revision == 'agent-recipes-revision-v4':
+    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
         from ..search_policy import validate_search_options, POLICY_VERSION
         from ..model_config import semantic_digest
         prepared = frozen['preparation']
@@ -776,7 +848,7 @@ def _decode_preparation(raw):
                     raise ValueError('search plan mismatch')
         except (KeyError, TypeError, ValueError) as exc:
             raise AgentDomainError('agent_preparation_failed', 'Frozen search differs from catalog', status_code=409) from exc
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4'):
+    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
         from ..knowledge import decode_snapshot, KnowledgeError
         prepared = frozen['preparation']
         if 'knowledge' not in prepared:

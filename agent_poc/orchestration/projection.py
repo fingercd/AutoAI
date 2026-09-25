@@ -98,7 +98,9 @@ def selection_context(*, task: dict[str, Any], models: list[str], session_id: st
 
 def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
                          validation: dict[str, Any], validation_score: float,
-                         allowed_actions: list[str], context_version: str = CONTEXT_VERSION) -> dict[str, Any]:
+                         allowed_actions: list[str], context_version: str = CONTEXT_VERSION,
+                         budget_awareness: str | None = None,
+                         budget_balance: dict | None = None) -> dict[str, Any]:
     if 'finalize_ml_session' not in allowed_actions:
         raise ValueError('finalize is not allowed')
     if 'status' in validation and validation['status'] != 'ready':
@@ -108,19 +110,25 @@ def finalization_context(*, task: dict[str, Any], session_id: str, run_id: str,
     checked = ValidationMetrics.model_validate(projected_metrics).model_dump(exclude_none=True)
     if checked.get(task['selection_metric']) != validation_score:
         raise ValueError('candidate selection metric mismatch')
-    context_type = (RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1') else
+    context_type = (BudgetFinalizationContext if context_version == 'agent-context-budget-v1' else
+                    RecipeFinalizationContext if context_version in ('agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1') else
                     FinalizationContext if context_version == CONTEXT_VERSION else FinalizationContextV2)
     return context_type.model_validate({
         'context_version': context_version, 'phase': 'finalize', 'task': _project_task(task),
-        'allowed_actions': ['finalize_ml_session'],
+        'allowed_actions': ['finalize_ml_session','stop_ml_session']
+            if budget_awareness == 'on' and context_version == 'agent-context-budget-v1'
+            else ['finalize_ml_session'],
         'bindings': {'session_id': session_id, 'selected_run_id': run_id},
         'validation': checked,
         'candidate': {'run_id': run_id, 'validation_score': validation_score, 'eligibility': 'valid'},
+        **({'budget_balance':budget_balance} if budget_balance is not None else {}),
     }).model_dump(mode='json', exclude_none=True)
 
 
 def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
-    if context.get('context_version') == 'agent-context-search-v1':
+    if context.get('context_version') == 'agent-context-budget-v1':
+        model = {'submit':BudgetSelectionContext,'finalize':BudgetFinalizationContext}.get(phase)
+    elif context.get('context_version') == 'agent-context-search-v1':
         model = {'submit':SearchSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
     elif context.get('context_version') == 'agent-context-processing-v1':
         model = {'submit':ProcessingSelectionContext,'finalize':RecipeFinalizationContext}.get(phase)
@@ -134,8 +142,16 @@ def validate_context(phase: str, context: dict[str, Any]) -> dict[str, Any]:
         model = {'submit': SelectionContext, 'finalize': FinalizationContext}.get(phase)
     if model is None:
         raise ValueError('unknown decision phase')
-    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version') not in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1'))
-    if checked['phase'] != phase or len(checked['allowed_actions']) != 1:
+    checked = model.model_validate(context).model_dump(mode='json', exclude_none=context.get('context_version') not in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1','agent-context-budget-v1'))
+    if context.get('context_version') == 'agent-context-budget-v1' and checked.get('budget_card') is None:
+        checked.pop('budget_card', None)
+    if context.get('context_version') == 'agent-context-budget-v1' and checked.get('budget_balance') is None:
+        checked.pop('budget_balance', None)
+    if (checked['phase'] != phase or
+            checked['allowed_actions'] not in (['submit_ml_experiment'],
+                                               ['finalize_ml_session'],
+                                               ['submit_ml_experiment','stop_ml_session'],
+                                               ['finalize_ml_session','stop_ml_session'])):
         raise ValueError('invalid allowed action')
     return checked
 
@@ -179,14 +195,38 @@ class RecipeSelectionContext(ClosedModel):
 
 
 class RecipeFinalizationContext(FinalizationContext):
-    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1']
+    context_version: Literal['agent-context-recipes-v1','agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1','agent-context-budget-v1']
 
 
-def recipe_selection_context(*,task,session_id,preparation,context_policy,model_configs=None):
+class BudgetFinalizationBalance(ClosedModel):
+    llm_calls_remaining: int = Field(ge=0)
+    api_calls_remaining: int = Field(ge=0)
+    llm_calls_unknown_held: int = Field(ge=0)
+    api_calls_unknown_held: int = Field(ge=0)
+    task_seconds_remaining: float = Field(ge=0, allow_inf_nan=False)
+
+
+class BudgetFinalizationContext(RecipeFinalizationContext):
+    context_version: Literal['agent-context-budget-v1']
+    allowed_actions: list[Literal['finalize_ml_session','stop_ml_session']]
+    budget_balance: BudgetFinalizationBalance | None = None
+
+    @model_validator(mode='after')
+    def stop_visibility(self):
+        expected = (['finalize_ml_session','stop_ml_session']
+                    if self.budget_balance is not None else ['finalize_ml_session'])
+        if self.allowed_actions != expected:
+            raise ValueError('finalization budget visibility mismatch')
+        return self
+
+
+def recipe_selection_context(*,task,session_id,preparation,context_policy,model_configs=None,
+                             budget_card=None):
     from agent_poc.clients.knowledge import KnowledgePreparation
-    searching=context_policy.get('projection')=='agent-context-search-v1'
-    processing=context_policy.get('projection') in ('agent-context-processing-v1','agent-context-search-v1')
-    modern=context_policy.get('projection') in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1')
+    budget_revision=context_policy.get('projection')=='agent-context-budget-v1'
+    searching=context_policy.get('projection') in ('agent-context-search-v1','agent-context-budget-v1')
+    processing=context_policy.get('projection') in ('agent-context-processing-v1','agent-context-search-v1','agent-context-budget-v1')
+    modern=context_policy.get('projection') in ('agent-context-knowledge-v1','agent-context-processing-v1','agent-context-search-v1','agent-context-budget-v1')
     prepared=(KnowledgePreparation if modern else Preparation).model_validate(preparation)
     full_recipes=[r.model_dump(mode='json') for r in prepared.catalog.recipes]
     payload=dict(context_version='agent-context-recipes-v1',phase='submit',task=_project_task(task),
@@ -199,7 +239,7 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy,model_
     if context_policy['risks']:
         payload['train_risks']=[r.model_dump(mode='json') for r in prepared.evidence.risks]
     if modern:
-        payload.update(context_version='agent-context-search-v1' if searching else 'agent-context-processing-v1' if processing else 'agent-context-knowledge-v1',
+        payload.update(context_version='agent-context-budget-v1' if budget_revision else 'agent-context-search-v1' if searching else 'agent-context-processing-v1' if processing else 'agent-context-knowledge-v1',
             knowledge=prepared.knowledge.projection.model_dump(mode='json'))
     if processing:
         profiles={}
@@ -215,7 +255,13 @@ def recipe_selection_context(*,task,session_id,preparation,context_policy,model_
                 class_balance=recipe['class_balance']) for recipe in full_recipes])
     if searching:
         payload.update(search_mode=task['search_mode'],max_trials=task['max_trials'])
-    return (SearchSelectionContext if searching else ProcessingSelectionContext if processing else KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
+    if budget_revision and budget_card is not None:
+        payload['budget_card']=budget_card
+        payload['allowed_actions']=['submit_ml_experiment','stop_ml_session']
+    projected = (BudgetSelectionContext if budget_revision else SearchSelectionContext if searching else ProcessingSelectionContext if processing else KnowledgeSelectionContext if modern else RecipeSelectionContext).model_validate(payload).model_dump(mode='json',exclude_none=not modern)
+    if budget_revision and projected.get('budget_card') is None:
+        projected.pop('budget_card', None)
+    return projected
 
 
 from agent_poc.clients.knowledge import KnowledgeProjection
@@ -281,3 +327,38 @@ class SearchSelectionContext(ProcessingSelectionContext):
     context_version: Literal['agent-context-search-v1']
     search_mode: Literal['fixed','bounded']
     max_trials: int
+
+
+class BudgetRecipeCost(ClosedModel):
+    recipe_id: Identifier
+    model_fits_upper: int = Field(ge=0)
+    training_epochs_upper: int = Field(ge=0)
+    feasible: bool
+    estimated_seconds: None = None
+
+
+class BudgetCostCard(ClosedModel):
+    model_fits_remaining: int = Field(ge=0)
+    training_epochs_remaining: int = Field(ge=0)
+    llm_calls_remaining: int = Field(ge=0)
+    api_calls_remaining: int = Field(ge=0)
+    llm_calls_unknown_held: int = Field(ge=0)
+    api_calls_unknown_held: int = Field(ge=0)
+    work_seconds_remaining: float = Field(ge=0, allow_inf_nan=False)
+    finalization_llm_calls_protected: int = Field(ge=0)
+    finalization_api_calls_protected: int = Field(ge=0)
+    recipes: list[BudgetRecipeCost]
+
+
+class BudgetSelectionContext(SearchSelectionContext):
+    context_version: Literal['agent-context-budget-v1']
+    allowed_actions: list[Literal['submit_ml_experiment','stop_ml_session']]
+    budget_card: BudgetCostCard | None = None
+
+    @model_validator(mode='after')
+    def stop_visibility(self):
+        expected = (['submit_ml_experiment','stop_ml_session'] if self.budget_card is not None
+                    else ['submit_ml_experiment'])
+        if self.allowed_actions != expected:
+            raise ValueError('budget action visibility mismatch')
+        return self

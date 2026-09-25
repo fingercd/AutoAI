@@ -145,12 +145,15 @@ class KnowledgePreparation(Preparation):
 
 
 class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5']
     preparation: KnowledgePreparation
     processing_mode: Literal['fixed','dynamic'] | None = None
     fixed_processing: dict[str,dict[str,str]] | None = None
     search_mode: Literal['fixed','bounded'] | None = None
     max_trials: int | None = None
+    budget_policy: dict[str, object] | None = None
+    budget_policy_digest: str | None = None
+    budget_awareness: Literal['on', 'off'] | None = None
 
     @field_validator('modules')
     @classmethod
@@ -163,7 +166,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
     def module_binding(self):
         if ('knowledge' in self.modules)!=(self.preparation.knowledge.status=='ready'):
             raise ValueError('knowledge switch mismatch')
-        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4'):
+        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5'):
             if (self.processing_mode is None or self.fixed_processing is None or
                     ('dynamic_preprocessing' in self.modules) != (self.processing_mode == 'dynamic')):
                 raise ValueError('processing switch mismatch')
@@ -171,7 +174,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
                 raise ValueError('processing catalog mismatch')
         elif self.processing_mode is not None or self.fixed_processing is not None or 'dynamic_preprocessing' in self.modules:
             raise ValueError('legacy knowledge processing mismatch')
-        if self.protocol_revision == 'agent-recipes-revision-v4':
+        if self.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5'):
             from backend.app.search_policy import validate_search_options
             if (self.search_mode is None or self.max_trials != validate_search_options(self.search_mode, self.max_trials)
                     or ('bounded_hpo' in self.modules) != (self.search_mode == 'bounded')):
@@ -183,6 +186,17 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
                 raise ValueError('search plans missing')
         elif self.search_mode is not None or self.max_trials is not None or 'bounded_hpo' in self.modules:
             raise ValueError('legacy knowledge search mismatch')
+        if self.protocol_revision == 'agent-recipes-revision-v5':
+            import hashlib
+            import json
+            if (self.budget_policy is None or self.budget_awareness is None or
+                    self.budget_policy_digest != hashlib.sha256(json.dumps(
+                        self.budget_policy, sort_keys=True, ensure_ascii=True,
+                        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()):
+                raise ValueError('frozen budget mismatch')
+        elif (self.budget_policy is not None or self.budget_policy_digest is not None or
+              self.budget_awareness is not None):
+            raise ValueError('legacy knowledge budget mismatch')
         return self
 
 
@@ -192,6 +206,19 @@ class KnowledgeCreatedSessionResponse(CreatedSessionResponse):
 
 class KnowledgeSessionResponse(SessionResponse):
     locked_config: KnowledgeLockedConfig
+    termination_reason: str | None = None
+    terminated_at: str | None = None
+
+
+class TerminatedSessionResponse(ClosedModel):
+    contract_version: Literal['agent-session-v2']
+    session_id: Identifier
+    state: Literal['terminated']
+    selected_run_id: None
+    termination_reason: Literal['no_candidates', 'budget_exhausted', 'no_valid_run',
+                                'operator_stop', 'deadline']
+    terminated_at: str
+    experiments_locked: Literal[True]
 
 
 class KnowledgeCapability(ClosedModel):
@@ -216,7 +243,7 @@ class SearchCapability(ClosedModel):
 
 
 class KnowledgeHealthResponse(HealthResponse):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5']
     execution_profiles: list[Literal['train-evidence-recipes-v1']]
     modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability | SearchCapability]
 
@@ -258,4 +285,5 @@ class KnowledgeExperimentResponse(ExperimentResponse):
 
 KNOWLEDGE_RESPONSE_MODELS = {**RECIPE_RESPONSE_MODELS,
     'inspect_ml_capabilities':KnowledgeHealthResponse,'start_ml_session':KnowledgeCreatedSessionResponse,
-    'inspect_ml_session':KnowledgeSessionResponse,'submit_ml_experiment':KnowledgeExperimentResponse}
+    'inspect_ml_session':KnowledgeSessionResponse,'submit_ml_experiment':KnowledgeExperimentResponse,
+    'terminate_ml_session':TerminatedSessionResponse}

@@ -132,6 +132,32 @@ class BudgetPolicy:
     def digest(self) -> str:
         return _digest(self.as_dict())
 
+    @classmethod
+    def from_dict(cls, body: object) -> 'BudgetPolicy':
+        """Accept only the exact versioned wire image of a validated policy."""
+        if type(body) is not dict:
+            raise BudgetError('budget_policy_invalid')
+        try:
+            limits = {name: body['dimensions'][name]['limit'] for name in DIMENSIONS}
+            policy = cls(task_id=body['task_id'], started_at=body['started_at'],
+                deadline_at=body['deadline_at'], work_deadline_at=body['work_deadline_at'],
+                limits=limits,
+                finalization_llm_calls=body['finalization']['llm_calls'],
+                finalization_api_calls=body['finalization']['api_calls'],
+                max_operation_attempts=body['max_operation_attempts'],
+                max_repair_attempts=body['max_repair_attempts'],
+                max_output_tokens_per_call=body['max_output_tokens_per_call'],
+                input_tokens_per_call_bound=body['input_tokens_per_call_bound'],
+                input_bound_source=body['input_bound_source'],
+                source_version=body['version'])
+            if policy.as_dict() != body:
+                raise BudgetError('budget_policy_invalid')
+            return policy
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, BudgetError):
+                raise
+            raise BudgetError('budget_policy_invalid') from exc
+
 
 def training_upper_bound(plan: Mapping[str, object], *, epochs: int | None = None) -> dict[str, int]:
     """Count base model fits; preprocessing and normalizer fits are separate spans."""

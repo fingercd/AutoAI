@@ -26,6 +26,7 @@ MetricName = Literal['macro_f1', 'balanced_accuracy']
 ToolName = Literal[
     'inspect_ml_capabilities', 'start_ml_session', 'inspect_ml_session',
     'submit_ml_experiment', 'observe_ml_experiment', 'finalize_ml_session',
+    'stop_ml_session', 'terminate_ml_session',
 ]
 JsonPrimitive: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonPrimitive | list['JsonValue'] | dict[str, 'JsonValue']
@@ -380,7 +381,7 @@ class DirectAction(StrictModel):
 class DecisionState(StrictModel):
     status: Availability = 'pending'
     decision_id: Identifier | None = None
-    kind: Literal['direct_action', 'recipe_selection', 'search_selection', 'finalize'] | None = None
+    kind: Literal['direct_action', 'recipe_selection', 'search_selection', 'finalize', 'budget_stop'] | None = None
     action: DirectAction | None = None
     selected_run_id: Identifier | None = None
     recipe_id: Identifier | None = None
@@ -707,7 +708,7 @@ class HistoryState(StrictModel):
 
 class PendingOperation(StrictModel):
     operation_id: Identifier
-    kind: Literal['session', 'experiment', 'finalize', 'reconcile', 'inspect', 'observe', 'llm']
+    kind: Literal['session', 'experiment', 'finalize', 'terminate', 'reconcile', 'inspect', 'observe', 'llm']
     request_id: Identifier | None = None
     tool_name: ToolName | None = None
     content: SessionRequest | ExperimentRequest | FinalizeRequest | None = None
@@ -716,9 +717,10 @@ class PendingOperation(StrictModel):
 
     @model_validator(mode='after')
     def content_matches(self) -> 'PendingOperation':
-        types = {'session': SessionRequest, 'experiment': (ExperimentRequest, RecipeExperimentRequest), 'finalize': FinalizeRequest}
+        types = {'session': SessionRequest, 'experiment': (ExperimentRequest, RecipeExperimentRequest),
+                 'finalize': FinalizeRequest, 'terminate': TerminateRequest}
         tools = {'session': 'start_ml_session', 'experiment': 'submit_ml_experiment',
-                 'finalize': 'finalize_ml_session'}
+                 'finalize': 'finalize_ml_session', 'terminate': 'terminate_ml_session'}
         if self.kind in types:
             if not isinstance(self.content, types[self.kind]):
                 raise ValueError('operation content does not match its kind')
@@ -726,7 +728,7 @@ class PendingOperation(StrictModel):
                 raise ValueError('operation content fingerprint mismatch')
             if self.tool_name != tools[self.kind]:
                 raise ValueError('operation tool does not match its kind')
-            if self.kind in ('session', 'experiment') and self.request_id != self.content.client_request_id:
+            if self.kind in ('session', 'experiment', 'terminate') and self.request_id != self.content.client_request_id:
                 raise ValueError('operation request identifier does not match content')
         elif self.content is not None:
             raise ValueError('read and reconciliation operations do not carry mutation content')
@@ -742,7 +744,7 @@ class OperationAttempts(StrictModel):
 
 
 class ConfirmedBackendState(StrictModel):
-    session_state: Literal['open', 'finalized'] | None = None
+    session_state: Literal['open', 'finalized', 'terminated'] | None = None
     run_status: RunStatus | None = None
     selected_run_id: Identifier | None = None
     remaining_runs: NonnegativeInt | None = None
@@ -770,7 +772,7 @@ class FinalizationState(StrictModel):
     selected_run_id: Identifier | None = None
     rationale: SafeText | None = None
     status: Literal['pending', 'confirmed', 'unselected'] = 'pending'
-    backend_session_state: Literal['open', 'finalized'] | None = None
+    backend_session_state: Literal['open', 'finalized', 'terminated'] | None = None
     locked_at: Nonnegative | None = None
     termination_reason: Identifier | None = None
 
@@ -829,7 +831,7 @@ class StateModel(StrictModel):
         config = self.execution.effective_config
         if config is not None:
             if (config.seed != self.task.seed or config.evaluation_config != self.task.evaluation_config
-                    or (self.versions.state not in ('agent-state-v5','agent-state-v6') and
+                    or (self.versions.state not in ('agent-state-v5','agent-state-v6','agent-state-v7') and
                         (config.normalization != self.task.normalization or config.class_balance != self.task.class_balance))):
                 raise ValueError('effective configuration differs from frozen task')
             if config.model_type not in self.capabilities.eligible_models:
@@ -843,7 +845,7 @@ class StateModel(StrictModel):
         if decision.validation_status == 'ready' and decision.kind == 'direct_action':
             if decision.action is None or decision.action.model_type not in self.capabilities.eligible_models:
                 raise ValueError('validated decision is outside Agent candidate capability')
-            if (self.versions.state not in ('agent-state-v5','agent-state-v6') and
+            if (self.versions.state not in ('agent-state-v5','agent-state-v6','agent-state-v7') and
                     (decision.action.normalization != self.task.normalization
                      or decision.action.class_balance != self.task.class_balance)):
                 raise ValueError('validated decision changes frozen processing')
@@ -874,10 +876,10 @@ class StateModel(StrictModel):
                 raise ValueError('selection score requires ready validation')
             if self.feedback.selection_score != getattr(self.feedback.validation_metrics, self.task.selection_metric):
                 raise ValueError('selection score does not match the frozen metric')
-        for name in (('memory','diagnosis','replanning') if self.versions.state in ('agent-state-v4','agent-state-v5','agent-state-v6') else ('knowledge', 'memory', 'diagnosis', 'replanning') if self.versions.state=='agent-state-v3' else ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning')):
+        for name in (('memory','diagnosis','replanning') if self.versions.state in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else ('knowledge', 'memory', 'diagnosis', 'replanning') if self.versions.state=='agent-state-v3' else ('evidence', 'recipes', 'knowledge', 'memory', 'diagnosis', 'replanning')):
             if getattr(self, name).status != 'disabled':
                 raise ValueError('unavailable research module cannot publish an enabled status')
-        if self.versions.state not in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+        if self.versions.state not in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
             if (self.evidence.algorithm_version is not None or self.evidence.risks or self.evidence.summary is not None
                     or self.evidence.references or self.evidence.validity != 'unavailable'
                     or self.evidence.statistics != TrainStatistics()):
@@ -886,7 +888,7 @@ class StateModel(StrictModel):
                     or self.recipes.catalog_digest is not None or self.recipes.legal_recipes or self.recipes.uses
                     or self.recipes.selection_mode != 'direct_action'):
                 raise ValueError('disabled recipes cannot publish fabricated outputs')
-        if self.versions.state not in ('agent-state-v4','agent-state-v5','agent-state-v6') and (self.knowledge.prior_version is not None or self.knowledge.matches):
+        if self.versions.state not in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and (self.knowledge.prior_version is not None or self.knowledge.matches):
             raise ValueError('disabled knowledge cannot publish fabricated outputs')
         if (self.memory.snapshot_version is not None or self.memory.snapshot_digest is not None
                 or self.memory.recalls or self.memory.publication_operation_id is not None
@@ -1166,7 +1168,10 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
               wire_version: str = 'agent-state-v1', model_configs: dict | None = None,
               evidence_context: bool = True, risk_context: bool = True, knowledge_enabled: bool = False, decision_mode: str | None = None, knowledge_query: dict | None = None,
               processing_mode: str | None = None, fixed_processing: dict | None = None,
-              search_mode: str | None = None, max_trials: int | None = None) -> GraphState:
+              search_mode: str | None = None, max_trials: int | None = None,
+              budget_policy: dict[str, Any] | None = None,
+              budget_awareness: str | None = None,
+              canonical_journal_sha256: str | None = None) -> GraphState:
     """Create a complete empty state without fabricating unavailable outputs."""
     started_at = time.time() if now is None else now
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -1174,10 +1179,10 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     for count in (max_llm_calls, max_api_calls, max_operation_attempts):
         if type(count) is not int or count < 1:
             raise ValueError('runtime call limits must be positive integers')
-    if wire_version not in ('agent-state-v1', 'agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+    if wire_version not in ('agent-state-v1', 'agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
         raise ValueError('unknown State version')
     modern = wire_version != 'agent-state-v1'
-    recipes = wire_version in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6')
+    recipes = wire_version in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7')
     task_type = TaskStateV2 if modern else TaskState
     version_type = VersionsStateV2 if modern else VersionsState
     context_type = ContextPolicyV2 if modern else ContextPolicy
@@ -1193,22 +1198,36 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
     if wire_version=='agent-state-v6':
         task_type,version_type,context_type,policy_type,state_type=(
             SearchTask,SearchVersions,SearchContext,SearchModulePolicy,SearchStateModel)
-    if wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6') and knowledge_enabled:
+    if wire_version=='agent-state-v7':
+        task_type,version_type,context_type,policy_type,state_type=(
+            BudgetTask,BudgetVersions,BudgetContext,BudgetModulePolicy,BudgetStateModel)
+        if (not isinstance(budget_policy, dict) or
+                budget_awareness not in ('on','off') or
+                not isinstance(canonical_journal_sha256, str) or
+                len(canonical_journal_sha256) != 64 or
+                budget_policy.get('task_id') != task_id or
+                budget_policy.get('started_at') != started_at or
+                budget_policy.get('deadline_at') != started_at + timeout_seconds):
+            raise ValueError('v7 requires matching frozen budget policy')
+    elif (budget_policy is not None or budget_awareness is not None or
+          canonical_journal_sha256 is not None):
+        raise ValueError('budget policy requires v7')
+    if wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and knowledge_enabled:
         raise ValueError('knowledge requires v4')
     if not modern and model_configs:
         raise ValueError('v1 does not accept model configurations')
-    if knowledge_query is not None and wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+    if knowledge_query is not None and wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
         raise ValueError('knowledge query requires current recipe State')
-    if decision_mode is not None and wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+    if decision_mode is not None and wire_version not in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
         raise ValueError('decision mode requires current recipe State')
-    if wire_version in ('agent-state-v5','agent-state-v6'):
+    if wire_version in ('agent-state-v5','agent-state-v6','agent-state-v7'):
         from backend.app.processing_policy import freeze_fixed_processing
         if processing_mode not in ('fixed','dynamic'):
             raise ValueError('invalid processing mode')
         fixed_processing = freeze_fixed_processing(allowed_models, fixed_processing)
     elif processing_mode is not None or fixed_processing is not None:
         raise ValueError('processing requires v5')
-    if wire_version == 'agent-state-v6':
+    if wire_version in ('agent-state-v6','agent-state-v7'):
         from backend.app.search_policy import validate_search_options
         search_mode = search_mode or 'fixed'
         max_trials = validate_search_options(search_mode,max_trials)
@@ -1216,22 +1235,29 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
         raise ValueError('search requires v6')
     evaluation = EvaluationConfig()
     task = task_type(**({'knowledge_query':knowledge_query} if knowledge_query is not None else {}), **({'decision_mode':decision_mode} if decision_mode is not None else {}),
-                     **({'processing_mode':processing_mode,'fixed_processing':fixed_processing} if wire_version in ('agent-state-v5','agent-state-v6') else {}),
-                     **({'search_mode':search_mode,'max_trials':max_trials} if wire_version=='agent-state-v6' else {}),
+                     **({'processing_mode':processing_mode,'fixed_processing':fixed_processing} if wire_version in ('agent-state-v5','agent-state-v6','agent-state-v7') else {}),
+                     **({'search_mode':search_mode,'max_trials':max_trials} if wire_version in ('agent-state-v6','agent-state-v7') else {}),
+                     **({'budget_policy':budget_policy,
+                         'budget_policy_digest':hashlib.sha256(json.dumps(budget_policy,
+                             sort_keys=True, ensure_ascii=True, separators=(',', ':'),
+                             allow_nan=False).encode('utf-8')).hexdigest(),
+                         'budget_awareness':budget_awareness} if wire_version=='agent-state-v7' else {}),
+                     **({'canonical_journal_sha256':canonical_journal_sha256}
+                        if wire_version=='agent-state-v7' else {}),
                      dataset_id=dataset_id, allowed_models=allowed_models, seed=seed,
                      selection_metric=selection_metric,
                      **({'model_configs':model_configs or {}} if modern else {}),
                      evaluation_config_fingerprint=fingerprint(evaluation.model_dump(mode='json')))
-    versions = version_type(prompt='agent-decision-search-v1' if wire_version=='agent-state-v6' else 'agent-decision-processing-v1' if wire_version=='agent-state-v5' else 'agent-decision-knowledge-v1' if wire_version=='agent-state-v4' else 'agent-decision-recipes-v1' if recipes else ('agent-decision-step2-v1' if modern else prompt_version), llm_config=llm_config_version,
+    versions = version_type(prompt='agent-decision-budget-v1' if wire_version=='agent-state-v7' else 'agent-decision-search-v1' if wire_version=='agent-state-v6' else 'agent-decision-processing-v1' if wire_version=='agent-state-v5' else 'agent-decision-knowledge-v1' if wire_version=='agent-state-v4' else 'agent-decision-recipes-v1' if recipes else ('agent-decision-step2-v1' if modern else prompt_version), llm_config=llm_config_version,
                              llm_config_fingerprint=llm_config_fingerprint)
     policy = policy_type(context_policy=context_type(source_role=source_role,**({'evidence':evidence_context,'risks':risk_context} if recipes else {})))
-    if wire_version in ('agent-state-v4','agent-state-v5','agent-state-v6'):
+    if wire_version in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
         policy.knowledge=KnowledgeSwitch(enabled=knowledge_enabled)
         if knowledge_enabled:
             versions.knowledge=VersionRef(status='ready',version='knowledge-snapshot-rag-v1')
-    if wire_version in ('agent-state-v5','agent-state-v6'):
+    if wire_version in ('agent-state-v5','agent-state-v6','agent-state-v7'):
         policy.dynamic_preprocessing=KnowledgeSwitch(enabled=processing_mode=='dynamic')
-    if wire_version=='agent-state-v6':
+    if wire_version in ('agent-state-v6','agent-state-v7'):
         policy.bounded_hpo=KnowledgeSwitch(enabled=search_mode=='bounded')
     budget = BudgetState(deadline_at=started_at + timeout_seconds,
                          max_operation_attempts=max_operation_attempts,
@@ -1251,7 +1277,7 @@ def new_state(*, dataset_id: str, allowed_models: list[str], backend_fingerprint
                                              or fingerprint({'api_timeout': 10.0})),
                        lifecycle=LifecycleState(started_at=started_at), task=task, versions=versions,
                        module_policy=policy, budget=budget,
-                       **({'knowledge':BoundKnowledgeState(status='pending' if knowledge_enabled else 'disabled')} if wire_version in ('agent-state-v4','agent-state-v5','agent-state-v6') else {}))
+                       **({'knowledge':BoundKnowledgeState(status='pending' if knowledge_enabled else 'disabled')} if wire_version in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') else {}))
     return cast(GraphState, state.model_dump(mode='json'))
 
 
@@ -1362,16 +1388,16 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
     old = validate_state(state).model_dump(mode='json')
     merged = _deep_merge(old, patch)
     updated = validate_state(merged).model_dump(mode='json')
-    if old['versions']['state'] in ('agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6'):
+    if old['versions']['state'] in ('agent-state-v2','agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7'):
         frozen = old['capabilities']['frozen_snapshot']
         if frozen is not None and frozen != updated['capabilities']['frozen_snapshot']:
             raise ValueError('Session capability snapshot is frozen')
-    if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') and old['evidence']['content'] is not None:
+    if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and old['evidence']['content'] is not None:
         if old['evidence']!=updated['evidence'] or any(old['recipes'][k]!=updated['recipes'][k] for k in ('status','catalog','evaluation_plan')):
             raise ValueError('prepared evidence and catalog are frozen')
-    if old['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6') and old['knowledge']['snapshot'] is not None and old['knowledge']!=updated['knowledge']:
+    if old['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and old['knowledge']['snapshot'] is not None and old['knowledge']!=updated['knowledge']:
         raise ValueError('knowledge snapshot is frozen')
-    if old['versions']['state'] == 'agent-state-v6' and old['search_plans'] and old['search_plans'] != updated['search_plans']:
+    if old['versions']['state'] in ('agent-state-v6','agent-state-v7') and old['search_plans'] and old['search_plans'] != updated['search_plans']:
         raise ValueError('search plans are frozen')
     for block in ('versions', 'module_policy'):
         if old[block] != updated[block]:
@@ -1383,7 +1409,7 @@ def apply_patch(state: GraphState | StateModel, patch: dict[str, object]) -> Gra
         if value is not None and value != updated['identity'][key]:
             raise ValueError('bound identity cannot be changed')
     for key, value in old['task'].items():
-        if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6') and key in ('split_fingerprint','split_fingerprint_status') and old['task']['split_fingerprint_status']=='unavailable':
+        if old['versions']['state'] in ('agent-state-v3','agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7') and key in ('split_fingerprint','split_fingerprint_status') and old['task']['split_fingerprint_status']=='unavailable':
             continue
         if key in ('dataset_fingerprint', 'dataset_fingerprint_status') and old['task']['dataset_fingerprint_status'] == 'pending':
             continue
@@ -1426,6 +1452,8 @@ def validate_state(raw):
         return ProcessingStateModel.model_validate(raw)
     if version == 'agent-state-v6':
         return SearchStateModel.model_validate(raw)
+    if version == 'agent-state-v7':
+        return BudgetStateModel.model_validate(raw)
     if version == 'agent-state-v3':
         return RecipeStateModel.model_validate(raw)
     if version == 'agent-state-v2':
@@ -1591,7 +1619,7 @@ class ProcessingStateModel(KnowledgeStateModel):
         catalog = self.recipes.catalog
         if catalog is None:
             return self
-        expected_catalog = 'recipe-catalog-v3' if self.versions.state == 'agent-state-v6' else 'recipe-catalog-v2'
+        expected_catalog = 'recipe-catalog-v3' if self.versions.state in ('agent-state-v6','agent-state-v7') else 'recipe-catalog-v2'
         if (catalog.catalog_version != expected_catalog or
                 catalog.processing_mode != self.task.processing_mode or
                 catalog.fixed_processing != self.task.fixed_processing):
@@ -1668,4 +1696,79 @@ class SearchStateModel(ProcessingStateModel):
                 raise ValueError('search options differ from frozen catalog')
             if any(recipe.search_plan_digest not in self.search_plans for recipe in catalog.recipes):
                 raise ValueError('search plans differ from frozen catalog')
+        return self
+
+
+class BudgetTask(SearchTask):
+    budget_policy: dict[str, Any]
+    budget_policy_digest: str
+    budget_awareness: Literal['on', 'off']
+    canonical_journal_sha256: Digest
+
+
+class BudgetVersions(SearchVersions):
+    state: Literal['agent-state-v7'] = 'agent-state-v7'
+    protocol_revision: Literal['agent-recipes-revision-v5'] = 'agent-recipes-revision-v5'
+    prompt: Literal['agent-decision-budget-v1'] = 'agent-decision-budget-v1'
+    context_projection: Literal['agent-context-budget-v1'] = 'agent-context-budget-v1'
+
+
+class BudgetContext(SearchContext):
+    projection: Literal['agent-context-budget-v1'] = 'agent-context-budget-v1'
+
+
+class BudgetModulePolicy(SearchModulePolicy):
+    context_policy: BudgetContext = Field(default_factory=BudgetContext)
+
+
+class BudgetSessionRequest(SearchSessionRequest):
+    context_policy: BudgetContext = Field(default_factory=BudgetContext)
+    budget_policy: dict[str, Any]
+    budget_awareness: Literal['on', 'off']
+
+
+class TerminateRequest(StrictModel):
+    session_id: Identifier
+    client_request_id: Identifier
+    reason: Literal['no_candidates', 'budget_exhausted', 'no_valid_run',
+                    'operator_stop', 'deadline']
+
+
+class BudgetPendingOperation(SearchPendingOperation):
+    content: BudgetSessionRequest | KnowledgeExperimentRequest | FinalizeRequest | TerminateRequest | None = None
+
+    @model_validator(mode='after')
+    def termination_content(self):
+        if self.kind == 'terminate':
+            if (not isinstance(self.content, TerminateRequest) or
+                    self.tool_name != 'terminate_ml_session' or
+                    self.request_id != self.content.client_request_id or
+                    self.content_fingerprint != fingerprint(self.content.model_dump(mode='json'))):
+                raise ValueError('termination operation mismatch')
+        return self
+
+
+class BudgetRecovery(SearchRecovery):
+    pending_operation: BudgetPendingOperation | None = None
+
+
+class BudgetStateModel(SearchStateModel):
+    task: BudgetTask
+    versions: BudgetVersions
+    module_policy: BudgetModulePolicy = Field(default_factory=BudgetModulePolicy)
+    recovery: BudgetRecovery = Field(default_factory=BudgetRecovery)
+
+    @model_validator(mode='after')
+    def budget_binding(self):
+        from backend.app.agent.budget import BudgetPolicy
+        body = self.task.budget_policy
+        policy = BudgetPolicy.from_dict(body)
+        if (body.get('task_id') != self.identity.task_id or
+                body.get('version') != 'budget-policy-v1' or
+                self.task.budget_policy_digest != policy.digest):
+            raise ValueError('frozen budget policy differs from task identity')
+        if (self.budget.deadline_at != body.get('deadline_at') or
+                self.budget.llm_calls.limit != body['dimensions']['llm_calls']['limit'] or
+                self.budget.api_calls.limit != body['dimensions']['api_calls']['limit']):
+            raise ValueError('State limits differ from frozen policy')
         return self
