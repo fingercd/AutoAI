@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -13,7 +14,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA = 'task-cost-snapshot-v2'
+SCHEMA = 'task-cost-report-v1'
 CALL_FIELDS = ('id', 'thread_id', 'operation_id', 'kind', 'name', 'status',
                'started_at', 'ended_at', 'attempt_index', 'task_id', 'session_id',
                'run_id', 'input_tokens', 'output_tokens', 'total_tokens',
@@ -107,7 +108,7 @@ def _backend_budget(agent_db: Path, *, session_id: str,
         columns = {item['name'] for item in db.execute('PRAGMA table_info(agent_sessions_v1)')}
         if 'budget_task_id' not in columns:
             return None
-        session = db.execute('''SELECT state,budget_task_id,budget_policy_digest FROM
+        session = db.execute('''SELECT state,finalized_at,terminated_at,budget_task_id,budget_policy_digest FROM
             agent_sessions_v1 WHERE session_id=?''', (session_id,)).fetchone()
         if session is None or session['budget_task_id'] is None:
             return None
@@ -145,7 +146,9 @@ def _backend_budget(agent_db: Path, *, session_id: str,
         event_ids = tuple(row['reservation_id'] for row in executions)
         events = _rows(db, 'task_training_events_v1',
             ('reservation_id','event_id','payload_digest','dimension','kind','status','entered_at','completed_at'),
-            where='ORDER BY reservation_id,event_id')
+            where='''WHERE reservation_id IN (SELECT reservation_id
+                FROM task_training_executions_v1 WHERE task_id=?)
+                ORDER BY reservation_id,event_id''', params=(task_id,))
         if any(row['reservation_id'] not in event_ids or
                row['dimension'] not in ('model_fits','training_epochs') or
                row['payload_digest'] != hashlib.sha256(json.dumps({
@@ -154,10 +157,14 @@ def _backend_budget(agent_db: Path, *, session_id: str,
             raise ValueError('cost_report_training_source_mismatch')
         terminations = _rows(db, 'task_training_terminations_v1',
             ('reservation_id','reason','requested_at','exited_at','latency_seconds','exit_code'),
-            where='ORDER BY reservation_id')
+            where='''WHERE reservation_id IN (SELECT reservation_id
+                FROM task_training_executions_v1 WHERE task_id=?)
+                ORDER BY reservation_id''', params=(task_id,))
         if any(row['reservation_id'] not in event_ids for row in terminations):
             raise ValueError('cost_report_training_source_mismatch')
-        return dict(task_status=session['state'], policy=json.loads(policy['policy_json']),
+        return dict(task_status='terminated' if session['terminated_at'] is not None else session['state'],
+                    completed_at=session['terminated_at'] or session['finalized_at'],
+                    policy=json.loads(policy['policy_json']),
                     policy_digest=policy['policy_digest'], dimensions=dimensions,
                     reservations=reservations, executions=executions,
                     events=events, terminations=terminations)
@@ -267,6 +274,18 @@ def _measure(rows: list[dict], field: str, *, applicable=lambda row: True) -> di
                 not_applicable_count=len(rows)-len(selected), applicable_count=len(selected))
 
 
+def _duration(start: str | None, end: str | None) -> float | None:
+    if start is None or end is None:
+        return None
+    try:
+        first = datetime.fromisoformat(start.replace('Z', '+00:00'))
+        last = datetime.fromisoformat(end.replace('Z', '+00:00'))
+        seconds = (last - first).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
 def _json(path: Path) -> Any:
     return json.loads(path.read_text(encoding='utf-8-sig')) if path.is_file() else None
 
@@ -307,9 +326,12 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
     if backend_budget is None and journal_dimensions is not None:
         raise ValueError('cost_report_policy_mismatch')
     calls, waits = call_rows(journal, thread_id)
-    if any(row['session_id'] != session_id or
-           row['task_id'] != task_id or
-           row['run_id'] not in (None, run_id) for row in calls):
+    if any(row['task_id'] != task_id or
+           row['run_id'] not in (None, run_id) or
+           (row['session_id'] != session_id and not
+            (row['session_id'] is None and row['run_id'] is None and
+             row['name'] in ('inspect_ml_capabilities','start_ml_session')))
+           for row in calls):
         raise ValueError('cost_report_call_binding_mismatch')
     if any((wait['task_id'], wait['session_id'], wait['run_id']) !=
            (task_id, session_id, run_id) for wait in waits):
@@ -336,7 +358,7 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                     request_started_at_utc=row['request_started_at_utc'],
                     response_ended_at_utc=row['response_ended_at_utc'],
                     request_duration_seconds=row['request_duration_seconds'],
-                    error_code=row['error_code'])
+                    error_code=row['error_code'], budget_phase=row['budget_phase'])
         attempts.append(base)
         if row['kind'] == 'llm':
             requests.append({**base, 'phase': row['phase'], 'protocol': row['protocol'],
@@ -417,6 +439,18 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                                             row['fit_purpose'] == 'candidate' and
                                             summary is not None and
                                             summary.get('selection_metric') == 'best_valid_loss'))
+    if backend_budget is not None:
+        workers = [{**entry, 'duration_seconds':_duration(entry['started_at'],
+            entry['finished_at'])} for entry in backend_budget['executions']]
+        coverage['worker_parent_duration'] = _measure(workers, 'duration_seconds')
+        completed_at = backend_budget['completed_at']
+        task_started = datetime.fromtimestamp(backend_budget['policy']['started_at'],
+            timezone.utc).isoformat()
+        coverage['task_wall_duration'] = _measure([{
+            'duration_seconds':_duration(task_started, completed_at)}], 'duration_seconds')
+    coverage['monitor_wait_duration'] = _measure(waits, 'duration_seconds')
+    search_parents = [event for event in events if event['stage'] == 'search']
+    coverage['search_parent_duration'] = _measure(search_parents, 'duration_seconds')
     dimensions = ({name: _report_dimension(value) for name, value in
                    {**backend_budget['dimensions'], **journal_dimensions}.items()}
         if backend_budget is not None and journal_dimensions is not None else
@@ -447,6 +481,9 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
         **(dict(task_status=backend_budget['task_status'],
             budget_policy_digest=backend_budget['policy_digest'],
             budget_dimensions=dimensions,
+            duration_scopes={name:coverage[name] for name in
+                ('task_wall_duration','worker_parent_duration',
+                 'search_parent_duration','monitor_wait_duration')},
             training_executions=backend_budget['executions'],
             training_terminations=backend_budget['terminations'])
             if backend_budget else {}),
@@ -460,7 +497,8 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
                   if backend_budget else []))
     markdown = (f'# 任务成本报告\n\n任务：{task_id or "历史未绑定"}；Session：{session_id}；'
                 f'Run：{run_id or "无"}。\n\n'
-                f'LLM 记录 {len(requests)} 条；训练 trial 记录 {len(training)} 条。'
+                f'状态：{cost_summary["report_status"]}；LLM 记录 {len(requests)} 条；'
+                f'训练明细 {len(training)} 条。'
                 '覆盖率详见 coverage.json。\n\n'
                 '未知成本保留为未知，预留量不算实际支出。父子时间段不可求和。'
                 '货币、电费与 GPU 秒不可用。\n')
