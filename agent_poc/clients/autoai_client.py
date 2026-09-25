@@ -186,6 +186,9 @@ class AutoAIClient:
         for index in range(attempts):
             try:
                 assert self.transport is not None
+                callback = getattr(self, 'on_dispatch', None)
+                if callback is not None:
+                    callback()
                 response = self.transport.request(
                     method, self.base_url + path, headers=headers, json=body, timeout=self.timeout)
                 break

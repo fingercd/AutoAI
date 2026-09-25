@@ -64,6 +64,9 @@ class BudgetPolicy:
     finalization_api_calls: int = 9
     max_operation_attempts: int = 3
     max_repair_attempts: int = 2
+    max_output_tokens_per_call: int = 1024
+    input_tokens_per_call_bound: int | None = None
+    input_bound_source: str | None = None
     source_version: str = POLICY_VERSION
 
     def __post_init__(self) -> None:
@@ -84,10 +87,23 @@ class BudgetPolicy:
             elif dimension not in ('input_tokens', 'cached_tokens'):
                 raise BudgetError('budget_hard_limit_missing')
         for value in (self.finalization_llm_calls, self.finalization_api_calls,
-                      self.max_operation_attempts, self.max_repair_attempts):
+                      self.max_operation_attempts, self.max_repair_attempts,
+                      self.max_output_tokens_per_call):
             _nonnegative_int(value)
-        if self.max_operation_attempts < 1:
+        if self.max_operation_attempts < 1 or self.max_output_tokens_per_call < 1:
             raise BudgetError('budget_invalid_integer')
+        if self.input_tokens_per_call_bound is not None:
+            _nonnegative_int(self.input_tokens_per_call_bound)
+        if (self.limits['input_tokens'] is not None or self.limits['cached_tokens'] is not None):
+            if (self.input_tokens_per_call_bound is None or
+                    self.input_bound_source != 'provider_verified'):
+                raise BudgetError('budget_input_bound_unverified')
+        if self.limits['output_tokens'] < self.finalization_llm_calls * self.max_output_tokens_per_call:
+            raise BudgetError('budget_finalization_insufficient')
+        for dimension in ('input_tokens', 'cached_tokens'):
+            if (self.limits[dimension] is not None and
+                    self.limits[dimension] < self.finalization_llm_calls * self.input_tokens_per_call_bound):
+                raise BudgetError('budget_finalization_insufficient')
         if self.limits['llm_calls'] < self.finalization_llm_calls or self.limits['api_calls'] < self.finalization_api_calls:
             raise BudgetError('budget_finalization_insufficient')
         object.__setattr__(self, 'limits', MappingProxyType(dict(self.limits)))
@@ -100,9 +116,17 @@ class BudgetPolicy:
                                           enforcement='hard' if self.limits[key] is not None else 'observation_only')
                                 for key, (unit, owner) in DIMENSIONS.items()},
                     finalization=dict(llm_calls=self.finalization_llm_calls,
-                                      api_calls=self.finalization_api_calls),
+                                      api_calls=self.finalization_api_calls,
+                                      output_tokens=self.finalization_llm_calls * self.max_output_tokens_per_call,
+                                      input_tokens=(self.finalization_llm_calls * self.input_tokens_per_call_bound
+                                          if self.limits['input_tokens'] is not None else 0),
+                                      cached_tokens=(self.finalization_llm_calls * self.input_tokens_per_call_bound
+                                          if self.limits['cached_tokens'] is not None else 0)),
                     max_operation_attempts=self.max_operation_attempts,
-                    max_repair_attempts=self.max_repair_attempts)
+                    max_repair_attempts=self.max_repair_attempts,
+                    max_output_tokens_per_call=self.max_output_tokens_per_call,
+                    input_tokens_per_call_bound=self.input_tokens_per_call_bound,
+                    input_bound_source=self.input_bound_source)
 
     @property
     def digest(self) -> str:
@@ -175,15 +199,15 @@ def dimension_summary(connection: sqlite3.Connection, *, task_id: str, owner: st
     rows = connection.execute('''SELECT actual,held,status FROM task_budget_reservations_v1
         WHERE task_id=? AND owner=? AND dimension=?''', (task_id, owner, dimension)).fetchall()
     known = sum(row[0] or 0 for row in rows)
-    held_reserved = sum(row[1] for row in rows if row[2] in ('reserved', 'dispatched'))
-    held_unknown = sum(row[1] for row in rows if row[2] == 'unknown_pending')
+    held_reserved = sum(row[1] for row in rows if row[2] == 'reserved')
+    held_unknown = sum(row[1] for row in rows if row[2] in ('dispatched', 'unknown_pending'))
     limit = spec['limit']
     return dict(unit=spec['unit'], owner=owner, limit=limit, known_actual=known,
                 held_reserved=held_reserved, held_unknown=held_unknown,
                 remaining=None if limit is None else max(0, limit-known-held_reserved-held_unknown),
                 budget_breach=limit is not None and known+held_reserved+held_unknown > limit,
                 known_count=sum(row[0] is not None for row in rows),
-                unknown_count=sum(row[2] == 'unknown_pending' for row in rows))
+                unknown_count=sum(row[2] in ('dispatched', 'unknown_pending') for row in rows))
 
 
 def reserve(connection: sqlite3.Connection, *, task_id: str, owner: str,

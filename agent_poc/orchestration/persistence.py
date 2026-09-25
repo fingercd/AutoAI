@@ -120,7 +120,8 @@ class CallJournal:
                                ('measurement_version','TEXT'),('model_id_sha256','TEXT'),('model_id','TEXT'),
                                ('protocol','TEXT'),('phase','TEXT'),('request_outcome','TEXT'),
                                ('task_id','TEXT'),('session_id','TEXT'),('run_id','TEXT'),
-                               ('budget_phase','TEXT')):
+                               ('budget_phase','TEXT'),('cached_tokens','INTEGER'),
+                               ('prepare_duration_seconds','REAL'),('parse_duration_seconds','REAL')):
                 if name not in columns:
                     self.connection.execute(f'ALTER TABLE orchestration_calls_v1 ADD COLUMN {name} {kind}')
             wait_columns={row[1] for row in self.connection.execute(
@@ -144,6 +145,18 @@ class CallJournal:
                                         owner='journal', dimension=name)
                 for name, spec in self.budget_policy.as_dict()['dimensions'].items()
                 if spec['owner'] == 'journal'}
+
+    def _call_amounts(self, kind: str) -> dict[str, int]:
+        if self.budget_policy is None:
+            return {}
+        amounts = {kind + '_calls': 1}
+        if kind == 'llm':
+            amounts['output_tokens'] = self.budget_policy.max_output_tokens_per_call
+            if self.budget_policy.limits['input_tokens'] is not None:
+                amounts['input_tokens'] = self.budget_policy.input_tokens_per_call_bound
+            if self.budget_policy.limits['cached_tokens'] is not None:
+                amounts['cached_tokens'] = self.budget_policy.input_tokens_per_call_bound
+        return amounts
 
     def begin(self, *, operation_id: str, kind: str, name: str, maximum: int,
               max_attempts: int, deadline: float, now: float | None = None,
@@ -177,7 +190,7 @@ class CallJournal:
                 try:
                     reserve(self.connection, task_id=task_id, owner='journal',
                             operation_id=operation_id, attempt_id=str(attempts),
-                            amounts={kind + '_calls': 1},
+                            amounts=self._call_amounts(kind),
                             payload={'kind': kind, 'name': name, 'session_id': session_id,
                                      'run_id': run_id}, phase=phase, now=now)
                 except BudgetError as error:
@@ -205,15 +218,17 @@ class CallJournal:
                 return
             if status != 'prepared' or self.budget_policy is None:
                 raise PersistenceError('call_dispatch_conflict')
-            transition(self.connection, task_id=task_id, owner='journal',
-                       operation_id=operation_id, attempt_id=str(attempt),
-                       dimension=kind + '_calls', status='dispatched')
+            for dimension in self._call_amounts(kind):
+                transition(self.connection, task_id=task_id, owner='journal',
+                           operation_id=operation_id, attempt_id=str(attempt),
+                           dimension=dimension, status='dispatched')
             self.connection.execute('''UPDATE orchestration_calls_v1 SET status='dispatched'
                 WHERE id=? AND thread_id=?''', (call_id, self.thread_id))
 
     def finish(self, call_id: int, *, error_code: str | None = None,
                input_tokens: int | None = None, output_tokens: int | None = None,
                total_tokens: int | None = None, token_status: str | None = None,
+               cached_tokens: int | None = None,
                proposal: dict | None = None, measurement: dict | None = None):
         # A second completion notification cannot rewrite settled measurements.
         with self.connection:
@@ -227,9 +242,10 @@ class CallJournal:
                     raise PersistenceError('call_missing')
                 task_id, operation_id, attempt, kind, status = row
                 if status == 'prepared':
-                    transition(self.connection, task_id=task_id, owner='journal',
-                               operation_id=operation_id, attempt_id=str(attempt),
-                               dimension=kind + '_calls', status='released')
+                    for dimension in self._call_amounts(kind):
+                        transition(self.connection, task_id=task_id, owner='journal',
+                                   operation_id=operation_id, attempt_id=str(attempt),
+                                   dimension=dimension, status='released')
                     self.connection.execute('''UPDATE orchestration_calls_v1
                         SET status='prepare_failed',ended_at=?,error_code=?
                         WHERE id=? AND thread_id=?''',
@@ -240,19 +256,34 @@ class CallJournal:
                                operation_id=operation_id, attempt_id=str(attempt),
                                dimension=kind + '_calls', status='settled', actual=1,
                                source_ref=f'call-{call_id}')
+                    if kind == 'llm':
+                        for dimension, value in (('input_tokens', input_tokens),
+                                                 ('output_tokens', output_tokens),
+                                                 ('cached_tokens', cached_tokens)):
+                            if dimension not in self._call_amounts(kind):
+                                continue
+                            transition(self.connection, task_id=task_id, owner='journal',
+                                operation_id=operation_id, attempt_id=str(attempt),
+                                dimension=dimension,
+                                status='settled' if value is not None else 'unknown_pending',
+                                actual=value, source_ref=f'call-{call_id}' if value is not None else None)
             self.connection.execute('''UPDATE orchestration_calls_v1 SET status=?,ended_at=?,
                 input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?,proposal_json=?,
                 request_started_at_utc=?,response_ended_at_utc=?,request_duration_seconds=?,
-                measurement_version=?,model_id_sha256=?,model_id=?,protocol=?,phase=?,request_outcome=?
+                measurement_version=?,model_id_sha256=?,model_id=?,protocol=?,phase=?,request_outcome=?,
+                cached_tokens=?,prepare_duration_seconds=?,parse_duration_seconds=?
                 WHERE id=? AND thread_id=? AND status='dispatched' ''',
                 ('failed' if error_code else 'confirmed', time.time(), input_tokens,
                  output_tokens, total_tokens, token_status, error_code,
                  json.dumps(proposal,ensure_ascii=True,allow_nan=False) if proposal is not None else None,
                  measurement.get('request_started_at_utc'),measurement.get('response_ended_at_utc'),
                  measurement.get('request_duration_seconds'),
-                 'llm-client-request-v1' if measurement else None,
+                 ('llm-client-request-v2' if any(key in measurement for key in
+                    ('prepare_duration_seconds', 'parse_duration_seconds')) else
+                  'llm-client-request-v1') if measurement else None,
                  measurement.get('model_id_sha256'),measurement.get('model_id'),measurement.get('protocol'),
-                 measurement.get('phase'),measurement.get('outcome'),
+                 measurement.get('phase'),measurement.get('outcome'),cached_tokens,
+                 measurement.get('prepare_duration_seconds'),measurement.get('parse_duration_seconds'),
                  call_id, self.thread_id))
 
     def proposal(self, operation_id: str) -> str | None:
@@ -270,13 +301,15 @@ class CallJournal:
             input_tokens,output_tokens,error_code,total_tokens,token_status,attempt_index,
             request_started_at_utc,response_ended_at_utc,request_duration_seconds,
             measurement_version,model_id_sha256,model_id,protocol,phase,request_outcome,
-            task_id,session_id,run_id FROM orchestration_calls_v1
+            task_id,session_id,run_id,cached_tokens,prepare_duration_seconds,
+            parse_duration_seconds FROM orchestration_calls_v1
             WHERE thread_id=? ORDER BY id''', (self.thread_id,)).fetchall()
         keys = ('id','operation_id','kind','name','status','started_at',
                 'input_tokens','output_tokens','error_code','total_tokens','token_status',
                 'attempt_index','request_started_at_utc','response_ended_at_utc',
                 'request_duration_seconds','measurement_version','model_id_sha256','model_id',
-                'protocol','phase','request_outcome','task_id','session_id','run_id')
+                'protocol','phase','request_outcome','task_id','session_id','run_id',
+                'cached_tokens','prepare_duration_seconds','parse_duration_seconds')
         return [dict(zip(keys, row)) for row in rows]
 
     def export_llm_requests(self) -> list[dict]:
@@ -291,6 +324,9 @@ class CallJournal:
                      model_id_sha256=row['model_id_sha256'],model_id=row['model_id'],protocol=row['protocol'],
                      request_outcome=row['request_outcome'],input_tokens=row['input_tokens'],
                      output_tokens=row['output_tokens'],total_tokens=row['total_tokens'],
+                     cached_tokens=row['cached_tokens'],
+                     prepare_duration_seconds=row['prepare_duration_seconds'],
+                     parse_duration_seconds=row['parse_duration_seconds'],
                      token_status=row['token_status'] or 'unknown',error_code=row['error_code'])
                 for row in self.snapshot() if row['kind']=='llm']
 

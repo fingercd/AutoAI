@@ -102,6 +102,7 @@ class TokenUsage:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     status: Literal['known', 'partial', 'unknown'] = 'unknown'
+    cached_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,14 @@ class StoredUsage(ClosedModel):
     completion_tokens: int | None=Field(default=None,ge=0)
     total_tokens: int | None=Field(default=None,ge=0)
     status: Literal['known','partial','unknown']
+    cached_tokens: int | None=Field(default=None,ge=0)
+
+    @model_validator(mode='after')
+    def cached_is_input_subset(self):
+        if (self.cached_tokens is not None and self.prompt_tokens is not None and
+                self.cached_tokens > self.prompt_tokens):
+            raise ValueError('cached tokens exceed input tokens')
+        return self
 
 
 class StoredProposal(ClosedModel):
@@ -258,9 +267,16 @@ def _usage(payload: dict[str, Any]) -> TokenUsage:
         raise ValueError('invalid usage')
     if all(number is not None for number in counts) and counts[0] + counts[1] != counts[2]:
         raise ValueError('inconsistent usage')
+    details = value.get('prompt_tokens_details')
+    if details is not None and type(details) is not dict:
+        raise ValueError('invalid cached usage')
+    cached = details.get('cached_tokens') if details is not None else None
+    if cached is not None and (type(cached) is not int or cached < 0 or
+                               counts[0] is not None and cached > counts[0]):
+        raise ValueError('inconsistent cached usage')
     status = 'known' if all(number is not None for number in counts) else (
         'partial' if any(number is not None for number in counts) else 'unknown')
-    return TokenUsage(*counts, status=status)
+    return TokenUsage(*counts, status=status, cached_tokens=cached)
 
 
 def _rationale(value: Any) -> str:
@@ -457,8 +473,10 @@ class LLMAdapter:
             knowledge['omitted_count'] = knowledge['matched_count'] - knowledge['provided_count']
 
     def propose(self, phase: str, context: dict[str, Any], *,
-                timeout_seconds: float | None = None, repair_code: str | None = None) -> Proposal:
+                timeout_seconds: float | None = None, repair_code: str | None = None,
+                on_dispatch=None) -> Proposal:
         self.last_request_measurement = None
+        prepare_started = time.monotonic()
         if repair_code is not None and (type(repair_code) is not str or repair_code not in _REPAIR_CODES):
             raise LLMError('llm_context_invalid') from None
         if timeout_seconds is not None and (
@@ -469,10 +487,13 @@ class LLMAdapter:
             raise LLMError('llm_timeout') from None
         request, projected, schema, tool, knowledge_profile, recipe_profile, step2 = self._build_request(phase, context, repair_code)
         self._check_prompt_budget(request)
+        prepare_duration = time.monotonic() - prepare_started
         structured = projected.get('decision_mode') == 'structured_config'
         headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if self._token:
             headers['Authorization'] = f'Bearer {self._token}'
+        if on_dispatch is not None:
+            on_dispatch()
         sent_at = datetime.now(timezone.utc).isoformat()
         started = time.monotonic()
         try:
@@ -482,6 +503,7 @@ class LLMAdapter:
             self.last_request_measurement = dict(request_started_at_utc=sent_at,
                 response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
                 request_duration_seconds=time.monotonic()-started, outcome='failed',
+                prepare_duration_seconds=prepare_duration,
                 model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
                 protocol=self.config.protocol, phase=phase)
             raise LLMError('llm_output_too_large') from None
@@ -489,6 +511,7 @@ class LLMAdapter:
             self.last_request_measurement = dict(request_started_at_utc=sent_at,
                 response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
                 request_duration_seconds=time.monotonic()-started, outcome='failed',
+                prepare_duration_seconds=prepare_duration,
                 model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
                 protocol=self.config.protocol, phase=phase)
             code = 'llm_timeout' if isinstance(exc, TimeoutError) or 'timeout' in type(exc).__name__.lower() else 'llm_unavailable'
@@ -496,9 +519,11 @@ class LLMAdapter:
         self.last_request_measurement = dict(request_started_at_utc=sent_at,
             response_ended_at_utc=datetime.now(timezone.utc).isoformat(),
             request_duration_seconds=time.monotonic()-started, outcome='response_received',
+            prepare_duration_seconds=prepare_duration,
             model_id_sha256=hashlib.sha256(self.config.model.encode()).hexdigest(),model_id=self.config.model,
             protocol=self.config.protocol, phase=phase)
         usage = TokenUsage()
+        parse_started = time.monotonic()
         try:
             if type(response.status_code) is not int or not 200 <= response.status_code < 300:
                 try:
@@ -576,3 +601,5 @@ class LLMAdapter:
             raise LLMError(exc.code, usage=usage) from None
         except Exception:
             raise LLMError('llm_output_invalid', usage=usage) from None
+        finally:
+            self.last_request_measurement['parse_duration_seconds'] = time.monotonic() - parse_started

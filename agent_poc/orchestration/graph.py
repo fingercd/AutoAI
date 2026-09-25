@@ -90,6 +90,7 @@ class Nodes:
                 status='unknown' if unknown else 'confirmed', input_tokens=row['input_tokens'],
                 output_tokens=row['output_tokens'],
                 total_tokens=row['total_tokens'],
+                cached_tokens=row['cached_tokens'],
                 token_status=('not_applicable' if row['kind'] == 'api' else
                               row['token_status'] or ('known' if tokens_known else 'unknown')),
             ).model_dump(mode='json')
@@ -110,7 +111,13 @@ class Nodes:
                 'unknown_pending': sum(row['status'] == 'dispatched' for row in selected),
                 'measurement_status': 'ready'}
         llm_rows = [row for row in rows if row['kind'] == 'llm']
-        budget['cached_tokens'] = {'unknown_pending':len(llm_rows), 'measurement_status':'unavailable'}
+        cached_known = [row['cached_tokens'] for row in llm_rows if row['cached_tokens'] is not None]
+        cached_unknown = sum(row['cached_tokens'] is None for row in llm_rows)
+        budget['cached_tokens'] = {
+            'actual': float(sum(cached_known)) if cached_known and not cached_unknown else None,
+            'unknown_pending': cached_unknown,
+            'measurement_status': 'pending' if cached_known and cached_unknown else
+                                  'ready' if cached_known else 'unavailable'}
         for dimension in ('input_tokens', 'output_tokens'):
             known = [row[dimension] for row in llm_rows if row[dimension] is not None]
             unknown = sum(row[dimension] is None for row in llm_rows)
@@ -257,6 +264,9 @@ class Nodes:
             task_id=state['identity']['task_id'],session_id=state['identity']['session_id'],
             run_id=state['execution']['run_id'])
         original_timeout = getattr(self.deps.client, 'timeout', None)
+        original_dispatch = getattr(self.deps.client, 'on_dispatch', None)
+        if self.deps.journal.budget_policy is not None:
+            self.deps.client.on_dispatch = lambda: self.deps.journal.mark_dispatched(call_id)
         if original_timeout is not None:
             self.deps.client.timeout = min(original_timeout, state['budget']['deadline_at'] - self.deps.clock())
         try:
@@ -269,9 +279,15 @@ class Nodes:
                     'api_contract_invalid' if isinstance(error, AgentContractError) else 'api_unavailable')
             self.deps.journal.finish(call_id, error_code=code)
             raise
+        except Exception:
+            if self.deps.journal.budget_policy is not None:
+                self.deps.journal.finish(call_id, error_code='api_unexpected')
+            raise
         finally:
             if original_timeout is not None:
                 self.deps.client.timeout = original_timeout
+            if self.deps.journal.budget_policy is not None:
+                self.deps.client.on_dispatch = original_dispatch
         self.deps.journal.finish(call_id)
         return result
 
@@ -296,18 +312,27 @@ class Nodes:
                                     if entry['operation_id'] == operation_id), None)
                 proposal = self.deps.llm.propose(phase, context,
                     timeout_seconds=state['budget']['deadline_at'] - self.deps.clock(),
-                    repair_code=repair_code)
+                    repair_code=repair_code,
+                    **({'on_dispatch': lambda: self.deps.journal.mark_dispatched(call_id)}
+                       if self.deps.journal.budget_policy is not None else {}))
             else:
                 proposal = self.deps.llm.propose(phase, context)
         except LLMError as error:
             self.deps.journal.finish(call_id, error_code=error.code,
                 input_tokens=error.usage.prompt_tokens, output_tokens=error.usage.completion_tokens,
                 total_tokens=error.usage.total_tokens, token_status=error.usage.status,
+                cached_tokens=error.usage.cached_tokens,
                 measurement=getattr(self.deps.llm,'last_request_measurement',None))
+            raise
+        except Exception:
+            if self.deps.journal.budget_policy is not None:
+                self.deps.journal.finish(call_id, error_code='llm_unexpected',
+                    measurement=getattr(self.deps.llm, 'last_request_measurement', None))
             raise
         self.deps.journal.finish(call_id, input_tokens=proposal.usage.prompt_tokens,
                                  output_tokens=proposal.usage.completion_tokens,
                                  total_tokens=proposal.usage.total_tokens, token_status=proposal.usage.status,
+                                 cached_tokens=proposal.usage.cached_tokens,
                                  measurement=getattr(self.deps.llm,'last_request_measurement',None),
                                  **({'proposal':store_proposal(proposal,context)} if modern else {}))
         return proposal
