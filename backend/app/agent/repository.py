@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 from ..runs.contracts import Principal
 from ..runs.repository import RunNotFound, RunRepository
 from .contracts import AgentDomainError
+from .budget import (BudgetPolicy, BudgetError, initialize_ledger, freeze_policy,
+                     reserve as reserve_budget, transition as transition_budget,
+                     training_upper_bound, dimension_summary)
 
 
 def _timestamp(value: datetime | None = None) -> str:
@@ -95,6 +98,8 @@ class AgentSessionRecord:
     capability_snapshot: dict[str, Any] | None = None
     frozen_preparation: dict[str, Any] | None = None
     payload_hash: str | None = None
+    budget_task_id: str | None = None
+    budget_policy_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +222,12 @@ class AgentSessionRepository:
             for column in ('dataset_sha256', 'metadata_version', 'contract_version', 'capability_snapshot_json', 'frozen_preparation_json'):
                 if column not in session_columns:
                     connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
+            for column in ('budget_task_id', 'budget_policy_digest'):
+                if column not in session_columns:
+                    connection.execute(f'ALTER TABLE agent_sessions_v1 ADD COLUMN {column} TEXT')
+            connection.execute('''CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_budget_task_v1
+                ON agent_sessions_v1(budget_task_id) WHERE budget_task_id IS NOT NULL''')
+            initialize_ledger(connection)
             for column in ('compiled_config_json', 'scientific_digest', 'decision_metadata_json'):
                 existing = {str(row['name']) for row in connection.execute('PRAGMA table_info(agent_experiment_reservations_v1)')}
                 if column not in existing:
@@ -295,6 +306,7 @@ class AgentSessionRepository:
             contract_version=row['contract_version'], capability_snapshot=_decode(row['capability_snapshot_json'], None),
             frozen_preparation=_decode_preparation(row['frozen_preparation_json']),
             payload_hash=row['payload_hash'],
+            budget_task_id=row['budget_task_id'], budget_policy_digest=row['budget_policy_digest'],
         )
         frozen = record.frozen_preparation
         if frozen is None and {'train_evidence','legal_recipes','knowledge'}.intersection(record.modules):
@@ -357,7 +369,8 @@ class AgentSessionRepository:
                        principal: Principal, dataset_sha256: str | None = None,
                        metadata_version: str | None = None, contract_version: str | None = None,
                        capability_snapshot: dict[str, Any] | None = None,
-                       frozen_preparation: dict[str, Any] | None = None) -> tuple[AgentSessionRecord, bool]:
+                       frozen_preparation: dict[str, Any] | None = None,
+                       budget_policy: BudgetPolicy | None = None) -> tuple[AgentSessionRecord, bool]:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -369,19 +382,39 @@ class AgentSessionRepository:
                 if row is not None:
                     if row['payload_hash'] != payload_hash:
                         connection.rollback(); raise AgentIdempotencyConflict()
+                    if ((budget_policy is None) != (row['budget_task_id'] is None) or
+                            budget_policy is not None and (
+                                row['budget_task_id'] != budget_policy.task_id or
+                                row['budget_policy_digest'] != budget_policy.digest)):
+                        connection.rollback(); raise AgentIdempotencyConflict()
                     connection.commit(); return self._session(row), False
             session_id, now = uuid.uuid4().hex, _timestamp()
+            if budget_policy is not None:
+                occupied = connection.execute('''SELECT 1 FROM agent_sessions_v1
+                    WHERE budget_task_id=?''', (budget_policy.task_id,)).fetchone()
+                if occupied is not None:
+                    connection.rollback()
+                    raise AgentDomainError('budget_task_already_bound',
+                        '预算任务已绑定其他 Session', status_code=409)
+                try:
+                    freeze_policy(connection, budget_policy, owner='backend')
+                except BudgetError as error:
+                    connection.rollback()
+                    raise AgentDomainError(error.code, '预算策略冲突或无效', status_code=409) from error
             connection.execute(
                 '''INSERT INTO agent_sessions_v1(
                     session_id,state,dataset_id,selection_metric,allowed_models_json,max_runs,seed,
                     evaluation_config_json,modules_json,context_policy_json,client_request_id,payload_hash,
-                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version,contract_version,capability_snapshot_json,frozen_preparation_json
-                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    created_at,owner_id,tenant_id,dataset_sha256,metadata_version,contract_version,capability_snapshot_json,frozen_preparation_json,
+                    budget_task_id,budget_policy_digest
+                ) VALUES(?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (session_id, dataset_id, selection_metric, _json(allowed_models), max_runs, seed,
                  _json(evaluation_config), _json(modules), _json(context_policy), client_request_id,
                  payload_hash, now, owner, tenant, dataset_sha256, metadata_version, contract_version,
                  _json(capability_snapshot) if capability_snapshot is not None else None,
-                 _json(frozen_preparation) if frozen_preparation is not None else None),
+                 _json(frozen_preparation) if frozen_preparation is not None else None,
+                 budget_policy.task_id if budget_policy else None,
+                 budget_policy.digest if budget_policy else None),
             )
             row = connection.execute('SELECT * FROM agent_sessions_v1 WHERE session_id=?', (session_id,)).fetchone()
             connection.commit()
@@ -495,6 +528,21 @@ class AgentSessionRepository:
             # reservation_id 同时是永久 submission identity；released 历史行绝不复用。
             reservation_id = uuid.uuid4().hex
             attempt = max([int(row['attempt']) for row in rows], default=0) + 1
+            if session_row['budget_task_id'] is not None:
+                try:
+                    if compiled_config is None or not isinstance(compiled_config.get('execution_search_plan'), dict):
+                        raise BudgetError('budget_search_plan_missing')
+                    plan = compiled_config['execution_search_plan']
+                    bounds = training_upper_bound(plan,
+                        epochs=compiled_config.get('epochs') if plan.get('fit_strategy') == 'train_best_epoch_no_refit' else None)
+                    reserve_budget(connection, task_id=session_row['budget_task_id'], owner='backend',
+                        operation_id=reservation_id, attempt_id='0',
+                        amounts={'experiments': 1, **bounds},
+                        payload={'session_id': session_id, 'config_hash': config_hash,
+                                 'plan_digest': plan['plan_digest']}, phase='work', now=time.time())
+                except BudgetError as error:
+                    connection.rollback()
+                    raise AgentDomainError(error.code, '实验训练预算不足或策略无效', status_code=409) from error
             connection.execute(
                 '''INSERT INTO agent_experiment_reservations_v1(
                    reservation_id,session_id,state,attempt,parent_run_id,action_json,rationale,
@@ -522,6 +570,13 @@ class AgentSessionRepository:
                 (run_id, _timestamp(), reservation_id, owner, tenant),
             ).rowcount
             if changed != 1: connection.rollback(); raise AgentExperimentNotFound()
+            session_row = connection.execute('''SELECT s.budget_task_id FROM agent_sessions_v1 s
+                JOIN agent_experiment_reservations_v1 r ON r.session_id=s.session_id
+                WHERE r.reservation_id=?''', (reservation_id,)).fetchone()
+            if session_row['budget_task_id'] is not None:
+                transition_budget(connection, task_id=session_row['budget_task_id'], owner='backend',
+                    operation_id=reservation_id, attempt_id='0', dimension='experiments',
+                    status='settled', actual=1, source_ref=f'run-{run_id}')
             row = connection.execute(
                 'SELECT * FROM agent_experiment_reservations_v1 WHERE reservation_id=?', (reservation_id,)
             ).fetchone(); connection.commit()
@@ -538,16 +593,29 @@ class AgentSessionRepository:
         if row is None: raise AgentExperimentNotFound()
         return self._experiment(row)
 
-    def release_reservation(self, reservation_id: str, *, failure_code: str, principal: Principal) -> None:
+    def release_reservation(self, reservation_id: str, *, failure_code: str, principal: Principal,
+                            created_run_id: str | None = None) -> None:
         owner, tenant = self._scope(principal)
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
-            connection.execute(
+            changed = connection.execute(
                 '''UPDATE agent_experiment_reservations_v1 SET state='released',failure_code=?,updated_at=?
                    WHERE reservation_id=? AND state='reserved'
                    AND owner_id IS ? AND tenant_id IS ?''',
                 (failure_code, _timestamp(), reservation_id, owner, tenant),
-            ); connection.commit()
+            ).rowcount
+            if changed:
+                row = connection.execute('''SELECT s.budget_task_id FROM agent_sessions_v1 s
+                    JOIN agent_experiment_reservations_v1 r ON r.session_id=s.session_id
+                    WHERE r.reservation_id=?''', (reservation_id,)).fetchone()
+                if row['budget_task_id'] is not None:
+                    for dimension in ('experiments', 'model_fits', 'training_epochs'):
+                        transition_budget(connection, task_id=row['budget_task_id'], owner='backend',
+                            operation_id=reservation_id, attempt_id='0', dimension=dimension,
+                            status='settled' if created_run_id and dimension == 'experiments' else 'released',
+                            actual=1 if created_run_id and dimension == 'experiments' else None,
+                            source_ref=f'run-{created_run_id}' if created_run_id and dimension == 'experiments' else None)
+            connection.commit()
 
     def require_compensation(self, reservation_id: str, *, run_id: str | None,
                              failure_code: str, principal: Principal) -> None:
@@ -607,10 +675,31 @@ class AgentSessionRepository:
             if row is None:
                 connection.rollback()
                 raise AgentExperimentNotFound()
+            if changed and new_state in ('released', 'bound'):
+                session_row = connection.execute('''SELECT budget_task_id FROM agent_sessions_v1
+                    WHERE session_id=?''', (row['session_id'],)).fetchone()
+                if session_row['budget_task_id'] is not None:
+                    for dimension in ('experiments', 'model_fits', 'training_epochs'):
+                        status = ('settled' if new_state == 'bound' else 'released') if dimension == 'experiments' else None
+                        if status is not None:
+                            transition_budget(connection, task_id=session_row['budget_task_id'], owner='backend',
+                                operation_id=reservation_id, attempt_id='0', dimension=dimension,
+                                status=status, actual=1 if status == 'settled' else None,
+                                source_ref=f'run-{run_id}' if status == 'settled' else None)
+                        elif new_state == 'released':
+                            transition_budget(connection, task_id=session_row['budget_task_id'], owner='backend',
+                                operation_id=reservation_id, attempt_id='0', dimension=dimension,
+                                status='released')
             connection.commit()
         return self._experiment(row), changed == 1
 
     def count_budget_scoped(self, *, session_id: str, principal: Principal) -> int:
+        session = self.get_session_scoped(session_id, principal=principal)
+        if session.budget_task_id is not None:
+            with self._connection() as connection:
+                summary = dimension_summary(connection, task_id=session.budget_task_id,
+                                            owner='backend', dimension='experiments')
+            return summary['known_actual'] + summary['held_reserved'] + summary['held_unknown']
         return sum(1 for item in self.list_experiments_scoped(session_id, principal=principal)
                    if item.state != 'released')
 

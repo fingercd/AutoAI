@@ -11,6 +11,11 @@ import sqlite3
 import time
 from typing import Iterator
 
+from backend.app.agent.budget import (
+    BudgetPolicy, BudgetError, freeze_policy, initialize_ledger, reserve,
+    transition, dimension_summary,
+)
+
 
 class PersistenceError(RuntimeError):
     pass
@@ -85,6 +90,7 @@ class CallJournal:
 
     def __init__(self, path: Path, thread_id: str):
         self.thread_id = thread_id
+        self.budget_policy: BudgetPolicy | None = None
         self.connection = sqlite3.connect(path, timeout=10)
         self.connection.execute('PRAGMA journal_mode=WAL')
         self.connection.execute('PRAGMA synchronous=FULL')
@@ -100,6 +106,7 @@ class CallJournal:
             started_at_epoch REAL NOT NULL, ended_at_utc TEXT, duration_seconds REAL,
             duration_clock TEXT NOT NULL, reason_code TEXT,
             UNIQUE(thread_id,operation_id))''')
+        initialize_ledger(self.connection)
         self.connection.commit()
         # Nullable additions preserve old settled rows: do not invent totals or
         # change their historical State token-status projection during upgrade.
@@ -112,7 +119,8 @@ class CallJournal:
                                ('response_ended_at_utc','TEXT'),('request_duration_seconds','REAL'),
                                ('measurement_version','TEXT'),('model_id_sha256','TEXT'),('model_id','TEXT'),
                                ('protocol','TEXT'),('phase','TEXT'),('request_outcome','TEXT'),
-                               ('task_id','TEXT'),('session_id','TEXT'),('run_id','TEXT')):
+                               ('task_id','TEXT'),('session_id','TEXT'),('run_id','TEXT'),
+                               ('budget_phase','TEXT')):
                 if name not in columns:
                     self.connection.execute(f'ALTER TABLE orchestration_calls_v1 ADD COLUMN {name} {kind}')
             wait_columns={row[1] for row in self.connection.execute(
@@ -122,17 +130,39 @@ class CallJournal:
                     self.connection.execute(
                         f'ALTER TABLE orchestration_monitor_waits_v1 ADD COLUMN {name} TEXT')
 
+    def bind_budget(self, policy: BudgetPolicy) -> None:
+        """Freeze this task's call owner before any new physical attempt."""
+        with self.connection:
+            self.connection.execute('BEGIN IMMEDIATE')
+            freeze_policy(self.connection, policy, owner='journal')
+        self.budget_policy = policy
+
+    def budget_summary(self) -> dict[str, dict]:
+        if self.budget_policy is None:
+            raise PersistenceError('budget_policy_missing')
+        return {name: dimension_summary(self.connection, task_id=self.budget_policy.task_id,
+                                        owner='journal', dimension=name)
+                for name, spec in self.budget_policy.as_dict()['dimensions'].items()
+                if spec['owner'] == 'journal'}
+
     def begin(self, *, operation_id: str, kind: str, name: str, maximum: int,
               max_attempts: int, deadline: float, now: float | None = None,
               task_id: str | None = None, session_id: str | None = None,
-              run_id: str | None = None) -> int:
+              run_id: str | None = None, phase: str = 'work') -> int:
         now = time.time() if now is None else now
         if now >= deadline:
             raise PersistenceError('deadline_exceeded')
+        if self.budget_policy is not None:
+            expected_attempts = (self.budget_policy.max_repair_attempts + 1 if kind == 'llm'
+                                 else self.budget_policy.max_operation_attempts)
+            if (maximum != self.budget_policy.limits.get(kind + '_calls') or
+                    max_attempts != expected_attempts or
+                    deadline != self.budget_policy.deadline_at):
+                raise PersistenceError('budget_legacy_limit_conflict')
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
             total = self.connection.execute(
-                'SELECT count(*) FROM orchestration_calls_v1 WHERE thread_id=? AND kind=?',
+                "SELECT count(*) FROM orchestration_calls_v1 WHERE thread_id=? AND kind=? AND status!='prepare_failed'",
                 (self.thread_id, kind)).fetchone()[0]
             attempts = self.connection.execute(
                 'SELECT count(*) FROM orchestration_calls_v1 WHERE thread_id=? AND operation_id=?',
@@ -141,13 +171,45 @@ class CallJournal:
                 raise PersistenceError(f'{kind}_call_limit')
             if attempts >= max_attempts:
                 raise PersistenceError('operation_attempt_limit')
+            if self.budget_policy is not None:
+                if task_id != self.budget_policy.task_id:
+                    raise PersistenceError('budget_task_mismatch')
+                try:
+                    reserve(self.connection, task_id=task_id, owner='journal',
+                            operation_id=operation_id, attempt_id=str(attempts),
+                            amounts={kind + '_calls': 1},
+                            payload={'kind': kind, 'name': name, 'session_id': session_id,
+                                     'run_id': run_id}, phase=phase, now=now)
+                except BudgetError as error:
+                    raise PersistenceError(error.code) from None
             cursor = self.connection.execute('''INSERT INTO orchestration_calls_v1
                 (thread_id,operation_id,kind,name,status,started_at,attempt_index,
-                 task_id,session_id,run_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?)''',
-                (self.thread_id, operation_id, kind, name, 'dispatched', now, attempts,
-                 task_id,session_id,run_id))
+                 task_id,session_id,run_id,budget_phase)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                (self.thread_id, operation_id, kind, name,
+                 'prepared' if self.budget_policy is not None else 'dispatched', now, attempts,
+                 task_id,session_id,run_id,phase if self.budget_policy is not None else None))
             return int(cursor.lastrowid)
+
+    def mark_dispatched(self, call_id: int) -> None:
+        """Persist the send boundary; a later crash remains an unknown hold."""
+        with self.connection:
+            self.connection.execute('BEGIN IMMEDIATE')
+            row = self.connection.execute('''SELECT task_id,operation_id,attempt_index,kind,status
+                FROM orchestration_calls_v1 WHERE id=? AND thread_id=?''',
+                (call_id, self.thread_id)).fetchone()
+            if row is None:
+                raise PersistenceError('call_missing')
+            task_id, operation_id, attempt, kind, status = row
+            if status == 'dispatched':
+                return
+            if status != 'prepared' or self.budget_policy is None:
+                raise PersistenceError('call_dispatch_conflict')
+            transition(self.connection, task_id=task_id, owner='journal',
+                       operation_id=operation_id, attempt_id=str(attempt),
+                       dimension=kind + '_calls', status='dispatched')
+            self.connection.execute('''UPDATE orchestration_calls_v1 SET status='dispatched'
+                WHERE id=? AND thread_id=?''', (call_id, self.thread_id))
 
     def finish(self, call_id: int, *, error_code: str | None = None,
                input_tokens: int | None = None, output_tokens: int | None = None,
@@ -156,6 +218,28 @@ class CallJournal:
         # A second completion notification cannot rewrite settled measurements.
         with self.connection:
             measurement = measurement or {}
+            if self.budget_policy is not None:
+                self.connection.execute('BEGIN IMMEDIATE')
+                row = self.connection.execute('''SELECT task_id,operation_id,attempt_index,kind,status
+                    FROM orchestration_calls_v1 WHERE id=? AND thread_id=?''',
+                    (call_id, self.thread_id)).fetchone()
+                if row is None:
+                    raise PersistenceError('call_missing')
+                task_id, operation_id, attempt, kind, status = row
+                if status == 'prepared':
+                    transition(self.connection, task_id=task_id, owner='journal',
+                               operation_id=operation_id, attempt_id=str(attempt),
+                               dimension=kind + '_calls', status='released')
+                    self.connection.execute('''UPDATE orchestration_calls_v1
+                        SET status='prepare_failed',ended_at=?,error_code=?
+                        WHERE id=? AND thread_id=?''',
+                        (time.time(), error_code or 'prepare_failed', call_id, self.thread_id))
+                    return
+                if status == 'dispatched':
+                    transition(self.connection, task_id=task_id, owner='journal',
+                               operation_id=operation_id, attempt_id=str(attempt),
+                               dimension=kind + '_calls', status='settled', actual=1,
+                               source_ref=f'call-{call_id}')
             self.connection.execute('''UPDATE orchestration_calls_v1 SET status=?,ended_at=?,
                 input_tokens=?,output_tokens=?,total_tokens=?,token_status=?,error_code=?,proposal_json=?,
                 request_started_at_utc=?,response_ended_at_utc=?,request_duration_seconds=?,

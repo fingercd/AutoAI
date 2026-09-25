@@ -424,7 +424,8 @@ class AgentService:
                 compensated = False
             if compensated:
                 self.sessions.release_reservation(
-                    reservation.experiment_id, failure_code='agent_binding_failed', principal=principal
+                    reservation.experiment_id, failure_code='agent_binding_failed', principal=principal,
+                    created_run_id=record.run_id,
                 )
             else:
                 self.sessions.require_compensation(
@@ -543,7 +544,7 @@ class AgentService:
                         raise
             summaries.append(entry)
         best_run_id = max(scores)[2] if scores else None
-        used = sum(1 for item in experiments if item.state != 'released')
+        used = self.sessions.count_budget_scoped(session_id=session_id, principal=principal)
         return {
             'contract_version': session.contract_version or AGENT_API_CONTRACT_VERSION,
             'session_id': session.session_id,
