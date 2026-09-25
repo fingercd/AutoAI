@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import closing
+import sqlite3
 
 import pytest
 
@@ -62,6 +64,35 @@ def test_finalization_bucket_and_policy_conflict(tmp_path: Path):
         changed = BudgetPolicy('task-journal', 100.0, 201.0, 140.0, frozen.limits)
         journal.bind_budget(changed)
     journal.close()
+
+
+def test_budget_journal_binding_rejects_another_thread_or_copied_store(tmp_path: Path):
+    source = tmp_path / 'calls.sqlite'
+    journal = CallJournal(source, 'thread-1')
+    frozen = policy()
+    journal.bind_budget(frozen)
+    journal.close()
+
+    with closing(CallJournal(source, 'thread-2')) as other_thread:
+        with pytest.raises(PersistenceError, match='budget_journal_binding_conflict'):
+            other_thread.bind_budget(frozen)
+
+    copied = tmp_path / 'copied.sqlite'
+    original = CallJournal(source, 'thread-1')
+    with sqlite3.connect(copied) as destination:
+        original.connection.backup(destination)
+    original.close()
+    with closing(CallJournal(copied, 'thread-1')) as wrong_path:
+        with pytest.raises(PersistenceError, match='budget_journal_binding_conflict'):
+            wrong_path.bind_budget(frozen)
+
+
+def test_budget_binding_cannot_retroactively_ignore_legacy_calls(tmp_path: Path):
+    with closing(CallJournal(tmp_path / 'calls.sqlite', 'thread-1')) as journal:
+        journal.begin(operation_id='old', kind='api', name='inspect', maximum=12,
+                      max_attempts=3, deadline=200.0, now=101.0)
+        with pytest.raises(PersistenceError, match='budget_binding_after_calls'):
+            journal.bind_budget(policy())
 
 
 def test_llm_prepare_failure_does_not_mark_send_and_valid_request_does(tmp_path: Path):
