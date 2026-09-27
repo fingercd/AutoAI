@@ -157,3 +157,12 @@ v4 沿用相同节点与 HTTP Client。prepare/session 只绑定后端已冻结�
 每次恢复从已验证 checkpoint 重建 revision、模型目录和知识绑定；即使 pending 节点跳过 prepare 也先恢复 Client 契约。不增加知识刷新 HTTP。Session POST 丢响应以同请求 ID 回读冻结赢家，LLM 成功结果按 journal 回放，Run POST 丢响应按已有 durable mapping 恢复；保持原网络重试、调用上限和 deadline，不承诺网络 exactly-once。当前知识文件替换/缺失不得改变已冻结 Session 的恢复。
 
 新 v4 在调用 journal 的同一事务中保存计量与经校验的安全提案（proposal_json），不保存原始模型响应。checkpoint 尚未落盘时，以 operation_id 与完整选择上下文摘要校验后回放；已确认记录缺失或损坏提案时明确停为 needs_attention，不重复调用。旧 v1/v2/v3 的 journal 行不补写提案，恢复行为保持原样。
+
+
+## 第九步反馈诊断（开发候选）
+
+新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
+诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
+失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
+详见 [第九步诊断契约](step9_diagnosis_contract.md)。
+本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。

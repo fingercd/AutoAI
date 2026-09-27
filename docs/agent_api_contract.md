@@ -173,3 +173,12 @@ Finalize 要求 Run 属于当前 Principal 与 Session、状态成功、Manifest
 6. `finalize_ml_session(...)`
 
 GET 可有界重试；POST 只有携带稳定 `client_request_id`（Finalize 的同 Run 幂等语义除外）才可重试。客户端遇到 contract version 不匹配必须 fail closed。Bearer token 只保存在客户端内存，不写日志、Trace 或异常文本。
+
+
+## 第九步反馈诊断（开发候选）
+
+新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
+诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
+失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
+详见 [第九步诊断契约](step9_diagnosis_contract.md)。
+本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
