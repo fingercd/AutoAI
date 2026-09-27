@@ -907,16 +907,12 @@ class Nodes:
             snapshot=journal.diagnosis_input(generation)
             reason=None
             if snapshot is None:
-                try:
-                    snapshot=build_input(state,after=after,generation=generation,adapter=self.deps.llm,journal=journal)
-                except LLMError as error:
-                    if error.code!='llm_context_too_long':
-                        raise
-                    reason='diagnosis_context_too_long'
-                    snapshot=build_input(state,after=after,generation=generation,adapter=None,journal=journal)
+                snapshot=build_input(state,after=after,generation=generation,adapter=self.deps.llm,journal=journal)
                 journal.freeze_diagnosis_input(snapshot)
             elif snapshot['after_diagnosis']!=after:
                 raise PersistenceError('diagnosis_route_conflict')
+            # Capacity failure is durable, including a crash after input freeze and before report save.
+            reason=snapshot['context'].get('reason_code')
             report=journal.diagnosis_report(snapshot['context']['input_digest'])
             if report is None:
                 proposal=None
@@ -924,7 +920,10 @@ class Nodes:
                 diagnostic=[row for row in rows if row['name']=='diagnose']
                 operation=state['recovery']['pending_operation']['operation_id']
                 # The same durable confirmed proposal is reconstructed before checking remaining budget.
-                if journal.proposal(operation) is not None:
+                if reason is not None:
+                    if journal.proposal(operation) is not None:
+                        raise PersistenceError('diagnosis_capacity_proposal_conflict')
+                elif journal.proposal(operation) is not None:
                     proposal=self.llm_call(state,'diagnose',snapshot['context'])
                 elif any(row['status']=='dispatched' or (row['kind']=='llm' and row['status'] in ('confirmed','failed')
                         and (row['input_tokens'] is None or row['output_tokens'] is None)) for row in rows):

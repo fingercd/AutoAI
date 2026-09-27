@@ -529,6 +529,8 @@ class CallJournal:
             from backend.app.agent.diagnosis import DiagnosisInput
             snapshot=DiagnosisInput.model_validate_json(source[0]).model_dump(mode='json')
             DiagnosisReport.model_validate(value).bind(snapshot)
+            from .diagnosis import verify_report_proposal
+            verify_report_proposal(self.connection,self.thread_id,value,snapshot)
             self.connection.execute('INSERT INTO diagnosis_reports_v1 VALUES (?,?,?,?,?)',
                 (self.thread_id,value['diagnosis_id'],value['input_digest'],
                  json.dumps(value,ensure_ascii=True,allow_nan=False),digest(value)))
