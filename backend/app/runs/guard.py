@@ -19,7 +19,7 @@ RULES_VERSION = 'training-guard-rules-v1'
 # Freeze the implementation sources as well as the public rules name.
 RULES_DIGEST = hashlib.sha256(b''.join((Path(__file__).parent.parent / name).read_bytes()
     for name in ('runs/guard.py', 'training.py', 'parsers.py', 'evaluation_plan.py',
-                 'search_policy.py', 'model_config.py'))).hexdigest()
+                 'search_policy.py', 'model_config.py', 'diagnostic_evidence.py'))).hexdigest()
 Stage = Literal['admission', 'pre_fit', 'pre_publish', 'publication', 'observation', 'finalize']
 Status = Literal['passed', 'failed', 'pending', 'unavailable', 'not_applicable', 'disabled']
 Reason = Literal['guard_dataset_invalid', 'guard_dataset_changed', 'guard_split_invalid',
