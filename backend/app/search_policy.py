@@ -97,7 +97,7 @@ def _legal_domain(model_id: str, train_count: int, feature_count: int,
 def _digest_source() -> str:
     # Bind the policy and the single authoritative training implementation.
     h = hashlib.sha256()
-    for name in ('search_policy.py', 'training.py'):
+    for name in ('search_policy.py', 'training.py', 'diagnostic_evidence.py'):
         h.update((Path(__file__).parent / name).read_bytes())
     return h.hexdigest()
 
