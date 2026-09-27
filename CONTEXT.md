@@ -127,3 +127,12 @@ node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 ## 第四步 RAG 启动预算补修（2026-09-19）
 
 新 RAG on 在创建 Session 前必须通过本地 tokenizer 与 context window 校验；CLI 的 `--llm-tokenizer` / `--llm-context-window` 或对应环境变量不得同时缺失。旧检查点解码、配置指纹和恢复保持原契约。整卡裁剪、引用范围、实际展示上下文和 journal 摘要继续使用现有实现。原 40 次实验显式配置预算，源码绑定保留，不因本次启动校验重跑。正式知识仍为 5 张，20–50 张规模与人工相关性验收未完成。
+
+
+## 第九步反馈诊断（开发候选）
+
+新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
+诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
+失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
+详见 [第九步诊断契约](docs/step9_diagnosis_contract.md)。
+本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
