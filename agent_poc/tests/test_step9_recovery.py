@@ -9,10 +9,11 @@ from agent_poc.orchestration.llm import LLMAdapter
 from agent_poc.orchestration.runtime import start_task,resume_task,TaskInterrupted
 
 
+@pytest.mark.parametrize('capacity',[False,True])
 @pytest.mark.parametrize('protocol',['json_action','native_tools'])
 @pytest.mark.parametrize('kind',['admission','budget'])
 @pytest.mark.parametrize('crash',[False,True])
-def test_no_run_closes_before_explanation_and_never_reposts(api,tmp_path,budget_config,monkeypatch,protocol,kind,crash):
+def test_no_run_closes_before_explanation_and_never_reposts(api,tmp_path,budget_config,monkeypatch,protocol,kind,crash,capacity):
     from backend.app.datasets.repository import DatasetRepository
     from backend.app.runs.repository import RunRepository
     from agent_poc.orchestration.graph import Nodes
@@ -38,6 +39,9 @@ def test_no_run_closes_before_explanation_and_never_reposts(api,tmp_path,budget_
         return result
     provider.request=request
     kwargs['llm']=LLMAdapter(runtime.llm_config,transport=provider)
+    if capacity:
+        original_tokens=kwargs['llm']._prompt_tokens
+        monkeypatch.setattr(kwargs['llm'],'_prompt_tokens',lambda request:1000000 if request['messages'][-1]['content'].startswith('{') and json.loads(request['messages'][-1]['content']).get('phase')=='diagnose' else original_tokens(request))
     if kind=='admission':
         kwargs['allowed_models']=['cnn1d'];kwargs['model_configs']={'cnn1d':{'epochs':2}}
     def closed():
@@ -59,8 +63,12 @@ def test_no_run_closes_before_explanation_and_never_reposts(api,tmp_path,budget_
     assert final['lifecycle']['status']=='completed',final['lifecycle']
     assert final['execution']['run_id'] is None
     assert not RunRepository(api[1]/'runs.sqlite3').list()
-    assert final['diagnosis']['report']['status']=='ready',final['diagnosis']
-    assert ('budget_rejected' if kind=='budget' else 'data_invalid') in final['diagnosis']['report']['problem_codes']
+    assert final['diagnosis']['report']['status']==('unavailable' if capacity else 'ready'),final['diagnosis']
+    if capacity:
+        assert final['diagnosis']['report']['reason_code']=='diagnosis_context_too_long'
+        assert not [c for c in provider.contexts if c['phase']=='diagnose']
+    else:
+        assert ('budget_rejected' if kind=='budget' else 'data_invalid') in final['diagnosis']['report']['problem_codes']
     if kind=='budget':assert final['decision']['reason_code']=='recipe_training_budget_exceeded'
     before=(len(wire.requests),len(provider.contexts),len(chooser.contexts))
     again=resume_task(runtime,**{k:kwargs[k] for k in ('storage','thread_id','client','llm','wait')})
@@ -68,4 +76,3 @@ def test_no_run_closes_before_explanation_and_never_reposts(api,tmp_path,budget_
     assert before==(len(wire.requests),len(provider.contexts),len(chooser.contexts))
     posts=[row for row in wire.calls if row[0]=='POST' and row[1].endswith('/terminate')]
     assert len(posts)==1
-

@@ -5,7 +5,7 @@ import json
 from pydantic import Field
 
 from backend.app.agent.diagnosis import (Strict, Digest, Identifier, DiagnosisInput,
-    DiagnosisContext, DiagnosisProposal, DiagnosisReport, Fact, SuggestionAction, digest)
+    DiagnosisContext, DiagnosisContextFields, UnavailableDiagnosisContext, DiagnosisProposal, DiagnosisReport, Fact, SuggestionAction, digest)
 
 
 class StoredDiagnosisProposal(Strict):
@@ -98,7 +98,9 @@ def build_input(state, *, after, generation, adapter, journal):
         # Catalog was verified against the frozen capability snapshot; no new values are generated.
         actions.append(SuggestionAction(action_id=f'review-recipe-{i+1}', kind='review_recipe',
             target=recipe['recipe_id'], recipe_digest=recipe['recipe_digest'],
-            configuration_const=recipe['fixed_execution_config'],
+            # The complete recipe (including fixed configuration) is bound by this digest.
+            recipe_summary=dict(model_id=recipe['model_id'],normalization=recipe['preprocessing']['normalization'],
+                class_balance=recipe['class_balance']),
             condition_refs=['requires_new_experiment_protocol']))
     actions.append(SuggestionAction(action_id='retain-current',kind='retain_current',condition_refs=[]))
     knowledge=(state['knowledge']['snapshot'] or {}).get('projection')
@@ -106,32 +108,83 @@ def build_input(state, *, after, generation, adapter, journal):
     call_cost=None
     if task['budget_awareness']=='on':
         call_cost=call_cost_evidence(journal.budget_summary(),journal.snapshot(),identity['task_id'])
-    context=DiagnosisContext(call_cost=call_cost, training_cost=evidence['training_cost'] if evidence and task['budget_awareness']=='on' else None, input_digest=digest(dict(bindings=bindings,subject=subject,generation=generation)),
+    context=DiagnosisContextFields(call_cost=call_cost, training_cost=evidence['training_cost'] if evidence and task['budget_awareness']=='on' else None, input_digest=digest(dict(bindings=bindings,subject=subject,generation=generation)),
         facts=facts,problem_codes=problems,limitations=limitations,
         suggestion_catalog=actions,
         train_statistics=state['evidence']['content']['statistics'] if context_policy['evidence'] else None,
         train_risks=state['evidence']['content']['risks'] if context_policy['risks'] else [],
         knowledge=knowledge).model_dump(mode='json')
-    # prepare_context removes only optional whole cards and checks repair/output tokens.
-    if adapter is not None:
-        context=adapter.prepare_context('diagnose',context)
+    # Structural validation precedes capacity decisions; corrupt input is never downgraded.
+    source_context = context
+    capacity = None
+    while len(json.dumps(context,ensure_ascii=False,separators=(',',':')).encode('utf8')) > 65536:
+        knowledge = context.get('knowledge')
+        if not knowledge or not knowledge['entries']:
+            capacity = 'bytes'
+            break
+        # Clone before clipping: retain the exact full projection digest for an audit receipt.
+        context = json.loads(json.dumps(context))
+        knowledge = context['knowledge']
+        knowledge['entries'].pop()
+        knowledge['provided_entry_ids'] = [entry['entry_id'] for entry in knowledge['entries']]
+        knowledge['provided_count'] = len(knowledge['entries'])
+        knowledge['omitted_count'] = knowledge['matched_count'] - knowledge['provided_count']
+    if capacity is None:
+        context = DiagnosisContext.model_validate(context).model_dump(mode='json')
+        if adapter is not None:
+            from .llm import LLMError
+            try:
+                context=adapter.prepare_context('diagnose',context)
+            except LLMError as error:
+                if error.code != 'llm_context_too_long':
+                    raise
+                capacity = 'tokens'
+    if capacity is not None:
+        context = UnavailableDiagnosisContext(input_digest=source_context['input_digest'],
+            capacity_limit=capacity, source_context_digest=digest(source_context),
+            source_context_bytes=len(json.dumps(source_context,ensure_ascii=False,separators=(',',':')).encode('utf8')),
+            fact_count=len(source_context['facts']), action_count=len(source_context['suggestion_catalog'])).model_dump(mode='json')
     return DiagnosisInput(subject_event_id=subject,generation=generation,bindings=bindings,
-        context=DiagnosisContext.model_validate(context), displayed_context_digest=digest(context),
+        context=context, displayed_context_digest=digest(context),
         after_diagnosis=after).model_dump(mode='json')
 
 
 def report_for(snapshot, *, policy, calls, now, proposal=None, reason=None):
     context=snapshot['context']
+    if context['context_version']=='agent-context-diagnosis-unavailable-v1':
+        calls=[]  # Earlier generations remain in the independent cost ledger, not this unsent receipt.
     parsed=DiagnosisProposal.model_validate(proposal.arguments).bind(context) if proposal else None
     return DiagnosisReport(diagnosis_id='diagnosis-'+digest([context['input_digest'],snapshot['generation']]),
         input_digest=context['input_digest'],rules_digest=policy['rules_digest'],
         status='ready' if parsed else 'unavailable', mode='llm' if parsed else 'deterministic_only',
+        assessment=parsed.assessment if parsed else None,
+        proposal_digest=digest(parsed.model_dump(mode='json')) if parsed else None,
         reason_code=reason, subject_event_id=snapshot['subject_event_id'], bindings=snapshot['bindings'],
         facts=context['facts'],problem_codes=context['problem_codes'],
         hypotheses=parsed.hypotheses if parsed else [],
         suggestions=[{**row.model_dump(),'executable_now':False} for row in parsed.suggestions] if parsed else [],
         limitations=context['limitations'],proposal_ref=f'call-{calls[-1]["id"]}' if parsed and calls else None,
         call_refs=[f'call-{row["id"]}' for row in calls],created_at=float(now),freshness='current').model_dump(mode='json')
+
+
+def verify_report_proposal(connection, thread_id, report, snapshot):
+    """Bind modern reports to the actual immutable confirmed call, not just its ID."""
+    if report['status'] != 'ready' or report.get('assessment', 'historically_unrecorded') == 'historically_unrecorded':
+        return
+    reference = report['proposal_ref']
+    if reference is None:
+        # Pure report construction may have no Journal call; production reports always carry it.
+        return
+    if not reference.startswith('call-') or not reference[5:].isdigit():
+        raise ValueError('diagnosis proposal reference invalid')
+    row = connection.execute('SELECT proposal_json,status,name,kind FROM orchestration_calls_v1 WHERE thread_id=? AND id=?',
+        (thread_id,int(reference[5:]))).fetchone()
+    if row is None or tuple(row[1:]) != ('confirmed','diagnose','llm') or not row[0]:
+        raise ValueError('diagnosis confirmed proposal missing')
+    parsed = StoredDiagnosisProposal.model_validate_json(row[0])
+    parsed.bind(snapshot['context'])
+    if digest(parsed.proposal.model_dump(mode='json')) != report['proposal_digest']:
+        raise ValueError('diagnosis confirmed proposal mismatch')
 
 
 def call_cost_evidence(balances,calls,task_id):

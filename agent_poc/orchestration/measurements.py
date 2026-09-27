@@ -5,4 +5,3 @@ def measure(rows: list[dict], field: str, *, applicable=lambda row: True) -> dic
     return dict(known_subtotal=sum(known), actual_total=sum(known) if len(known) == len(selected) else None,
                 known_count=len(known), unknown_count=len(selected)-len(known),
                 not_applicable_count=len(rows)-len(selected), applicable_count=len(selected))
-
