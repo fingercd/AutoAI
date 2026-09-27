@@ -85,3 +85,47 @@ def test_real_tokenizer_schema_and_output_capacity(budget_config,protocol):
     if protocol=='native_tools':
         assert [t['function']['name'] for t in request['tools']]==['report_feedback_diagnosis']
         assert request['parallel_tool_calls'] is False
+
+
+
+@pytest.mark.parametrize('assessment',['no_issue_identified','insufficient_evidence'])
+def test_observed_inconsistent_assessment_is_not_repaired_silently(assessment):
+    ctx=context();value=proposal(ctx)
+    value['assessment']=assessment
+    value['hypotheses'][0]['hypothesis_code']='unknown'
+    with pytest.raises(ValueError,match='inconsistent assessment'):
+        DiagnosisProposal.model_validate(value).bind(ctx)
+
+
+def test_single_action_finalization_example_roundtrips_original_envelope():
+    from agent_poc.orchestration.llm import LLMAdapter,LLMConfig
+    from agent_poc.orchestration.projection import finalization_context
+    from agent_poc.tests.test_llm import TASK,envelope,FakeTransport,Response
+    from dataclasses import replace
+    ctx=finalization_context(task=TASK,session_id='session-1',run_id='run-1',validation={'macro_f1':.3},
+        validation_score=.3,allowed_actions=['finalize_ml_session'],context_version='agent-context-budget-v1',budget_awareness='off')
+    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True)
+    adapter=LLMAdapter(cfg)
+    system=adapter._build_request('finalize',ctx)[0]['messages'][0]['content']
+    value=json.loads(system.split('Complete JSON object example: ',1)[1].split('\n',1)[0])
+    assert value['arguments']==ctx['bindings']
+    adapter=LLMAdapter(cfg,transport=FakeTransport([Response(200,envelope(json.dumps(value)))]))
+    parsed=adapter.propose('finalize',ctx)
+    assert parsed.tool_name=='finalize_ml_session' and parsed.arguments==ctx['bindings']
+    legacy=LLMAdapter(replace(cfg,diagnosis_phase=False))._build_request('finalize',ctx)[0]['messages'][0]['content']
+    native=LLMAdapter(replace(cfg,protocol='native_tools'))._build_request('finalize',ctx)[0]
+    assert 'Complete JSON object example:' not in legacy
+    assert 'Complete JSON object example:' not in native['messages'][0]['content']
+    assert native['parallel_tool_calls'] is False
+
+
+@pytest.mark.parametrize('content',['"finalize_ml_session"','"finalize_ml_session"{"session_id":"session-1"}Finish.'])
+def test_real_invalid_finalization_forms_remain_rejected(content):
+    from agent_poc.orchestration.llm import LLMAdapter,LLMConfig,LLMError
+    from agent_poc.orchestration.projection import finalization_context
+    from agent_poc.tests.test_llm import TASK,envelope,FakeTransport,Response
+    ctx=finalization_context(task=TASK,session_id='session-1',run_id='run-1',validation={'macro_f1':.3},
+        validation_score=.3,allowed_actions=['finalize_ml_session'],context_version='agent-context-budget-v1',budget_awareness='off')
+    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True)
+    adapter=LLMAdapter(cfg,transport=FakeTransport([Response(200,envelope(content))]))
+    with pytest.raises(LLMError,match='llm_output_invalid'):adapter.propose('finalize',ctx)
