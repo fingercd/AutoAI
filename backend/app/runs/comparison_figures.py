@@ -16,7 +16,7 @@ from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
 
-DRAWING_VERSION = 'comparison-figures-v2'
+DRAWING_VERSION = 'comparison-figures-v3'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
@@ -66,6 +66,8 @@ def figure_specs(data):
     result += [{'kind': 'matrix', 'model': row['model_type'], 'id': f'matrix_{row["model_type"]}'} for row in data.get('confusion_matrices', []) if row.get('confusion_matrix')]
     if data.get('class_recall', {}).get('status') == 'ready':
         result.append({'kind': 'recall', 'id': 'class_recall'})
+    if data.get('class_metrics', {}).get('status') == 'ready':
+        result.append({'kind': 'precision', 'id': 'class_precision'})
     count = len(data.get('sample_correctness', {}).get('sample_ids', []))
     result += [{'kind': 'samples', 'page': page, 'id': f'samples_{page + 1:03d}'} for page in range(ceil(count / 50))]
     if feature_policy.FEATURE_ENGINEERING_ENABLED and any(row.get('experiment') for row in data.get('models', [])):
@@ -103,6 +105,12 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
         entries = {row['model_type']: row for row in data.get('class_recall', {}).get('rows', [])}
         labels = list(map(str, data.get('class_recall', {}).get('labels', [])))
         values = [[finite((item or {}).get('mean')) for item in entries.get(mid, {}).get('values', [None] * len(labels))] for mid in ids]
+        return {'rows': names, 'columns': labels, 'values': values}
+    if kind == 'precision':
+        source = data.get('class_metrics', {})
+        entries = {row['model_type']: row for row in source.get('rows', [])}
+        labels = list(map(str, source.get('labels', [])))
+        values = [[finite((item or {}).get('precision')) for item in entries.get(mid, {}).get('values', [None] * len(labels))] for mid in ids]
         return {'rows': names, 'columns': labels, 'values': values}
     if kind == 'samples':
         source = data.get('sample_correctness', {})
@@ -158,7 +166,7 @@ def render_figure(data, *, format='svg', width=360, **options):
             left = 68 if is_matrix else 145
             bottom = 62 if kind == 'samples' else 48
             if kind == 'samples': width = max(320, left + len(columns) * 36 + 20)
-            if kind in {'recall', 'features'}: width = max(520, left + len(columns) * 110 + 70)
+            if kind in {'recall', 'precision', 'features'}: width = max(520, left + len(columns) * 110 + 70)
             plot_width = width - left - (64 if kind != 'samples' else 12)
             plot_height = plot_width if is_matrix else len(rows) * 32
             height = plot_height + bottom + 36
@@ -195,7 +203,7 @@ def render_figure(data, *, format='svg', width=360, **options):
                 bar = fig.colorbar(image, cax=cax, ticks=[0, vmax / 2, vmax])
                 bar.ax.set_yticklabels([f'{v:g}' if count_view else f'{v * 100:.0f}%' for v in [0, vmax / 2, vmax]])
                 bar.ax.tick_params(length=0, labelsize=9.75); bar.outline.set_visible(False)
-        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else 'Recall / Sensitivity' if kind == 'recall' else 'Sample_ID × Models' if kind == 'samples' else '特征方案 · ' + FEATURE_METRICS[options.get('metric', 'balanced_accuracy')]
+        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else 'Recall / Sensitivity' if kind == 'recall' else 'Precision' if kind == 'precision' else 'Sample_ID × Models' if kind == 'samples' else '特征方案 · ' + FEATURE_METRICS[options.get('metric', 'balanced_accuracy')]
         fig.text(10 / width, 1 - 8 / height, title, fontsize=12, weight='semibold', va='top', color='#25382f')
         output = BytesIO()
         fig.savefig(output, format=format, dpi=192 if format == 'png' else 96, metadata={'Creator': DRAWING_VERSION} if format == 'svg' else {'Software': DRAWING_VERSION})

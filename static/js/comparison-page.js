@@ -50,7 +50,7 @@ export function matrixZoomWidth(viewportWidth, viewportHeight) {
 }
 
 function chart(title, options, tasks, {sample=false, zoom=true}={}) {
-  const card=element('figure','','cmp-figure'+(['recall','samples','features'].includes(options.kind)?' cmp-compact':'')),head=element('div','','cmp-figure-head'),actions=element('div','','cmp-actions');
+  const card=element('figure','','cmp-figure'+(['recall','precision','samples','features'].includes(options.kind)?' cmp-compact':'')),head=element('div','','cmp-figure-head'),actions=element('div','','cmp-actions');
   const host=element('div','','cmp-scroll'),message=element('p','正在绘图…','cmp-note');host.append(message);
   let rendered=null, requested=null;
   async function download(format) {
@@ -136,13 +136,12 @@ function paint() {
   const classMetrics=data.class_metrics;
   if(classMetrics?.status==='ready'){
     const cls=section('分类预测指标');
-    cls.append(element('p','Recall（召回率）= TP/(TP+FN)，二分类时即 Sensitivity，衡量“别漏判”；Precision（精确率）= TP/(TP+FP)，衡量“别误判”。两者不是同一个指标，因此分成两张表。','cmp-note'));
     const rowsFor=key=>classMetricRows(data,models,key).map(row=>[modelName(row[0]),...row.slice(1)]);
-    const subtitle=text=>element('h4',text,'cmp-subtitle');
-    cls.append(subtitle('各类别 Recall（召回率 / Sensitivity）'));
-    cls.append(table(['模型',...classMetrics.labels],rowsFor('recall')));
-    cls.append(subtitle('各类别 Precision（精确率）'));
-    cls.append(table(['模型',...classMetrics.labels],rowsFor('precision')));
+    for(const [kind,title] of [['recall','各类别 Recall（召回率 / Sensitivity）'],['precision','各类别 Precision（精确率）']]){
+      cls.append(element('h4',title,'cmp-subtitle'));
+      cls.append(chart(title,{kind},tasks));
+      cls.append(details(`${title} · 精确数值`,table(['模型',...classMetrics.labels],rowsFor(kind))));
+    }
     cls.append(details('各类别记录数（Support）',table(['模型',...classMetrics.labels],classSupportRows(data,models).map(row=>[modelName(row[0]),...row.slice(1)]))));
     root.append(cls);
   }
