@@ -468,10 +468,10 @@ def test_summary_projection_requires_manifest_size_and_sha256_integrity(tmp_path
     summaries = {item['run_id']: item for item in response.json()['items']}
     assert summaries[missing.run_id]['result_state'] == 'partial'
     assert summaries[missing.run_id]['test_macro_f1'] is None
-    # descriptors 的快速大小检查仍会认为 ready；标量读取器必须由 SHA-256 拒绝同大小篡改。
-    assert summaries[damaged.run_id]['result_state'] == 'ready'
+    # The same-size digest failure is now visible in both detail and summary.
+    assert summaries[damaged.run_id]['result_state'] == 'partial'
     assert summaries[damaged.run_id]['test_macro_f1'] is None
-    assert summaries[unverifiable.run_id]['result_state'] == 'ready'
+    assert summaries[unverifiable.run_id]['result_state'] == 'partial'
     assert summaries[unverifiable.run_id]['test_macro_f1'] is None
 
 
