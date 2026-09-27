@@ -27,7 +27,7 @@ def test_actual_search_trial_audit_and_fit_counts(api,model,mode):
     rid=response.json()['run_id'];repo=RunRepository(storage/'runs.sqlite3')
     worker=RunWorker(repository=repo,worker_id='audit-search',now=lambda:datetime.now(timezone.utc),execute=lambda run:execute_claimed_run(run,repository=repo))
     assert worker.run_once();assert repo.get(rid).state=='succeeded'
-    docs={p.name:json.loads(p.read_text()) for p in (storage/'runs'/rid).glob('*.json')}
+    docs={p.name:json.loads(p.read_text(encoding='utf8')) for p in (storage/'runs'/rid).glob('*.json')}
     assert paired_metrics(docs)['status']=='ready'
     audit=docs['training_validation_audit.json']['folds'][0];summary=docs['search_summary.json']
     assert audit['selected_trial_index']==summary['selected'][0]['trial_index']
@@ -44,7 +44,7 @@ def test_external_test_private_audit_does_not_use_test_metrics(tmp_path):
     test=write_grouped_classification_csv(tmp_path/'test.csv',groups_per_class=4,repeats=2,feature_count=8)
     out=tmp_path/'run'
     _run_legacy_training(source,dict(model_type='logistic_regression',test_data_path=str(test),split_train=8,split_valid=2,split_test=0,feature_selection_enabled=False),output_dir=out)
-    docs={p.name:json.loads(p.read_text()) for p in out.glob('*.json')}
+    docs={p.name:json.loads(p.read_text(encoding='utf8')) for p in out.glob('*.json')}
     assert docs['training_validation_audit.json']['evaluation_strategy']=='external_test_holdout'
     assert paired_metrics(docs)['status']=='ready'
     before=paired_metrics(docs);docs['metrics.json']['test']={'PRIVATE_TEST_CANARY':'injected'}
@@ -74,11 +74,10 @@ def test_early_stopped_deep_audit_uses_restored_best_epoch(tmp_path,monkeypatch)
     out=tmp_path/'run'
     training._run_legacy_training(source,dict(model_type='cnn1d',epochs=4,batch_size=8,
         early_stopping_patience=1,feature_selection_enabled=False),output_dir=out)
-    docs={p.name:json.loads(p.read_text()) for p in out.glob('*.json')}
+    docs={p.name:json.loads(p.read_text(encoding='utf8')) for p in out.glob('*.json')}
     assert len(losses)==2
     import csv
     with (out/'history.csv').open(encoding='utf-8-sig') as history:
         assert len(list(csv.DictReader(history)))==2
     assert docs['training_validation_audit.json']['folds'][0]['best_epoch']==1
     assert paired_metrics(docs)['status']=='ready'
-

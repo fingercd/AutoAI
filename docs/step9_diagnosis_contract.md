@@ -74,3 +74,14 @@ python scripts/export_diagnosis.py --storage <canonical-dir> --thread-id <id> --
 test_step9_graph、test_step9_recovery。脚本化 provider、真实训练、真实 Qwen 分开登记。
 最终工程证据放 work/step9_acceptance；原始数据库/数据/模型不进 Git。
 建议本步不执行，不能据此宣称训练或 Test 质量改善；独立验收、研究消融及部署另行进行。
+
+
+## Acceptance repair: capacity and assessment
+
+The complete recipe action catalog uses recipe IDs, recipe digests and model/processing summaries.
+The recipe digest binds the complete frozen execution configuration; summaries cannot introduce new parameters.
+Structural validation precedes the unchanged 65,536-byte limit and tokenizer checks. Optional knowledge is removed only as whole cards.
+If required content still does not fit, an immutable `agent-context-diagnosis-unavailable-v1` receipt records the source context digest, byte count, fact/action counts and byte/token limit. It is never sent to an LLM. Recovery preserves this reason and the original finalize/terminated route; prior-generation calls remain in the independent cost ledger.
+New ready reports preserve the exact validated assessment and proposal digest and check the referenced confirmed Journal proposal on save/export.
+Legacy reports retain their original immutable serialization and hashes; read-only projections explicitly label the assessment `historically_unrecorded`.
+An unavailable report has no model assessment. Empty hypotheses/suggestions remain valid for normal successful experiments.

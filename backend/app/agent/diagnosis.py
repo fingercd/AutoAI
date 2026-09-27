@@ -215,6 +215,14 @@ class SuggestionAction(Strict):
     target: Identifier | None = None
     recipe_digest: Digest | None = None
     configuration_const: dict[Identifier, bool | Count | Finite | str] | None = None
+    recipe_summary: dict[Literal['model_id', 'normalization', 'class_balance'], Identifier] | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_historical_action(self, handler):
+        result = handler(self)
+        if 'recipe_summary' not in self.model_fields_set:
+            result.pop('recipe_summary', None)
+        return result
     condition_refs: list[Identifier]
     executable_now: Literal[False] = False
 
@@ -286,7 +294,7 @@ class DiagnosisProposal(Strict):
         return self
 
 
-class DiagnosisContext(Strict):
+class DiagnosisContextFields(Strict):
     context_version: Literal['agent-context-diagnosis-v1'] = 'agent-context-diagnosis-v1'
     phase: Literal['diagnose'] = 'diagnose'
     input_digest: Digest
@@ -307,6 +315,8 @@ class DiagnosisContext(Strict):
             return KnowledgeProjection.model_validate_json(json.dumps(value, allow_nan=False))
         return value
 
+
+class DiagnosisContext(DiagnosisContextFields):
     @model_validator(mode='after')
     def bounded(self):
         if len(self.model_dump_json().encode()) > 65536:
@@ -314,12 +324,31 @@ class DiagnosisContext(Strict):
         return self
 
 
+class UnavailableDiagnosisContext(Strict):
+    """Bounded audit receipt, never a sendable context or a partial action catalog."""
+    context_version: Literal['agent-context-diagnosis-unavailable-v1'] = 'agent-context-diagnosis-unavailable-v1'
+    phase: Literal['diagnose'] = 'diagnose'
+    input_digest: Digest
+    reason_code: Literal['diagnosis_context_too_long'] = 'diagnosis_context_too_long'
+    capacity_limit: Literal['bytes', 'tokens']
+    source_context_digest: Digest
+    source_context_bytes: Count
+    fact_count: Count
+    action_count: Count
+    # Facts remain bound through the complete context hash and scoped evidence binding.
+    # An unavailable receipt makes no claims and cannot be submitted to a model.
+    facts: list[Fact] = Field(default_factory=list, max_length=0)
+    problem_codes: list[Identifier] = Field(default_factory=list, max_length=0)
+    limitations: list[Literal['diagnosis_context_unavailable']] = ['diagnosis_context_unavailable']
+    suggestion_catalog: list[SuggestionAction] = Field(default_factory=list, max_length=0)
+
+
 class DiagnosisInput(Strict):
     schema_version: Literal['agent-diagnosis-input-v1'] = 'agent-diagnosis-input-v1'
     subject_event_id: Identifier
     generation: Annotated[int, Field(strict=True, ge=0, le=1)]
     bindings: dict[Identifier, Digest | None]
-    context: DiagnosisContext
+    context: Annotated[DiagnosisContext | UnavailableDiagnosisContext, Field(discriminator='context_version')]
     displayed_context_digest: Digest
     after_diagnosis: Literal['finalize_decision', 'terminated']
 
@@ -360,6 +389,17 @@ class DiagnosisReport(Strict):
     call_refs: list[Identifier] = Field(max_length=2)
     created_at: Finite
     freshness: Literal['snapshot_only', 'current', 'stale', 'unverified']
+    assessment: Literal['hypotheses_present', 'no_issue_identified', 'insufficient_evidence', 'historically_unrecorded'] | None = 'historically_unrecorded'
+    proposal_digest: Digest | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_historical_bytes(self, handler):
+        result = handler(self)
+        # Old immutable Journal hashes include neither field. Annotate only after verification.
+        for name in ('assessment', 'proposal_digest'):
+            if name not in self.model_fields_set:
+                result.pop(name, None)
+        return result
 
     @model_validator(mode='after')
     def coherent(self):
@@ -375,8 +415,19 @@ class DiagnosisReport(Strict):
                 or [f.model_dump(mode='json') for f in self.facts]!=context['facts']
                 or self.problem_codes!=context['problem_codes'] or self.limitations!=context['limitations']):
             raise ValueError('diagnosis report differs from immutable input')
+        if context['context_version']=='agent-context-diagnosis-unavailable-v1' and (
+                self.status!='unavailable' or self.reason_code!=context['reason_code'] or self.call_refs):
+            raise ValueError('capacity receipt must remain unavailable with zero calls')
         if self.status=='ready':
-            DiagnosisProposal(schema_version='diagnosis-proposal-v1',input_digest=self.input_digest,
-                assessment='hypotheses_present' if self.hypotheses else 'no_issue_identified',
+            if context['context_version']=='agent-context-diagnosis-unavailable-v1':
+                raise ValueError('capacity receipt cannot have a model proposal')
+            historical = 'assessment' not in self.model_fields_set or self.assessment=='historically_unrecorded'
+            proposal = DiagnosisProposal(schema_version='diagnosis-proposal-v1',input_digest=self.input_digest,
+                # Historical claims still undergo reference validation, without inferring a recorded assessment.
+                assessment=('hypotheses_present' if self.hypotheses else 'insufficient_evidence') if historical else self.assessment,
                 hypotheses=self.hypotheses,suggestions=[Suggestion.model_validate(s.model_dump(exclude={'executable_now'})) for s in self.suggestions]).bind(context)
+            if not historical and self.proposal_digest != digest(proposal.model_dump(mode='json')):
+                raise ValueError('diagnosis report differs from validated proposal')
+        elif self.assessment not in (None, 'historically_unrecorded') or self.proposal_digest is not None:
+            raise ValueError('unavailable report has a model assessment')
         return self

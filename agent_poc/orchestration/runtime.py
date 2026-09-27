@@ -249,6 +249,7 @@ def _historical_snapshot(state):
     if state['versions']['state']=='agent-state-v9' and state['diagnosis']['report'] is not None:
         import copy
         state=copy.deepcopy(state)
+        state['diagnosis']['report'].setdefault('assessment','historically_unrecorded')
         state['diagnosis']['report']['freshness']='snapshot_only'
     return state
 

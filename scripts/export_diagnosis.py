@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_poc.orchestration.runtime import read_status, _journal_path_digest
 from backend.app.agent.diagnosis import DiagnosisReport, DiagnosisInput, digest
 from scripts.task_cost_report import readonly_snapshot, _journal_budget, call_rows
-from agent_poc.orchestration.diagnosis import call_cost_evidence
+from agent_poc.orchestration.diagnosis import call_cost_evidence, verify_report_proposal
 
 
 def build_diagnosis(*, storage: Path, thread_id: str) -> dict:
@@ -53,6 +53,10 @@ def build_diagnosis(*, storage: Path, thread_id: str) -> dict:
                     or digest(snapshot['context'])!=snapshot['displayed_context_digest']):
                 raise ValueError('diagnosis_input_integrity_failed')
             DiagnosisReport.model_validate(report).bind(snapshot)
+            verify_report_proposal(db,thread_id,report,snapshot)
+            if snapshot['context']['context_version']=='agent-context-diagnosis-unavailable-v1':
+                result['capacity_receipt']=snapshot['context']
+            report.setdefault('assessment','historically_unrecorded')
             report['freshness']='snapshot_only'
             reports.append(report)
             training_cost=snapshot['context'].get('training_cost')
@@ -78,7 +82,7 @@ def export_diagnosis(*, storage: Path, thread_id: str, output: Path):
         '', f"Status: {payload['status']}", f"Reason: {payload['reason_code'] or 'none'}", '']
     report=payload['report']
     if report:
-        lines+=['## Verified facts','']
+        lines += [f"Assessment: {report['assessment'] or 'not_applicable'}", '', '## Verified facts','']
         lines += [f"- {f['fact_id']}: {f['code']} = {json.dumps(f['value'],ensure_ascii=False)} ({f['trust']}; source {f['source_ref']})" for f in report['facts']]
         lines+=['','## Hypotheses (not confirmed causes)','']
         lines += [f"- {h['explanation']} Uncertainty: {h['uncertainty']}. Evidence: {', '.join(h['evidence_refs'])}." for h in report['hypotheses']]
