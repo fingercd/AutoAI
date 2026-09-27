@@ -341,3 +341,12 @@ python -m backend.app.runs.migration --dry-run \
 
 
 新知识 Session 使用短卡正文的单路向量检索（Top-3），发布与模型准备命令见 [Agent 契约](docs/agent_step2_contract.md)。Embedding 是可选部署依赖，普通训练和 knowledge-off 不加载模型；旧知识快照仍可恢复。当前只有 5 条既有来源卡，20–50 条知识规模及人工检索质量另行验收。
+
+
+## 第九步反馈诊断（开发候选）
+
+新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
+诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
+失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
+详见 [第九步诊断契约](docs/step9_diagnosis_contract.md)。
+本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
