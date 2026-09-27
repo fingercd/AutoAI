@@ -168,9 +168,11 @@ def check_preflight(*, record, repository, prepare: Callable, stage: Stage = 'pr
         prepared = prepare()
     except Exception as exc:
         from ..contracts import TrainingConfigValidationError
+        from ..datasets.repository import DatasetIntegrityError
         from ..model_catalog import ModelNotImplementedForVersion, ModelRetiredError
         from ..evaluation_plan import PreparationResourceExhausted
         reason = (exc.code if isinstance(exc, GuardError) else
+            'guard_dataset_changed' if isinstance(exc, DatasetIntegrityError) else
             'guard_capability_unavailable' if isinstance(exc, (ModelNotImplementedForVersion, ModelRetiredError)) else
             'guard_config_mismatch' if isinstance(exc, TrainingConfigValidationError) else
             'guard_resource_limit' if isinstance(exc, PreparationResourceExhausted) else

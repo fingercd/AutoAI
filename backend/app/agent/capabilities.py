@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
+
 from typing import Any
 
 from .contracts import AGENT_ALLOWED_MODELS, AGENT_API_CONTRACT_VERSION
@@ -25,17 +27,20 @@ def module_catalog(revision: str | None = None) -> dict[str, dict[str, Any]]:
         }
         for name in _PLANNED_MODULES
     }
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if revision in REVISIONS_SINCE[2]:
         result['knowledge'] = dict(available=True, status='ready', schema_version='knowledge-snapshot-rag-v1', reason=None)
-    if revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if revision in REVISIONS_SINCE[3]:
         result['dynamic_preprocessing'] = dict(available=True, status='ready',
             schema_version='finite-processing-v1', reason=None)
-    if revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if revision in REVISIONS_SINCE[4]:
         result['bounded_hpo'] = dict(available=True, status='ready',
             schema_version='finite-hpo-v1', reason=None)
-    if revision == 'agent-recipes-revision-v6':
+    if revision in REVISIONS_SINCE[6]:
         result['fail_fast_guard'] = dict(available=True, status='ready',
             schema_version='training-guard-policy-v1', reason=None)
+    if revision == 'agent-recipes-revision-v7':
+        result['feedback_diagnosis'] = dict(available=True, status='ready',
+            schema_version='feedback-diagnosis-policy-v1', reason=None)
     return result
 
 

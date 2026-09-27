@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
+
 import sqlite3
 from datetime import datetime, timezone
 
@@ -246,14 +248,14 @@ def call(method, principal, revision=None, **kwargs):
 @current_router.get('/health')
 def current_health(revision: str | None = Depends(revision_header)):
     result = agent_health()
-    snapshot = model_capability_snapshot(search_revision=revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'))
+    snapshot = model_capability_snapshot(search_revision=revision in REVISIONS_SINCE[4])
     result.update(contract_version=V2, **snapshot)
     result['capabilities']['create_experiment'] &= any(m['available'] for m in snapshot['models'])
     if not any(m['available'] for m in snapshot['models']):
         result['status'] = 'unavailable'
-    if revision in ('agent-recipes-revision-v1','agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if revision in REVISIONS_SINCE[1]:
         result.update(protocol_revision=revision,execution_profiles=['train-evidence-recipes-v1'])
-    if revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if revision in REVISIONS_SINCE[2]:
         from ..agent.capabilities import module_catalog
         result['modules'] = module_catalog(revision)
     return result
