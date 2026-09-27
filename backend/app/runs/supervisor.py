@@ -1,8 +1,9 @@
-"""Windows process-tree supervision for a single claimed training Run.
+"""Platform process-tree supervision for a single claimed training Run.
 
 The worker owns the claim and the Job Object.  A child cannot begin work until
 it has been assigned to that job.  Closing the last job handle after a parent
 crash kills the child and any processes it spawned.
+Linux uses a dedicated subreaper with a private worker-liveness pipe.
 """
 
 from __future__ import annotations
@@ -128,6 +129,7 @@ def _child_environment() -> dict[str, str]:
         'CUDA_VISIBLE_DEVICES', 'CUDA_PATH', 'CUDA_HOME',
         'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
         'PYTHONPATH', 'VIRTUAL_ENV', 'CONDA_PREFIX',
+        'HOME', 'TMPDIR', 'LD_LIBRARY_PATH', 'LANG', 'LC_ALL', 'PYTHONUTF8',
     }
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
@@ -160,7 +162,7 @@ def supervise(
     termination_grace_seconds: float = 2.0,
     on_stop: Callable[[TerminationEvidence], None] | None = None,
 ) -> dict[str, object]:
-    """Run one subprocess under a Windows Job Object and return its JSON result.
+    """Run one subprocess under platform supervision and return its JSON result.
 
     ``active`` checks the parent-owned claim and cancellation state.  The
     caller must check the claim again before publishing success.  If exit
@@ -179,6 +181,12 @@ def supervise(
             'claim_inactive', datetime.now(timezone.utc).isoformat(),
             datetime.now(timezone.utc).isoformat(), 0.0, None))
     monotonic_deadline = time.monotonic() + (deadline_at - datetime.now(timezone.utc)).total_seconds()
+
+    if sys.platform == 'linux':
+        from .linux_supervisor import supervise_linux
+        return supervise_linux(payload, deadline_at=deadline_at, active=active,
+            module=module, poll_seconds=poll_seconds,
+            termination_grace_seconds=termination_grace_seconds, on_stop=on_stop)
 
     job = _job_create()
     process: subprocess.Popen[str] | None = None
@@ -262,31 +270,7 @@ def supervise(
         output = process.stdout.read()
         if process.returncode != 0:
             raise ChildExecutionError('ChildProcessExit', f'training child exited {process.returncode}')
-        try:
-            envelope = json.loads(output)
-        except (TypeError, ValueError) as exc:
-            raise ChildExecutionError('ChildProtocolError', 'invalid training child result') from exc
-        if not isinstance(envelope, dict) or type(envelope.get('ok')) is not bool:
-            raise ChildExecutionError('ChildProtocolError', 'invalid training child result')
-        if not envelope['ok']:
-            if envelope.get('error_type') == 'GuardError':
-                from .guard import GuardError
-                details = envelope.get('guard', {})
-                # The child carries only registered fields, never exception prose.
-                from pydantic import TypeAdapter
-                from .guard import Stage
-                stage = TypeAdapter(Stage).validate_python(details.get('stage'))
-                ref = details.get('report_id')
-                import re
-                if ref is not None and (not isinstance(ref, str) or not re.fullmatch('guard-[a-f0-9]{64}', ref)):
-                    raise ChildExecutionError('ChildProtocolError', 'invalid guard reference')
-                raise GuardError(details.get('code'), stage=stage, report_id=ref)
-            raise ChildExecutionError(str(envelope.get('error_type', 'ChildExecutionError')),
-                                      str(envelope.get('message', 'training child failed')))
-        result = envelope.get('result')
-        if not isinstance(result, dict):
-            raise ChildExecutionError('ChildProtocolError', 'invalid training child result')
-        return result
+        return _decode_result(output)
     finally:
         # Kill-on-close also covers failures between Popen and normal exit.
         _kernel.CloseHandle(job)
@@ -302,6 +286,34 @@ def supervise(
                 process.stdout.close()
             if process.stdin is not None:
                 process.stdin.close()
+
+
+def _decode_result(output: str) -> dict[str, object]:
+    try:
+        envelope = json.loads(output)
+    except (TypeError, ValueError) as exc:
+        raise ChildExecutionError('ChildProtocolError', 'invalid training child result') from exc
+    if not isinstance(envelope, dict) or type(envelope.get('ok')) is not bool:
+        raise ChildExecutionError('ChildProtocolError', 'invalid training child result')
+    if not envelope['ok']:
+        if envelope.get('error_type') == 'GuardError':
+            from .guard import GuardError
+            details = envelope.get('guard', {})
+            # The child carries only registered fields, never exception prose.
+            from pydantic import TypeAdapter
+            from .guard import Stage
+            stage = TypeAdapter(Stage).validate_python(details.get('stage'))
+            ref = details.get('report_id')
+            import re
+            if ref is not None and (not isinstance(ref, str) or not re.fullmatch('guard-[a-f0-9]{64}', ref)):
+                raise ChildExecutionError('ChildProtocolError', 'invalid guard reference')
+            raise GuardError(details.get('code'), stage=stage, report_id=ref)
+        raise ChildExecutionError(str(envelope.get('error_type', 'ChildExecutionError')),
+                                  str(envelope.get('message', 'training child failed')))
+    result = envelope.get('result')
+    if not isinstance(result, dict):
+        raise ChildExecutionError('ChildProtocolError', 'invalid training child result')
+    return result
 
 
 def _child_main() -> None:
@@ -320,7 +332,8 @@ def _child_main() -> None:
                                           stdin=subprocess.DEVNULL,
                                           stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL,
-                                          creationflags=subprocess.CREATE_NO_WINDOW)
+                                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                                          start_new_session=sys.platform == 'linux')
             Path(str(payload['identity_path'])).write_text(json.dumps({
                 'child': os.getpid(), 'grandchild': grandchild.pid}))
             time.sleep(30)

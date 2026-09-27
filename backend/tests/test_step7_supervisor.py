@@ -1,4 +1,4 @@
-"""Real Windows process supervision; no training data or provider is needed."""
+"""Real platform process supervision; no training data or provider is needed."""
 
 from __future__ import annotations
 
@@ -23,10 +23,13 @@ from backend.tests.test_agent_model_sessions import api
 from backend.tests.test_finite_search import search_session_request, HEADERS
 
 
-pytestmark = pytest.mark.skipif(sys.platform != 'win32', reason='Windows Job Object contract')
+pytestmark = pytest.mark.skipif(sys.platform not in ('win32', 'linux'), reason='supported process supervision')
 
 
 def _live(pid: int) -> bool:
+    if sys.platform == 'linux':
+        stat = Path(f'/proc/{pid}/stat')
+        return stat.exists() and stat.read_text().split(') ', 1)[1][0] != 'Z'
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
@@ -104,7 +107,7 @@ def test_parent_crash_closes_job_and_kills_process_tree(tmp_path):
     parent = subprocess.Popen([sys.executable, '-c', code, str(identity)],
                               cwd=str(Path(__file__).resolve().parents[2]),
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     try:
         until = time.monotonic() + 8
         while not identity.exists() and time.monotonic() < until:

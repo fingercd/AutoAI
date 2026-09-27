@@ -24,6 +24,24 @@ CallJournal 扣账。预约上界和已发生用量分开记录。调度到训�
 拒绝旧 worker 合同领取预算 Run。worker 退出证据不明确时保留未知 hold，不能将
 Run 发布为成功。
 
+### Linux 进程监督
+
+Windows 继续使用带 kill-on-close 的 Job Object。Linux 通过同一 `supervise`
+接口启动独立、单线程的 `PR_SET_CHILD_SUBREAPER` 监督进程；训练仍进入现有
+`execute_claimed_run`，没有另一套训练核心。监督关系成立且父侧启动检查通过后才
+释放训练输入。worker 持有的专用管道不传给训练子进程，worker 被 SIGKILL 后
+管道 EOF 会触发清理；监督进程也独立检查冻结截止时间。
+
+清理只对内核列出的直接子进程发 SIGKILL，并反复收养、清理、waitpid 回收后代，
+因此 `setsid`、父进程先退出不会逃离监督。只在 `waitpid` 返回 ECHILD 后发出
+整树退出证明，父侧还要求监督进程正常退出。结果用临时文件传输，避免大 JSON
+填满 stdout 管道阻塞退出。截止、取消及 claim 失效仍由原预算和发布事务收口。
+
+该机制不要求 root/cgroup 写权限，要求 Linux subreaper 与 `/proc/.../children`。
+它面向受信任训练代码，不是抵抗恶意同 UID 程序的安全沙箱。监督进程本身被杀、
+内核不可中断等待或缺失退出证明时保留 unknown hold，绝不按主子进程已退出释放
+额度；超时的监督进程继续清理。worker 崩溃后的恢复沿用原账本，不自动重复 fit。
+
 同一 operation 的再次发送按此前最后一次已发送记录分类：LLM 无效/过大输出后的
 再次请求计入 output_repairs，其余再次请求（包括未知发送后的重试）计入
 network_retries。两者都同时消耗对应的 LLM/API call 额度，不是额外免费调用。

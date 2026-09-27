@@ -172,7 +172,7 @@ def test_expired_queued_run_settles_zero_without_fit(tmp_path):
         assert connection.execute('SELECT COUNT(*) FROM task_training_events_v1').fetchone()[0] == 0
 
 
-@pytest.mark.skipif(sys.platform != 'win32', reason='Windows Job Object contract')
+@pytest.mark.skipif(sys.platform not in ('win32', 'linux'), reason='supported process supervision')
 def test_blocked_child_termination_preserves_fit_and_latency(tmp_path):
     path, _, reservation, ledger = _setup(tmp_path)
     ledger.bind()
