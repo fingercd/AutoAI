@@ -1480,7 +1480,7 @@
         }
       }
     </style>
-    <link rel="stylesheet" href="/static/js/comparison-page.css?v=1" />
+    <link rel="stylesheet" href="/static/js/comparison-page.css?v=2" />
   </head>
   <body>
     <!-- 页头：平台标题、使用说明入口、认证状态徽章（authStatus/authButton，
@@ -1788,19 +1788,24 @@
 
         <!-- 批次比较视图：不占用左侧导航项，通过可刷新 Hash 深链进入。 -->
         <div id="view-comparison" class="view hidden">
-          <details class="page-help">
-            <summary>模型比较说明</summary>
-            <ol>
-              <li>一个所选模型对应一个独立 Run；本页只比较成功且完整的真实结果。</li>
-              <li>四项指标统一排序；混淆矩阵、类别 Recall 和样品正误分别展示，可保存和下载。</li>
-              <li>普通划分使用直接 Test，留一交叉验证使用 pooled OOF，独立测试集使用 direct external Test。</li>
-            </ol>
-          </details>
-          <div class="panel wide comparison-page-shell">
-            <div class="panel-title">
+          <div class="cmp-page-heading">
+            <div>
+              <p class="cmp-breadcrumb">建模结果 <span>/</span> 批次对比</p>
               <h2>模型性能对比</h2>
-              <a class="secondary" href="#/modeling">返回 AI 建模</a>
             </div>
+            <div class="cmp-page-actions">
+              <details class="page-help">
+                <summary>比较说明</summary>
+                <ol>
+                  <li>一个所选模型对应一个独立 Run；本页只比较成功且完整的真实结果。</li>
+                  <li>四项指标统一排序；混淆矩阵、类别 Recall / Precision 和样品正误分别展示，可保存和下载。</li>
+                  <li>普通划分使用直接 Test，留一交叉验证使用 pooled OOF，独立测试集使用 direct external Test。</li>
+                </ol>
+              </details>
+              <a class="secondary cmp-back" href="#/modeling">返回 AI 建模 <span aria-hidden="true">↗</span></a>
+            </div>
+          </div>
+          <div class="panel wide comparison-page-shell">
             <div id="batchComparisonError" class="comparison-error" role="status"></div>
             <div id="batchComparisonPage" class="comparison-content" aria-live="polite"></div>
           </div>
@@ -1908,7 +1913,7 @@
     <script src="/static/js/classic-training-policy.js"></script>
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
-    <script type="module" src="/static/js/comparison-page.js?v=1"></script>
+    <script type="module" src="/static/js/comparison-page.js?v=2"></script>
     <script type="module" src="/static/js/run-results.js?v=20260820-compact-visualization-v3"></script>
     <script>
       /*

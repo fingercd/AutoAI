@@ -40,7 +40,8 @@ def test_feature_chart_and_new_archive_inventory_are_disabled(monkeypatch):
 def test_frontend_feature_block_is_retained_but_gated():
     source = Path('static/js/comparison-page.js').read_text(encoding='utf-8')
     assert 'const FEATURE_ENGINEERING_ENABLED' not in source
-    assert "if(trainingScheme?.enabled){\n    const feature=section('特征工程 × 模型'" in source
+    # The feature panel is now reached through the capability-gated result tab.
+    assert "if(trainingScheme?.enabled)items.push(['features','特征方案','layers',features]);" in source
     assert 'cmp-matrix-dialog' in source
     css = Path('static/js/comparison-page.css').read_text(encoding='utf-8')
     assert '#view-comparison dialog.cmp-matrix-dialog > button' in css

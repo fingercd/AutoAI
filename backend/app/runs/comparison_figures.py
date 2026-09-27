@@ -16,7 +16,7 @@ from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
 
-DRAWING_VERSION = 'comparison-figures-v3'
+DRAWING_VERSION = 'comparison-figures-v4'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
@@ -203,7 +203,7 @@ def render_figure(data, *, format='svg', width=360, **options):
                 bar = fig.colorbar(image, cax=cax, ticks=[0, vmax / 2, vmax])
                 bar.ax.set_yticklabels([f'{v:g}' if count_view else f'{v * 100:.0f}%' for v in [0, vmax / 2, vmax]])
                 bar.ax.tick_params(length=0, labelsize=9.75); bar.outline.set_visible(False)
-        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else 'Recall / Sensitivity' if kind == 'recall' else 'Precision' if kind == 'precision' else 'Sample_ID × Models' if kind == 'samples' else '特征方案 · ' + FEATURE_METRICS[options.get('metric', 'balanced_accuracy')]
+        title = METRICS[options.get('metric', 'balanced_accuracy')] if kind == 'overall' else NAMES.get(options.get('model'), options.get('model')) if kind == 'matrix' else '召回率' if kind == 'recall' else 'Precision' if kind == 'precision' else 'Sample_ID × Models' if kind == 'samples' else '特征方案 · ' + FEATURE_METRICS[options.get('metric', 'balanced_accuracy')]
         fig.text(10 / width, 1 - 8 / height, title, fontsize=12, weight='semibold', va='top', color='#25382f')
         output = BytesIO()
         fig.savefig(output, format=format, dpi=192 if format == 'png' else 96, metadata={'Creator': DRAWING_VERSION} if format == 'svg' else {'Software': DRAWING_VERSION})
