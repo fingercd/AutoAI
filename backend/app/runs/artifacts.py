@@ -30,6 +30,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -50,6 +51,22 @@ LEGACY_DIRECT_DOWNLOAD_NAMES = frozenset({
     'feature_importance.json',
     'feature_importance.csv',
 })
+
+# Historical benchmark writers indexed these internal files in v2 manifests.
+# Recognition is read-only: neither the current writer nor the public catalog
+# gains nested paths. In particular old downloadable=True is not authority.
+_LEGACY_INTERNAL_NAME = re.compile(
+    r'(?:details/(?:epochs|search_trials|candidate_samples|samples)/[0-9]{6}\.json'
+    r'|weights/fold-[0-9]{4}\.(?:pt|pkl))\Z'
+)
+
+
+def _canonical_name(name: str, *, legacy: bool = False) -> bool:
+    if (not isinstance(name, str) or not name or '\\' in name or ':' in name
+            or '%' in name or any(ord(c) < 32 or ord(c) == 127 for c in name)
+            or any(part in ('', '.', '..') for part in name.split('/'))):
+        return False
+    return '/' not in name or legacy and _LEGACY_INTERNAL_NAME.fullmatch(name) is not None
 
 # 新 Run 的公开下载面由这里唯一声明。未知文件和可执行模型对象默认私有；旧
 # manifest 的 downloadable 标记仍由 resolve_download 兼容读取。历史全局
@@ -266,12 +283,23 @@ class RunArtifactWriter:
         self.run_dir = Path(run_dir).resolve()
         self._private_names: set[str] = set()
 
-    # artifact 名必须是“扁平文件名”：Path(name).name != name 说明带目录分隔符，
-    # '.'/'..' 显式拒绝。所有读写都经此入口拼路径，从源头杜绝目录穿越。
+    # 新写入保持扁平文件名；历史读取另外经 _read_path 的窄兼容边界。
     def _path(self, name: str) -> Path:
-        if not name or Path(name).name != name or name in {'.', '..'}:
+        if not _canonical_name(name):
             raise ValueError(f'invalid artifact name: {name!r}')
         return self.run_dir / name
+
+    def _read_path(self, name: str) -> Path:
+        """Resolve a canonical catalog/legacy name without escaping the Run."""
+        if not _canonical_name(name, legacy=True):
+            raise ManifestCorruptError('manifest.json 含无效 artifact 文件名')
+        try:
+            path = (self.run_dir / name).resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ManifestCorruptError('artifact 路径无法安全解析') from exc
+        if not _is_within(path, self.run_dir):
+            raise ManifestCorruptError('artifact 路径越出 Run 目录')
+        return path
 
     # 原子写核心：同目录建 .tmp 临时文件 → 写入 → flush+fsync 落盘 → os.replace
     # 覆盖目标。同文件系统内 replace 是原子操作，读者不会看到写一半的文件；
@@ -372,11 +400,11 @@ class RunArtifactWriter:
 
     # 读取并严格校验 manifest.json。校验项（任一失败抛 ManifestCorruptError）：
     # JSON 合法性、顶层必须是含 artifacts 对象的 dict、Manifest 内 run_id 与目录名一致、
-    # 每个 artifact 名是合法扁平文件名、size_bytes 是非负 int（注意 bool 是 int 子类，
+    # 每个 artifact 名符合扁平/已知历史路径规则、size_bytes 是非负 int（bool 是 int 子类，
     # 要显式排除）、sha256 必须是 str。读侧从严，是为了尽早发现损坏/篡改，
     # 不让坏 Manifest 流向下游的结果页与下载逻辑。
     def load_manifest(self) -> dict[str, Any]:
-        manifest_path = self.run_dir / 'manifest.json'
+        manifest_path = self._read_path('manifest.json')
         if not manifest_path.is_file():
             raise FileNotFoundError(manifest_path)
         try:
@@ -385,12 +413,13 @@ class RunArtifactWriter:
             raise ManifestCorruptError('manifest.json 不是有效 JSON') from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get('artifacts'), dict):
             raise ManifestCorruptError('manifest.json 缺少 artifacts 对象')
+        if manifest.get('schema_version') not in (None, 'run-artifact-manifest-v1', MANIFEST_SCHEMA_VERSION):
+            raise ManifestCorruptError('manifest.json 版本不受支持')
         manifest_run_id = manifest.get('run_id')
         if manifest_run_id is not None and str(manifest_run_id) != self.run_dir.name:
             raise ManifestCorruptError('manifest.json 的 run_id 与目录不一致')
         for name, entry in manifest['artifacts'].items():
-            if not isinstance(name, str) or not name or Path(name).name != name or name in {'.', '..'}:
-                raise ManifestCorruptError('manifest.json 含无效 artifact 文件名')
+            self._read_path(name)
             if not isinstance(entry, dict):
                 raise ManifestCorruptError(f'manifest.json 的 artifact 条目无效: {name}')
             size = entry.get('size_bytes')
@@ -408,10 +437,20 @@ class RunArtifactWriter:
         entry = manifest['artifacts'].get(name)
         if not isinstance(entry, dict):
             raise FileNotFoundError(name)
-        path = self._path(name).resolve()
+        path = self._read_path(name)
         if not _is_within(path, self.run_dir) or not path.is_file():
             raise FileNotFoundError(name)
         return entry, path
+
+    def read_verified_json(self, manifest: dict[str, Any], name: str) -> Any:
+        """Verify the exact bytes projected to users; never trust status fallbacks."""
+        entry, path = self._resolve_manifest_entry(manifest, name)
+        raw = path.read_bytes()
+        if (entry.get('size_bytes') is None or not entry.get('sha256')
+                or len(raw) != entry['size_bytes']
+                or hashlib.sha256(raw).hexdigest() != entry['sha256']):
+            raise ArtifactIntegrityError(f'artifact integrity mismatch: {name}')
+        return json.loads(raw.decode('utf-8-sig'))
 
     @staticmethod
     # 校验单个 artifact 与 Manifest 条目的一致性。
@@ -437,15 +476,21 @@ class RunArtifactWriter:
     def resolve_download(self, name: str) -> Path:
         manifest = self.load_manifest()
         entry, path = self._resolve_manifest_entry(manifest, name)
-        is_v2 = manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
         catalog_downloadable = bool(_catalog_policy(name).get('downloadable'))
         legacy_direct_download = name in LEGACY_DIRECT_DOWNLOAD_NAMES
-        # v1 继续尊重历史 downloadable；v2 通常还必须通过当前显式 catalog。
+        legacy_flat_text = (
+            manifest.get('schema_version') != MANIFEST_SCHEMA_VERSION
+            and '/' not in name and name not in ARTIFACT_CATALOG
+            and Path(name).suffix.lower() in {'.txt', '.csv', '.json'}
+        )
+        # v1 未知名字仅保留扁平文本兼容；所有版本的模型对象和内部目录均私有。
         # 已发布过的全局重要性仅保留已知文件名的窄范围直接下载，不重新进入结果页。
         if not entry.get('downloadable') or (
-            is_v2 and not catalog_downloadable and not legacy_direct_download
+            not catalog_downloadable and not legacy_direct_download and not legacy_flat_text
         ):
             raise PermissionError(f'artifact is not downloadable: {name}')
+        if name == 'config.json' and _json_contains_path_fields(path):
+            raise PermissionError('config contains private paths')
         self._verify_entry(path, entry, verify_hash=True)
         return path
 
@@ -453,8 +498,8 @@ class RunArtifactWriter:
     # 输出是“catalog 全部已知名字 ∪ Manifest 实际登记名字”的并集，逐项给出：
     # - required/applicable：v2 才采纳 required 语义；applicable 由 _is_applicable 按
     #   模型家族/类型判定（但已登记在 Manifest 的常规文件一律视为适用）。
-    # - integrity：ok / corrupt / missing / not_generated / volatile。结果页只做
-    #   大小级校验（verify_hash=False），sha256 留到真正下载时再算。
+    # - integrity：ok / corrupt / missing / not_generated / volatile。公开结果核对
+    #   大小和 SHA；私有内部文件的页面检查核对大小，全盘摘要由迁移审计验证。
     # - downloadable 是 exists + integrity==ok + applicable + catalog 允许 +
     #   Manifest 允许 的合取；不允许时附带人类可读的 reason 供前端灰显解释。
     # - LEGACY_DIRECT_DOWNLOAD_NAMES 被显式跳过，不进入结果页列表。
@@ -470,14 +515,15 @@ class RunArtifactWriter:
                 continue
             policy = _catalog_policy(name)
             entry = manifest_entries.get(name)
-            exists = isinstance(entry, dict) and self._path(name).is_file()
+            path = self._read_path(name)
+            exists = isinstance(entry, dict) and path.is_file()
             required = (
                 bool(entry.get('required')) if isinstance(entry, dict) and entry.get('required') is not None
                 else bool(policy.get('required'))
             ) if is_v2 else False
             applicable = _is_applicable(
                 name,
-                path=self._path(name),
+                path=path,
                 manifest=manifest,
                 exists=exists,
                 required=required,
@@ -498,8 +544,11 @@ class RunArtifactWriter:
                     integrity = 'volatile'
                 else:
                     try:
-                        # 结果页只做常数时间的大小检查；实际下载前重新计算 sha256。
-                        self._verify_entry(self._path(name), entry, verify_hash=False)
+                        # Public results require content integrity, including same-size tampering.
+                        if (manifest.get('schema_version') == MANIFEST_SCHEMA_VERSION
+                                and (entry.get('size_bytes') is None or not entry.get('sha256'))):
+                            raise ArtifactIntegrityError('missing integrity metadata')
+                        self._verify_entry(path, entry, verify_hash=bool(policy.get('downloadable')))
                         integrity = 'ok'
                     except ArtifactIntegrityError:
                         integrity = 'corrupt'
@@ -513,6 +562,8 @@ class RunArtifactWriter:
 
             catalog_downloadable = bool(policy.get('downloadable'))
             manifest_downloadable = bool(entry.get('downloadable')) if isinstance(entry, dict) else False
+            if name == 'config.json' and exists and _json_contains_path_fields(path):
+                manifest_downloadable = False
             downloadable = bool(
                 exists
                 and integrity == 'ok'
