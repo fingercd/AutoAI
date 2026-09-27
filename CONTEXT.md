@@ -119,3 +119,5 @@ node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 - 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
 - 直接使用 uvicorn 不会启动训练 worker；本地一键入口 `run.py` 默认同时启动二者。
 - 服务器升级前先备份 `storage/`；历史绑定先执行 `python -m backend.app.runs.migration --dry-run --owner-id ... --tenant-id ... --rebind-unowned`，确认后去掉 `--dry-run`。
+
+2026-09-27：经典对比页“分类预测指标”改为直接显示 Recall 与 Precision 热图，删除标题下的指标解释小字，数值表折叠查看。precision 图像及 SVG/PNG/CSV 归档从 class_metrics 读取；绘图版本 comparison-figures-v3，旧图集按现有产物补建。

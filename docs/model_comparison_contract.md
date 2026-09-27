@@ -31,7 +31,7 @@
 }
 ```
 
-`class_metrics` 按类别给出 Precision / Recall / F1 / Support：多次重复实验取均值与标准差（`*_std`），Support 求和；任一字段缺失即为 `null`，不填 0。**Recall（召回率）= TP/(TP+FN)**，二分类时即 Sensitivity，衡量漏判；**Precision（精确率）= TP/(TP+FP)**，衡量误判。二者不是同一个指标，经典对比页据此分成“各类别 Recall”和“各类别 Precision”两张表，Support 单独折叠展示；`class_recall` 与 recall 图像保持不变，供 v2 与历史归档继续使用。
+`class_metrics` 按类别给出 Precision / Recall / F1 / Support：多次重复实验取均值与标准差（`*_std`），Support 求和；任一字段缺失即为 `null`，不填 0。**Recall（召回率）= TP/(TP+FN)**，二分类时即 Sensitivity，衡量漏判；**Precision（精确率）= TP/(TP+FP)**，衡量误判。二者不是同一个指标，经典对比页据此显示“各类别 Recall”和“各类别 Precision”两张热图，精确数值与 Support 折叠展示。`class_recall` 与 recall 图像保持兼容；precision 图从 `class_metrics.precision` 读取，缺失保留为空，不填零。2026-09-27 绘图版本升级为 comparison-figures-v3，归档增加 class_precision 的 SVG/PNG/CSV，旧图集按现有产物补建，无需重训。
 
 ## 预测明细 Excel 导出（2026-09-22）
 
@@ -65,7 +65,7 @@ models[].experiment 来自 Manifest 校验通过的 feature_experiments.json，�
 - `GET /api/training/batches/{id}/archive`：返回 pending/missing/failed/ready/discarded；ready 时附归档 comparison。
 - `POST /api/training/batches/{id}/archive?force=false`：幂等补建；force=true 重试生成。运行中/已停止或并发生成返回 409。
 - `GET /api/training/batches/{id}/archive/files/{name}`：下载校验通过的 JSON/CSV/SVG/PNG；`all.zip` 包含全部默认图集、数据和 Manifest。
-- `POST /api/training/batches/{id}/figure?format=svg|png`：kind 为 overall/matrix/recall/samples/features；接受 metric、model、sort、page（0 基）、search、errors、matrix_mode（percent/count）、width（260–1800）。SVG 返回 svg、width、height 和绘图行列数据；PNG 返回图像。筛选图不覆盖默认归档。
+- `POST /api/training/batches/{id}/figure?format=svg|png`：kind 为 overall/matrix/recall/precision/samples/features；接受 metric、model、sort、page（0 基）、search、errors、matrix_mode（percent/count）、width（260–1800）。SVG 返回 svg、width、height 和绘图行列数据；PNG 返回图像。筛选图不覆盖默认归档。
 
 归档位于 Run 数据库同级的 `batches/<batch_id>/`，格式为 `batch-comparison-archive-v1`，包含比较快照、默认 SVG/PNG 与 CSV、带 SHA-256/大小的 manifest.json；绘图版本为 comparison-figures-v1。完整 Sample_ID 图集按 50 个分图保存。
 

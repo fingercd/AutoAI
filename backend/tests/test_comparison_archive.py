@@ -61,6 +61,30 @@ def test_pure_figure_contract_missing_labels_selection_and_count_scale(monkeypat
     assert feature['values'][4][0] is None # CNN is ranked first; PCA is not applicable
 
 
+def test_class_precision_figures_preserve_missing_values_and_export(repo_batch, monkeypatch):
+    from backend.app.routers.batches import ComparisonFigureRequest
+
+    data = comparison_fixture(n=2, classes=3, features=False)
+    data['class_metrics'] = {'status': 'ready', 'labels': ['1', '2', '10'], 'rows': [
+        {'model_type': 'pls_da', 'values': [{'precision': .6}, {'precision': None}, {'precision': 0}]},
+        {'model_type': 'logistic_regression', 'values': [{'precision': .75}, {'precision': 1}, {'precision': .5}]},
+    ]}
+    assert ComparisonFigureRequest(kind='precision').kind == 'precision'
+    svg, spec = figures.render_figure(data, kind='precision')
+    png, png_spec = figures.render_figure(data, kind='precision', format='png')
+    assert spec == png_spec
+    assert spec['columns'] == ['1', '2', '10']
+    assert spec['rows'] == ['Elastic Net', 'PLS-DA']
+    assert spec['values'] == [[.75, 1, .5], [.6, None, 0]]
+    assert b'Precision' in svg and png.startswith(b'\x89PNG')
+    assert figures.figure_data(data, kind='recall')['values'] == [[1., 1., 1.], [1., 1., 1.]]
+    repo, batch, principal = repo_batch
+    monkeypatch.setattr(archive, 'project_model_comparison', lambda **_: data)
+    archive.ensure_archive(repo, batch.batch_id, principal, Path)
+    bundle = zipfile.ZipFile(BytesIO(archive.archive_download(repo, batch.batch_id, principal, 'all.zip')))
+    assert {'class_precision.svg', 'class_precision.png', 'class_precision.csv'} <= set(bundle.namelist())
+
+
 @pytest.mark.parametrize('models,classes,samples',[(1,4,4),(4,4,50),(6,10,1000)])
 def test_scientific_figures_render_svg_png_and_paginate(models,classes,samples,monkeypatch):
     monkeypatch.setattr(figures.feature_policy, 'FEATURE_ENGINEERING_ENABLED', True)

@@ -240,7 +240,7 @@ def get_archive_file(batch_id: str, name: str, principal: Principal = Depends(ge
 
 
 class ComparisonFigureRequest(BaseModel):
-    kind: str = Field(pattern='^(overall|matrix|recall|samples|features)$')
+    kind: str = Field(pattern='^(overall|matrix|recall|precision|samples|features)$')
     metric: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')
     model: str = Field(default='', max_length=100, pattern='^[a-zA-Z0-9_-]*$')
     sort: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')

@@ -230,7 +230,7 @@ def ensure_archive(repository, batch_id, principal, run_dir_for, *, force=False)
                 if any(record.state not in {'succeeded', 'failed'} for record in latest):
                     raise ArchiveUnavailable('批次已停止，不再生成图像')
                 options = {key: value for key, value in spec.items() if key != 'id'}
-                width = 900 if spec['kind'] in {'recall', 'features', 'samples'} else 360
+                width = 900 if spec['kind'] in {'recall', 'precision', 'features', 'samples'} else 360
                 write(spec['id'] + '.csv', _csv(figure_data(comparison, **options)))
                 for fmt in ('svg', 'png'):
                     content, _ = render_figure(comparison, format=fmt, width=width, **options)
