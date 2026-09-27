@@ -44,20 +44,26 @@ class DiagnosisProvider(KnowledgeProvider):
         return httpx.Response(200,json=payload)
 
 
-def started(api,tmp_path,budget_config, *, protocol='json_action', diagnosis='on', awareness='off', guard='on', invalid=False, unknown=False, max_llm_calls=6):
+def started(api,tmp_path,budget_config, *, protocol='json_action', diagnosis='on', awareness='off', guard='on', invalid=False, unknown=False, max_llm_calls=6, full_pool=False):
     test_client, storage, dataset=api
+    allowed=['logistic_regression']
+    processing='fixed'
+    if full_pool:
+        from agent_poc.tests.test_step9_acceptance_repairs import full_state
+        allowed=full_state()['task']['allowed_models']
+        processing='dynamic'
     config=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,
         prompt_version='agent-decision-budget-v1',diagnosis_phase=True,**budget_config)
     runtime=RuntimeConfig('http://backend.invalid','local',config)
     transport=CountTransport(test_client)
     client=AutoAIClient(runtime.backend_url,transport=transport,api_version='v2',
         execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v7',
-        processing_mode='fixed',search_mode='fixed',max_trials=1,max_retries=0)
+        processing_mode=processing,search_mode='fixed',max_trials=1,max_retries=0)
     provider=DiagnosisProvider(protocol,invalid=invalid,unknown=unknown)
     llm=LLMAdapter(config,transport=provider)
     root=tmp_path/'graph'
-    state=start_task(runtime,dataset_id=dataset,allowed_models=['logistic_regression'],
-        processing_mode='fixed',search_mode='fixed',max_trials=1,decision_mode='recipe_id',
+    state=start_task(runtime,dataset_id=dataset,allowed_models=allowed,
+        processing_mode=processing,search_mode='fixed',max_trials=1,decision_mode='recipe_id',
         knowledge=False,budget_awareness=awareness,fail_fast_guard=guard,feedback_diagnosis=diagnosis,
         storage=root,thread_id='step9-graph',client=client,llm=llm,wait=False,max_llm_calls=max_llm_calls)
     assert state['execution']['run_id'],state['lifecycle']
@@ -239,3 +245,99 @@ def test_persistence_failure_never_dispatches_diagnosis(api,tmp_path,budget_conf
     assert final['lifecycle']['status']=='needs_attention'
     assert not [c for c in provider.contexts if c['phase']=='diagnose']
     assert final['execution']['run_id']==state['execution']['run_id']
+
+
+
+@pytest.mark.parametrize('protocol',['json_action','native_tools'])
+@pytest.mark.parametrize('awareness',['on','off'])
+@pytest.mark.parametrize('outcome',['success','failed'])
+def test_capacity_receipt_crash_resumes_without_dispatch(api,tmp_path,budget_config,monkeypatch,protocol,awareness,outcome):
+    from agent_poc.orchestration.persistence import CallJournal
+    from agent_poc.orchestration.runtime import TaskInterrupted
+    from backend.app.datasets.repository import DatasetRepository
+    from scripts.export_diagnosis import export_diagnosis
+    import numpy as np
+    import pandas as pd
+    frame=pd.DataFrame(np.random.default_rng(3).normal(size=(60,128)),columns=[str(i) for i in range(128)])
+    frame.insert(0,'Name',['sample-'+str(i) for i in range(60)])
+    frame.insert(0,'Sample_ID',['group-'+str(i//2) for i in range(60)])
+    frame.insert(0,'Label',[str(i//30) for i in range(60)])
+    frame.insert(0,'Index',list(range(60)))
+    uploaded=api[0].post('/api/datasets/upload',files={'file':('capacity.csv',frame.to_csv(index=False).encode(),'text/csv')})
+    assert uploaded.status_code==200,uploaded.text
+    api=(api[0],api[1],uploaded.json()['dataset_id'])
+    state,runtime,wire,client,provider,llm,root=started(api,tmp_path,{**budget_config,'context_window':65536},protocol=protocol,awareness=awareness,full_pool=True)
+    assert len(state['recipes']['catalog']['recipes'])==96
+    if outcome=='failed':
+        source=DatasetRepository(api[1]/'datasets.sqlite3',storage_root=api[1]).resolve_system(api[2],legacy_path=None).path
+        source.write_bytes(source.read_bytes()+b'\n')
+    finish_worker(api)
+    original_tokens=llm._prompt_tokens
+    monkeypatch.setattr(llm,'_prompt_tokens',lambda request:1000000 if json.loads(request['messages'][-1]['content'])['phase']=='diagnose' else original_tokens(request))
+    original_freeze=CallJournal.freeze_diagnosis_input
+    def crash(self,snapshot):
+        original_freeze(self,snapshot)
+        raise KeyboardInterrupt
+    with monkeypatch.context() as patch:
+        patch.setattr(CallJournal,'freeze_diagnosis_input',crash)
+        with pytest.raises(TaskInterrupted):resume_task(runtime,storage=root,thread_id='step9-graph',client=client,llm=llm,wait=True)
+    final=resume_task(runtime,storage=root,thread_id='step9-graph',client=client,llm=llm,wait=True)
+    assert final['lifecycle']['status']=='completed',final['lifecycle']
+    assert final['finalization']['backend_session_state']==('finalized' if outcome=='success' else 'terminated')
+    assert final['diagnosis']['report']['reason_code']=='diagnosis_context_too_long'
+    assert final['execution']['run_id']==state['execution']['run_id']
+    assert not [c for c in provider.contexts if c['phase']=='diagnose']
+    before=(len(wire.requests),len(provider.contexts))
+    exported=export_diagnosis(storage=root,thread_id='step9-graph',output=tmp_path/'capacity-export')
+    assert exported['status']=='unavailable'
+    assert resume_task(runtime,storage=root,thread_id='step9-graph',client=client,llm=llm)==final
+    assert before==(len(wire.requests),len(provider.contexts))
+    with sqlite3.connect(root/'calls.sqlite') as db:
+        assert db.execute("SELECT count(*) FROM orchestration_calls_v1 WHERE name='diagnose'").fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM diagnosis_inputs_v1').fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM diagnosis_reports_v1').fetchone()[0]==1
+    with sqlite3.connect(api[1]/'runs.sqlite3') as db:
+        assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
+
+
+
+@pytest.mark.parametrize('assessment',['no_issue_identified','insufficient_evidence'])
+def test_assessment_proposal_report_export_and_terminal_replay(api,tmp_path,budget_config,monkeypatch,assessment):
+    from backend.app.agent.diagnosis import digest
+    from scripts.export_diagnosis import export_diagnosis
+    from agent_poc.orchestration.runtime import _historical_snapshot
+    from copy import deepcopy
+    state,runtime,wire,client,provider,llm,root=started(api,tmp_path,budget_config)
+    finish_worker(api)
+    original=provider.request
+    def response(method,url,*,headers,json:dict,timeout):
+        import json as codec
+        result=original(method,url,headers=headers,json=json,timeout=timeout)
+        if codec.loads(json['messages'][-1]['content'])['phase']=='diagnose':
+            payload=result.json();proposal=codec.loads(payload['choices'][0]['message']['content'])
+            proposal['assessment']=assessment
+            payload['choices'][0]['message']['content']=codec.dumps(proposal)
+            return httpx.Response(200,json=payload)
+        return result
+    monkeypatch.setattr(provider,'request',response)
+    final=resume_task(runtime,storage=root,thread_id='step9-graph',client=client,llm=llm,wait=True)
+    assert final['lifecycle']['status']=='completed',final['lifecycle']
+    before=(len(wire.requests),len(provider.contexts))
+    exported=export_diagnosis(storage=root,thread_id='step9-graph',output=tmp_path/'assessment-export')
+    assert exported['report']['assessment']==assessment
+    assert assessment in (tmp_path/'assessment-export/diagnosis.md').read_text(encoding='utf8')
+    assert resume_task(runtime,storage=root,thread_id='step9-graph',client=client,llm=llm)==final
+    assert before==(len(wire.requests),len(provider.contexts))
+    # A genuine legacy report shape remains hash-identical in the database; the read projection labels it.
+    with sqlite3.connect(root/'calls.sqlite') as db:
+        raw=db.execute('SELECT payload_json FROM diagnosis_reports_v1').fetchone()[0]
+        old=json.loads(raw);del old['assessment'];del old['proposal_digest']
+        old_raw=json.dumps(old)
+        db.execute('UPDATE diagnosis_reports_v1 SET payload_json=?,payload_digest=?',(old_raw,digest(old)))
+    old_export=export_diagnosis(storage=root,thread_id='step9-graph',output=tmp_path/'historical-export')
+    assert old_export['report']['assessment']=='historically_unrecorded'
+    assert old_export['report']['facts']==exported['report']['facts']
+    historical=deepcopy(final);historical['diagnosis']['report']=old
+    assert _historical_snapshot(historical)['diagnosis']['report']['assessment']=='historically_unrecorded'
+    with sqlite3.connect(root/'calls.sqlite') as db:
+        assert db.execute('SELECT payload_json FROM diagnosis_reports_v1').fetchone()[0]==old_raw

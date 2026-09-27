@@ -485,7 +485,12 @@ class LLMAdapter:
             'overfitting_risk requires a referenced positive paired gap. model_data_mismatch and optimization_limitation '
             'require referenced Train/Valid evidence. environment_related requires an explicit dependency_unavailable fact. '
             'For a failed or rejected experiment without scores, explain only the supplied failure fact with hypothesis_code=unknown '
-            'or return insufficient_evidence. Do not infer training performance. ')
+            'or return insufficient_evidence. A displayed failure means an event is known even when its cause is unknown: '
+            'reference the failure fact in an unknown hypothesis or an applicable manual-inspection suggestion, '
+            'and explicitly distinguish the observed rejection from an unproven underlying cause. '
+            'Use insufficient_evidence when the cause cannot be determined; do not describe a known rejection as no issue. '
+            'Do not infer training performance. ')
+
         request = dict(model=self.config.model, temperature=self.config.temperature,
             top_p=self.config.top_p, max_tokens=self.config.max_tokens, stream=False)
         if self.config.protocol == 'json_action':

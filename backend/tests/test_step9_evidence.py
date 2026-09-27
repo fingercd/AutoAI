@@ -17,7 +17,7 @@ def trained(tmp_path):
     run = tmp_path/'audit-test'
     training._run_legacy_training(source, {'model_type':'logistic_regression',
         'feature_selection_enabled':False}, run_id='audit-test', output_dir=run)
-    docs = {p.name:json.loads(p.read_text()) for p in run.glob('*.json')}
+    docs = {p.name:json.loads(p.read_text(encoding='utf8')) for p in run.glob('*.json')}
     return run, docs
 
 
@@ -92,7 +92,7 @@ def test_audit_collected_before_refit_without_extra_fit(tmp_path, monkeypatch, m
     run=tmp_path/'run'
     training._run_legacy_training(source, {'model_type':model, 'epochs':2,
         'feature_selection_enabled':False}, output_dir=run)
-    docs={p.name:json.loads(p.read_text()) for p in run.glob('*.json')}
+    docs={p.name:json.loads(p.read_text(encoding='utf8')) for p in run.glob('*.json')}
     assert paired_metrics(docs)['status'] == 'ready'
     fold=docs['training_validation_audit.json']['folds'][0]
     if model in ('cnn1d', 'pca_mlp'):
@@ -111,7 +111,7 @@ def test_cv_pairs_all_folds_never_pools_independent_support(tmp_path, groups):
     run=tmp_path/'run'
     training._run_legacy_training(source, {'model_type':'logistic_regression',
         'split_mode':'leave_one_sample_id_cv','split_train':8,'split_valid':2,'feature_selection_enabled':False}, output_dir=run)
-    docs={p.name:json.loads(p.read_text()) for p in run.glob('*.json')}
+    docs={p.name:json.loads(p.read_text(encoding='utf8')) for p in run.glob('*.json')}
     result=paired_metrics(docs)
     if groups == 3:
         assert result['reason_code'] == 'class_support_incomplete'
