@@ -46,6 +46,8 @@ TOOLS = {
     'confirm_termination': 'inspect_ml_session', 'reconcile': None,
 }
 
+RECIPE_BUDGET_REJECTION = 'recipe_training_budget_exceeded'
+
 
 def _key(prefix, value, suffix=''):
     result = f'{prefix}-{value}{suffix}'
@@ -626,6 +628,9 @@ class Nodes:
         experiments = response['experiments']
         if len(experiments) > 1:
             raise ValueError('multiple experiments violate protocol')
+        if state['decision']['reason_code'] == RECIPE_BUDGET_REJECTION:
+            # Reconciliation must not turn a confirmed rejection into a new choice.
+            return _next(state, 'terminate', reason=RECIPE_BUDGET_REJECTION)
         if experiments:
             item = experiments[0]
             if item['binding_state'] == 'released':
@@ -747,10 +752,6 @@ class Nodes:
         action = None if recipe_profile else {k:content[k] for k in keys}
         if recipe_profile and content['recipe_id'] not in {r['recipe_id'] for r in context['recipes']}:
             raise ValueError('recipe outside frozen catalog')
-        if state['versions']['state'] in ('agent-state-v7','agent-state-v8'):
-            if not any(item['recipe_id']==content['recipe_id'] and item['feasible']
-                       for item in recipes):
-                raise ValueError('recipe exceeds current training budget')
         knowledge_decision={}
         if state['versions']['state'] in ('agent-state-v4','agent-state-v5','agent-state-v6','agent-state-v7','agent-state-v8'):
             snapshot=state['knowledge']['snapshot']
@@ -764,6 +765,16 @@ class Nodes:
             **({'recipe_id':content['recipe_id']} if recipe_profile else {}), rationale=proposal.rationale, validation_status='ready',
             tool_name=proposal.tool_name, tool_call_id=proposal.tool_call_id,
             response_id=proposal.response_id).model_dump(mode='json')
+        if (state['versions']['state'] in ('agent-state-v7','agent-state-v8') and
+                not any(item['recipe_id'] == content['recipe_id'] and item['feasible']
+                        for item in recipes)):
+            # The physical response and proposal are already durable in the journal.
+            # This is a known decision rejection, not an unknown submission outcome.
+            decision.update(status='invalid', validation_status='invalid',
+                            reason_code=RECIPE_BUDGET_REJECTION)
+            state = apply_patch(state, {'decision': decision, 'finalization': {
+                'status': 'unselected', 'termination_reason': 'budget_exhausted'}})
+            return _next(state, 'terminate', reason=RECIPE_BUDGET_REJECTION)
         recipe_use={'recipes':{'uses':[dict(use_id=_key('recipe-use',state['identity']['task_id']),
             recipe_id=content['recipe_id'],decision_id=decision['decision_id'],experiment_id=state['identity']['current_experiment_id'])]}} if recipe_profile else {}
         state = apply_patch(state, {**recipe_use,'decision':decision,
@@ -909,6 +920,9 @@ class Nodes:
                for item in response['experiments']):
             return _next(state, 'reconcile', status='recovering')
         if any(item.get('state') in ('queued', 'running') for item in response['experiments']):
+            if state['decision']['reason_code'] == RECIPE_BUDGET_REJECTION:
+                return _stop(state, 'agent_active_run_exists', self.deps.clock(),
+                             status='needs_attention', uncertain=True)
             return _next(state, 'inspect_session', status='recovering')
         if response['state'] != 'open' or state['execution']['run_status'] in ('queued','running'):
             raise ValueError('termination conflicts with active experiment')
@@ -969,6 +983,9 @@ class Nodes:
         state = apply_patch(state, {'recovery':{'reconciliation':{'status':'ready',
             'outcome':outcome, 'resolution_code':item['resolution_code'], 'checked_at':self.deps.clock()}}})
         if item['state'] == 'released':
+            if state['decision']['reason_code'] == RECIPE_BUDGET_REJECTION:
+                return _next(state, 'terminate', status='recovering',
+                             reason=RECIPE_BUDGET_REJECTION)
             return _stop(state, 'agent_request_released', self.deps.clock())
         if item['requires_manual_review']:
             return _stop(state, item['resolution_code'], self.deps.clock(), status='needs_attention', uncertain=True)

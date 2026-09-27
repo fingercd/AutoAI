@@ -54,6 +54,16 @@ network_retries。两者都同时消耗对应的 LLM/API call 额度，不是额
 Finalize 与 terminate 在同一 Session 上互斥。成功 Run 可以选择不锁定，明确终止
 后 `selected_run_id=null`。
 
+State v7/v8 中，已落盘且契约有效的 LLM 提案若超过冻结训练额度，Graph 将
+decision 标记为 `invalid` / `recipe_training_budget_exceeded`，choose operation
+保持 `confirmed`。Journal 保留原提案、响应引用与实际 token；不另选配方，
+不提交 Run，转入 `budget_exhausted` 的 terminate + 后端确认流程。收尾前核对
+Session，未解决映射先对账，活动 Run、收尾 API 额度不足或结果未知时保持
+恢复/待处理状态，不能宣称 Session 已终止。对账释放后继续原收尾，不回到选型。
+崩溃后重放同一已落盘提案不新增 LLM 调用；已确认终止的任务重放不发网络请求。
+预算提示 on 的输出协议仍先限制可负担配方，越过该协议的响应按原输出修复
+规则处理，不把协议错误当作上述已确认提案。
+
 ## 成本报告
 
 `scripts/task_cost_report.py` 只读导出 `task-cost-report-v1` 的七个文件：
