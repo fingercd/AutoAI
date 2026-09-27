@@ -235,3 +235,12 @@ status 退出 0 表示查询成功，不表示实验成功；自动化脚本需�
 以下扩展在同一 State 核心中实现，前文 v1 类型继续用于历史解码。`versions.knowledge` 初始化为 ready/knowledge-snapshot-v1；context/prompt 固定为 agent-context-knowledge-v1 / agent-decision-knowledge-v1，versions 与 module_policy 整块仍不可修改。
 
 新 knowledge 模块 implementation_status=ready。开启未创建 Session 时 pending，成功绑定后 ready，匹配可为空；关闭始终 disabled。State 保存 prior_version、匹配摘要及安全 snapshot，不存完整知识库。成功 Session 首次绑定不改变 startup_config_fingerprint，此后整个知识块冻结。开关与快照状态、来源绑定、实际投影摘要、决策引用版本必须一致；未知 wire/损坏数据拒绝，v1/v2/v3 不自动补 knowledge_refs 或重算旧摘要。
+
+
+## 第九步反馈诊断（开发候选）
+
+新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
+诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
+失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
+详见 [第九步诊断契约](step9_diagnosis_contract.md)。
+本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
