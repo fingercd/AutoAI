@@ -1931,6 +1931,8 @@ def _run_legacy_training(
     traditional_sample_results: list[dict[str, Any]] = []
     best_search_rows: list[dict[str, Any]] = []
     selected_trials: list[dict[str, Any]] = []
+    from .diagnostic_evidence import collect_fold, TrainingValidationAudit, producer_digest, digest as audit_digest
+    validation_audits = []
     final_refit_count = 0
     fold_count = len(folds)
     started_at = previous_status.get("started_at") or _now_iso()
@@ -2041,6 +2043,13 @@ def _run_legacy_training(
                     trial_index=selected_search_row['trial_index'], params=fold_best_params,
                     selection_score=fold_selection_score))
             train_eval = _evaluate_traditional_model(model, x, y_model, splits["train"], label_names)
+            validation_audits.append(collect_fold(
+                run_id=run_id, fold_index=fold_index, model_id=model_type,
+                train_indices=splits["train"], valid_indices=splits["valid"],
+                labels=y_model, sample_groups=sample_id, class_count=len(label_names),
+                train_eval=train_eval, valid_eval=valid_eval, processing_stage=selection_audit,
+                selected_trial_index=selected_search_row.get("trial_index") if search_accounting else None,
+                selection_criterion=fold_selection_metric, best_epoch=None))
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
             refit_scope = search_accounting.span('final_refit', fold_index=fold_index) if search_accounting else nullcontext()
             with refit_scope as refit_stage:
@@ -2170,6 +2179,16 @@ def _run_legacy_training(
                 history_rows.append({**row, "fold_index": fold_index})
             train_eval = _evaluate(model, x, y_model, splits["train"], label_names)
             valid_eval = _evaluate(model, x, y_model, splits["valid"], label_names)
+            # bad_epochs=0 records the original strict improvement/tie rule.
+            best_epoch = next((int(row["epoch"]) for row in reversed(history)
+                               if row["bad_epochs"] == 0), None)
+            validation_audits.append(collect_fold(
+                run_id=run_id, fold_index=fold_index, model_id=model_type,
+                train_indices=splits["train"], valid_indices=splits["valid"],
+                labels=y_model, sample_groups=sample_id, class_count=len(label_names),
+                train_eval=train_eval, valid_eval=valid_eval, processing_stage=selection_audit,
+                selected_trial_index=best_trial_index if search_accounting else None,
+                selection_criterion="best_valid_loss", best_epoch=best_epoch))
             eval_scope = search_accounting.span('final_evaluation', fold_index=fold_index) if search_accounting else nullcontext()
             with eval_scope:
                 check_run_active()
@@ -2401,6 +2420,10 @@ def _run_legacy_training(
         "explainability_method": explainability,
         "artifact_explainability_method": model_metadata["artifact_explainability_method"],
     }
+    from .runs.artifacts import RunArtifactWriter
+    audit = TrainingValidationAudit(status="ready", producer_source_digest=producer_digest(),
+        config_digest=audit_digest(config_out), evaluation_strategy=evaluation_strategy, folds=validation_audits)
+    RunArtifactWriter(run_dir).write_json("training_validation_audit.json", audit.model_dump())
     (run_dir / "config.json").write_text(json.dumps(config_out, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "model_metadata.json").write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     (run_dir / "label_map.json").write_text(json.dumps({idx: label for idx, label in enumerate(label_names)}, ensure_ascii=False, indent=2), encoding="utf-8")

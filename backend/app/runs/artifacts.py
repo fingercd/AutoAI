@@ -55,6 +55,8 @@ LEGACY_DIRECT_DOWNLOAD_NAMES = frozenset({
 # manifest 的 downloadable 标记仍由 resolve_download 兼容读取。历史全局
 # 重要性文件不再出现在结果页 catalog，但保留已知文件名的直接下载兼容。
 ARTIFACT_CATALOG: dict[str, dict[str, object]] = {
+    'training_validation_audit.json': {'label': 'Train/Valid provenance', 'category': 'internal',
+        'required': False, 'downloadable': False, 'volatile': False},
     'metrics.json': {'label': '总体指标', 'category': 'metrics', 'required': True, 'downloadable': True},
     'cv_metrics.json': {'label': '交叉验证汇总', 'category': 'metrics', 'required': True, 'downloadable': True},
     'fold_metrics.csv': {'label': '分折指标', 'category': 'metrics', 'required': True, 'downloadable': True},
