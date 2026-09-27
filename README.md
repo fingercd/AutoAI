@@ -8,7 +8,7 @@
 
 对比页“下载全部”旁边提供“下载 Excel”：第一个工作表是 `Index, Label, Sample_ID, 划分` 加每个模型一列的预测类别，第二个工作表布局相同但每个单元格是逗号分隔、合计为 1 的逐类概率。开交叉验证时每条记录只以它作为测试集的那一折出现（pooled OOF，划分恒为 test）；不开交叉验证时用最终训练好的模型对全部记录预测一次并标注 train/valid/test。历史 Run 没有全量明细时只导出已有 test/OOF 行，不补造。
 
-对比页的分类预测指标显示各类别 Recall（召回率 / Sensitivity）与 Precision（精确率）两张热图，支持 SVG、PNG 下载与放大；精确数值和 Support 折叠查看。
+对比页的分类预测指标显示各类别召回率与 Precision（精确率）两张热图，支持 SVG、PNG 下载与放大；精确数值和 Support 折叠查看。
 
 更新代码后，需让 Web 与 Worker 都加载新代码，再刷新页面。不要在训练进行中强制重启。`/api/models` 的 `training_scheme` 字段表示当前 Web 的新版能力；未声明方案版本的 API 请求继续兼容旧行为。
 
