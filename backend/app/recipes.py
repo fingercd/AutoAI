@@ -1,5 +1,7 @@
 """Finite execution recipes compiled from authoritative frozen model policy."""
 from __future__ import annotations
+
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
 import math
 from typing import Literal
 from pydantic import BaseModel,ConfigDict,model_validator,model_serializer
@@ -101,8 +103,8 @@ def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: Trai
     policies={m['id']:m for m in frozen_capabilities['models']}
     recipes=[];excluded={};allowed=sorted(set(task['allowed_models']))
     if len(allowed)!=len(task['allowed_models']):raise ValueError('duplicate_allowed_model')
-    search_revision = task.get('protocol_revision') in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6')
-    modern = task.get('protocol_revision') in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6')
+    search_revision = task.get('protocol_revision') in REVISIONS_SINCE[4]
+    modern = task.get('protocol_revision') in REVISIONS_SINCE[3]
     processing_mode = task.get('processing_mode', 'fixed') if modern else None
     fixed_processing = freeze_fixed_processing(allowed, task.get('fixed_processing')) if modern else None
     class_count = len(evidence.statistics.classes)

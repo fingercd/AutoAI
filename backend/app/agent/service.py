@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
+
 import hashlib
 import json
 from copy import deepcopy
@@ -102,7 +104,7 @@ class AgentService:
         unavailable = sorted({name for name in payload.modules if name not in prepared_modules and not catalog.get(name, {}).get('available')})
         body = payload.model_dump(mode='json')
         budget_policy = None
-        if getattr(payload, 'protocol_revision', None) in ('agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if getattr(payload, 'protocol_revision', None) in REVISIONS_SINCE[5]:
             try:
                 budget_policy = BudgetPolicy.from_dict(payload.budget_policy)
             except (TypeError, BudgetError) as exc:
@@ -177,7 +179,7 @@ class AgentService:
                     principal=principal, expected_sha256=digest, limits=limits)
                 evidence = compute_train_evidence(select_train(view, plan), limits)
                 search_plans = {}
-                if payload.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+                if payload.protocol_revision in REVISIONS_SINCE[4]:
                     from ..search_policy import adjust_baselines_for_train
                     stats = evidence.statistics
                     adjust_baselines_for_train(snapshot, train_count=stats.observation_count,
@@ -196,23 +198,27 @@ class AgentService:
                 protocol_revision=payload.protocol_revision,
                 preparation=dict(evaluation_plan=plan.safe_reference(),
                     evidence=evidence.model_dump(mode='json'),catalog=recipes.model_dump(mode='json')))
-            if payload.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+            if payload.protocol_revision in REVISIONS_SINCE[3]:
                 frozen_preparation.update(processing_mode=payload.processing_mode,
                     fixed_processing=payload.fixed_processing)
-            if payload.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+            if payload.protocol_revision in REVISIONS_SINCE[4]:
                 frozen_preparation.update(search_mode=payload.search_mode,max_trials=payload.max_trials)
                 frozen_preparation['preparation']['search_plans'] = search_plans
             if budget_policy is not None:
                 frozen_preparation.update(budget_policy=budget_policy.as_dict(),
                     budget_policy_digest=budget_policy.digest,
                     budget_awareness=payload.budget_awareness)
-            if payload.protocol_revision == 'agent-recipes-revision-v6':
+            if payload.protocol_revision in REVISIONS_SINCE[6]:
                 from ..runs.guard import GuardPolicy, digest as guard_digest
                 guard_policy = GuardPolicy(fail_fast_guard=payload.fail_fast_guard).model_dump()
                 frozen_preparation.update(guard_policy=guard_policy, guard_policy_digest=guard_digest(guard_policy))
+            if payload.protocol_revision == 'agent-recipes-revision-v7':
+                from .diagnosis import DiagnosisPolicy, rules_digest
+                diagnosis_policy = DiagnosisPolicy(enabled=payload.feedback_diagnosis=='on', rules_digest=rules_digest()).model_dump()
+                frozen_preparation.update(diagnosis_policy=diagnosis_policy, diagnosis_policy_digest=guard_digest(diagnosis_policy))
         if requested_profile and payload.decision_mode is not None:
             frozen_preparation['decision_mode'] = payload.decision_mode
-        if requested_profile and payload.protocol_revision in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if requested_profile and payload.protocol_revision in REVISIONS_SINCE[2]:
             from ..knowledge import freeze_knowledge, KnowledgeError
             try:
                 knowledge = freeze_knowledge(enabled='knowledge' in payload.modules, evidence=evidence, catalog=recipes,
@@ -257,6 +263,24 @@ class AgentService:
             'idempotent_replay': not created,
         }
 
+    def _check_admission(self,session,prepared,principal,request_id,body,prepare,*,with_record=False):
+        from ..runs.contracts import RunRecord
+        from ..runs.guard import check_preflight,report,GuardError,digest as guard_digest
+        from .contracts import GuardAdmissionRejected
+        admission=RunRecord(run_id=None,state='queued',version=1,dataset_id=session.dataset_id,
+            legacy_data_path=None,config={**prepared,'admission_ref':guard_digest([session.session_id,request_id,body])},
+            owner_id=principal.owner_id,tenant_id=principal.tenant_id,
+            dataset_snapshot={'sha256':session.dataset_sha256},guard_policy=session.frozen_preparation['guard_policy'])
+        if admission.guard_policy['fail_fast_guard']=='off':
+            self.runs.save_guard_report(report(admission,'admission',status='disabled'))
+            return None
+        try:
+            return check_preflight(record=admission,repository=self.runs,stage='admission',
+                prepare=(lambda:prepare(admission)) if with_record else prepare)
+        except GuardError as exc:
+            checked=self.runs.get_guard_report(exc.report_id,principal=principal)
+            raise GuardAdmissionRejected(checked) from exc
+
     def create_experiment(self, *, session_id: str, payload: CreateAgentExperimentRequest,
                           principal: Principal) -> dict[str, Any]:
         payload.validate_business()
@@ -293,7 +317,7 @@ class AgentService:
                         bound = current
                     return self._experiment_response(session, bound, record, replay=True)
             if not mapping_exists:
-                if session.frozen_preparation and session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v6':
+                if session.frozen_preparation and session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[6]:
                     from ..runs.guard import require_current_policy, GuardError
                     try:
                         require_current_policy(session.frozen_preparation['guard_policy'])
@@ -303,8 +327,19 @@ class AgentService:
             prepared = (replay_reservation.compiled_config if replay_reservation else None)
             if prepared is None:
                 prepared = policy.compiled_config(session, action, _training_config(session, action))
-                _, plan = self.submissions.prepare_evaluation(dataset_id=session.dataset_id,
-                    raw_config=prepared,principal=principal,expected_sha256=session.dataset_sha256)
+                def prepare_plan():
+                    # Keep typed integrity failures inside the scoped Guard envelope.
+                    if (session.frozen_preparation and session.frozen_preparation['protocol_revision']=='agent-recipes-revision-v7'
+                            and session.frozen_preparation['guard_policy']['fail_fast_guard']=='on'):
+                        source=self.datasets.resolve(session.dataset_id,principal=principal)
+                        self.datasets.verify_integrity(source,expected_sha256=session.dataset_sha256)
+                    return self.submissions.prepare_evaluation(dataset_id=session.dataset_id,
+                        raw_config=prepared,principal=principal,expected_sha256=session.dataset_sha256)
+                if (session.frozen_preparation and session.frozen_preparation['protocol_revision']=='agent-recipes-revision-v7'
+                        and session.frozen_preparation['guard_policy']['fail_fast_guard']=='on'):
+                    _,plan=self._check_admission(session,prepared,principal,payload.client_request_id,body,prepare_plan)
+                else:
+                    _,plan=prepare_plan()
                 prepared['evaluation_plan_digest'] = plan.plan_digest
             if command.recipe is not None:
                 prepared.update(evaluation_plan_digest=session.frozen_preparation['preparation']['evaluation_plan']['plan_digest'],
@@ -312,40 +347,25 @@ class AgentService:
                     execution_catalog_digest=session.frozen_preparation['preparation']['catalog']['catalog_digest'],
                     execution_evidence_digest=session.frozen_preparation['preparation']['evidence']['evidence_digest'],
                     execution_search_digest=command.recipe['search_strategy_digest'])
-                if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+                if session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[3]:
                     from ..processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
                     prepared.update(execution_processing_policy_version=PROCESSING_POLICY_VERSION,
                         execution_processing_digest=processing_execution_digest(
                             action['model_type'],action['normalization'],action['class_balance']))
-                if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+                if session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[4]:
                     plan_digest = command.recipe['search_plan_digest']
                     prepared['execution_search_plan'] = session.frozen_preparation['preparation']['search_plans'][plan_digest]
             if session.budget_task_id is not None:
                 prepared['execution_budget_task_id'] = session.budget_task_id
                 prepared['execution_budget_policy_digest'] = session.budget_policy_digest
-            if session.frozen_preparation and session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v6':
+            if session.frozen_preparation and session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[6]:
                 prepared['execution_guard_policy'] = session.frozen_preparation['guard_policy']
                 prepared['execution_guard_policy_digest'] = session.frozen_preparation['guard_policy_digest']
                 if not mapping_exists:
-                    from dataclasses import replace
-                    from ..runs.contracts import RunRecord
-                    from ..runs.guard import check_preflight, report, GuardError, digest as guard_digest
                     from ..training import prepare_training_inputs
-                    admission = RunRecord(run_id=None, state='queued', version=1, dataset_id=session.dataset_id,
-                        legacy_data_path=None, config={**prepared, 'admission_ref': guard_digest([session_id, payload.client_request_id, body])},
-                        owner_id=principal.owner_id, tenant_id=principal.tenant_id,
-                        dataset_snapshot={'sha256': session.dataset_sha256}, guard_policy=prepared['execution_guard_policy'])
-                    if prepared['execution_guard_policy']['fail_fast_guard'] == 'on':
-                        try:
-                            source = self.datasets.resolve(session.dataset_id, principal=principal)
-                            check_preflight(record=admission, repository=self.runs, stage='admission',
-                                prepare=lambda: prepare_training_inputs(source.path, prepared, repository=self.runs, record=admission))
-                        except GuardError as exc:
-                            from .contracts import GuardAdmissionRejected
-                            checked = self.runs.get_guard_report(exc.report_id, principal=principal)
-                            raise GuardAdmissionRejected(checked) from exc
-                    else:
-                        self.runs.save_guard_report(report(admission, 'admission', status='disabled'))
+                    self._check_admission(session,prepared,principal,payload.client_request_id,body,
+                        lambda admission: prepare_training_inputs(self.datasets.resolve(session.dataset_id,principal=principal).path,
+                            prepared,repository=self.runs,record=admission),with_record=True)
             full_digest = policy.command_digest(session, command)
         if session.state != 'open':
             raise AgentSessionClosed()
@@ -493,7 +513,7 @@ class AgentService:
 
     @staticmethod
     def _verify_run_metadata(session: AgentSessionRecord, record: RunRecord) -> None:
-        if session.frozen_preparation and session.frozen_preparation['protocol_revision'] == 'agent-recipes-revision-v6':
+        if session.frozen_preparation and session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[6]:
             if record.guard_policy != session.frozen_preparation['guard_policy']:
                 raise AgentDomainError('guard_report_binding_mismatch', 'Run guard binding differs', status_code=409)
         if session.dataset_sha256 is not None and (
@@ -515,13 +535,13 @@ class AgentService:
                     or record.config.get('execution_evidence_digest')!=prepared['evidence']['evidence_digest']
                     or record.config.get('execution_search_digest')!=recipe['search_strategy_digest']):
                 raise AgentDomainError('agent_metadata_invalid','Run differs from frozen execution recipe',status_code=409)
-            if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+            if session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[3]:
                 from ..processing_policy import PROCESSING_POLICY_VERSION, processing_execution_digest
                 if (record.config.get('execution_processing_policy_version') != PROCESSING_POLICY_VERSION or
                         record.config.get('execution_processing_digest') != processing_execution_digest(
                             recipe['model_id'],recipe['preprocessing']['normalization'],recipe['class_balance'])):
                     raise AgentDomainError('agent_metadata_invalid','Run processing differs from frozen recipe',status_code=409)
-            if session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+            if session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[4]:
                 plan_digest = recipe.get('search_plan_digest')
                 plan = session.frozen_preparation['preparation']['search_plans'].get(plan_digest)
                 if plan is None or record.config.get('execution_search_plan') != plan:
@@ -555,6 +575,10 @@ class AgentService:
             session_id=session_id, principal=principal
         ))
         return build_observation(
+            training_cost=(self.sessions.diagnosis_training_cost(session_id=session_id,principal=principal)
+                if session.frozen_preparation and session.frozen_preparation.get('diagnosis_policy',{}).get('enabled') else None),
+            feedback_policy=(session.frozen_preparation.get('diagnosis_policy') if session.frozen_preparation else None),
+            budget_awareness=(session.frozen_preparation.get('budget_awareness') if session.frozen_preparation else None),
             session_id=session_id,
             session_state=session.state,
             selection_metric=session.selection_metric,
@@ -567,7 +591,7 @@ class AgentService:
             capability_snapshot=session.capability_snapshot,
             assessment=assess_candidate(record=record, repository=self.runs, run_dir=self.run_root/run_id,
                 selection_metric=session.selection_metric),
-            guard_projection=bool(session.frozen_preparation and session.frozen_preparation['protocol_revision']=='agent-recipes-revision-v6'),
+            guard_projection=bool(session.frozen_preparation and session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[6]),
         )
 
     def get_session(self, *, session_id: str, principal: Principal) -> dict[str, Any]:
@@ -616,7 +640,7 @@ class AgentService:
             **(dict(termination_reason=session.termination_reason,
                     terminated_at=session.terminated_at)
                if session.frozen_preparation and
-               session.frozen_preparation['protocol_revision'] in ('agent-recipes-revision-v5','agent-recipes-revision-v6')
+               session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[5]
                else {}),
             'experiments': summaries,
         }
@@ -624,7 +648,7 @@ class AgentService:
     def terminate_session(self, *, session_id: str, request_id: str,
                           reason: str, principal: Principal) -> dict[str, Any]:
         session = self._session(session_id, principal)
-        if session.frozen_preparation is None or session.frozen_preparation['protocol_revision'] not in ('agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if session.frozen_preparation is None or session.frozen_preparation['protocol_revision'] not in REVISIONS_SINCE[5]:
             raise AgentDomainError('agent_version_incompatible',
                 '终止路径需要预算协议 v5', status_code=409)
         run_states = {}
@@ -698,26 +722,27 @@ def _preparation_wire(session):
         return {}
     prepared = frozen['preparation']
     wire = {key: prepared[key] for key in ('evaluation_plan','evidence','catalog')}
-    if frozen['protocol_revision'] in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if frozen['protocol_revision'] in REVISIONS_SINCE[2]:
         wire['knowledge'] = prepared['knowledge'].wire()
-    if frozen['protocol_revision'] in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if frozen['protocol_revision'] in REVISIONS_SINCE[4]:
         wire['search_plans'] = prepared['search_plans']
     return dict(execution_profile=frozen['execution_profile'], protocol_revision=frozen['protocol_revision'], preparation=wire,
+                **({k:frozen[k] for k in ('diagnosis_policy','diagnosis_policy_digest')} if frozen['protocol_revision']=='agent-recipes-revision-v7' else {}),
                 **({'decision_mode': frozen['decision_mode']} if 'decision_mode' in frozen else {}),
                 **({'processing_mode': frozen['processing_mode'], 'fixed_processing': frozen['fixed_processing']}
-                   if frozen['protocol_revision'] in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6') else {}),
+                   if frozen['protocol_revision'] in REVISIONS_SINCE[3] else {}),
                 **({'search_mode': frozen['search_mode'], 'max_trials': frozen['max_trials']}
-                   if frozen['protocol_revision'] in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6') else {}),
+                   if frozen['protocol_revision'] in REVISIONS_SINCE[4] else {}),
                    **(dict(budget_policy=frozen['budget_policy'],
                            budget_policy_digest=frozen['budget_policy_digest'],
                            budget_awareness=frozen['budget_awareness'])
-                      if frozen['protocol_revision'] in ('agent-recipes-revision-v5','agent-recipes-revision-v6') else {}),
+                      if frozen['protocol_revision'] in REVISIONS_SINCE[5] else {}),
                    **(dict(guard_policy=frozen['guard_policy'], guard_policy_digest=frozen['guard_policy_digest'])
-                      if frozen['protocol_revision'] == 'agent-recipes-revision-v6' else {}))
+                      if frozen['protocol_revision'] in REVISIONS_SINCE[6] else {}))
 
 
 def _decision_wire(session, experiment):
     frozen = session.frozen_preparation
-    if frozen is None or frozen['protocol_revision'] not in ('agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+    if frozen is None or frozen['protocol_revision'] not in REVISIONS_SINCE[2]:
         return {}
     return dict(decision_metadata=experiment.decision_metadata.model_dump(mode='json'))
