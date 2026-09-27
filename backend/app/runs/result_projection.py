@@ -343,11 +343,6 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     status = _read_json_object(run_dir / 'status.json', warnings)
     # 未成功 Run 一律不读训练产物：半成品不具备展示资格，也避免读到写一半的文件。
     is_succeeded = record.state == 'succeeded'
-    metrics_file = _read_json_object(run_dir / 'metrics.json', warnings) if is_succeeded else {}
-    cv_file = _read_json_object(run_dir / 'cv_metrics.json', warnings) if is_succeeded else {}
-    model_metadata = _read_json_object(run_dir / 'model_metadata.json', warnings) if is_succeeded else {}
-    label_map = _read_json_object(run_dir / 'label_map.json', warnings) if is_succeeded else {}
-    split_file = _read_json_list(run_dir / 'split.json', warnings) if is_succeeded else []
 
     manifest: dict[str, Any] | None = None
     descriptors: list[dict[str, Any]] = []
@@ -384,6 +379,22 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             descriptor['download_url'] = None
             descriptor['reason'] = '训练尚未成功完成，结果文件不可下载'
 
+    def verified_json(name, expected_type):
+        if is_succeeded and manifest is not None:
+            try:
+                value = artifact_writer.read_verified_json(manifest, name)
+                if isinstance(value, expected_type):
+                    return value
+            except (OSError, ValueError, UnicodeDecodeError):
+                warnings.append(f'{name} 无法通过完整性校验或解析')
+        return expected_type()
+
+    metrics_file = verified_json('metrics.json', dict)
+    cv_file = verified_json('cv_metrics.json', dict)
+    model_metadata = verified_json('model_metadata.json', dict)
+    label_map = verified_json('label_map.json', dict)
+    split_file = verified_json('split.json', list)
+
     result_state = _result_state(
         record,
         manifest=manifest,
@@ -403,14 +414,8 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     )
     fold_count = status.get('fold_count') or cv_file.get('fold_count')
     cv_summary = cv_file.get('cv_summary') if isinstance(cv_file.get('cv_summary'), dict) else {}
-    if is_succeeded and not cv_summary and isinstance(status.get('cv_summary'), dict):
-        cv_summary = status['cv_summary']
-
-    raw_metrics = metrics_file or (
-        status.get('metrics')
-        if is_succeeded and isinstance(status.get('metrics'), dict)
-        else {}
-    )
+    # Mutable status projections are not authority for scientific measurements.
+    raw_metrics = metrics_file
     raw_split_metrics = {
         name: _without_paths(raw_metrics.get(name, {}))
         for name in ('train', 'valid', 'test')
@@ -515,7 +520,8 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
     model_type = status.get('model_type') or record.config.get('model_type') or model_metadata.get('model_type')
     model_family = status.get('model_family') or model_metadata.get('model_family')
     # 只有深度模型有 epoch 曲线；传统模型固定返回 available=False 并提示看参数选择审计。
-    if is_succeeded and model_family == 'deep_learning':
+    verified_names = {item['name'] for item in descriptors if item['integrity'] == 'ok'}
+    if is_succeeded and model_family == 'deep_learning' and 'history.csv' in verified_names:
         history = _read_history(run_dir / 'history.csv', warnings)
     else:
         history = {
@@ -537,7 +543,7 @@ def project_run_result(record: RunRecord, *, run_dir: Path, dataset_name: str | 
             model_metadata=model_metadata,
             read_status_file=False,
         )
-        if is_succeeded
+        if is_succeeded and result_state == 'ready'
         else {}
     )
     started_at = record.started_at or status.get('started_at')
