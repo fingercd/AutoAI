@@ -1,5 +1,7 @@
 """Frozen knowledge projections and negotiated response codecs."""
 from __future__ import annotations
+
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
 from typing import Annotated, Literal
 import math
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -145,7 +147,7 @@ class KnowledgePreparation(Preparation):
 
 
 class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6','agent-recipes-revision-v7']
     preparation: KnowledgePreparation
     processing_mode: Literal['fixed','dynamic'] | None = None
     fixed_processing: dict[str,dict[str,str]] | None = None
@@ -156,17 +158,26 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
     budget_awareness: Literal['on', 'off'] | None = None
     guard_policy: dict[str, str] | None = None
     guard_policy_digest: str | None = None
+    diagnosis_policy: dict | None = None
+    diagnosis_policy_digest: str | None = None
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
-        if set(value)-{'train_evidence','legal_recipes','knowledge','dynamic_preprocessing','bounded_hpo','fail_fast_guard'}:
+        if set(value)-{'train_evidence','legal_recipes','knowledge','dynamic_preprocessing','bounded_hpo','fail_fast_guard','feedback_diagnosis'}:
             raise ValueError('invalid knowledge modules')
         return value
 
     @model_validator(mode='after')
     def module_binding(self):
-        if self.protocol_revision == 'agent-recipes-revision-v6':
+        if self.protocol_revision == 'agent-recipes-revision-v7':
+            from backend.app.agent.diagnosis import DiagnosisPolicy, digest
+            diagnosis = DiagnosisPolicy.model_validate(self.diagnosis_policy)
+            if digest(diagnosis.model_dump()) != self.diagnosis_policy_digest or diagnosis.enabled != ('feedback_diagnosis' in self.modules):
+                raise ValueError('diagnosis policy mismatch')
+        elif self.diagnosis_policy is not None or self.diagnosis_policy_digest is not None:
+            raise ValueError('diagnosis requires revision v7')
+        if self.protocol_revision in REVISIONS_SINCE[6]:
             from backend.app.runs.guard import GuardPolicy, digest
             policy = GuardPolicy.model_validate(self.guard_policy)
             if digest(policy.model_dump()) != self.guard_policy_digest or ('fail_fast_guard' in self.modules) != (policy.fail_fast_guard == 'on'):
@@ -175,7 +186,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
             raise ValueError('guard policy requires revision v6')
         if ('knowledge' in self.modules)!=(self.preparation.knowledge.status=='ready'):
             raise ValueError('knowledge switch mismatch')
-        if self.protocol_revision in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if self.protocol_revision in REVISIONS_SINCE[3]:
             if (self.processing_mode is None or self.fixed_processing is None or
                     ('dynamic_preprocessing' in self.modules) != (self.processing_mode == 'dynamic')):
                 raise ValueError('processing switch mismatch')
@@ -183,7 +194,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
                 raise ValueError('processing catalog mismatch')
         elif self.processing_mode is not None or self.fixed_processing is not None or 'dynamic_preprocessing' in self.modules:
             raise ValueError('legacy knowledge processing mismatch')
-        if self.protocol_revision in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if self.protocol_revision in REVISIONS_SINCE[4]:
             from backend.app.search_policy import validate_search_options
             if (self.search_mode is None or self.max_trials != validate_search_options(self.search_mode, self.max_trials)
                     or ('bounded_hpo' in self.modules) != (self.search_mode == 'bounded')):
@@ -195,7 +206,7 @@ class KnowledgeLockedConfig(RecipeLockedConfig, DecisionModeBinding):
                 raise ValueError('search plans missing')
         elif self.search_mode is not None or self.max_trials is not None or 'bounded_hpo' in self.modules:
             raise ValueError('legacy knowledge search mismatch')
-        if self.protocol_revision in ('agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if self.protocol_revision in REVISIONS_SINCE[5]:
             import hashlib
             import json
             if (self.budget_policy is None or self.budget_awareness is None or
@@ -258,16 +269,23 @@ class GuardCapability(ClosedModel):
     reason: None
 
 
+class DiagnosisCapability(ClosedModel):
+    available: Literal[True]
+    status: Literal['ready']
+    schema_version: Literal['feedback-diagnosis-policy-v1']
+    reason: None
+
+
 class KnowledgeHealthResponse(HealthResponse):
-    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6']
+    protocol_revision: Literal['agent-recipes-revision-v2','agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6','agent-recipes-revision-v7']
     execution_profiles: list[Literal['train-evidence-recipes-v1']]
-    modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability | SearchCapability | GuardCapability]
+    modules: dict[str, v1.ModuleCapability | KnowledgeCapability | ProcessingCapability | SearchCapability | GuardCapability | DiagnosisCapability]
 
     @field_validator('modules')
     @classmethod
     def known_modules(cls,value):
         from agent_poc.tools import MODULES
-        if set(value)-set(MODULES)-{'knowledge','dynamic_preprocessing','bounded_hpo','fail_fast_guard'} or 'knowledge' not in value:
+        if set(value)-set(MODULES)-{'knowledge','dynamic_preprocessing','bounded_hpo','fail_fast_guard','feedback_diagnosis'} or 'knowledge' not in value:
             raise ValueError('unknown module')
         if not isinstance(value['knowledge'],KnowledgeCapability):
             raise ValueError('knowledge capability missing')

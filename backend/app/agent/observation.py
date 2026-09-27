@@ -58,7 +58,7 @@ def allowed_actions(*, session_state: str, run_state: str, validation_status: st
 
 def build_observation(*, session_id: str, session_state: str, selection_metric: str,
                       run_dir: Path, record: RunRecord, attempt: int,
-                      effective_action: dict[str, Any], remaining_runs: int, contract_version: str = AGENT_API_CONTRACT_VERSION, capability_snapshot: dict | None = None, assessment=None, guard_projection=False) -> dict[str, Any]:
+                      effective_action: dict[str, Any], remaining_runs: int, contract_version: str = AGENT_API_CONTRACT_VERSION, capability_snapshot: dict | None = None, assessment=None, guard_projection=False, feedback_policy=None, budget_awareness=None, training_cost=None) -> dict[str, Any]:
     validation_status, metrics, validation_error = ('pending', {}, None)
     public_error: dict[str, Any] | None = None
     if record.state == 'succeeded':
@@ -137,6 +137,12 @@ def build_observation(*, session_id: str, session_state: str, selection_metric: 
                 response['progress'][key] = value
         if response['error'] is not None:
             response['error'] = {'code': 'agent_run_' + record.state, 'message': 'Run result unavailable', 'retryable': False}
+    if feedback_policy is not None:
+        from .diagnosis import DiagnosisPolicy, feedback_evidence
+        policy = DiagnosisPolicy.model_validate(feedback_policy)
+        if policy.enabled:
+            response['extensions']['feedback_evidence'] = feedback_evidence(
+                record=record, assessment=assessment, awareness=budget_awareness, training_cost=training_cost)
     response['validation_score'] = metrics.get(selection_metric) if validation_status == 'ready' else None
     if record.state in {'queued', 'running'}:
         response['retry_after_seconds'] = 2

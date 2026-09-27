@@ -108,6 +108,14 @@ class CallJournal:
             started_at_epoch REAL NOT NULL, ended_at_utc TEXT, duration_seconds REAL,
             duration_clock TEXT NOT NULL, reason_code TEXT,
             UNIQUE(thread_id,operation_id))''')
+        self.connection.execute('''CREATE TABLE IF NOT EXISTS diagnosis_inputs_v1 (
+            thread_id TEXT NOT NULL, subject_event_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            input_digest TEXT NOT NULL, payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL,
+            PRIMARY KEY(thread_id,subject_event_id,generation), UNIQUE(thread_id,generation))''')
+        self.connection.execute('''CREATE TABLE IF NOT EXISTS diagnosis_reports_v1 (
+            thread_id TEXT NOT NULL, diagnosis_id TEXT NOT NULL, input_digest TEXT NOT NULL,
+            payload_json TEXT NOT NULL, payload_digest TEXT NOT NULL,
+            PRIMARY KEY(thread_id,diagnosis_id))''')
         initialize_ledger(self.connection)
         self.connection.execute('''CREATE TABLE IF NOT EXISTS task_budget_journal_bindings_v1 (
             task_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
@@ -451,6 +459,80 @@ class CallJournal:
         keys=('operation_id','run_id','task_id','session_id','status','started_at_utc','ended_at_utc',
               'duration_seconds','duration_clock','reason_code')
         return [dict(thread_id=self.thread_id,**dict(zip(keys,row))) for row in rows]
+
+    def diagnosis_input(self, generation):
+        from backend.app.agent.diagnosis import DiagnosisInput, digest
+        row = self.connection.execute(
+            'SELECT payload_json,payload_digest FROM diagnosis_inputs_v1 WHERE thread_id=? AND generation=?',
+            (self.thread_id,generation)).fetchone()
+        if row is None:
+            return None
+        try:
+            value = DiagnosisInput.model_validate_json(row[0]).model_dump(mode='json')
+            if (value['bindings'].get('task')!=digest(self.budget_policy.task_id) or value['bindings'].get('thread')!=digest(self.thread_id)
+                    or digest(value) != row[1] or digest(value['context']) != value['displayed_context_digest']):
+                raise ValueError('input digest mismatch')
+            return value
+        except (ValueError,KeyError,TypeError) as exc:
+            raise PersistenceError('diagnosis_input_corrupt') from exc
+
+    def freeze_diagnosis_input(self, value):
+        from backend.app.agent.diagnosis import DiagnosisInput, digest
+        self._require_budget_binding()
+        value=DiagnosisInput.model_validate(value).model_dump(mode='json')
+        if self.budget_policy is None or value['bindings'].get('task')!=digest(self.budget_policy.task_id) or value['bindings'].get('thread')!=digest(self.thread_id):
+            raise PersistenceError('diagnosis_input_scope_mismatch')
+        if digest(value['context']) != value['displayed_context_digest']:
+            raise PersistenceError('diagnosis_context_digest_mismatch')
+        with self.connection:
+            self.connection.execute('BEGIN IMMEDIATE')
+            prior=self.diagnosis_input(value['generation'])
+            if prior is not None:
+                if prior != value:
+                    raise PersistenceError('diagnosis_input_immutable')
+                return prior
+            self.connection.execute('INSERT INTO diagnosis_inputs_v1 VALUES (?,?,?,?,?,?)',
+                (self.thread_id,value['subject_event_id'],value['generation'],value['context']['input_digest'],
+                 json.dumps(value,ensure_ascii=True,allow_nan=False),digest(value)))
+        return value
+
+    def diagnosis_report(self, input_digest):
+        from backend.app.agent.diagnosis import DiagnosisReport, digest
+        row=self.connection.execute(
+            'SELECT payload_json,payload_digest FROM diagnosis_reports_v1 WHERE thread_id=? AND input_digest=?',
+            (self.thread_id,input_digest)).fetchone()
+        if row is None:
+            return None
+        try:
+            value=DiagnosisReport.model_validate_json(row[0]).model_dump(mode='json')
+            if digest(value)!=row[1]:
+                raise ValueError('report digest mismatch')
+            return value
+        except (ValueError,KeyError,TypeError) as exc:
+            raise PersistenceError('diagnosis_report_corrupt') from exc
+
+    def save_diagnosis_report(self, value):
+        from backend.app.agent.diagnosis import DiagnosisReport, digest
+        self._require_budget_binding()
+        value=DiagnosisReport.model_validate(value).model_dump(mode='json')
+        with self.connection:
+            self.connection.execute('BEGIN IMMEDIATE')
+            prior=self.diagnosis_report(value['input_digest'])
+            if prior is not None:
+                if prior != value:
+                    raise PersistenceError('diagnosis_report_immutable')
+                return prior
+            source=self.connection.execute('SELECT payload_json FROM diagnosis_inputs_v1 WHERE thread_id=? AND input_digest=?',
+                    (self.thread_id,value['input_digest'])).fetchone()
+            if source is None:
+                raise PersistenceError('diagnosis_input_missing')
+            from backend.app.agent.diagnosis import DiagnosisInput
+            snapshot=DiagnosisInput.model_validate_json(source[0]).model_dump(mode='json')
+            DiagnosisReport.model_validate(value).bind(snapshot)
+            self.connection.execute('INSERT INTO diagnosis_reports_v1 VALUES (?,?,?,?,?)',
+                (self.thread_id,value['diagnosis_id'],value['input_digest'],
+                 json.dumps(value,ensure_ascii=True,allow_nan=False),digest(value)))
+        return value
 
     def close(self):
         self.connection.close()

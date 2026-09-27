@@ -1,6 +1,8 @@
 """Single-host persistent runner and a credential-free start/resume/status CLI."""
 from __future__ import annotations
 
+from backend.app.agent.revisions import REVISIONS_SINCE, STATES_SINCE
+
 import argparse
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
@@ -217,13 +219,14 @@ def _state_from_checkpoint(saver: SqliteSaver, thread_id: str) -> GraphState | N
 
 def _verify_binding(state: GraphState, config: RuntimeConfig, thread_id: str) -> None:
     identity, versions = state['identity'], state['versions']
-    llm_config = replace(config.llm_config, prompt_version=versions['prompt'])
+    llm_config = replace(config.llm_config, prompt_version=versions['prompt'], diagnosis_phase=versions['state']=='agent-state-v9')
     context_version = llm_config.public_config()['context_version']
     expected = ((identity['thread_id'], thread_id),
                 (identity['backend_fingerprint'], config.backend_fingerprint()),
                 (identity['principal_fingerprint'], config.principal_fingerprint()),
                 (identity['runtime_config_fingerprint'], config.runtime_config_fingerprint()),
-                (versions['llm_config_fingerprint'], llm_config.fingerprint()),
+                (versions['llm_config_fingerprint'], llm_config.fingerprint(diagnosis_rules_digest=
+                    state['task']['diagnosis_policy']['rules_digest'] if versions['state']=='agent-state-v9' and state['lifecycle']['next_action'] is None else None)),
                 (versions['prompt'], llm_config.prompt_version),
                 (versions['llm_config'], LLM_CONFIG_VERSION),
                 (versions['context_projection'], context_version))
@@ -237,9 +240,17 @@ def _build(config: RuntimeConfig, saver: SqliteSaver, journal: CallJournal, *,
     from .graph import Dependencies, build_graph
     deps = Dependencies(client=client or AutoAIClient(config.backend_url, token=config.backend_token,
                                                      timeout=config.api_timeout, max_retries=0, api_version=api_version,execution_profile=execution_profile,protocol_revision=protocol_revision),
-                        llm=llm or LLMAdapter(replace(config.llm_config, prompt_version='agent-decision-budget-v1' if protocol_revision in ('agent-recipes-revision-v5','agent-recipes-revision-v6') else 'agent-decision-search-v1' if protocol_revision=='agent-recipes-revision-v4' else 'agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
+                        llm=llm or LLMAdapter(replace(config.llm_config, diagnosis_phase=protocol_revision=='agent-recipes-revision-v7', prompt_version='agent-decision-budget-v1' if protocol_revision in REVISIONS_SINCE[5] else 'agent-decision-search-v1' if protocol_revision=='agent-recipes-revision-v4' else 'agent-decision-processing-v1' if protocol_revision=='agent-recipes-revision-v3' else 'agent-decision-knowledge-v1' if protocol_revision=='agent-recipes-revision-v2' else 'agent-decision-recipes-v1' if execution_profile else ('agent-decision-step2-v1' if api_version == 'v2' else PROMPT_VERSION)), token=config.llm_token),
                         journal=journal, clock=clock)
     return (graph_factory or build_graph)(deps, saver)
+
+
+def _historical_snapshot(state):
+    if state['versions']['state']=='agent-state-v9' and state['diagnosis']['report'] is not None:
+        import copy
+        state=copy.deepcopy(state)
+        state['diagnosis']['report']['freshness']='snapshot_only'
+    return state
 
 
 def _drive(graph, state: GraphState, *, initial: GraphState | None, wait: bool,
@@ -252,7 +263,7 @@ def _drive(graph, state: GraphState, *, initial: GraphState | None, wait: bool,
         if initial is None and snapshot.values:
             state = validate_state(snapshot.values).model_dump(mode='json')
         if state['lifecycle']['next_action'] is None:
-            return state
+            return _historical_snapshot(state)
         now = clock()
         wake_at = state['recovery']['next_wake_at']
         waiting = state['lifecycle']['status'] == 'waiting' and wake_at is not None and now < wake_at
@@ -269,7 +280,7 @@ def _drive(graph, state: GraphState, *, initial: GraphState | None, wait: bool,
         incoming = None
         initial = None
         if state['lifecycle']['next_action'] is None:
-            return state
+            return _historical_snapshot(state)
         if state['lifecycle']['status'] == 'waiting' and not wait:
             return state
     stopped = apply_patch(state, {'lifecycle': {'status': 'needs_attention', 'stage': 'ended',
@@ -292,13 +303,14 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
                processing_mode: str | None = None, fixed_processing: dict | None = None,
                search_mode: str | None = None, max_trials: int | None = None,
                budget_policy: dict | None = None, budget_awareness: str | None = None,
-               fail_fast_guard: str | None = None,
+               fail_fast_guard: str | None = None, feedback_diagnosis: str | None = None,
                clock: Callable[[], float] = time.time,
                sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id or str(uuid.uuid4()))
     directory = Path(storage)
-    guard_revision = fail_fast_guard is not None or getattr(client, 'protocol_revision', None) == 'agent-recipes-revision-v6'
-    budget_revision = guard_revision or (getattr(client, 'protocol_revision', None) in ('agent-recipes-revision-v5','agent-recipes-revision-v6')
+    diagnosis_revision = feedback_diagnosis is not None or getattr(client, 'protocol_revision', None)=='agent-recipes-revision-v7'
+    guard_revision = diagnosis_revision or fail_fast_guard is not None or getattr(client, 'protocol_revision', None) in REVISIONS_SINCE[6]
+    budget_revision = guard_revision or (getattr(client, 'protocol_revision', None) in REVISIONS_SINCE[5]
                        or budget_policy is not None or budget_awareness is not None)
     api_version = api_version or (getattr(client, 'api_version', 'v1') if client is not None else 'v2')
     if api_version not in ('v1','v2'):
@@ -325,9 +337,9 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('model_configs_require_v2')
     if execution_profile:
         factory=new_state
-        if processing_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v3','agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if processing_mode is None and getattr(client,'protocol_revision',None) in REVISIONS_SINCE[3]:
             processing_mode=getattr(client,'processing_mode','fixed')
-        if search_mode is None and getattr(client,'protocol_revision',None) in ('agent-recipes-revision-v4','agent-recipes-revision-v5','agent-recipes-revision-v6'):
+        if search_mode is None and getattr(client,'protocol_revision',None) in REVISIONS_SINCE[4]:
             search_mode=getattr(client,'search_mode','fixed')
             max_trials=getattr(client,'max_trials',1)
         if budget_revision:
@@ -340,7 +352,7 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         processing = processing_mode is not None
         searching = search_mode is not None
         modern = knowledge is not None or client is None or decision_mode is not None or knowledge_query is not None
-        extra.update(wire_version='agent-state-v8' if guard_revision else 'agent-state-v7' if budget_revision else 'agent-state-v6' if searching else 'agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
+        extra.update(wire_version='agent-state-v9' if diagnosis_revision else 'agent-state-v8' if guard_revision else 'agent-state-v7' if budget_revision else 'agent-state-v6' if searching else 'agent-state-v5' if processing else 'agent-state-v4' if modern else 'agent-state-v3',
             evidence_context=evidence_context,risk_context=risk_context,knowledge_enabled=bool(knowledge),
             decision_mode=decision_mode or ('recipe_id' if processing else None),knowledge_query=knowledge_query,
             processing_mode=processing_mode,fixed_processing=fixed_processing,
@@ -350,6 +362,9 @@ def start_task(config: RuntimeConfig, *, dataset_id: str, allowed_models: list[s
         raise RuntimeErrorCode('budget_requires_recipe_profile')
     if guard_revision:
         extra['fail_fast_guard'] = fail_fast_guard or 'on'
+    if diagnosis_revision:
+        extra['feedback_diagnosis'] = feedback_diagnosis or 'on'
+        llm_config = replace(llm_config, diagnosis_phase=True)
     started_at = clock()
     frozen_policy = None
     if budget_revision:
@@ -432,8 +447,12 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
                 sleep: Callable[[float], None] = time.sleep, graph_factory=None) -> GraphState:
     thread_id = _validate_thread(thread_id)
     directory = Path(storage)
-    if not (directory / 'checkpoints.sqlite').is_file():
-        raise RuntimeErrorCode('thread_not_found')
+    snapshot=read_status(storage=directory,thread_id=thread_id)
+    if snapshot['lifecycle']['next_action'] is None:
+        _verify_binding(snapshot,config,thread_id)
+        if snapshot['versions']['state'] in STATES_SINCE[7]:
+            _require_existing_budget_journal(directory,snapshot)
+        return snapshot
     try:
         with thread_lock(directory / 'locks', thread_id), checkpoint_store(directory) as saver:
             state = _state_from_checkpoint(saver, thread_id)
@@ -441,10 +460,14 @@ def resume_task(config: RuntimeConfig, *, storage: Path | str = DEFAULT_STORAGE,
                 raise RuntimeErrorCode('thread_not_found')
             _verify_binding(state, config, thread_id)
             frozen_policy = (_require_existing_budget_journal(directory, state)
-                             if state['versions']['state'] in ('agent-state-v7','agent-state-v8') else None)
+                             if state['versions']['state'] in STATES_SINCE[7] else None)
             if state['lifecycle']['next_action'] is None:
-                return state
-            if state['versions']['state'] == 'agent-state-v8':
+                return _historical_snapshot(state)
+            if state['versions']['state'] == 'agent-state-v9':
+                from backend.app.agent.diagnosis import rules_digest
+                if state['task']['diagnosis_policy']['rules_digest'] != rules_digest():
+                    raise RuntimeErrorCode('diagnosis_source_changed')
+            if state['versions']['state'] in STATES_SINCE[8]:
                 from backend.app.runs.guard import require_current_policy, GuardError
                 try:
                     require_current_policy(state['task']['guard_policy'])
@@ -475,14 +498,14 @@ def read_status(*, storage: Path | str = DEFAULT_STORAGE, thread_id: str) -> Gra
             state = _state_from_checkpoint(saver, thread_id)
             if state is None:
                 raise RuntimeErrorCode('thread_not_found')
-            return state
+            return _historical_snapshot(state)
     except (sqlite3.DatabaseError, ValidationError, KeyError, TypeError):
         raise RuntimeErrorCode('checkpoint_invalid') from None
 
 
 def state_summary(state: GraphState) -> dict:
     state = validate_state(state).model_dump(mode='json')
-    return {'task_id': state['identity']['task_id'], 'thread_id': state['identity']['thread_id'],
+    return {**({'diagnosis':dict(status=state['diagnosis']['status'], report_id=(state['diagnosis']['report'] or {}).get('diagnosis_id'), reason_code=(state['diagnosis']['report'] or {}).get('reason_code'), freshness='snapshot_only')} if state['versions']['state']=='agent-state-v9' else {}), 'task_id': state['identity']['task_id'], 'thread_id': state['identity']['thread_id'],
             'session_id': state['identity']['session_id'], 'run_id': state['execution']['run_id'],
             'lifecycle': state['lifecycle'], 'run_status': state['execution']['run_status'],
             'next_wake_at': state['recovery']['next_wake_at'],
@@ -547,6 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument('--max-operation-attempts', type=int, default=3)
             command.add_argument('--max-repair-attempts', type=int, default=2)
             command.add_argument('--fail-fast-guard', choices=('on','off'), default='on')
+            command.add_argument('--feedback-diagnosis', choices=('on','off'), default=None)
             command.add_argument('--budget-awareness', choices=('on','off'))
             command.add_argument('--budget-policy', type=json.loads)
             command.add_argument('--timeout-seconds', type=float, default=3600.0)
@@ -595,6 +619,8 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
         else:
             config = _config_from_args(args, os.environ if environ is None else environ)
             if args.command == 'start':
+                if args.execution_profile=='direct_action' and args.feedback_diagnosis is not None:
+                    raise RuntimeErrorCode('diagnosis_requires_recipe_profile')
                 state = start_task(config, storage=args.storage, thread_id=args.thread_id, wait=args.wait,
                                    dataset_id=args.dataset_id,
                                    allowed_models=[part.strip() for part in args.allowed_models.split(',') if part.strip()],
@@ -608,6 +634,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
                                    fixed_processing=args.fixed_processing if args.execution_profile!='direct_action' else None,
                                    search_mode=args.search_mode if args.execution_profile!='direct_action' else None,
                                    max_trials=args.max_trials if args.execution_profile!='direct_action' else None,
+                                   feedback_diagnosis=(args.feedback_diagnosis or 'on') if args.execution_profile!='direct_action' else None,
                                    fail_fast_guard=args.fail_fast_guard if args.execution_profile!='direct_action' else None,
                                    budget_awareness=args.budget_awareness if args.execution_profile!='direct_action' else None,
                                    budget_policy=args.budget_policy if args.execution_profile!='direct_action' else None)
