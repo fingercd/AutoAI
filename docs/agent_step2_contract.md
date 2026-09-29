@@ -1,9 +1,8 @@
 # 全模型单实验协议与训练证据配方
 
-当前增量：State v8 / recipes revision v6 提供冻结的 Guard on/off 和 Observation v2
-`extensions.guard`；旧协议保持原 wire。见 [第八步训练检查](step8_guard_contract.md)。
+当前新 CLI 配方任务使用 State v9 / recipes revision v7，知识默认 off、Guard 默认 on、反馈诊断默认 on；预算 awareness 在未显式指定时由运行入口设为 on。旧协议保持原 wire。Guard 与诊断分别见 [第八步训练检查](step8_guard_contract.md)、[第九步诊断契约](step9_diagnosis_contract.md)。本页第二至四步内容保留历史版本语境；维护范围见根目录 `AGENTS.md`、`CONTEXT.md`。
 
-第二步直接动作任务使用 `/api/agent/v2`、`agent-session-v2`、`agent-observation-v2`、`agent-metadata-v2` 和 `agent-state-v2`。图仍为 `agent-single-experiment-v1`，每个 Session 只运行一次分类实验。旧客户端、旧检查点及人工训练保留原路径与语义。第三步新任务默认协商下文的训练证据配方 profile。
+第二步直接动作任务使用 `/api/agent/v2`、`agent-session-v2`、`agent-observation-v2`、`agent-metadata-v2` 和 `agent-state-v2`。图仍为 `agent-single-experiment-v1`，每个 Session 只运行一次分类实验。旧客户端、旧检查点及人工训练保留原路径与语义。自第三步起，配方任务使用下文的训练证据 profile；当前默认修订以页首为准。
 
 ## 模型与配置
 
@@ -120,7 +119,7 @@ structured_config 的 LLM 提案包含 `session_id, model_id, normalization, cla
 
 `python scripts/agent_ablation.py` 针对已运行的服务执行一行并保存到 `work/ablation-records/<experiment-id>/record.json`。相同 ID 再次运行沿用冻结配置和原 checkpoint/journal；科研重复必须使用新 ID。Linux 上以 OS 文件锁避免并发重复。普通训练 API 没有幂等键：基线在 POST 前持久化 attempt_started，绑定 Run ID 后才继续；丢响应或在绑定前崩溃写 submission_uncertain 并停止，必须人工核对，禁止自动再次 POST。
 
-以下示例假定 Web/worker 已运行、数据已上传，`DATASET_ID` 为上传返回值；Bearer 仅由环境注入，不写入命令参数、文件或日志。LLM 模型和协议显式指定。固定基线必须先执行，再执行 Agent 对照。
+以下为第三、四步历史验收命令，不能作为当前主线的启动配置照做。它假定 Web/worker 已运行、数据已上传，`DATASET_ID` 为上传返回值；Bearer 仅由环境注入，不写入命令参数、文件或日志。LLM 模型和协议显式指定。固定基线必须先执行，再执行 Agent 对照。
 
 ```bash
 PY=/users/fotile/work/autoai-server-acceptance-20260912/venv/bin/python
@@ -176,3 +175,7 @@ export AUTOAI_KNOWLEDGE_BUNDLE="$PWD/work/knowledge"
 CLI 支持 `--query-mode train_template|user_text`、`--query-text` 和 `--confirmed-domain`。新 RAG（`--knowledge on`）启动必须提供 `--llm-tokenizer /path/to/local/model --llm-context-window 32768`，也可设置 `AUTOAI_LLM_TOKENIZER` / `AUTOAI_LLM_CONTEXT_WINDOW`；消融脚本对应参数为 `--llm-tokenizer` / `--context-window`。启动前验证本地 tokenizer 文件、chat template 和实际计数能力，缺失返回 `rag_prompt_budget_configuration_required`，不可用返回 `rag_prompt_budget_configuration_invalid`，均不创建 Session、不请求 LLM。注入适配器须绑定同一配置。历史检查点仍按原配置指纹恢复，不追补新启动约束。配置后使用实际 chat template 对完整消息、工具 schema 和生成预留计数，必要时整卡减少，不截断正文或模型目录。完整实际展示上下文与 digest 写入现有 proposal journal，重放必须一致。预算不足是终止性 `llm_context_too_long`。
 
 `knowledge_refs` 可以为空；JSON action 和 native tools、recipe_id 和 structured_config 均使用实际提供的 ID/version。查询、检索分数、Embedding 版本不进入训练有效配置或科学摘要。`scripts.agent_ablation.summarize_plan` 仅离线汇总 Finalize 后的指标，失败保留计划分母；成功子集均值与完整均值分别报告。
+
+## 当前版本边界
+
+当前主线的 revision v7 / State v9 在 v2 API 上增加反馈诊断；建议只读，不触发第二个训练 Run。Agent 固定工具与后端生成的输入不含 Test，Finalize 仍只锁定选择。人工结果页和离线评估在原权限边界内读取 Test；本协议不新增锁定后的 Test 机制。模型目录有 14 个目标、13 个实现；DSCARNet 只读兼容历史记录，CNN-Mamba 未实现。`available` 是实际进程的准入状态，不能从实现数直接推断。当前主线已包含第七、八步和第九步协议，具体服务是否启用需核对部署版本。

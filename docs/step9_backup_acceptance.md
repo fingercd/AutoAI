@@ -1,5 +1,7 @@
 # Step 9: isolated database backup and rollback acceptance
 
+> **Current scope (2026-09-29):** This remains an isolated synthetic acceptance test. Extracting historical tracked source into pytest temporary directories is a test fixture, not a new development checkout or a production backup. Current development workflow is governed by [AGENTS.md](../AGENTS.md), [CONTEXT.md](../CONTEXT.md), and [README.md](../README.md): baseline `019f1cc`, sole server development directory `/users/fotile/AutoAI/Pan`, fixed `pan/agent`; no new branch, worktree, fork, or developable copy. Development Git commands run only from that Pan root. This documentation pass does not commit, push, or deploy, and leaves other GitHub branches intact. The acceptance test's historical use of Test in metric names is not a request to change the Agent's fixed tools or inputs, data policy, or experiment counts.
+
 This is an acceptance procedure for synthetic databases, not a production restore command.
 The production application and the SQLite schemas are unchanged by this closeout.
 
@@ -8,6 +10,10 @@ The production application and the SQLite schemas are unchanged by this closeout
 Run `python -m pytest agent_poc/tests/test_step9_backup.py -q`. The checkout must contain
 Git commits `39743e455cdfa5f7ba2c8f1f44f17553f38dfe4e` (pre-Step9) and
 `7502267a2e673bcdb8d4583e5a9dea68ce48796c` (pre-assessment repair).
+These are exact historical source prerequisites for the test, not branch targets or instructions
+to create a development checkout. Their availability in the current Pan object store must be
+checked before running the test; a matching tree at another commit does not by itself prove
+that substituting a SHA will satisfy the test or preserve the intended historical fixture.
 The test extracts those tracked sources into pytest temporary directories and executes
 those actual historical programs using the current dependency environment. This verifies
 source compatibility in this environment; it does not certify every historic dependency stack.

@@ -1,5 +1,7 @@
 # SpecAutoAI 谱学数据预处理与自动建模平台开发计划（历史路线）
 
+> **历史归档提示（2026-09-29）：** 下文是早期开发路线及当时的实现提示，保留原始需求和技术判断供追溯；其中的模型数量、架构状态、分支、推送、部署或运行命令均不构成当前操作指令。当前开发以 [`AGENTS.md`](AGENTS.md)、[`CONTEXT.md`](CONTEXT.md)、[`README.md`](README.md) 和现行接口契约为准。当前主线为 `019f1cc`；服务器唯一开发目录为 `/users/fotile/AutoAI/Pan`，固定 `pan/agent`。不得创建新分支、worktree、fork 或可开发复制；开发用 Git 命令仅在该服务器 Pan 根目录执行。本次文档整理不提交、推送或部署，GitHub 其他分支保留。
+
 > **历史文档，不作为当前实现或安装说明。** 本文件保留早期需求与技术路线原文，其中 React/Vite、BackgroundTasks、Redis/RQ、旧模型清单和旧命令均可能已经失效。当前事实以 `README.md`、`CONTEXT.md`、`AGENTS.md` 和 `docs/frontend_backend_handoff.md` 为准；维护者不得据此直接修改正式主线。
 
 ## 当前实现提示（仅帮助识别下文的过时内容）

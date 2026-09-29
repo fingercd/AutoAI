@@ -1,8 +1,11 @@
 # 第九步：反馈诊断契约
 
+> 当前主线 019f1cc 已包含本协议；第七、八步已发布。本文描述代码和契约，不代表具体服务已升级，也不代表真实模型效果已验证。维护与运行边界见根目录 `AGENTS.md`、`CONTEXT.md`。
+
 新 recipe CLI 默认启用 `--feedback-diagnosis on`，可显式关闭。新任务使用
 `agent-recipes-revision-v7` / `agent-state-v9`；旧 revision 与 direct_action 不启用诊断。
 选择与 Finalize 使用原 Prompt，诊断意见不参与调度，不产生第二个 Run。
+知识开关默认 off；未显式传 `--budget-awareness` 时运行入口采用 on。当前 CLI 的预算默认值以 `agent_poc/orchestration/runtime.py` 为准：6 次 LLM 调用、60 次 API 调用、每 operation 3 次尝试、最多 2 次输出修复、总时限 3600 秒；用户显式配置可改变冻结额度。下文的 3 LLM / 9 API / 60 秒仅是受保护收尾额度，不是任务总额。
 
 ## 可信输入
 
@@ -35,6 +38,7 @@ overfitting_risk 还必须引用同源正差距。高分、低分、零分均可
 建议 action_id 从冻结 recipe/config 编译，参数是 const。解释只选择 ID，不提交参数。
 所有建议 executable_now=false，不存在 Dispatcher 注册，不开放 Test 调参、换 seed、
 安装依赖、执行代码、取消 Guard 或新模型。memory/replanning 仍 disabled。
+现有 Agent 固定工具和后端生成的输入均不含 Test；Finalize 只锁定选择，不新增锁定后 Test 机制。Test 仍留在人工结果页与原权限范围内的离线评估。
 
 ## 路由和预算
 
@@ -73,10 +77,10 @@ python scripts/export_diagnosis.py --storage <canonical-dir> --thread-id <id> --
 专项位于 test_step9_evidence、test_step9_search_audit、test_step9_contracts、
 test_step9_graph、test_step9_recovery。脚本化 provider、真实训练、真实 Qwen 分开登记。
 最终工程证据放 work/step9_acceptance；原始数据库/数据/模型不进 Git。
-建议本步不执行，不能据此宣称训练或 Test 质量改善；独立验收、研究消融及部署另行进行。
+诊断建议本身不执行，不能据此宣称训练或 Test 质量改善；真实模型效果和具体部署需分别核对。
 
 
-## Acceptance repair: capacity and assessment
+## 验收补修：容量与评估
 
 The complete recipe action catalog uses recipe IDs, recipe digests and model/processing summaries.
 The recipe digest binds the complete frozen execution configuration; summaries cannot introduce new parameters.

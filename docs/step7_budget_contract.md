@@ -1,13 +1,15 @@
 # 第七步预算协议与运行边界
 
+> 本页记录 revision v5 / State v7 引入的预算机制及旧任务恢复。当前新 CLI 配方任务使用 revision v7 / State v9，预算仍由 `budget-policy-v1` 冻结；知识默认 off、反馈诊断默认 on。维护范围见根目录 `AGENTS.md`、`CONTEXT.md`。
+
 第八步增量见 [训练检查协议](step8_guard_contract.md)。新 Guard Run 使用 guard-v1 worker；
 旧预算 Run 的 SQL 领取闸门同时接受 budget-v1 和 guard-v1，下文 v5/v7 为历史协议描述。
 
 ## 新任务与旧任务
 
 配方协议 `agent-recipes-revision-v5` 使用 `agent-state-v7`、
-`budget-policy-v1` 和 `agent-context-budget-v1`。CLI 新建预算任务时显式传
-`--budget-awareness on` 或 `--budget-awareness off`；两组均执行相同的硬预算。
+`budget-policy-v1` 和 `agent-context-budget-v1`。预算对照实验显式传
+`--budget-awareness on` 或 `--budget-awareness off`；当前 CLI 未指定时，运行入口采用 `on`。两组均执行相同的硬预算。
 `on` 的选择上下文含剩余额度、未知占用及各合法配方的 fit/epoch 上界，并可建议
 `stop_ml_session`；`off` 沿原单次选择流程，不向 LLM 显示预算卡。无可行配方时
 两组都由编排器终止，不发起训练。
@@ -19,9 +21,9 @@ CallJournal。恢复只接受原 canonical Journal 路径及原策略绑定；�
 ## 执行与收尾
 
 Run、fit、已进入的 epoch 由后端账本扣账；LLM、API、Token、修复与重试由
-CallJournal 扣账。预约上界和已发生用量分开记录。调度到训练时，预算 Run 仅由
-`training-worker-budget-v1` worker 领取，并在受监督子进程运行。数据库领取闸门
-拒绝旧 worker 合同领取预算 Run。worker 退出证据不明确时保留未知 hold，不能将
+CallJournal 扣账。预约上界和已发生用量分开记录。调度到训练时，第七步历史预算 Run 可由
+`training-worker-budget-v1` 或当前 `training-worker-guard-v1` worker 领取，并在受监督子进程运行。数据库领取闸门
+拒绝更旧 worker 合同领取预算 Run；新 Guard Run 只允许 guard-v1。worker 退出证据不明确时保留未知 hold，不能将
 Run 发布为成功。
 
 ### Linux 进程监督

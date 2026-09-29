@@ -1,5 +1,7 @@
 # ADR 0001: Stable Run Architecture
 
+> **决策记录说明（2026-09-29）：** 本 ADR 于 2026-07-16 核对，以下 Run 状态机、独立 worker、lease 与 Manifest 的架构决策仍作为该领域的有效依据；它不是开发目录、Git 或部署流程指南。执行工作以 [AGENTS.md](../../AGENTS.md)、[CONTEXT.md](../../CONTEXT.md)、[README.md](../../README.md) 为准。当前主线为 `019f1cc`；服务器唯一开发目录为 `/users/fotile/AutoAI/Pan`，固定 `pan/agent`，不得新建分支、worktree、fork 或可开发复制。开发用 Git 命令仅在服务器 Pan 根目录执行；本次文档整理不提交、推送或部署，GitHub 其他分支保留。
+
 - Status: Accepted
 - Scope: Run persistence, worker execution, state projection and artifact publication
 - Last reviewed: 2026-07-16
