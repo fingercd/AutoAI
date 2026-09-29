@@ -1,5 +1,7 @@
 # 真实 X 轴宽表建模 CSV 迁移计划
 
+> **历史计划归档（原计划日期：2026-07-21；归档标识：2026-09-29）：** 本文保留当时的目标、方案和验收记录，不能据此判断功能已交付或按文中的分支、推送、部署命令操作。当前事实与工作流程以 [AGENTS.md](../../AGENTS.md)、[CONTEXT.md](../../CONTEXT.md)、[README.md](../../README.md) 和[文档导航](../README.md)为准。当前主线为 `019f1cc`；服务器唯一开发目录为 `/users/fotile/AutoAI/Pan`，固定 `pan/agent`。不得创建新分支、worktree、fork 或可开发复制；开发用 Git 命令仅在该服务器 Pan 根目录执行。本次整理不提交、推送或部署，GitHub 其他分支保留。
+
 ## 目标与成功标准
 
 把预处理导出与训练上传统一迁移到 `wide-feature-v1` 宽表：每条曲线占一行，前三列固定为 `Index, Label, Sample_ID`，其余每一列的列名是一个真实 `XXX` 坐标，单元格是该坐标对应的 `Intensity`。新训练只接受这种宽表，不再接受把 `XXX`、`Intensity` 数组塞进两个单元格的旧六列格式。

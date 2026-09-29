@@ -1,5 +1,7 @@
 # 拉曼预处理 CSV 数据完整性与 Excel 兼容修复计划
 
+> **历史计划归档（原计划日期：2026-07-14；归档标识：2026-09-29）：** 本文保留当时的目标、方案和验收记录，不能据此判断功能已交付或按文中的分支、推送、部署命令操作。当前事实与工作流程以 [AGENTS.md](../../AGENTS.md)、[CONTEXT.md](../../CONTEXT.md)、[README.md](../../README.md) 和[文档导航](../README.md)为准。当前主线为 `019f1cc`；服务器唯一开发目录为 `/users/fotile/AutoAI/Pan`，固定 `pan/agent`。不得创建新分支、worktree、fork 或可开发复制；开发用 Git 命令仅在该服务器 Pan 根目录执行。本次整理不提交、推送或部署，GitHub 其他分支保留。
+
 ## 目标与成功标准
 
 修复预处理结果把超长 `XXX`、`Intensity` 数组交给 Excel 后拆成多行，导致续段数值落入 `Index`、`Name` 等列的问题。继续保持统一建模 CSV 的六列契约 `Index, Name, XXX, Intensity, Label, Sample_ID`，不静默删点或降采样；修复后，当前 50 个拉曼文件在截图参数（按行号 100–2000、`range_then_baseline`、`arPLS`）下必须能被 Excel 正确打开、填写标签、保存并由建模加载器完整回读。

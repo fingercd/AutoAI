@@ -1,32 +1,33 @@
-# SpecAutoAI 文档导航
+# Pan 文档导航
 
-> 最近核对：2026-07-16。本文用于区分当前契约、架构记录、部署说明和历史材料；发生冲突时，优先级为自动化测试与接口实现、`AGENTS.md`、`CONTEXT.md`、`README.md`、当前接口契约，最后才是历史计划和审查快照。
+> 最近核对：2026-09-29，源码基准 019f1cc。用户当前要求决定任务目标；代码和接口用于确认现状；历史计划不授予操作权限，也不覆盖当前规则。
 
-## 当前维护文档
+## 先读的入口
 
-- `../README.md`：安装、启动、功能范围和对外项目说明。
-- `../CONTEXT.md`：面向维护者的当前实现速查表。
-- `../AGENTS.md`：协作、修改边界、模型口径和验证要求。
-- `frontend_backend_handoff.md`：前端调用后端时必须遵守的请求、响应和 artifact 契约。
-- `run_result_contract.md`：独立建模结果页使用的 `run-result-v1` 字段、状态、指标聚合和下载描述。
-- `agent_api_contract.md`：Agent Session/Experiment、durable submission mapping、显式 reservation reconciliation、Observation Test 防火墙及 LLM Tool Client 契约。
-- `../deploy/server_deploy.md`：校园集群 Web + worker 部署说明。
-- `github_publish_policy.md`：可以进入 Git/GitHub 的内容边界。
-- `adr/0001-stable-run-architecture.md`：SQLite Run 状态机、worker、lease 与 Manifest 的架构决策。
+- [AGENTS](../AGENTS.md)：唯一开发目录/分支、Git、授权和验证规则。
+- [CONTEXT](../CONTEXT.md)：有日期和 SHA 的当前阶段、协议、发布与候选状态。
+- [README](../README.md)：当前能力、数据格式和使用方式。
+- [CLAUDE](../CLAUDE.md)：共用上述规则的协作入口。
+- [Git 与发布规范](github_publish_policy.md)：仅在服务器 Pan 根目录核对、提交及推送 pan/agent；操作须单独授权。
+- [部署说明](../deploy/server_deploy.md) 与 [服务控制](service_control.md)：当前 release、storage 和受控启停。
 
-## 历史或内部材料
+## 现行接口和阶段契约
 
-- `../AutoAI_开发计划.md`：早期 1–9 步路线，保留原始语境，不代表当前 React/Vite、Redis/RQ 或模型实现。
-- `hplc-pipeline-review-prompt.md`：2026-07-06 前后的 HPLC 提交审查快照，里面的文件位置、测试数量和旧响应字段不能替代当前代码。
-- `plans/`：内部实施计划。计划描述预期工作，不自动等同已经交付的功能。
+- [前后端接口](frontend_backend_handoff.md)、[结果页](run_result_contract.md)、[历史 Manifest](legacy_manifest_compatibility.md)。
+- [Agent API](agent_api_contract.md)：旧版兼容与 Session/Experiment、持久绑定及输入边界。
+- [全模型及配方](agent_step2_contract.md)：能力、证据、知识和逐阶段协议。
+- [State/CLI](langgraph_state_contract.md)、[编排与恢复](langgraph_orchestration.md)。
+- [第五步处理消融](step5_processing_ablation.md)、[第七步预算](step7_budget_contract.md)、[第八步训练检查](step8_guard_contract.md)。
+- [第九步反馈诊断](step9_diagnosis_contract.md)、[第九步隔离备份验收](step9_backup_acceptance.md)。
 
-## 快速核对入口
+当前新 recipe 任务为 revision-v7 / State-v9，诊断默认启用且建议不执行，仍为单实验流程。旧协议章节必须按其版本阅读。模型注册与实现状态见代码目录，当前环境可用性见 GET /api/models，不以历史数量替代接口。
 
-- 模型目录：`GET /api/models`；目标 15 项，当前环境通常 14 项可用。
-- 训练创建：`POST /api/training/runs`；只持久化 queued Run，训练由独立 worker 执行。
-- 建模结果：`GET /api/training/runs/{run_id}/result`；前端 URL 为 `#/results?run_id=...`。
-- 轻量记录：`GET /api/training/runs?projection=summary&limit=20&cursor=...`。
-- 主色谱预处理：`POST /api/preprocess/hplc`；旧 `chromatography` 仅做简单范围截取。
-- Run 下载：`GET /api/training/runs/{run_id}/artifact/{name}`；必须通过 Principal、成功状态、显式 catalog 和完整性校验。
-- 服务器认证：`AUTOAI_DEPLOYMENT_MODE=server` + Bearer token；CORS 禁止通配来源。
-- 回归测试：`python -m pytest backend/tests -q`，并运行 `python -m compileall backend/app -q`。
+Agent 的工具和后端生成输入不含 Test；通用结果页仍显示既有 Test。这里说明既有边界，不提出额外的 Test 开放时序改造。
+
+## 架构与历史材料
+
+- [稳定 Run 架构决策](adr/0001-stable-run-architecture.md)：保留仍有效的架构依据，开发操作遵守现行 AGENTS。
+- [早期开发计划](../AutoAI_开发计划.md)：历史路线，不是当前阶段或操作指令。
+- `plans/`：按文件日期保留的历史实施记录；其中建分支、推送和部署命令不能直接执行。当前十三步顺序与已实现状态见 CONTEXT。
+
+接口字段、服务状态和历史实验证据分别维护，不把“文档里写了”“代码已进入主线”“服务已发布”和“论文效果已证实”混成一个状态。

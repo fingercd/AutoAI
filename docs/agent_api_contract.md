@@ -1,8 +1,8 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新任务默认 v2；新增字段、参数冻结和恢复分派见 [第二步契约](agent_step2_contract.md)。
+> 范围：本页主体记录 `/api/agent` 的 v1 wire，供旧客户端与历史 Session 读取。当前新 CLI 配方任务使用 revision v7 / State v9，仍通过 `/api/agent/v2`；新增字段、冻结和恢复分派见 [第二步契约](agent_step2_contract.md) 与 [第九步诊断契约](step9_diagnosis_contract.md)。维护与运行范围以根目录 `AGENTS.md`、`CONTEXT.md` 为准。
 
 # Agent API 接口契约（agent-session-v1）
 
-新 Guard revision v6 及候选复查见 [第八步协议](step8_guard_contract.md)；本页 v1 wire 保持不变。
+Guard 从 revision v6 引入，当前 revision v7 继续使用；候选复查见 [第八步协议](step8_guard_contract.md)。本页 v1 wire 保持不变。
 
 Agent API 是 LLM/Orchestrator 与稳定训练引擎之间的有限适配层。它只允许创建冻结的 Session、提交受限实验、读取 Validation Observation 和 Finalize；不允许读取服务器文件、数据库、Test 指标、预测、解释性结果或 artifact。它不实现自动选模、Prompt、Memory、诊断、重规划和论文创新算法。
 
@@ -159,7 +159,7 @@ Finalize 要求 Run 属于当前 Principal 与 Session、状态成功、Manifest
 
 ## 能力与未来模块
 
-基础五项能力为可用。`evidence_card`、`dynamic_preprocessing`、`restricted_strategy_pool`、`bounded_hpo`、`fail_fast_guard`、`feedback_diagnosis`、`limited_replanning`、`uncertainty_selection`、`case_memory`、`budget_control`、`constrained_code_evolution` 当前均为 `available=false,status=unavailable`。请求启用会返回 422，不会静默忽略。
+此处说明 v1 基础适配层：基础五项能力可用，v1 不接受后续模块。能力状态按协议修订返回；当前 revision v7 的 `knowledge`、`dynamic_preprocessing`、`bounded_hpo`、`fail_fast_guard`、`feedback_diagnosis` 已有相应协议，预算由冻结的 `budget-policy-v1` 约束。`limited_replanning`、`uncertainty_selection`、`case_memory`、`constrained_code_evolution` 仍不可用。不能用 v1 的模块状态推断当前 v7 的能力。
 
 未来模块应通过 capability registry、版本化请求字段和 Observation `extensions` 接入，不应修改共享 Run Submission Service、Worker、训练算法或 `run-result-v1`。
 
@@ -175,10 +175,10 @@ Finalize 要求 Run 属于当前 Principal 与 Session、状态成功、Manifest
 GET 可有界重试；POST 只有携带稳定 `client_request_id`（Finalize 的同 Run 幂等语义除外）才可重试。客户端遇到 contract version 不匹配必须 fail closed。Bearer token 只保存在客户端内存，不写日志、Trace 或异常文本。
 
 
-## 第九步反馈诊断（开发候选）
+## 第九步反馈诊断（当前配方任务）
 
 新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
 诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
 失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
 详见 [第九步诊断契约](step9_diagnosis_contract.md)。
-本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
+当前主线已包含该协议；是否在具体服务生效仍以实际部署版本为准。模型目录有 14 个目标、13 个实现，DSCARNet 已退役，CNN-Mamba 未实现；其余模型的 `available` 还取决于运行环境。
