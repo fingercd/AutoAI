@@ -1,14 +1,14 @@
 # SpecAutoAI
 
-## Word 0904 新版训练入口（2026-09-07）
+## Word 0904 新版训练入口（当前状态核对：2026-09-29）
 
 经典 AI 建模入口已接通六模型特征方案比较：传统模型在 Train+Valid 内按 Sample_ID 分层五折搜索，全特征、Binning 5/10/20、PCA 90/95/99% 独立比较；CNN 只比较全特征与三种 Binning，按 validation loss 选择。每模型一个 Run，不增加重复次数。
 
 有独立 Test、无独立 Test、留一法及留一法加独立 Test 均支持自定义比例（合计 10）；每个模式单独记住比例。结果页/对比页提供可展开的最佳配置、逐折参数与实际划分数量。特征工程热图使用指标切换器，PNG/SVG/CSV/ZIP 与页面同源；旧结果没有特征产物时不会补造或重训。
 
-对比页“下载全部”旁边提供“下载 Excel”：第一个工作表是 `Index, Label, Sample_ID, 划分` 加每个模型一列的预测类别，第二个工作表布局相同但每个单元格是逗号分隔、合计为 1 的逐类概率。开交叉验证时每条记录只以它作为测试集的那一折出现（pooled OOF，划分恒为 test）；不开交叉验证时用最终训练好的模型对全部记录预测一次并标注 train/valid/test。历史 Run 没有全量明细时只导出已有 test/OOF 行，不补造。
+对比页“下载全部”旁边提供“下载 Excel”：第一个工作表是 `Index, Label, Sample_ID, 划分` 加每个模型一列的预测类别，第二个工作表布局相同，每个模型单元格是按 `label_map` 类别顺序排列、逗号分隔的六位小数概率文本。原始概率按类别归一化；写成六位小数后总和可能有舍入误差。`stratified_holdout` 与 `external_test_holdout` 用最终拟合模型预测全量记录并标注 `train/valid/test`，独立测试记录标为 `external_test`。普通留一法导出主数据 pooled OOF 行，每条记录只出现一次且划分为 `test`；留一法加独立 Test 时还包含 pooled OOF 主数据行和外部测试行，后者标为 `external_test`。该模式的独立 Test 是主指标，主数据 pooled OOF 仅作审计。历史 Run 没有全量明细时只导出已有 test/OOF 行，不补造。
 
-对比页的分类预测指标显示各类别召回率与 Precision（精确率）两张热图，支持 SVG、PNG 下载与放大；精确数值和 Support 折叠查看。
+对比页按“总体表现、分类指标、样品预测、特征方案、参数与划分”组织为标签页；特征方案标签只在后端能力开启时出现。分类预测指标显示各类别召回率与 Precision（精确率）两张热图，精确数值与 Support 折叠查看，单图支持 SVG、PNG 下载与放大，CSV 随归档提供。绘图版本为 `comparison-figures-v4`，过期或缺图的归档可从已有训练产物幂等补建，不重训。
 
 更新代码后，需让 Web 与 Worker 都加载新代码，再刷新页面。不要在训练进行中强制重启。`/api/models` 的 `training_scheme` 字段表示当前 Web 的新版能力；未声明方案版本的 API 请求继续兼容旧行为。
 
@@ -32,7 +32,7 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 
 ## 双前端入口
 
-当前新增特征工程方案比较暂时停用，保留代码和历史文件；普通训练、标准化及其他对比图不受影响。经典混淆矩阵放大窗口已限制尺寸，避免四类别矩阵撑满屏幕。
+特征方案训练与比较已启用；经典页面依据 `/api/models` 的 `training_scheme.enabled` 展示相应方案结果。历史批次缺少特征产物时只说明缺失，不补造或重训。可解释性仍由 `TEMPORARILY_HIDDEN` 关闭，新训练不生成解释性结果，历史解释性 artifact 也不开放下载。经典混淆矩阵放大窗口限制在视口范围内。
 
 仓库同时维护两个受测试保护的原生静态前端，它们共享同一套 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约：
 
@@ -43,10 +43,10 @@ v2 是正式纳入仓库的并行前端，不是历史 UI 画廊，也不会替�
 
 ## 环境要求
 
-- 已验证：Python `3.12.12`。
+- 仓库依赖基线记录 Python `3.12.12`；本轮未重新验收运行环境。
 - CPU 环境可直接安装核心依赖。
 - NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- DSCARNet 额外依赖 AggMap；其余 13 个当前可用模型不要求 AggMap。目录中的 `cnn_mamba1d` 另需 `mamba-ssm`，当前 Windows Conda 环境不可用。
+- `/api/models` 注册 17 个分类模型；当前可用性由运行环境的依赖探测动态返回，不能把目录总数当作可训练数。DSCARNet 依赖可选安装的 AggMap；`cnn_mamba1d` 需要 `mamba-ssm`。前端仅显示 `ui_visible=true` 的六个模型，隐藏模型在依赖可用时仍保留兼容 API。
 
 建议新建虚拟环境：
 

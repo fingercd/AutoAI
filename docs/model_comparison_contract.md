@@ -1,5 +1,7 @@
 # 模型比较接口契约（model-comparison-v1）
 
+当前实现核对：2026-09-29。经典比较页按“总体表现、分类指标、样品预测、特征方案、参数与划分”组织为标签页；特征方案标签由 `/api/models.training_scheme.enabled` 控制。类别 Recall 与 Precision 各显示一张热图，精确数值与 Support 可折叠查看。当前绘图版本为 `comparison-figures-v4`，过期或缺图的归档可从已验证 Run 产物补建。
+
 ## 2026-09-07 特征方案接通
 
 经典对比页移除总体性能“排序”下拉框和“选择历史对比”入口。四项总体指标图与数值表统一沿用默认 Balanced Accuracy 降序；下载、归档和图表放大保留。历史结果从训练记录的“查看所属对比”进入，未指定批次的对比页提供训练记录链接，不再请求批次列表。
@@ -31,16 +33,16 @@
 }
 ```
 
-`class_metrics` 按类别给出 Precision / Recall / F1 / Support：多次重复实验取均值与标准差（`*_std`），Support 求和；任一字段缺失即为 `null`，不填 0。**Recall（召回率）= TP/(TP+FN)**，二分类时即 Sensitivity，衡量漏判；**Precision（精确率）= TP/(TP+FP)**，衡量误判。二者不是同一个指标，经典对比页据此显示“各类别 Recall”和“各类别 Precision”两张热图，精确数值与 Support 折叠展示。`class_recall` 与 recall 图像保持兼容；precision 图从 `class_metrics.precision` 读取，缺失保留为空，不填零。2026-09-27 绘图版本升级为 comparison-figures-v3，归档增加 class_precision 的 SVG/PNG/CSV，旧图集按现有产物补建，无需重训。
+`class_metrics` 按类别给出 Precision / Recall / F1 / Support。新 Batch 每模型只有一个 Run；历史重复批次默认采用每模型第一条成功且结果完整的 Run，类别指标不跨 Run 求均值或求和。任何字段缺失即为 `null`，不填 0。**Recall（召回率）= TP/(TP+FN)**，二分类时即 Sensitivity；**Precision（精确率）= TP/(TP+FP)**。经典对比页依据 `class_recall` 与 `class_metrics.precision` 显示两张热图，精确数值与 Support 可折叠查看；图像与归档读取同一投影，缺失值保留为空。2026-09-27 两项指标改为热图并加入 precision 图集；随后绘图版本升级为 `comparison-figures-v4`，旧图集可按现有产物补建，无需重训。
 
 ## 预测明细 Excel 导出（2026-09-22）
 
 `GET /api/training/batches/{batch_id}/predictions.xlsx` 返回两个工作表的 `.xlsx`（附件下载），同样按 Principal scope，只使用 Manifest 校验通过的成功子 Run 产物，响应不含服务器路径：
 
 - 工作表 1 `预测类别`：固定 `Index` / `Label` / `Sample_ID` / `划分` 四列，其后每个可比较模型一列，单元格是该模型对该记录的预测类别。
-- 工作表 2 `预测概率`：布局相同，每个模型单元格是按 `label_map` 编码顺序给出、逗号分隔、合计为 1 的逐类概率（列头注释与工作表名都标注类别顺序）。
+- 工作表 2 `预测概率`：布局相同，每个模型单元格是按 `label_map` 数字键顺序给出的逗号分隔六位小数文本。底层逐类概率归一化；写成六位小数后总和可能有轻微误差，列头注释与工作表名标注类别顺序。
 
-覆盖范围由评估口径和已验证产物决定，不重算、不补造：`stratified_holdout` / `external_test_holdout` 读取训练时写出的 `all_predictions.csv`（最终模型对全部记录预测一次，`划分` 为 train/valid/test，独立测试集记为 `external_test`）；交叉验证口径没有单一最终模型，同一文件存放逐折 pooled OOF 行，每条记录只在它作为测试集的那一折出现，`划分` 恒为 `test`（留一法加独立 Test 时为 `test` + `external_test`）。历史 Run 没有该产物时回退到 `predictions.csv`，只导出已有的 test/OOF 行，`Index` 列留空。批次不可比较或缺少校验通过的预测/类别映射时返回 409 与原因。
+覆盖范围由评估口径和已验证产物决定，不重算、不补造：`stratified_holdout` / `external_test_holdout` 从 `all_predictions.csv` 读取最终模型对全量记录的预测，主数据标为 train/valid/test，独立测试记录标为 `external_test`。普通留一法读取主数据 pooled OOF，每条记录只在其作为测试集的折出现一次并标为 `test`。留一法加独立 Test 时同时导出主数据 pooled OOF 行（`test`）和独立测试行（`external_test`）；该模式的独立 Test 是主指标，pooled OOF 仅用于审计。历史 Run 无 `all_predictions.csv` 时回退到 `predictions.csv`，只导出已有的 test/OOF 行，`Index` 留空。批次不可比较或缺少校验通过的预测/类别映射时返回 409 与原因。
 
 新 Batch 固定一模型一 Run。sample_correctness.values 为 0/1/null；details 返回真实／预测类别、测量条数和概率均值或投票的聚合方法。Recall values 的 support 为该类预测记录数；混淆矩阵顺序严格按 label_map 编码顺序，不按字符串重排矩阵。
 
@@ -52,9 +54,9 @@ models[].experiment 来自 Manifest 校验通过的 feature_experiments.json，�
 
 ## 经典对比页与持久归档（2026-09-05）
 
-临时功能开关：特征工程前后端已停用，代码保留。`feature_policy.FEATURE_ENGINEERING_ENABLED=False` 时，word-0904 训练配置被拒绝，features 图像请求返回 409，新归档不生成特征方案图像；普通训练不变，历史文件不删除。经典对比页不显示特征工程区块或占位说明。混淆矩阵放大图上限 640px，同时受视口高度约束；此调整不作用于其他图的放大窗口。
+历史基线（2026-09-05，当时特征方案曾暂时停用；已由 2026-09-07 恢复记录覆盖）：当时 `FEATURE_ENGINEERING_ENABLED=False` 会拒绝 word-0904 训练配置、关闭 features 图像请求并阻止新归档生成特征方案图像。此状态不代表当前实现；当前开关为 `True`，前端按 `/api/models.training_scheme.enabled` 显示特征方案结果。
 
-经典对比页使用 `static/js/comparison-page.js/css`；v2 和单模型结果页不变。样式全部限定在 `#view-comparison`。总体指标按内容宽度 1100/640px 切为四/二/一列；墨绿矩阵默认真实类别归一化，计数共享范围。格内数字按格子宽度缩小（约 8–11px），轴标签 13px、标题 16px。Sample_ID 每页 50 个，缺失不当作错误。
+经典对比页使用 `static/js/comparison-page.js/css`；v2 和单模型结果页不变。样式全部限定在 `#view-comparison`。总体指标与矩阵随容器宽度响应式排列；放大弹窗受视口宽高约束。Sample_ID 每页 50 个，缺失不当作错误。
 
 后端 `comparison_figures.py` 使用同一 Matplotlib Figure 输出 SVG/PNG，不依赖服务器浏览器或 Node。基础依赖包含 Matplotlib；非 Windows 部署若使用中文类别名，应安装 Noto Sans CJK SC 或文泉驿字体。
 

@@ -16,9 +16,12 @@ always taken from a verified artifact rather than recomputed here:
   which the trainer writes by running the final fitted model once over every
   record; the ``split`` column then carries train/valid/test (external rows are
   ``external_test``).
-* Cross-validation strategies have no single final model, so the same file holds
-  the pooled out-of-fold rows – each record appears exactly once, as the test of
-  its own fold, and ``split`` is ``test``.
+* ``leave_one_sample_id_cv`` has no single final model, so the file holds the
+  pooled out-of-fold rows – each primary-data record appears exactly once as
+  the test of its own fold, and ``split`` is ``test``.
+* ``leave_one_sample_id_cv_with_external_test`` also includes those primary-data
+  pooled OOF rows plus predictions for the independent test set from the final
+  model retrained on all primary data; external rows use ``split=external_test``.
 
 Historical batches trained before this file existed fall back to
 ``predictions.csv`` (test/OOF rows only); nothing is fabricated and nothing is

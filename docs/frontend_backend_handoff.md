@@ -2,6 +2,8 @@
 
 2026-09-07 增量：`GET /api/models` 增加 `training_scheme`，含 enabled、version、传统/CNN 方案数量及训练 defaults；models 数组保持兼容。经典页面从该能力组装 `experiment_version=word-0904` 新请求；旧版无版本 API 和 v2 不变。两段划分不发送 split_test，由服务端规范化为 0；默认比例 8:2，可自定义，外部 Test 与留一法可以同时启用。传统模型采用完整五折网格；经典新版表单不提交旧手动搜索预算，CNN 使用文档默认固定训练参数。
 
+2026-09-22 / 2026-09-29 增量：Batch 增加预测 Excel 导出，类别概率按 `label_map` 顺序写为逗号分隔六位小数文本，舍入后总和可能有微小误差。留一法加独立 Test 同时包含主数据 pooled OOF（`test`，审计）和外部预测（`external_test`，主指标）。经典比较页以标签页组织总体表现、分类指标、样品预测、特征方案及参数与划分；特征方案标签由 `training_scheme.enabled` 控制，类别 Recall/Precision 分别显示热图，当前绘图版本为 `comparison-figures-v4`。
+
 2026-09-05 增量：经典多模型对比页新增批次历史、归档与绘图接口，详见 `docs/model_comparison_contract.md` 的“经典对比页与持久归档”。Run summary 新增可空 batch_id；原 Run/Batch 契约、v2 和单模型结果页保持兼容。本轮没有改动训练请求和算法。
 
 当前建模入口仅支持分类，具体六模型与 0904 特征工程见第六节。
@@ -406,7 +408,9 @@ UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-
 
 `POST /api/training/batches` 请求包含 `model_types`、`base_seed` 和通用 `config`。新产品流程遵循“一模型一个 Run”，`repeat_count` 缺省且只允许为 1，普通前端不再展示或提交重复实验次数。仓储与结果投影仍能读取既有历史 R>1 批次，但创建接口不再接受新的重复训练。Batch 为所有模型写入相同 `split_seed=base_seed`，确保在相同划分上比较。单个子 Run 失败或取消不会破坏已成功结果；Batch 聚合状态为 `queued`、`running`、`succeeded`、`partial`、`failed` 或 `cancelled`。
 
-`GET /api/training/batches/{batch_id}/comparison` 返回 `model-comparison-v1`。仅完整成功、划分 digest 和评估口径一致的子 Run 可比较；它返回 Accuracy、Balanced Accuracy、Macro-F1、Weighted-F1、Sample_ID × 模型正确率、类别 Recall 和每模型的单 Run 混淆矩阵入口。历史响应可能仍带 `repeat_stability` 兼容字段，新前端不渲染该区块。缺失值为显式缺失，不补零、不伪造 ROC/PR。
+`GET /api/training/batches/{batch_id}/comparison` 返回 `model-comparison-v1`。仅完整成功、划分 digest 和评估口径一致的子 Run 可比较；它返回 Accuracy、Balanced Accuracy、Macro-F1、Weighted-F1、Sample_ID × 模型正确率、类别 `class_recall` / `class_metrics`（含 Precision、Recall、F1、Support）和单模型混淆矩阵入口。经典页分别显示 Recall 与 Precision 热图，精确数值与 Support 可折叠查看。历史响应可能仍带 `repeat_stability` 兼容字段，新前端不渲染该区块。缺失值为显式缺失，不补零、不伪造 ROC/PR。
+
+`GET /api/training/batches/{batch_id}/predictions.xlsx` 按当前 Principal 下载两个工作表：预测类别、预测概率。接口只读取 Manifest 校验通过的成功子 Run 产物；`all_predictions.csv` 存在时按评估策略导出已生成的预测行，历史 Run 缺少该文件时才回退到 `predictions.csv` 里的测试/OOF 行，不重新预测。概率工作表每个模型单元格是按 `label_map` 数字键顺序排列的六位小数文本，列头注释说明类别顺序。
 
 ## 7. 结果页数据能力
 
@@ -419,7 +423,7 @@ UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-
 - Train/Valid/Test 三分区混淆矩阵、各类别指标和竖向预测分布。
 - 三个混淆矩阵各自提供纯前端 PNG 下载；PNG 直接由同一矩阵数据重绘，标题包含 Run、分区和聚合口径，不依赖后端截图 artifact。
 - 深度模型训练历史；传统模型不生成 `history.csv`，结果页不显示空曲线。
-- Batch 比较中的 Accuracy 排名、四项总体指标自适应图、Sample_ID × 模型正确率、类别 Recall 与单模型混淆矩阵入口。
+- Batch 比较中的四项总体指标图（默认按 Balanced Accuracy 排序）、Sample_ID × 模型正确率、类别 Recall/Precision 热图、单模型混淆矩阵与 Excel 预测导出。
 - 可解释性和模型特征图当前均为 `temporarily_hidden`，不在 Run 结果页投影或渲染。
 
 当前没有正式计算 ROC-AUC、ROC 曲线和 Precision-Recall 曲线。结果契约会返回 `available=false` 和原因；前端不得绘制空图或伪造数值。
@@ -435,6 +439,7 @@ UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-
 | `fold_metrics.csv` | 分折审计指标 |
 | `predictions.csv` | 测试预测明细 |
 | `cv_predictions.csv` | OOF/兼容预测明细 |
+| `all_predictions.csv` | 可选全量预测明细；批次 Excel 导出在 Manifest 校验后读取 |
 | `history.csv` | 深度模型训练过程，适用时 |
 | `hyperparameter_search.csv` | 传统模型参数搜索，适用时 |
 | `config.json` | 已移除服务器路径的训练配置；只在内容审查通过时公开 |

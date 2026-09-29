@@ -4,7 +4,7 @@
 
 0904 增量：可选顶层 experiment 只读取 Manifest 完整性校验通过的 feature_experiments.json；未生成时为 null。包含最佳特征方案、参数、选择指标与分数、逐折配置和七种方案的测试指标。feature_experiments.json/csv 加入公开 artifact 目录，拟合变换 joblib 与模型文件仍为私有。CNN0904 采用多类别 CrossEntropyLoss，包括二分类；旧模型契约不改写。
 
-> 最近核对：2026-08-22。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
+> 最近核对：2026-09-29。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
 
 前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。
 
@@ -249,6 +249,8 @@ ok | volatile | missing | corrupt | not_generated
 页面按钮只在 `downloadable=true` 且 URL 安全时启用。禁用时直接显示 `reason`；不提供难以理解的单一“下载全部”按钮。
 
 新 Manifest 使用显式 catalog。`model.pkl`、`model.pt`、`*.joblib`、`status.json` 和 Manifest 本身不作为结果页下载；无服务器路径的 `config.json` 可下载，含路径字段的历史配置自动禁用。
+
+`all_predictions.csv` 是可选的公开预测明细 artifact：holdout 记录由训练期的全量预测流程产生；留一法记录为 pooled OOF，每条主数据记录在自己的 test 折出现一次。留一法加独立 Test 时还包含 `dataset=external_test` 的最终模型预测行。批次预测 Excel 接口读取并核验此文件；没有该文件的历史 Run 可回退到 `predictions.csv` 中已有的测试/OOF 行。
 
 `sample_feature_importance.*`、`feature_importance.*`、`model_feature_visualization.json` 和 `dscarnet_mapping.json` 在 `TEMPORARILY_HIDDEN` 期间均不是可下载 artifact；对新旧 Manifest 的直接请求统一受控返回 404。
 

@@ -4,7 +4,7 @@
 
 ## 项目目标
 
-SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建模平台。核心流程是上传原始 CSV，做范围截取、拉曼基线校正或 HPLC 标准化预处理，生成统一建模 CSV，再选择模型训练并查看指标、混淆矩阵、预测结果和关键特征解释。
+SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建模平台。核心流程是上传原始 CSV，做范围截取、拉曼基线校正或 HPLC 标准化预处理，生成统一建模 CSV，再选择模型训练并查看指标、混淆矩阵和预测结果。可解释性实现仍保留在后端，但目前 `TEMPORARILY_HIDDEN`，不是当前产品功能。
 
 ## 当前状态
 
@@ -39,19 +39,21 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 模型与可解释性
 
-2026-09-07：按 Word 第 3、6、10.5 节恢复并接通六模型特征方案训练。`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，不再强制取消外部测试下的 CV 或覆盖自定义比例。混淆矩阵放大宽度上限仍为 640px，本次没有修改图表配色与其他页面布局。
+2026-09-07 接通的六模型特征方案训练当前仍启用：`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，外部测试可与 CV 同时使用。解释性则继续由 `TEMPORARILY_HIDDEN` 关闭；这两项能力状态不同。
 
 后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求；v2 不改。
 
 新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，v2/单模型结果页不变。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
 
-2026-09-22：对比页新增 `GET /api/training/batches/{batch_id}/predictions.xlsx`（openpyxl，两个工作表：预测类别 + 逐类概率），数据来自训练写出的 `all_predictions.csv`（holdout 为最终模型全量预测并标注 train/valid/test；CV 为 pooled OOF、划分恒为 test），历史 Run 回退 predictions.csv。对比页分类指标改为“各类别 Recall”和“各类别 Precision”两张表（`model-comparison-v1.class_metrics`），`class_recall` 与 recall 图保留给 v2 与归档。新增依赖 openpyxl（requirements 与 constraints 已同步）。
+2026-09-22：新增 `GET /api/training/batches/{batch_id}/predictions.xlsx`。预测类别表与预测概率表共用记录行；概率按 `label_map` 顺序编码为逗号分隔的六位小数文本，舍入后总和可能有微小误差。普通 CV 导出主数据 pooled OOF；CV+external Test 同时导出主数据 OOF（`test`）和外部集预测（`external_test`），后者为主指标、前者仅作审计。holdout 导出最终模型对全量记录的预测。历史 Run 无 `all_predictions.csv` 时只导出已有测试行。对比投影有 `class_metrics` 的类别 Precision/Recall/F1/Support 数据。
 
 `stratified_holdout` 以 8:1:1 为目标；`leave_one_sample_id_cv` 的主指标是全部外层 test 的 pooled OOF；`external_test_holdout` 主数据 8:2、独立数据为最终 test；`leave_one_sample_id_cv_with_external_test` 将主数据 pooled OOF 作为审计，而以全部主数据重训后的独立测试结果作为主指标。所有传统模型均以 `Sample_ID` 分组的内层 5 折 mean Balanced Accuracy 选优，normalizer/PCA/变量选择只在内层训练折拟合；深度模型使用 AdamW、学习率调度、早停和最佳 validation loss checkpoint。
 
 训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
 
 可解释性源码和未来恢复所需的模型分支仍以 `backend/app/training_explainability.py` 为准，但当前由唯一硬编码 `TEMPORARILY_HIDDEN` 开关关闭：新训练不计算、不写入、不投影也不开放直接下载相应 artifact；两套前端不渲染或请求任何解释性数据。
+
+2026-09-27：经典比较页将各类别 Recall 与 Precision 改为两张热图，精确数值与 Support 折叠查看，图像与归档均由后端 `comparison_figures.py` 生成。最新绘图版本为 `comparison-figures-v4`；比较页通过能力标签显示特征方案结果，历史缺少方案产物时不补造。v2 的比较视图与单 Run 结果页维持各自流程。
 
 - 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
 - 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
