@@ -1,8 +1,8 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v8，知识默认关闭；v1–v7 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [第八步协议](step8_guard_contract.md)。
+> 范围：本页主体记录第一步节点与恢复边界，供历史 v1 任务读取。当前新 CLI 配方任务使用 revision v7 / State v9，知识默认 off、反馈诊断默认 on；v1–v8 检查点保持原 wire 和历史摘要。后续扩展见 [第八步协议](step8_guard_contract.md) 与 [第九步诊断契约](step9_diagnosis_contract.md)；维护范围见根目录 `AGENTS.md`、`CONTEXT.md`。
 
 # LangGraph 编排节点与恢复契约
 
-当前新 CLI 任务使用 State v8 / revision v6，Guard 失败沿既有预算 terminate/reconciliation
+当前新 CLI 配方任务使用 State v9 / revision v7。Guard 失败沿既有预算 terminate/reconciliation
 路径收尾，不引入自动重规划。confirm 复核当前候选。见 [第八步协议](step8_guard_contract.md)。
 
 本文件描述 `agent_poc/orchestration/graph.py` 的实际第一步实现，图名为
@@ -130,8 +130,8 @@ scope 与凭据的 HMAC 绑定、LLM 配置摘要、API timeout 摘要，以及�
 协议版本。全部匹配才创建运行依赖和继续调用；不接受 dataset、seed、模型集合、预算
 或 Prompt/LLM 配置的静默替换。终态 next_action=null 时返回现有状态，不重新执行图。
 
-本任务的 checkpoint、当前 history、未来跨任务案例 memory 具有不同职责。未来模块
-在 State 中已完整分型，但在第一步始终 disabled/unavailable：没有 Train Evidence
+第一步历史任务的 checkpoint、history、预留的跨任务案例 memory 具有不同职责。预留模块
+在第一步 State 中已完整分型，但该历史版本始终 disabled/unavailable：没有 Train Evidence
 统计、配方目录、知识匹配、案例召回/发布、搜索、科研 Guard、诊断、重规划、候选
 不确定性或统一多维预算算法。当前 guard 只记录已有契约/动作/Manifest/选择指标检查。
 
@@ -159,10 +159,10 @@ v4 沿用相同节点与 HTTP Client。prepare/session 只绑定后端已冻结�
 新 v4 在调用 journal 的同一事务中保存计量与经校验的安全提案（proposal_json），不保存原始模型响应。checkpoint 尚未落盘时，以 operation_id 与完整选择上下文摘要校验后回放；已确认记录缺失或损坏提案时明确停为 needs_attention，不重复调用。旧 v1/v2/v3 的 journal 行不补写提案，恢复行为保持原样。
 
 
-## 第九步反馈诊断（开发候选）
+## 第九步反馈诊断（当前配方任务）
 
 新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
 诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
 失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
 详见 [第九步诊断契约](step9_diagnosis_contract.md)。
-本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
+当前主线已包含该协议；具体服务版本需按部署核对。模型目录有 14 个目标、13 个实现，DSCARNet 已退役，CNN-Mamba 未实现；其余模型的 `available` 还取决于运行环境。
