@@ -12,7 +12,7 @@
 #   边界，不影响后端兼容训练能力。
 #
 # 关键设计约束：
-#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的十项；
+#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的六项；
 #     可选依赖（mamba-ssm、aggmap）缺失时只标 available=false，
 #     绝不用近似实现静默顶替。
 #   - capability 探测运行在 Web 请求路径上，必须廉价：只查文件存在性与
@@ -46,7 +46,7 @@ from ..version import WEB_CONTRACTS, WORKER_CONTRACT_VERSION
 router = APIRouter()
 
 # 顺序同时决定前端目录的稳定展示顺序；新增模型需同步 registry 与契约测试。
-# 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族) 三元组。
+# 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族, ui_visible) 四元组。
 _MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml", True),
     ("spls_da", "sPLS-DA", "traditional_ml", False),

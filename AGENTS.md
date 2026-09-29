@@ -1,6 +1,6 @@
 # SpecAutoAI Agent 工作规则
 
-当前实现核对日期：2026-09-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
+当前实现核对日期：2026-09-29。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
 
 ## 默认协作规则
 
@@ -74,7 +74,8 @@
 - 多模型进度按 Batch 及子 Run 恢复，刷新后不能丢失其他模型或只显示某个单 Run；保留方案、外层折、搜索或 epoch 的真实进度。停止后重置当前训练面板、停止轮询与自动跳转；停止/删除只清理目标 Run 或 Batch 的产物与归档，不影响其他任务。
 - 最佳配置、逐折参数、留出样品和实际划分数量按需展开。`feature_experiments.json/csv` 经 Manifest 校验后可投影和下载；普通留一法不虚构全局最佳星号。
 - 模型比较必须核对主/独立数据快照、评估与聚合口径、划分 digest、测试样品集合及标签映射一致，且来源产物通过 Manifest 校验；不一致则说明不可比较，不生成排行或热图。缺失、不适用、部分完成和失败保留原因，不填零，不自动重训历史 Run。
-- 经典比较页使用 `static/js/comparison-page.js/css` 和后端 `comparison_figures.py`；图像展示及 PNG/SVG 导出复用同一绘图函数，CSV 与 ZIP 对应同一数据。特征热图为七方案 × 所选模型，默认 Balanced Accuracy，可切换 Accuracy、Macro-F1、Weighted-F1；选优标记只来自验证/CV。
+- 经典比较页使用 `static/js/comparison-page.js/css` 和后端 `comparison_figures.py`；图像展示及 PNG/SVG 导出复用同一绘图函数，CSV 与 ZIP 对应同一数据。特征热图为七方案 × 所选模型，默认 Balanced Accuracy，可切换 Accuracy、Macro-F1、Weighted-F1；选优标记只来自验证/CV。类别 Recall 与 Precision 热图分别读取对应投影字段，精确数值与 Support 可展开查看；当前图集绘图版本为 `comparison-figures-v4`。
+- `GET /api/training/batches/{batch_id}/predictions.xlsx` 导出预测类别与预测概率两个工作表。概率按 `label_map` 顺序写为逗号分隔六位小数文本，舍入后不保证总和严格等于 1。普通留一法导出主数据 pooled OOF；留一法加独立 Test 同时导出主数据 OOF（`test`）和外部预测（`external_test`），其中外部 Test 是主指标、OOF 仅为审计。缺少新全量明细的历史 Run 仅回退导出现有测试预测，不重算或补造。
 - 批次归档支持自动保存和幂等补建，历史比较从训练记录的“查看所属对比”进入；已有真实产物但图集过期或缺图时可原子补建派生归档，缺少训练产物时不补造数据。部分失败只保存可比较结果；归档失败不改写成功 Run，停止/删除阻止迟到归档发布。下载沿用 Principal、Manifest 与公开文件白名单。
 - `GET /api/training/runs?projection=summary` 可返回 `batch_id` 和可空 `test_macro_f1`。仅成功且 Manifest 完整、指标文件通过大小/SHA-256 校验时读取：普通留一法取 pooled OOF，holdout 及留一法加独立 Test 取 direct Test；不能回退为 fold mean，缺失或不一致时返回 `null`。
 - 新 Manifest 使用显式 catalog 与 SHA-256/大小校验；`model.pkl`、`model.pt`、joblib 和 `status.json` 不属于新结果页公开下载。`config.json` 只有在不含服务器路径时才可下载。传统模型不生成或展示 epoch history；当前无正式 ROC-AUC、ROC 或 Precision-Recall 产物，不伪造指标或空图。
