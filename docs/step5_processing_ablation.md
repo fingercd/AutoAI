@@ -1,8 +1,10 @@
 # 第五步处理消融：预注册与离线 Test
 
+> 本页记录第五步消融协议和历史命令，不代表当前主线只停留在第五步。当前新 CLI 配方任务为 revision v7 / State v9；维护与运行边界见根目录 `AGENTS.md`、`CONTEXT.md`。实验产物隔离只指同一 Pan 项目内独立的 storage/队列与输出目录，不要求另建可开发仓库、分支或 worktree。
+
 脚本入口为 `python -m scripts.agent_ablation`。在隔离的后端 storage/队列和同版本 Web、worker 上执行；认证仅通过运行环境注入。先检查 10 个上传数据集的内容 SHA-256、模型参数、LLM 模型及 tokenizer，然后生成预注册 JSON。`register-processing` 会在任何决策前冻结 40 行及其摘要，重复注册同一 ID 会拒绝。
 
-预注册 JSON 顶层包含 `tasks`（10 个 `{task_id,dataset_id,dataset_sha256}`）、`model_pools`（`ML` 与 `DL`，合起来恰好覆盖 13 个可执行模型）、`fixed_processing`（每模型一组合法 normalization/class_balance）、`seed: 42`、`repeat` 和 `conditions`。`conditions` 必须是 `backend_binding`、`scope_binding`、`llm_binding`、`model_configs_digest` 四个 SHA-256 摘要。摘要分别使用脚本的 `digest`、`LLMConfig.fingerprint()` 与冻结配置计算，不能填明文 token。数据集 ID 需属于实际运行的隔离后端。
+预注册 JSON 顶层包含 `tasks`（10 个 `{task_id,dataset_id,dataset_sha256}`）、`model_pools`（`ML` 与 `DL`，合起来覆盖代码登记的 13 个已实现模型；实际 `available` 仍取决于运行环境）、`fixed_processing`（每模型一组合法 normalization/class_balance）、`seed: 42`、`repeat` 和 `conditions`。`conditions` 必须是 `backend_binding`、`scope_binding`、`llm_binding`、`model_configs_digest` 四个 SHA-256 摘要。摘要分别使用脚本的 `digest`、`LLMConfig.fingerprint()` 与冻结配置计算，不能填明文 token。数据集 ID 需属于实际运行的隔离后端。
 
 ```text
 python -m scripts.agent_ablation register-processing --config work/step5/registration.json --storage work/step5/records --experiment-id step5-processing

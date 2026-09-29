@@ -1,5 +1,7 @@
 # 建模结果接口契约（run-result-v1）
 
+> 当前新 CLI Agent 配方任务为 revision v7 / State v9；Agent 固定工具与后端生成的输入不含 Test。本文是 Principal 授权下的人类结果页接口，不能把它的 Test 字段当作 Agent Observation。本次文档核对不改变 `run-result-v1`、Test 权限或页面功能。维护范围见根目录 [AGENTS.md](../AGENTS.md)、[CONTEXT.md](../CONTEXT.md)。
+
 新 Run 发布增加 Guard 报告与 succeeded 同事务关联；结果页 wire 不变。
 历史 succeeded/selected 事实与当前 Agent 候选资格分开，见 [第八步协议](step8_guard_contract.md)。
 
@@ -216,7 +218,7 @@ weighted_f1
 }
 ```
 
-这里仅提供单样品解释的安全摘要。完整 JSON/CSV 由 `artifacts[]` 下载；单样品文件可能较大，前端应在用户明确点击后再懒加载，加载完成后才在本地切换样品，不能把全部内容重复塞入首屏结果响应。新 Run 不生成或投影全局重要性。
+这里仅提供单样品解释的安全摘要。完整 JSON/CSV 由 `artifacts[]` 下载；当前经典页与 v2 工作台在摘要 ready 且 JSON artifact 可下载时自动加载一次，加载完成后在本地切换样品，不能把全部内容重复塞入首屏结果响应。新 Run 不生成或投影全局重要性。
 
 ## Artifact 描述
 

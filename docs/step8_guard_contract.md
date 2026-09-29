@@ -1,11 +1,13 @@
 # 第八步训练检查协议
 
-本地工程实现，待架构独立验收。检查事实由 `backend/app/runs/guard.py` 聚合，
+> 本页记录 revision v6 / State v8 引入的 Guard，供历史任务按原协议读取。第七、八步已经发布；当前新 CLI 配方任务使用 revision v7 / State v9，Guard 默认 on、反馈诊断默认 on，知识默认 off。维护范围见根目录 `AGENTS.md`、`CONTEXT.md`。
+
+检查事实由 `backend/app/runs/guard.py` 聚合，
 共享 `training.prepare_training_inputs` 返回的实际数组和划分；不创建第二套训练算法或用量账本。
 
 ## 版本与开关
 
-新配方任务采用 `agent-recipes-revision-v6`、`agent-state-v8`，保留 Observation v2。
+第八步首次采用 `agent-recipes-revision-v6`、`agent-state-v8`，保留 Observation v2；当前新任务的 v7/v9 继续保留 Guard。
 `extensions.guard` 为严格的 `agent-guard-projection-v1`，仅含报告引用、阶段、状态、
 资格和有限检查原因；不含 Test 数值、样品、路径、原异常或预算数量。
 旧 revision/checkpoint 按原 wire 读取，缺报告不补造历史 passed。
@@ -88,5 +90,5 @@ Finalize 与应用删除共享按 Run 的跨进程文件锁；Finalize/terminate
 定向测试在 `test_step8_guard.py`、`test_step8_guard_integration.py`、
 `test_step8_failures.py`、`test_step8_selection_safety.py`、`agent_poc/tests/test_step8_graph.py`，并运行整个 backend/agent 测试集。
 故障注入与真实模型/真实监督证据分开记录；确定性 provider 不代表真实 LLM。
-Windows Job Object 专项必须在 Windows 实际运行。Linux 监督沿既有平台边界，
-服务器恢复后另验，S7-S01–S7-S08 不因此关闭。
+Windows Job Object 专项必须在 Windows 实际运行。Linux 监督沿既有平台边界；
+第七、八步发布状态与专项验收证据应分别记录，不能据文档推断具体服务器的运行结果。

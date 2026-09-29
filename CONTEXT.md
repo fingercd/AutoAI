@@ -1,138 +1,55 @@
-# SpecAutoAI 项目入口
+# Pan 当前实现与发布状态
 
-## 项目目标
+## 核对基准
 
-SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动建模平台。核心流程是上传原始 CSV，做范围截取、拉曼基线校正或 HPLC 标准化预处理，生成统一建模 CSV，再选择模型训练并查看指标、混淆矩阵、预测结果和关键特征解释。
+最近核对：2026-09-29。本次为文档统一及闲置开发副本清理，业务源码和现有服务不变。
 
-## 当前状态
+| 项目 | 当前状态 |
+|---|---|
+| 唯一开发目录 | `/users/fotile/AutoAI/Pan` |
+| 开发主线 | `pan/agent`；不创建或切换到其他开发分支 |
+| 源码基准 | `019f1cc673f9f289419e4ec1e68204659d94e34b` |
+| 发布目录 | `/users/fotile/AutoAI/step78/current` 指向同一 SHA 的 release |
+| 服务控制器来源 | 固定 release `fcea2b1555a8d3f5d4f815494e46771839fe8336`，不随 current 改变 |
+| 新配方任务 | `agent-recipes-revision-v7` / `agent-state-v9`，反馈诊断默认启用 |
+| 执行范围 | 同一 recipe Session 为 `max_runs=1`；诊断建议不执行 |
+| worker 合同 | `training-worker-guard-v1` |
+| 候选历史 | `2699a55` 的第5/6步研究补充、`56108ee` 的第十步候选未合入；归档供参考，不作为当前功能 |
 
-- 第八步训练检查：新任务为 State v8 / recipes revision v6，Guard on/off 仅控制额外准入；worker、发布和候选完整性始终检查。当前 worker 合同为 `training-worker-guard-v1`。见 `docs/step8_guard_contract.md`，待架构独立验收。
+GitHub 的 `master` 和其他现有分支保留，但日常开发只使用上述服务器主线。本次已删除未被工作树使用的 py/step4-old-head 引用；跨节点进程核验未完成的10个工作树及 development 链接暂保留，禁止继续作为开发入口。临时分支/副本清理清单和归档记录保存在 `work/maintenance-20260929/`，其文件不进入 Git。发布快照、历史 Agent 参考库和运行资源不作为新开发入口。
 
-- 后端使用 FastAPI，前端静态页面由后端一起托管。
-- 公共启动器是 `run.py`；本地使用 `run_classic.py` 打开经典前端，使用 `run_v2.py` 打开 v2 工作台。
-- 主要代码在 `backend/` 和 `static/`；经典前端为 `static/index.html`，并行 v2 工作台为 `static/v2/index.html`。
-- 快速回归在 `backend/tests/test_smoke.py`；Run 结果、artifact、安全、前端纯函数和迁移另有专项测试，交付时运行整个 `backend/tests`。
-- 正式产品包含经典前端与 v2 独立工作台。两者均使用原生 Hash 路由、共享 `static/js/api-client.js`、同一 FastAPI API 与 `run-result-v1`；v2 不覆盖经典入口。
-- 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
-- `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是 `run-result-v1` 结果结构；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
-- HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
-- 默认 local 模式只面向本机；server 模式必须配置 `AUTOAI_DEPLOYMENT_MODE=server` 与至少 32 字符的 `AUTOAI_API_TOKEN`，Bearer 身份只经服务端 Principal 注入。
-- server CORS 只接受 `AUTOAI_ALLOWED_ORIGINS` 的明确来源，禁止 `*`；浏览器令牌只进当前标签页 sessionStorage。
-- server Principal 只能访问同 owner/tenant 的 Dataset 与 Run；历史 owner 为空 Run 默认不可见，使用显式 migration dry-run/rebind。
-- Run 状态转换由 SQLite 事务、claim token 和 lease 控制；本机 worker 可用 `python -m backend.app.runs.worker` 独立启动。
-- `run.py` 默认托管 worker，并在意外退出时有限退避重启；`/health` 返回 Web 契约版本与匿名 worker 心跳/兼容性摘要。活跃旧 Worker 会使创建训练返回 503，避免新 Web 被旧 Worker 抢占任务。
-- 独立结果页使用 `#/results?run_id=...`，刷新后从 `GET /api/training/runs/{run_id}/result` 恢复。
-- `run-result-v1` 明确区分 direct、pooled OOF、fold mean 与 fold std；`analysis.splits.train/valid/test` 提供三分区混淆矩阵、分类报告和预测分布。传统模型不生成或展示 epoch history。
-- Run 成功前必须提交 Manifest；新 Manifest 使用显式 catalog 和 SHA-256/大小校验。模型 pickle/PT 和 joblib 私有；无路径 `config.json` 才可下载。
-- Agent API 已冻结为 `agent-session-v1`，Observation 为 `agent-observation-v1`。人工训练与 Agent 实验共用 `RunSubmissionService`；Agent reservation、幂等键和预算状态持久化在独立 `agent.sqlite3`，Runs DB 使用内部 durable submission mapping 原子关联 reservation 与 Run，并由显式 Principal-scoped reconciliation 恢复崩溃窗口；Test 数据不进入 Observation、Session 或对账响应。
+## 项目与阶段
 
-## 预处理与接口事实
+Pan 以既有光谱/HPLC 分类训练后端为基础开发小样本训练 Agent。用户确认的开发顺序为 State 闭环、全模型接口、证据与有限配方、领域先验、动态处理、有界搜索、统一预算、训练检查、反馈诊断、有限重规划、不确定性与停止、案例记忆、固定评测与消融。
 
-- 新预处理统一输出 `wide-feature-v2`：前四列固定为 `Index, Label, Sample_ID, Name`，`Name` 写入原始文件名，第 5 列起的列名是 float64 可往返的真实 `XXX` 坐标，单元格是标量 `Intensity`。坐标必须有限、唯一、严格递增，强度必须有限；预处理强度最多保留 5 位小数且不自适应降精度。训练读取继续兼容没有 `Name` 的 `wide-feature-v1`。
-- 所有曲线必须共享表头表示的公共轴，主数据集与独立测试集也必须逐点同轴。旧六列数组/JSON、`linspace-v1`、`linspace-slice-v1` 文件不再可训练，也不自动迁移。
-- Excel 总列数上限为 16,384，v2 扣除四个元数据列后最多 16,380 个特征。`output_precision` 固定报告 `format=wide-feature-v2`、`xxx_encoding=column_headers`、`xxx_precision=float64-roundtrip`、强度位数、特征/总列数和 Excel 兼容性。
-- 拉曼预处理支持 `range_mode=row/x_value` 和 `baseline_method`，默认 `arPLS`；处理顺序固定为先选择范围，再执行基线校正。
-- HPLC 固定轴由 `HplcGridConfig` 配置，覆盖 0–50 分钟，点数来自当前批次检测出的公共点数。选择文件后逐一显示原文件名、点数、时间范围和状态；任意一致且不少于 2 的点数均可处理。不一致时以唯一众数为期望值，列出异常文件及实际点数后拒绝；没有唯一众数时列出全部点数组。行号为 1 基、首尾包含，终止行留空时使用动态完整点数。
-- HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，但多文件所选轴必须完全一致，否则拒绝导出。均不消负或做面积归一化。
-- HPLC 的实际目标/原始公共轴逐点写入宽表特征表头；`common_time`/`hplc_axis` 继续描述预览所用的真实轴。成功请求只生成一个宽表建模 CSV 并只返回主 `download_url`；不生成逐点 `_xxx.csv`，也不返回 `xxx_download_url`/`xxx_rows`。
-- `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
-- server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
+当前主线包含第1至第9步的实现及收尾修复。第十步候选未合入，第11至第13步不在此宣称完成；实现存在不等于已获得论文效果证据。早期 `AutoAI_开发计划.md` 和 `docs/plans/` 只作历史材料，不替代当前顺序和操作规则。
 
-## 模型与可解释性
+## 当前 Agent 行为
 
-分类模型 v2 的权威目标为 **14 个目标分类模型**：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`、`cnn_mamba1d`。当前仅支持分类；`Sample_ID` 是样品分组的规范字段。新 Run 写入 `architecture_version="docx-classification-v2"`，旧模型权重和 artifact 只读兼容。
+- CLI 使用 `python -m agent_poc.orchestration start/resume/status`，通过 Agent v2 的冻结能力和合法配方调用现有后端；旧 v1、旧 revision 和 `direct_action` 按各自协议读取/恢复。
+- 新配方任务默认 `processing-mode=fixed`、`search-mode=fixed`、`knowledge=off`、`fail-fast-guard=on`；反馈诊断默认启用。当前默认预算感知为 on，可显式选择 off，硬预算与给 LLM 展示预算是不同概念。完整参数以 [CLI/State 契约](docs/langgraph_state_contract.md) 为准。
+- Session 冻结数据指纹、按 Sample_ID 的评估计划、Train-only 证据、模型配置、配方、知识及预算。新配方请求使用当前规定的 grouped holdout；不要将人工训练的其他评估入口当成 Agent 已开放能力。
+- 人工训练与 Agent 共用 Run 提交和 worker 执行；HTTP 只创建 queued Run，BackgroundTasks 不执行训练。Agent 账本与 Runs 数据库通过持久映射和显式 reconciliation 恢复崩溃窗口。
+- Agent 只能使用规定工具与后端生成的输入。Observation、Session、诊断和选择不提供 Test；通用结果页/API 仍按既定权限显示 Train/Valid/Test。本次不增加 Test 计算或开放时间门禁。
+- 第九步用同源 Train/Valid 审计和 Guard 证据生成解释及只读建议；不产生第二个 Run。失败先确认后端关闭再解释，成功诊断后沿原 Finalize 流程收尾，终态历史读取不新增网络调用。
+- 预算预约、实际消耗、失败/修复/重试和 unknown/held 持久记录；Linux 与 Windows 的既有进程监督实现保留。
 
-14 个目标模型是 catalog 契约，不表示每个依赖在本机都可用。`cnn_mamba1d` 在当前 Windows Conda 环境中因 `mamba-ssm` 依赖不可用而禁用并跳过训练验收；不得回退成近似模型。DSCARNet 已退役，新请求及别名均被拒绝；二分类深度模型使用单 logit + `BCEWithLogitsLoss`。
+## 数据、模型与结果
 
-`stratified_holdout` 以 8:1:1 为目标；当 10% 的组数不足以覆盖全部类别时，Valid/Test 自动提高到每类至少 1 个 `Sample_ID`，Train 同样保留全部类别，因此每类至少需要 3 个不同 `Sample_ID`，不足时明确拒绝。`leave_one_sample_id_cv` 的外层 test 留一个 `Sample_ID`，其余按 8:2 分 train/valid；`external_test_holdout` 主数据 8:2、独立数据为唯一 test，禁止 CV。交叉验证测试集的 Precision、Recall 和 Macro F1 以全部折 OOF 预测合并后计算，逐折均值/标准差只作审计。传统模型按 valid balanced accuracy 选优，再以 train+valid 重训；深度模型统一 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+现有业务数据合同保持不变：新预处理输出 `wide-feature-v2`，前四列 `Index,Label,Sample_ID,Name`，其后为真实、有限、唯一、严格递增的数值坐标；读取兼容没有 Name 的 v1。曲线共享轴、独立测试同轴、同组标签一致和当前重复次数约束继续执行。拉曼先截取再基线校正；HPLC 使用批次公共点数、0–50 分钟目标轴和既有插值规则。详细内容见 [README](README.md#建模-csv) 与 [前后端契约](docs/frontend_backend_handoff.md)。
 
-训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
+核对时能力目录注册14个目标，其中13个有训练实现；实际可用性还取决于环境依赖。DSCARNet 已退役，新请求和别名被拒绝，历史产物按权限和完整性规则只读；Mamba 当前不可用，不做近似替代。模型能力以代码目录和 `GET /api/models` 为准。
 
-解释性矩阵以 `backend/app/training_explainability.py` 为准：六个传统模型及 `pca_mlp`、`cnn_transformer1d`、未来可用的 `cnn_mamba1d` 使用真实类别 Log-loss 窗口遮挡；`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d` 使用 1D Grad-CAM，并保留输入梯度 sanity check；历史 `dscarnet` 的 SAR/CAR/dual 解释产物保持只读兼容。旧 artifact 名保持兼容。
+人工分类支持 grouped holdout、按 Sample_ID 留一 CV、外部测试 holdout；Agent 请求范围单独按其协议执行。传统搜索通常按 Valid balanced accuracy、RF 按 OOB 选优；传统最终 Train+Valid 重训与选参阶段区别记录。深度模型保留既有 Valid loss 最佳权重规则。这里描述现状，不新增搜索或评估整改。
 
-- 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
-- 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
-- 六个传统模型：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`。
-- 当前七个可训练深度模型：`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`；`transformer1d` 是 `cnn_transformer1d` 的兼容别名。
-- 模型 profile 同时按训练样本数 N 和特征数 L 分档：N 为 `<=100`、`101-299`、`>=300`；L 为 `<=1000`、`1001-2999`、`>=3000`。模型输入范围会另行给出警告，但不会把警告阈值误当成 profile 分档。
-- 分类评估支持三种口径：`stratified_holdout` 为无独立测试集时以 8:1:1 为目标划分 train/valid/test，并强制三个集合都包含全部类别；Valid/Test 的每类 1 个 `Sample_ID` 是高于比例的硬下限。`leave_one_sample_id_cv` 为无独立测试集时按 `Sample_ID` 留一作 test，其余按 8:2 划分 train/valid；`external_test_holdout` 为有独立测试集时主数据 8:2 划分 train/valid、独立测试集作最终 test。每个口径都只用当前训练集拟合标准化、调参、PCA 或 early stopping。
-- 窗口遮挡的重要性为 `masked_loss - original_loss = log(p_before / p_after)`；请求窗口数会解析为最接近且能整除特征数的等宽窗口数。
-- 新训练只生成并展示 `sample_feature_importance.json/csv`：样品曲线、第一重要红色区间、下方热力条、中文色标和 Top 区间，不再生成全局重要性。历史 `feature_importance.json/csv` 仅保留原 Manifest、Principal 和完整性约束下的直接下载兼容，不进入新 catalog 或结果页。
-- 历史 DSCARNet 的 AggMap/PCA SAR/CAR 2D 结果可能包含 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。
-- 当前没有正式 ROC-AUC、ROC 曲线或 Precision-Recall 曲线产物；结果 API 明确返回 unavailable，前端不绘制虚假图表。
-- 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。
+结果接口为 `run-result-v1`。CV 主测试指标取 pooled OOF，fold mean/std 作为审计。新训练生成单样品解释，历史全局解释按原 Manifest 只读。模型权重和内部 joblib 不在公开下载白名单；当前没有正式 ROC/AUC/PR 产物，不绘制虚假图表。
 
-## 运行方式
+## 运行与维护入口
 
-推荐本机启动：
+FastAPI 托管经典前端和 v2 工作台；`run.py` 为公共启动器，另有 `run_classic.py` 和 `run_v2.py`。当前服务器实例使用独立 release 与持久 storage，现场启动/停止须按 [部署说明](deploy/server_deploy.md) 和 [服务控制契约](docs/service_control.md) 操作，不直接在开发目录另启生产进程。
 
-```powershell
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_classic.py
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_v2.py
-```
+server 模式使用服务端 Principal、Bearer 认证和明确 CORS；浏览器 token 只进标签页 sessionStorage。身份、数据完整性、Manifest 和 worker 兼容性检查继续有效。
 
-二选一运行即可；两者共享端口、后端和 worker，不能同时占用默认 `8000` 端口。服务已启动时直接访问 `/` 与 `/v2` 切换。
+知识开启时使用冻结的正文向量 Top-3 检索，目前发布材料为5张有来源的知识卡；knowledge-off 不加载 embedding。生产知识调用仍须配置实际 tokenizer/context window，整卡裁剪、来源绑定和恢复规则见 [Agent 配方契约](docs/agent_step2_contract.md)。本次没有运行新的知识效果实验。
 
-等效手动启动：
-
-```powershell
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
-
-打开：
-
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/v2`
-- `http://127.0.0.1:8000/#/results?run_id=<Run ID>`
-- `http://127.0.0.1:8000/static/v2/index.html#/results?run_id=<Run ID>`
-- `http://127.0.0.1:8000/#/runs`
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/health`
-
-对外部署必须使用 `python run.py --server --host 0.0.0.0 --no-browser`，并由环境安全注入 token。SSH tunnel + `127.0.0.1` 可继续使用 local 模式。
-
-## 验证方式
-
-```powershell
-Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
-$env:PYTHONPATH='D:\PythonProject\AutoAI'
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
-node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
-```
-
-前端 JS 改动后，优先抽取 `static/index.html` 的内联 `<script>` 再用 Node 检查；不要直接 `node --check static/index.html`。没有 Playwright 时不要强行引入新依赖。
-
-## 不要碰
-
-- 不要删除用户上传数据、模型参考目录、截图或 zip；需要清理时先列清单。
-- 不要读取或输出密钥、token、`.env`。
-- 不要把 `.omc/state/`、缓存、模型权重、大数据加入 git。
-- 不要把 UI 方案、后端接口和训练逻辑混在一次大改里。
-
-## 维护提醒
-
-- 后续如要开放 DSCARNet joblib 下载，需要先扩展 artifact 白名单并补路径安全测试。
-- 直接使用 uvicorn 不会启动训练 worker；本地一键入口 `run.py` 默认同时启动二者。
-- 服务器升级前先备份 `storage/`；历史绑定先执行 `python -m backend.app.runs.migration --dry-run --owner-id ... --tenant-id ... --rebind-unowned`，确认后去掉 `--dry-run`。
-
-
-## 第四步知识协议
-
-新 CLI 配方任务使用 agent-state-v4 / agent-recipes-revision-v2，唯一知识开关为 module_policy.knowledge，CLI --knowledge 默认 off。新开启任务使用 knowledge-snapshot-rag-v1 / body-cosine-topk-v1：固定 BAAI/bge-small-zh-v1.5，只编码短卡正文；Train Evidence 模板或显式 user_text 查询进行一次精确 Top-3 检索。发布包、查询、结果、投影及来源绑定随 Session 冻结；知识引用独立记录，不改变 recipe/catalog/scientific digest 或训练执行。恢复只消费已有快照，不加载最新知识；旧 knowledge-snapshot-v1 保留原摘要只读兼容。v1/v2/v3 wire、幂等及启动摘要保留，详细规则见 docs/agent_step2_contract.md。
-
-当前正式材料只有 5 张来源卡，20–50 张规模与冻结人工检索质量尚未验收；tau 未启用，无关查询也可能返回卡片。knowledge-off 无需加载 Embedding；on 的发布或模型故障明确失败。生产调用应配置实际 LLM tokenizer 与上下文窗口，整卡减少后仍超限则失败；tokenizer 库必须支持所用模型的文件格式，可将 BGE 服务依赖与 LLM 客户端依赖隔离。真实对照使用原 scripts/agent_ablation.py，失败保留分母，指标仅在 Finalize 后离线读取。
-
-## 第四步 RAG 启动预算补修（2026-09-19）
-
-新 RAG on 在创建 Session 前必须通过本地 tokenizer 与 context window 校验；CLI 的 `--llm-tokenizer` / `--llm-context-window` 或对应环境变量不得同时缺失。旧检查点解码、配置指纹和恢复保持原契约。整卡裁剪、引用范围、实际展示上下文和 journal 摘要继续使用现有实现。原 40 次实验显式配置预算，源码绑定保留，不因本次启动校验重跑。正式知识仍为 5 张，20–50 张规模与人工相关性验收未完成。
-
-
-## 第九步反馈诊断（开发候选）
-
-新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
-诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
-失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
-详见 [第九步诊断契约](docs/step9_diagnosis_contract.md)。
-本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
+所有开发 Git 操作先遵守 [AGENTS](AGENTS.md) 的目录与分支核对；提交/推送规则见 [发布规范](docs/github_publish_policy.md)。修改文档检查差异、事实和链接，不自动运行训练或重启服务。其它验证按实际改动选择，不能将某台开发机的绝对路径当作服务器命令。

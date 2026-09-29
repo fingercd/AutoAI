@@ -1,6 +1,6 @@
 # 第五至八步迁移后的历史 Manifest 读取
 
-此修复基于已部署的 39743e4，属于迁移收尾，不包含第九步诊断实现。
+> 本页仅定义旧 Manifest 的只读识别与下载边界。修复起点是已部署的 39743e4；当前主线 019f1cc 已包含第九步诊断，但不把新写入格式扩大为旧格式。本次文档核对不改变 Test 权限、写入格式或下载功能。维护范围见根目录 [AGENTS.md](../AGENTS.md)、[CONTEXT.md](../CONTEXT.md)。
 
 历史格式来自 2026-09-13 保全的 `uncommitted-code.tar.gz`：
 `backend/app/records/writer.py` 写入六位序号的 `details/<collection>/*.json`

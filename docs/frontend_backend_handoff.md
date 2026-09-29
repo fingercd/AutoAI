@@ -1,6 +1,6 @@
 # SpecAutoAI 前后端接口契约
 
-> 最近核对：2026-07-17。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
+> 2026-09-29 对照主线 019f1cc 核对。本文记录 FastAPI + 静态前端的稳定接口、状态和下载边界；Agent 当前为 revision v7 / State v9，知识默认 off、反馈诊断默认 on。本次文档核对不改变前后端功能或 Test 权限。实现与自动化测试优先于历史计划；维护与运行边界见根目录 [AGENTS.md](../AGENTS.md)、[CONTEXT.md](../CONTEXT.md)。
 
 ## 1. 当前架构
 
@@ -379,7 +379,7 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 能力目录固定公开 **14 个目标分类模型**。当前仅支持分类；`Label` 即使为数字也按类别处理。
 
-当前通常可训练 14 项；`cnn_mamba1d` 因依赖不可用返回 `available=false`，不得静默替换。新 Run 使用 `architecture_version="docx-classification-v2"`。
+14 个目标中有 13 个已实现；`cnn_mamba1d` 在当前架构版本未实现，返回 `available=false`，不得静默替换。其余 13 个模型的 `available` 还取决于服务进程的依赖探测，不能保证环境均可训练。新 Run 使用 `architecture_version="docx-classification-v2"`。
 
 评估方式：
 
@@ -491,11 +491,10 @@ Hash 页面：
 
 ## 11. 验证
 
-```powershell
-Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
-$env:PYTHONPATH='D:\PythonProject\AutoAI'
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
-& 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
+```bash
+cd /users/fotile/AutoAI/Pan
+python -m pytest backend/tests -q
+python -m compileall backend/app -q
 ```
 
 前端脚本还必须执行 Node 语法检查和纯函数测试。项目根目录存在本地 `data.csv` 时，使用轻量模型完成上传 → queued → worker → succeeded → 结果 URL → 刷新 → 下载的真实闭环；数据、Run 目录和模型产物不得提交进 Git。

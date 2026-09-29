@@ -1,5 +1,7 @@
 # Linux release 控制入口
 
+> 2026-09-29 核对：现行控制器契约。开发只在服务器 Pan 的 pan/agent，遵循 [AGENTS](../AGENTS.md)；release 是不可变运行快照，不是开发分支。现场路径见 [部署说明](../deploy/server_deploy.md)。
+
 `scripts.service_control.Controller` 是正式控制实现。现场适配器仅提供 Config
 和 `environment(release)` 回调；回调通过既有私密配置注入环境，不能将环境、
 token 或认证文件内容输出到日志。控制器只使用标准库，不导入训练实现。
@@ -34,7 +36,7 @@ start 幂等：运行中必须同 release 且健康，不能静默切换代码�
 training-worker-guard-v1 且只有一个 live worker。失败保留已启动进程身份，
 先 status 再按相同安全入口 stop。timeout 参数是上界，不是强杀许可。
 
-发布先核对远端并验收独立分支，再取得最新一致性三库及文件备份并恢复检查。
+发布先在服务器 Pan 根目录核对 pan/agent 远端并验收该主线版本，不创建独立开发分支；再取得最新一致性三库及文件备份并恢复检查。
 排空停止后只切 current；启动验收失败时仍用此控制器停止，切回旧代码，
 保留当前 storage 和发布后新数据。禁止用旧数据库覆盖当前生产。
 

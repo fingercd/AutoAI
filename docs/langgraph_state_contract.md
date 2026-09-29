@@ -1,15 +1,15 @@
-> 版本说明：本页原 v1 契约作为兼容基线保留。新 CLI 任务采用训练证据配方 profile 与 agent-state-v8，知识默认关闭；v1–v7 检查点保持原 wire 和历史摘要。当前扩展与恢复分派见 [第八步协议](step8_guard_contract.md)。
+> 范围：本页主体记录第一步 State 的字段和冻结规则，供历史 v1 任务读取。当前新 CLI 配方任务使用 revision v7 / State v9，知识默认 off、反馈诊断默认 on；v1–v8 检查点保持原 wire 和历史摘要。后续扩展见 [第八步协议](step8_guard_contract.md) 与 [第九步诊断契约](step9_diagnosis_contract.md)；维护范围见根目录 `AGENTS.md`、`CONTEXT.md`。
 
 # LangGraph 任务 State 契约
 
-当前新 CLI 任务使用 State v8 / revision v6；Guard 报告按 report_id 追加事实。
-旧 State v1–v7 保持原 wire 与指纹，详见 [第八步协议](step8_guard_contract.md)。
+当前新 CLI 配方任务使用 State v9 / revision v7；Guard 报告按 report_id 追加事实。
+旧 State v1–v8 保持原 wire 与指纹，详见 [第八步协议](step8_guard_contract.md)。
 
 第一步协议：`agent-state-v1`，图协议：`agent-single-experiment-v1`。实现位于
 `agent_poc/orchestration/state.py`。本协议执行一个科学实验；完整 State 为后续模块保留
 严格类型，但不表示 Evidence、配方、知识、案例、搜索、诊断、重规划或统一预算已实现。
 
-当前上下文投影为 `agent-context-step1-v1`，Prompt 为 `agent-decision-step1-v2`，
+第一步历史上下文投影为 `agent-context-step1-v1`，Prompt 为 `agent-decision-step1-v2`，
 LLM HTTP 配置为 `agent-llm-http-v1`。运行入口在恢复前核对这三个实际实现版本。
 
 ## 序列化与可用性
@@ -158,8 +158,8 @@ SQLite checkpoint 是单机持久化，不是多机 HA，也不是跨任务案�
 当成已经验证可用的服务。本入口不安装模型、不自动启动服务器模型服务。
 
 依赖安装使用 `agent_poc/requirements.txt` 与实际验证约束
-`agent_poc/constraints-verified.txt`。本次工作区隔离解释器为
-`work/langgraph-step1/venv/Scripts/python.exe`，正式运行可使用安装了这些依赖的 Python。
+`agent_poc/constraints-verified.txt`。历史第一步验证使用过
+`work/langgraph-step1/venv/Scripts/python.exe`；当前运行应使用在 Pan 根目录配置好依赖的解释器。
 
 ```powershell
 python -m pip install -r agent_poc/requirements.txt -c agent_poc/constraints-verified.txt
@@ -237,10 +237,10 @@ status 退出 0 表示查询成功，不表示实验成功；自动化脚本需�
 新 knowledge 模块 implementation_status=ready。开启未创建 Session 时 pending，成功绑定后 ready，匹配可为空；关闭始终 disabled。State 保存 prior_version、匹配摘要及安全 snapshot，不存完整知识库。成功 Session 首次绑定不改变 startup_config_fingerprint，此后整个知识块冻结。开关与快照状态、来源绑定、实际投影摘要、决策引用版本必须一致；未知 wire/损坏数据拒绝，v1/v2/v3 不自动补 knowledge_refs 或重算旧摘要。
 
 
-## 第九步反馈诊断（开发候选）
+## 第九步反馈诊断（当前配方任务）
 
 新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
 诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
 失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
 详见 [第九步诊断契约](step9_diagnosis_contract.md)。
-本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
+当前主线已包含该协议；具体服务版本需按部署核对。模型目录有 14 个目标、13 个实现，DSCARNet 已退役，CNN-Mamba 未实现；其余模型的 `available` 还取决于运行环境。

@@ -1,8 +1,8 @@
 # SpecAutoAI
 
-当前训练检查与 Agent v8/revision v6 增量见 [第八步协议](docs/step8_guard_contract.md)。
+最近核对：2026-09-29，主线 `pan/agent` / `019f1cc`。新 recipe 任务为 revision-v7 / State-v9，见 [当前状态](CONTEXT.md) 与 [第九步协议](docs/step9_diagnosis_contract.md)。所有开发 Git 操作仅在服务器 `/users/fotile/AutoAI/Pan` 根目录，禁止新分支、worktree、fork 或可开发复制；详见 [AGENTS](AGENTS.md)。
 
-SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
+SpecAutoAI 在既有拉曼与色谱/HPLC 分类建模平台上开发小样本训练 Agent。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
 
 当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
 
@@ -15,21 +15,23 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
 - 已实现 13 个分类模型（实际可用性取决于当前环境依赖）：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d`。能力目录另保留 `cnn_mamba1d`，但当前环境不可训练。
-- Agent 接口适配层使用 `agent-session-v1` / `agent-observation-v1`：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
+- 当前配方入口使用 Agent v2，旧 `agent-session-v1` / `agent-observation-v1` 保留兼容：人工与 Agent 训练共用 Run 提交服务，Experiment 具备持久化幂等、并发预算预约和 durable submission mapping；显式 reconciliation 可在重启后安全恢复未绑定 Run，Observation 只公开 Manifest 校验后的 Validation。详细契约见 `docs/agent_api_contract.md`。
 - 可解释性：传统模型、PCA-MLP 和 CNN-Transformer 使用真实类别 Log-loss 窗口遮挡；卷积模型使用 Grad-CAM-like。
 
-DSCARNet 已退役，新训练请求及其 `dscar_net` 别名均被拒绝；历史 Run、Manifest 和结果仍按原权限与完整性规则只读访问。旧 Agent 同请求的已绑定 Run 或 durable mapping 优先回读；未提交的旧 DSCARNet 任务返回 `model_retired`。部署前须确认旧 queued/running 任务已终态，本次代码变更不切换生产 worker。
+DSCARNet 已退役，新训练请求及其 `dscar_net` 别名均被拒绝；历史 Run、Manifest 和结果仍按原权限与完整性规则只读访问。旧 Agent 同请求的已绑定 Run 或 durable mapping 优先回读；未提交的旧 DSCARNet 任务返回 `model_retired`。本次文档维护不切换生产 worker。
 
 ## 全模型 Agent 与训练证据配方
 
-新 CLI 任务在 Agent v2 上协商 `train-evidence-recipes-v1`：Session 创建时冻结分组划分、只来自 Train 的证据及有限合法配方。LLM 只选择配方 ID 和说明，后端按冻结配置执行现有模型搜索。仍是 `max_runs=1` 的单实验流程。`--execution-profile direct_action` 保留第二步直接模型选择，旧 v1/v2 检查点按原版本恢复。协议、参数和命令见 [Agent 契约](docs/agent_step2_contract.md)。
+新 CLI 任务在 Agent v2 上协商 `train-evidence-recipes-v1`：Session 创建时冻结分组划分、只来自 Train 的证据及有限合法配方。LLM 默认选择配方 ID 和说明，也可使用合法域相同的 structured_config；后端按冻结配置执行。仍是 `max_runs=1` 的单实验流程。`--execution-profile direct_action` 保留第二步直接模型选择，旧 v1/v2 检查点按原版本恢复。协议、参数和命令见 [Agent 契约](docs/agent_step2_contract.md)。
+
+Agent 只接收工具契约规定的后端输入，其中不含 Test。通用结果 API/页面显示 Test 不代表 Agent 读取了它；现有结果计算与开放方式不因本次文档更新而改变。
 
 ## LangGraph 单实验编排
 
 `agent_poc/orchestration/` 提供独立于网页的 `start / resume / status` 入口：
 真实 LLM 在冻结目录中选择执行配方，HTTP 只提交 queued Run，独立 worker
 训练后，编排器仅读取 Validation 并由后端确认 Finalize。当前协议固定一次实验；
-Train Evidence 与合法配方已启用；自适应搜索、诊断和案例记忆保持关闭。人工训练与 Agent 共用独立后端的划分准备和执行入口。
+Train Evidence 与合法配方已启用；动态处理与有界搜索可显式开启，诊断默认启用且建议不执行；案例记忆与多 Run 重规划不属于当前主线。人工训练与 Agent 共用独立后端的划分准备和执行入口。
 
 Agent 依赖单独安装：`python -m pip install -r agent_poc/requirements.txt -c agent_poc/constraints-verified.txt`。
 完整 [State、配置与启动/恢复命令](docs/langgraph_state_contract.md) 和
@@ -50,9 +52,9 @@ v2 是正式纳入仓库的并行前端，不是历史 UI 画廊，也不会替�
 - 已验证：Python `3.12.12`。
 - CPU 环境可直接安装核心依赖。
 - NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- 当前模型不要求 AggMap。目录中的 `cnn_mamba1d` 另需 `mamba-ssm`，当前 Windows Conda 环境不可用。
+- 当前模型不要求 AggMap。`cnn_mamba1d` 是目录占位，当前架构版本未实现，不开放训练。
 
-建议新建虚拟环境：
+以下是通用隔离环境示例，服务器日常维护优先复用已核对的运行环境；安装或更换依赖需有任务授权：
 
 ```bash
 python -m venv .venv
@@ -170,7 +172,7 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 `AUTOAI_ALLOWED_ORIGINS` 可用逗号分隔多个明确来源，禁止 `*`。同源部署不需要额外跨域来源。浏览器首次访问受保护 API 时会要求令牌，令牌只保存在当前标签页的 `sessionStorage` 中。
 
-如果通过 SSH tunnel 访问，推荐让服务继续监听 `127.0.0.1` 并使用 local 模式，无需将端口直接暴露到网络。
+新建本机隔离实例可使用 loopback local 模式；当前服务器实例保持既有 server 模式和认证，SSH tunnel 不取消认证。现场端口和控制入口见 [部署说明](deploy/server_deploy.md)。
 
 ### 正式本地 URL
 
@@ -188,9 +190,9 @@ python run.py --server --host 0.0.0.0 --no-browser
 
 当前能力目录公开 **14 个目标分类模型**，每个模型按当前环境探测可用性：`pls_da`、`pca_lda`、`logistic_regression`、`svm`、`random_forest`、`xgboost`、`pca_mlp`、`cnn1d`、`cnn1d_se`、`resnet1d`、`inception1d`、`tcn1d`、`cnn_transformer1d` 已实现，满足依赖后可训练；`cnn_mamba1d` 当前不可用。训练入口仅支持分类，`Label` 即使为数字也按类别编码，`Sample_ID` 是样品分组的规范字段。
 
-新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，在 Windows Conda 环境因 `mamba-ssm` 依赖不可用而显示 unavailable。
+新 Run 使用 `architecture_version="docx-classification-v2"`；旧模型类、旧 checkpoint 和旧 artifact 名仅作只读兼容，不把旧权重静默载入 v2 结构。二分类深度模型使用单 logit + `BCEWithLogitsLoss`，多分类使用多 logit + `CrossEntropyLoss`。`cnn_mamba1d` 仅保留在能力目录中，当前架构版本未实现，显示 unavailable。
 
-评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型按验证集 balanced accuracy 选优，锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
+评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为唯一 test，禁止 CV。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型通常按验证集 balanced accuracy 选优，Random Forest 使用 OOB 指标；锁定参数后用 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
 
 解释性方法矩阵：六个传统模型及 `pca_mlp`、`cnn_transformer1d` 使用真实类别 Log-loss 窗口遮挡；五个 1D 卷积模型使用 1D Grad-CAM 并保留输入梯度 sanity check。新训练只生成和展示单样品解释，包含样品曲线、第一重要区间、窗口热力条和 Top 区间；不再生成全局重要性。窗口遮挡会将请求窗口数解析为最接近且能整除特征数的窗口数，例如 160 个特征请求 100 窗时实际使用 80 窗、每窗 2 点。历史 Manifest 中已经登记的 `feature_importance.json/csv` 只保留原权限和完整性约束下的直接下载兼容，不进入新结果页；`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
 
@@ -245,7 +247,7 @@ run_v2.py                    启动服务并打开 v2 工作台
 
 ## 验证
 
-安装开发依赖后，可先跑快速 smoke，再执行交付门禁：
+以下为代码改动可选的验证入口，按影响范围选用；文档修改只检查内容、链接和差异，不自动运行训练或全量回归：
 
 ```bash
 python -m pytest backend/tests/test_smoke.py -q
@@ -277,7 +279,7 @@ curl http://127.0.0.1:8000/health
   "worker": {
     "available": true,
     "compatible": true,
-    "contract_version": "run-artifact-manifest-v2",
+    "contract_version": "training-worker-guard-v1",
     "live_count": 1,
     "last_seen_at": "...",
     "active_run_count": 0
@@ -332,21 +334,21 @@ python -m backend.app.runs.migration --dry-run \
 
 ## 协作与发布
 
-前后端契约见 `docs/frontend_backend_handoff.md`，结果结构见 `docs/run_result_contract.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。
+开发只在服务器 Pan 的 pan/agent 进行，不能在 release 或临时副本继续开发；GitHub 其他现有分支保留。所有 Git 命令先核对物理路径与仓库根，提交和推送必须有当前授权。前后端契约见 `docs/frontend_backend_handoff.md`，结果结构见 `docs/run_result_contract.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。
 
 
 ## 静态建模知识
 
-配方 CLI 任务现在使用知识协议 v4，默认 `--knowledge off`；显式 `--knowledge on` 后，Session 冻结五条有来源的通用建模建议，并向 LLM 提供与当前合法配方有关的有限投影。LLM 只选 recipe_id，可引用已展示条目；知识不改变执行配置、划分或搜索。普通后端训练与 worker 不依赖知识文件。旧任务按原协议恢复，完整契约见 [Agent 契约](docs/agent_step2_contract.md)。
+第四步引入的知识能力继续用于当前配方协议，默认 `--knowledge off`；显式 `--knowledge on` 后，Session 从当前五张有来源的知识卡中检索并冻结结果，向 LLM 提供有限投影。默认以 recipe_id 决策，也支持契约规定的 structured_config；可引用已展示条目。知识不改变执行配置、划分或搜索。普通后端训练与 worker 不依赖知识文件。旧任务按原协议恢复，完整契约见 [Agent 契约](docs/agent_step2_contract.md)。
 
 
 新知识 Session 使用短卡正文的单路向量检索（Top-3），发布与模型准备命令见 [Agent 契约](docs/agent_step2_contract.md)。Embedding 是可选部署依赖，普通训练和 knowledge-off 不加载模型；旧知识快照仍可恢复。当前只有 5 条既有来源卡，20–50 条知识规模及人工检索质量另行验收。
 
 
-## 第九步反馈诊断（开发候选）
+## 第九步反馈诊断
 
 新 recipe 默认采用 revision-v7 / State-v9，可用 `--feedback-diagnosis off` 关闭。
 诊断使用私有同源 Train/Valid 审计与当前 Guard 证据；建议只读、不执行。成功在 Finalize 前解释并复验资格，
 失败先确认后端关闭再解释。诊断最多两次 work 物理调用，未知费用不清零，终态历史读取零网络。
 详见 [第九步诊断契约](docs/step9_diagnosis_contract.md)。
-本变更未部署；当前能力目录为 14 个目标、13 个实现，DSCARNet 已退役，Mamba 仍不可用。
+第九步已进入主线并位于当前 release；核对时能力目录为14个目标、13个实现，具体可用性取决于环境。DSCARNet 已退役，Mamba 当前不可用。
