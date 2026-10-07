@@ -2,7 +2,7 @@
 
 ## Agent Skill
 
-仓库提供 `skills/autoai-research` 分类研究 Skill，可安装到具备 Python、文件访问和 HTTP 能力的外部 Agent。它复用现有后端完成表格整理、拉曼/HPLC 预处理、模型推荐、严格预检、可恢复训练与结果交付。模型由 Agent 根据数据推荐，默认训练策略为快速、全特征。
+仓库提供 `skills/autoai-research` 分类研究 Skill。用户指定文件和目标后，Agent 检查数据、推荐模型与训练设置，将必要问题集中确认，然后完成训练和结果交付；明确要求直接运行时不增加确认环节。本地计算环境由 Agent 自动准备，普通对话只解释数据、方案和结果。模型按数据推荐，默认快速训练、全特征。
 
 使用与安装见 [AutoAI 分类研究 Skill](docs/autoai-research-skill.md)。后端新增 `/api/training/preflight`，Run/Batch 可通过 `strict_config` 和 `Idempotency-Key` 使用严格校验与提交去重，旧客户端保持兼容。
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "AutoAI 分类研究助手"
-  short_description: "整理拉曼与 HPLC 数据，推荐分类实验并通过现有后端训练、恢复进度和解释结果"
-  default_prompt: "使用 $autoai-research 检查我的曲线数据，推荐分类实验并完成授权范围内的建模。"
+  short_description: "检查拉曼与 HPLC 文件，推荐模型和训练设置，集中确认必要信息并交付分类结果"
+  default_prompt: "使用 $autoai-research 检查指定文件，推荐模型和训练设置，缺少的信息一次问完并完成分类训练。"

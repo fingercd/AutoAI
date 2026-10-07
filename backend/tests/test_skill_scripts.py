@@ -169,3 +169,107 @@ def test_cloud_failure_preserves_journal_then_verifies_replayed_metrics(tmp_path
     fake.Api = lambda: types.SimpleNamespace(run=lambda path: types.SimpleNamespace(
         summary=lambda keys: {'test/accuracy': {'value': 0.75}}, profile={'config': {}}))
     assert client.sync_cloud()['cloud_status'] == 'uploaded_unverified'
+
+
+def ready_response(request):
+    if request.url.path == '/health':
+        return httpx.Response(200, json={'worker': {'available': True, 'compatible': True}})
+    if request.url.path == '/openapi.json':
+        return httpx.Response(200, json={'paths': {
+            '/api/training/preflight': {},
+            '/api/training/runs': {'post': {'parameters': [{'name': 'Idempotency-Key', 'in': 'header'}]}},
+        }, 'components': {'schemas': {'TrainingRunRequest': {'properties': {'strict_config': {}}}}}})
+    raise AssertionError(request.url)
+
+
+def test_ready_reuses_valid_environment_without_spawning(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_module.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('should reuse service'))
+    client = client_module.AutoAIClient('http://127.0.0.1:8000', tmp_path / 'task', transport=httpx.MockTransport(ready_response))
+    assert client.ensure_ready() == {'ready': True}
+    assert 'runtime' not in client.state
+
+
+def test_old_local_service_is_repaired_privately_and_uploaded_source_rebound(tmp_path, monkeypatch):
+    import types
+    project = tmp_path / 'project'
+    (project / 'backend/app/routers').mkdir(parents=True)
+    (project / 'backend/app/routers/preflight.py').touch()
+    (project / 'run_classic.py').touch()
+    source = tmp_path / 'original.csv'
+    source.write_text('retained source', encoding='utf-8')
+    spawned, uploads, terminated = [], [], []
+    def popen(command, **kwargs):
+        spawned.append((command, kwargs))
+        return types.SimpleNamespace(pid=100 + len(spawned), poll=lambda: None,
+                                     terminate=lambda: terminated.append(command))
+    monkeypatch.setattr(client_module.subprocess, 'Popen', popen)
+    def handler(request):
+        if request.url.port == 8000:
+            if request.url.path == '/health':
+                return httpx.Response(200, json={'worker': {'available': False, 'compatible': False}})
+            if request.url.path == '/openapi.json':
+                return httpx.Response(200, json={'paths': {}, 'components': {}})
+            pytest.fail('old service must not receive training or data mutations')
+        if request.url.path == '/api/datasets/upload':
+            uploads.append(request.read())
+            return httpx.Response(200, json={'dataset_id': 'new-dataset', 'summary': {'samples': 1}})
+        return ready_response(request)
+    task = tmp_path / 'task'
+    client = client_module.AutoAIClient('http://127.0.0.1:8000', task, transport=httpx.MockTransport(handler))
+    client.state['datasets']['primary'] = {'dataset_id': 'old-dataset', 'sha256': prepare.fingerprint(source),
+                                         'original_copy': str(source), 'name': source.name}
+    client.state['plan'] = {'dataset_id': 'old-dataset', 'config': {'model_type': 'pls_da'}}
+    assert client.ensure_ready(project_dir=project)['ready']
+    assert len(spawned) == 2 and len(uploads) == 1 and terminated == []
+    assert client.state['datasets']['primary']['dataset_id'] == 'new-dataset'
+    assert client.state['plan']['dataset_id'] == 'new-dataset'
+    assert Path(client.state['runtime']['storage']).is_relative_to(task)
+    assert source.read_text(encoding='utf-8') == 'retained source'
+    for command, kwargs in spawned:
+        assert '_serve' in command and str(project.resolve()) in command
+        assert kwargs['creationflags'] == (client_module.subprocess.CREATE_NO_WINDOW if client_module.os.name == 'nt' else 0)
+    # The next invocation uses the saved private address, not the stale default.
+    restored = client_module.AutoAIClient('http://127.0.0.1:8000', task, transport=httpx.MockTransport(handler))
+    assert restored.service_url == client.service_url
+    assert restored.ensure_ready()['ready'] and len(spawned) == 2
+
+
+@pytest.mark.parametrize('address,submission', [('https://remote.example', None), ('http://127.0.0.1:8000', {'key': 'pending'})])
+def test_unhealthy_remote_or_uncertain_submission_is_not_moved(tmp_path, monkeypatch, address, submission):
+    monkeypatch.setattr(client_module.subprocess, 'Popen', lambda *args, **kwargs: pytest.fail('no replacement allowed'))
+    client = client_module.AutoAIClient(address, tmp_path / 'task', transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    if submission:
+        client.state['submission'] = submission
+    with pytest.raises(ValueError):
+        client.ensure_ready()
+    assert 'runtime' not in client.state
+    assert client.state.get('submission') == submission
+
+
+def test_train_completes_internal_steps_without_separate_submission_round(tmp_path, monkeypatch):
+    client = client_module.AutoAIClient('http://127.0.0.1:8000', tmp_path / 'task')
+    source = tmp_path / 'data.csv'
+    source.write_text('file', encoding='utf-8')
+    calls = []
+    monkeypatch.setattr(client, 'ensure_ready', lambda **kwargs: calls.append('prepare_environment'))
+    monkeypatch.setattr(client, 'upload', lambda *args: calls.append('upload'))
+    def preflight(plan):
+        assert 'dataset_id' not in plan
+        calls.append('check_data_and_settings')
+        return {'runnable': True}
+    monkeypatch.setattr(client, 'preflight', preflight)
+    monkeypatch.setattr(client, 'submit', lambda: calls.append('submit_once'))
+    monkeypatch.setattr(client, 'watch', lambda seconds: calls.append('wait') or {'state': 'succeeded'})
+    monkeypatch.setattr(client, 'result', lambda **kwargs: calls.append('deliver') or {'runs': [{'state': 'succeeded'}]})
+    assert client.train(source, {'dataset_id': 'stale', 'config': {'model_type': 'pls_da'}})['runs'][0]['state'] == 'succeeded'
+    assert calls == ['prepare_environment', 'upload', 'check_data_and_settings', 'submit_once', 'wait', 'deliver']
+
+
+def test_invalid_data_does_not_start_training(tmp_path, monkeypatch):
+    client = client_module.AutoAIClient('http://127.0.0.1:8000', tmp_path / 'task')
+    monkeypatch.setattr(client, 'ensure_ready', lambda **kwargs: None)
+    monkeypatch.setattr(client, 'upload', lambda *args: None)
+    monkeypatch.setattr(client, 'preflight', lambda plan: {'runnable': False})
+    monkeypatch.setattr(client, 'submit', lambda: pytest.fail('invalid data must not train'))
+    with pytest.raises(ValueError, match='数据'):
+        client.train(tmp_path / 'data.csv', {'config': {}})
