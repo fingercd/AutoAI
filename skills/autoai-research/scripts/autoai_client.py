@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +49,49 @@ def provenance():
             'converter_sha256': fingerprint(Path(__file__).with_name('prepare_dataset.py'))}
 
 
+def runtime_settings():
+    """Optional machine-local setup; no credentials belong in this file."""
+    path = Path(__file__).resolve().parents[1] / 'runtime.json'
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+
+
+def find_project(explicit=None, source=None):
+    settings = runtime_settings()
+    configured = explicit or os.environ.get('AUTOAI_PROJECT_DIR') or settings.get('project_dir')
+    candidates = [Path(configured)] if configured else []
+    if not configured:
+        for location in (Path.cwd(), Path(source).resolve().parent if source else None, Path(__file__).resolve().parent):
+            if location is not None:
+                candidates.extend([location, *location.parents])
+    for candidate in candidates:
+        if (candidate / 'backend/app/routers/preflight.py').is_file() and (candidate / 'run_classic.py').is_file():
+            return candidate.resolve()
+    raise ValueError('暂时无法准备计算环境。文件和方案会保留，请稍后重试。')
+
+
+def serve_runtime(role, project_dir, storage, port):
+    """Private local service: isolates Skill jobs from any existing user queue."""
+    sys.path.insert(0, str(Path(project_dir).resolve()))
+    os.environ['AUTOAI_DEPLOYMENT_MODE'] = 'local'
+    from backend.app import paths
+    storage = Path(storage).resolve()
+    paths.STORAGE_DIR = storage
+    paths.DATASETS_DATABASE = storage / 'datasets.sqlite3'
+    paths.RUNS_DATABASE = storage / 'runs.sqlite3'
+    paths.UPLOADS_DIR = storage / 'uploads'
+    paths.PREPROCESSED_DIR = storage / 'preprocessed'
+    paths.RUNS_DIR = storage / 'runs'
+    paths.DEFAULT_DATA = storage / 'no-default-data.csv'
+    paths.ensure_storage()
+    if role == 'web':
+        import uvicorn
+        uvicorn.run('backend.app.main:app', host='127.0.0.1', port=port)
+    else:
+        sys.argv = ['worker']
+        from backend.app.runs.worker import main as worker_main
+        worker_main()
+
+
 class AutoAIClient:
     def __init__(self, service_url, task_dir=None, *, transport=None):
         parsed = urlsplit(service_url)
@@ -61,18 +105,138 @@ class AutoAIClient:
             state_path = self.task_dir / 'state.json'
             if state_path.exists():
                 self.state = json.loads(state_path.read_text(encoding='utf-8'))
-                if self.state['service_url'] != self.service_url:
+                self.state.setdefault('requested_service_url', self.state['service_url'])
+                if self.service_url not in {self.state['service_url'], self.state.get('requested_service_url')}:
                     raise ValueError('任务记录属于另一服务地址，请使用新的任务目录')
+                self.service_url = self.state['service_url']
             else:
-                self.state = {'service_url': self.service_url, 'datasets': {}}
+                self.state = {'service_url': self.service_url, 'requested_service_url': self.service_url, 'datasets': {}}
                 self.save()
         token = os.environ.get('AUTOAI_SERVICE_TOKEN')
         headers = {'Authorization': f'Bearer {token}'} if token else {}
-        self.http = httpx.Client(timeout=60, headers=headers, transport=transport, follow_redirects=False)
+        self.http = httpx.Client(timeout=60, headers=headers, transport=transport, follow_redirects=False,
+                                 trust_env=urlsplit(self.service_url).hostname not in {'localhost', '127.0.0.1', '::1'})
 
     def save(self):
         if self.task_dir:
             write_json(self.task_dir / 'state.json', self.state)
+
+    def readiness(self):
+        """Internal diagnosis. No data upload and no training is performed."""
+        try:
+            health = self.http.get(self.url('/health'), timeout=3)
+            health.raise_for_status()
+            schema = self.http.get(self.url('/openapi.json'), timeout=3)
+            schema.raise_for_status()
+            health, schema = health.json(), schema.json()
+            paths = schema.get('paths', {})
+            request_schema = schema.get('components', {}).get('schemas', {}).get('TrainingRunRequest', {})
+            headers = paths.get('/api/training/runs', {}).get('post', {}).get('parameters', [])
+            protocol_ok = ('/api/training/preflight' in paths
+                           and 'strict_config' in request_schema.get('properties', {})
+                           and any(item.get('name', '').lower() == 'idempotency-key' for item in headers))
+            worker = health.get('worker', {})
+            return {'ready': protocol_ok and bool(worker.get('available') and worker.get('compatible')),
+                    'protocol_ok': protocol_ok, 'health': health}
+        except (httpx.HTTPError, ValueError) as exc:
+            return {'ready': False, 'error_type': type(exc).__name__}
+
+    def ensure_ready(self, *, project_dir=None, source=None, wait_seconds=45):
+        diagnosis = self.readiness()
+        if diagnosis['ready']:
+            return {'ready': True}
+        self.state['last_runtime_diagnosis'] = diagnosis
+        self.save()
+        address = urlsplit(self.service_url)
+        if address.hostname not in {'127.0.0.1', 'localhost', '::1'}:
+            raise ValueError('暂时无法连接计算环境。文件和方案已保留，我还不能开始训练。')
+        # Never move a possibly accepted submission to another queue.
+        if self.state.get('submission') and not self.state.get('runtime'):
+            raise ValueError('正在恢复已有计算；需要先查清原任务状态，不能重复启动训练。')
+        project = find_project(project_dir, source)
+        runtime = self.state.get('runtime')
+        if runtime:
+            storage, port = Path(runtime['storage']), runtime['port']
+        else:
+            storage = self.task_dir / 'runtime' / 'storage'
+            with socket.socket() as probe:
+                probe.bind(('127.0.0.1', 0))
+                port = probe.getsockname()[1]
+        # If our service is still healthy and only execution stopped, revive
+        # its worker. Never restart another service or interrupt a running job.
+        roles = ['worker'] if runtime and diagnosis.get('protocol_ok') else ['web', 'worker']
+        runtime_dir = storage.parent
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        python = runtime_settings().get('python') or sys.executable
+        processes = []
+        old_datasets = dict(self.state['datasets']) if runtime is None else {}
+        for role in roles:
+            command = [python, str(Path(__file__).resolve()), '_serve', '--role', role,
+                       '--project-dir', str(project), '--storage', str(storage), '--port', str(port)]
+            with (runtime_dir / f'{role}.log').open('ab') as log:
+                process = subprocess.Popen(command, cwd=project, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            processes.append(process)
+        self.state['runtime'] = {'project_dir': str(project), 'storage': str(storage), 'port': port,
+                                 'pids': (runtime.get('pids', []) if runtime else []) + [process.pid for process in processes]}
+        self.service_url = f'http://127.0.0.1:{port}/'
+        self.state['service_url'] = self.service_url
+        self.save()
+        end = time.monotonic() + wait_seconds
+        while time.monotonic() < end:
+            if any(process.poll() is not None for process in processes):
+                break
+            if self.readiness()['ready']:
+                if old_datasets:
+                    self.state['previous_datasets'] = old_datasets
+                    self.state['datasets'] = {}
+                    self.state.pop('preflight', None)
+                    self.save()
+                    for role, item in old_datasets.items():
+                        source_copy = Path(item['original_copy'])
+                        if fingerprint(source_copy) != item['sha256']:
+                            raise ValueError('保存的数据文件已变化；请重新提供原文件。')
+                        self.upload(source_copy, role)
+                    for field, role in [('dataset_id', 'primary'), ('test_dataset_id', 'external_test')]:
+                        if field in self.state.get('plan', {}) and role in self.state['datasets']:
+                            self.state['plan'][field] = self.state['datasets'][role]['dataset_id']
+                    self.save()
+                return {'ready': True}
+            time.sleep(0.25)
+        # Only children created in this call are stopped on startup failure.
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        self.state['last_runtime_diagnosis'] = {'ready': False, 'error_type': 'startup_failed'}
+        self.save()
+        raise ValueError('计算环境尚未准备完成，文件和方案已保留。我会根据本地记录继续处理。')
+
+    def train(self, file, plan, *, external_file=None, project_dir=None, seconds=60):
+        self.ensure_ready(project_dir=project_dir, source=file)
+        if self.state.get('submission'):
+            if fingerprint(file) != self.state['datasets']['primary']['sha256']:
+                raise ValueError('文件与已有实验不同，请为新实验使用独立目录。')
+            existing_plan = {key: value for key, value in self.state['plan'].items()
+                             if key not in {'dataset_id', 'test_dataset_id'}}
+            requested_plan = {key: value for key, value in plan.items()
+                              if key not in {'dataset_id', 'test_dataset_id'}}
+            if existing_plan != requested_plan:
+                raise ValueError('设置与已有实验不同，请为新实验使用独立目录。')
+        else:
+            self.upload(file, 'primary')
+            if external_file:
+                self.upload(external_file, 'external_test')
+            # This workflow is file-based; never let an old identifier override
+            # the file the user just supplied after environment recovery.
+            file_plan = {key: value for key, value in plan.items() if key not in {'dataset_id', 'test_dataset_id'}}
+            preview = self.preflight(file_plan)
+            if not preview['runnable']:
+                raise ValueError('当前数据和设置还不能开始训练，请根据检查结果解决具体数据问题。')
+        self.submit()
+        status = self.watch(seconds)
+        if status['state'] in {'succeeded', 'failed', 'cancelled', 'partial'}:
+            return self.result(download=True)
+        return {'phase': 'training', 'message': '训练正在进行，我会继续查看进度。', 'status': status}
 
     def url(self, path):
         target = urljoin(self.service_url, path)
@@ -391,6 +555,20 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('capabilities')
     sub.add_parser('health')
+    ready = sub.add_parser('ready')
+    ready.add_argument('--project-dir', type=Path)
+    ready.add_argument('--source', type=Path)
+    train = sub.add_parser('train')
+    train.add_argument('file', type=Path)
+    train.add_argument('--plan', type=Path, required=True)
+    train.add_argument('--external-file', type=Path)
+    train.add_argument('--project-dir', type=Path)
+    train.add_argument('--seconds', type=float, default=60)
+    internal = sub.add_parser('_serve', help=argparse.SUPPRESS)
+    internal.add_argument('--role', choices=['web', 'worker'], required=True)
+    internal.add_argument('--project-dir', type=Path, required=True)
+    internal.add_argument('--storage', type=Path, required=True)
+    internal.add_argument('--port', type=int, required=True)
     upload = sub.add_parser('upload')
     upload.add_argument('file', type=Path)
     upload.add_argument('--role', choices=['primary', 'external_test'], default='primary')
@@ -412,6 +590,9 @@ def main():
     result = sub.add_parser('result')
     result.add_argument('--download', action='store_true')
     args = parser.parse_args()
+    if args.command == '_serve':
+        serve_runtime(args.role, args.project_dir, args.storage, args.port)
+        return
     if args.command not in {'capabilities', 'health', 'inspect-hplc'} and not args.task_dir:
         parser.error('此操作需要 --task-dir，以保存来源和恢复记录')
     client = AutoAIClient(args.service_url, args.task_dir)
@@ -419,6 +600,13 @@ def main():
         command = args.command
         if command in {'capabilities', 'health'}:
             output = client.request('GET', '/api/models' if command == 'capabilities' else '/health').json()
+        elif command == 'ready':
+            output = client.ensure_ready(project_dir=args.project_dir, source=args.source)
+        elif command == 'train':
+            if args.seconds <= 0:
+                raise ValueError('等待时间必须大于零')
+            output = client.train(args.file, json.loads(args.plan.read_text(encoding='utf-8-sig')),
+                                  external_file=args.external_file, project_dir=args.project_dir, seconds=args.seconds)
         elif command == 'inspect-hplc':
             output = client.multipart('/api/preprocess/hplc/inspect', args.files)
         elif command == 'upload':
@@ -440,7 +628,10 @@ def main():
     except (ValueError, OSError, KeyError, httpx.HTTPError) as exc:
         token = os.environ.get('AUTOAI_SERVICE_TOKEN', '')
         message = str(exc).replace(token, '[redacted]') if token else str(exc)
-        print(json.dumps({'error': message, 'recovery': '保留任务目录；提交未知时使用同目录 submit 恢复'}, ensure_ascii=False))
+        client.state['last_error'] = {'type': type(exc).__name__, 'detail': message}
+        client.save()
+        print(json.dumps({'message': '这次操作还没有完成，文件和方案已保留。',
+                          'diagnostic_file': str(client.task_dir / 'state.json') if client.task_dir else None}, ensure_ascii=False))
         raise SystemExit(1)
     finally:
         client.http.close()

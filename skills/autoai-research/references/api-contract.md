@@ -1,30 +1,33 @@
-# 接口与命令
+# 内部执行手册（供 Agent 使用）
 
-依赖 Python 3.10+、httpx、openpyxl、swanlab。后端必须具有 `/api/training/preflight`、strict_config 和 Idempotency-Key 支持。服务地址默认 `http://127.0.0.1:8000`，可由 `AUTOAI_SERVICE_URL` 或 `--service-url` 指定；鉴权只读取环境变量 `AUTOAI_SERVICE_TOKEN`。不要把令牌传到命令行。
+本文件是操作参考，不是用户回复模板。工具返回的内部编号、连接状态和接口诊断只用于执行与恢复，不在普通对话中转述。用户看见的是数据情况、推荐模型、拟用参数、必要问题和最终结果。
+
+## 准备运行环境
+
+使用本技能目录中的 scripts。若技能根目录有 runtime.json，读取其中的 project_dir 和 python，采用该解释器和项目路径；它是机器本地配置，不含凭据。否则从工作目录或输入文件附近定位 AutoAI 项目。Python 需要 httpx、openpyxl、swanlab，计算环境复用现有项目依赖；缺少依赖或路径时自行定位并处理，不把维护命令交给研究用户。
+
+服务地址可从 AUTOAI_SERVICE_URL 读取，默认 http://127.0.0.1:8000；凭据只从 AUTOAI_SERVICE_TOKEN 读取，不能进入命令行或日志。
 
 ```text
-python <skill>/scripts/autoai_client.py health
-python <skill>/scripts/autoai_client.py capabilities
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment upload prepared/dataset.csv
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment upload external/dataset.csv --role external_test
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment preflight --plan plan.json
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment submit
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment watch --seconds 60
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment status
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment result --download
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment stop
-python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment sync-cloud
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task ready --source <input-file> --project-dir <AutoAI-project>
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task capabilities
 ```
 
-全局参数放在子命令前。preflight 从任务记录填入已上传的主/测试 Dataset ID，也允许计划显式引用已有 Dataset。
+ready 先检查已有服务的实际能力与执行可用性。已有环境满足要求就复用；本地服务未启动、过旧或执行不可用时，用当前项目代码在空闲端口后台启动独立的 Web 和 Worker，存储限制在本次实验目录，随后继续操作。不会终止其他服务、抢占原队列或改写用户数据。新地址与来源关系自动保存，后续命令使用同一任务目录即可恢复。
 
-单模型计划示例（模型必须根据数据建议或用户选择替换）：
+如果已经提交过任务，不能因故障换到另一队列创建重复训练。来自非本机的连接故障不擅自切换为本地实验，保留状态并诊断。只有超出 Agent 可处理的权限、文件或环境条件才向用户说明无法完成，使用具体但非技术化的表述，不引用内部组件或接口名称。
+
+## 一次执行训练
+
+先用 prepare_dataset.py inspect 检查文件，按已明确语义建立映射并 convert，保存原始文件与转换记录。原始曲线需处理时先执行后文流程。模型推荐与一次集中提问按 SKILL.md；数据已经清晰且用户授权直接运行时不问确认。
+
+将最终设置保存为 plan.json，采用下面的格式。模型需按本次数据推荐或用户选择填写，示例不代表固定默认模型：
 
 ```json
 {
   "task_type": "run",
   "config": {
-    "model_type": "logistic_regression",
+    "model_type": "pls_da",
     "experiment_version": "word-0904",
     "training_profile": "quick",
     "feature_scheme": "full",
@@ -38,27 +41,44 @@ python <skill>/scripts/autoai_client.py --task-dir outputs/my-experiment sync-cl
 }
 ```
 
-Batch 使用 `task_type=batch`、顶层 `model_types` 和 `base_seed`，config 删除 model_type/seed/split_seed/model_seed；后端固定每模型一个 Run。
+```text
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task train <prepared>/dataset.csv --plan plan.json --project-dir <AutoAI-project> --seconds 60
+```
+
+train 会自行准备环境、上传已确认数据、完成严格检查、提交一次训练并等待结果。独立测试文件用 --external-file <prepared-external>/dataset.csv，并在计划中使用相应评估模式及主数据 8:2 的比例；内部 split_test=0。
+
+多模型计划使用 task_type=batch、顶层 model_types 和 base_seed；config 不含 model_type/seed/split_seed/model_seed。每模型只运行一次。
+
+返回 phase=training 时继续 watch，直到结束，再读取结果；不要在这一步结束用户任务或提出新确认：
+
+```text
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task watch --seconds 60
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task result --download
+```
+
+返回的结构化数据只用来写用户能理解的摘要，不原样粘贴。训练过程中主动告知所选模型、特征处理、划分方式和拟用参数；无需解释实际调用了哪些接口。完整参数与审计记录保存在目录中。
 
 ## 原始曲线
 
+准备环境后执行：
+
 ```text
-python <skill>/scripts/autoai_client.py inspect-hplc curve-A.txt curve-B.txt
-python <skill>/scripts/autoai_client.py --task-dir outputs/raw-experiment preprocess --kind hplc --options preprocessing.json curve-A.txt curve-B.txt
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task inspect-hplc curve-A.txt curve-B.txt
+python <skill>/scripts/autoai_client.py --task-dir <experiment>/task preprocess --kind hplc --options preprocessing.json curve-A.txt curve-B.txt
 ```
 
-options 是已确认参数的 JSON，例如 `{"range_mode":"row","start_row":1,"hplc_interpolate":true}`。HPLC 不固定点数，范围依检测结果；不消负或归一化。拉曼使用 `--kind raman`，先截取后基线，baseline_method 默认 arPLS。处理完成后将 preprocessed.csv 通过 prepare_dataset 的 Name 映射补齐元数据，再上传。
+options 示例为 {"range_mode":"row","start_row":1,"hplc_interpolate":true}。按动态检测点数处理范围，HPLC 不消负或归一化。拉曼使用 kind=raman，先截取后基线。参数有研究歧义时与模型和数据问题一起问清；已处理数据不重复处理。
 
-## 接口行为与恢复
+预处理后的 preprocessed.csv 标签与样品编号待补齐，按 Name 应用用户提供或已确认的映射，再 convert 和 train。重复文件名、缺失标签或不明真实分组不能猜测。
 
-- `POST /api/training/preflight` 返回 training-preflight-v1、runnable、errors、warnings、normalized_configs、data、worker、run_count、feature_scheme_counts 和 submit_payload。失败不入队，也不拟合。
-- Run/Batch 请求增加 `strict_config=true`，未知/不生效参数在创建前拒绝；旧接口默认兼容。
-- 客户端把 preflight 的提交请求与随机键先写 state.json，再通过 Idempotency-Key 提交。服务端按 Principal 和任务类型去重，同键不同请求或已删除目标返回 409。
-- 首次 submit 会刷新预检并检查 Worker；已有未知响应的提交只重放已保存请求，不重做规划。已有 ID 直接查状态。
-- GET 和带幂等键的训练创建可有限重试；上传、预处理、停止不盲目自动重试。上传/处理响应未知时保留状态，核实后才使用 `--retry-uncertain`。
-- 同一任务目录绑定服务地址。新配置、新训练使用新目录；同目录再次 submit 用于恢复，不用于重新训练。
-- 结果保存 run-result-v1、比较投影、summary.json 和公开 artifact。下载检查大小与 SHA-256。经典链接为 `#/results?run_id=...` 或 `#/comparison?batch_id=...`。
+## 内部检查、恢复与记录
 
-SwanLab 在线项目为 AutoAI-Skill。云端 ID 与 events.jsonl 保存在任务目录，跨命令续写同一个实验。client 结束不会停止后端 Worker，但中断期间未轮询的实时进度不会被补造；最终结果恢复后补齐。`cloud_status=verified` 表示配置和最近指标都与本地记录核对通过，其他状态都需说明并必要时 sync-cloud。指标按 test、external_test 或 pooled_oof 及模型名分组，不混淆评估口径。
+底层仍调用现有公开接口：能力目录 /api/models、数据上传 /api/datasets/upload、训练预检 /api/training/preflight、Run/Batch 创建及结果接口。保持严格检查与服务端幂等，不能为了流程顺畅绕过数据校验或直接调用训练算法。
 
-Batch 的 result --download 在结果可比较时导出 predictions.xlsx；自动归档已就绪时同时下载 comparison.zip。归档未就绪时保存 archive-status.json，稍后再次获取结果，不为了下载自动重训或启动新实验。
+- 提交前把请求与幂等键写入 state.json。未知响应用同目录 submit 恢复，不创建新键；新实验用新目录。
+- 已注册数据和首次环境切换的文件指纹自动恢复，不能将先前连接中的编号当成新环境里的数据。
+- GET 和有幂等保障的创建请求可有限重试。上传、预处理和停止不盲目重试；核实后才使用 --retry-uncertain。
+- 用户要求停止时调用同目录 stop，随后停止轮询。
+- 下载校验大小和 SHA-256。单模型保存公开结果文件；Batch 可比较时导出 predictions.xlsx，归档就绪时下载 comparison.zip。
+- SwanLab 项目 AutoAI-Skill 在线记录配置、seed、代码与数据版本、进度和结果。失联保留 events.jsonl，用 sync-cloud 补传；配置和指标都核验通过才标 verified。指标按 test/external_test/pooled_oof 和模型名组织。
+- last_error 和 last_runtime_diagnosis 用于 Agent 排障；必要时读取本次 runtime 日志并解决问题。用户默认摘要不显示这些字段。
