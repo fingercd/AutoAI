@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 # 项目内部依赖：路径/目录初始化、安全中间件，以及按业务域拆分的五组 router。
 from .paths import RUNS_DIR, STATIC_DIR, ensure_storage
 from .http.security import ServerAuthMiddleware, load_security_settings
-from .routers import auth, batches, catalog, datasets, preprocess, runs
+from .routers import auth, batches, catalog, datasets, preflight, preprocess, runs
 
 
 # 导入应用时先保证静态文件、上传和 Run 路径存在，路由随后即可安全写入。
@@ -66,7 +66,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=['*'],
     # 只放行实际用到的请求头，收紧跨域攻击面。
-    allow_headers=['Authorization', 'Content-Type', 'Accept'],
+    allow_headers=['Authorization', 'Content-Type', 'Accept', 'Idempotency-Key'],
 )
 
 # 静态资源与 API 同源托管；根路由本身由 catalog router 返回 index.html。
@@ -82,3 +82,4 @@ app.include_router(datasets.router)
 app.include_router(preprocess.router)
 app.include_router(runs.router)
 app.include_router(batches.router)
+app.include_router(preflight.router)

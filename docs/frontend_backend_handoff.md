@@ -1,5 +1,7 @@
 # SpecAutoAI 前后端接口契约
 
+2026-10-07 Skill 增量：新增 `POST /api/training/preflight`（`training-preflight-v1`），只读检查 Dataset、配置与实际分组划分，不创建 Run 或拟合模型。Run/Batch 新增可选 `strict_config`，默认 false 保持旧客户端兼容；严格模式只接受 Word 0904 中实际生效的控制项，并在入队前核验数据及模型可用性。创建接口支持可选 `Idempotency-Key`：按服务端 Principal 和任务类型去重，重试返回原任务；同键不同请求或已删除原任务返回 409。幂等记录与任务在同一 SQLite 事务创建。完整命令和接口使用见 [分类研究 Skill](autoai-research-skill.md) 与仓库 Skill 的 `references/api-contract.md`。
+
 2026-10-07 增量：`training_scheme` 增加 `default_profile=quick`、`default_feature_scheme=full`、`profiles`、`feature_schemes`、`quick_candidate_count=3`。经典表单发送 `training_profile` 和 `feature_scheme`；默认快速训练只运行所选方案，传统模型最多三候选、一次验证、选定后重训。`full` 主动恢复原完整比较。CNN 快速模式不接受 PCA。HTTP 在入队前验证选项；未声明实验版本的兼容 API 不受影响。下述历史完整网格说明仅对应 full。
 
 2026-09-07 增量：`GET /api/models` 增加 `training_scheme`，含 enabled、version、传统/CNN 方案数量及训练 defaults；models 数组保持兼容。经典页面从该能力组装 `experiment_version=word-0904` 新请求；旧版无版本 API 和 v2 不变。两段划分不发送 split_test，由服务端规范化为 0；默认比例 8:2，可自定义，外部 Test 与留一法可以同时启用。传统模型采用完整五折网格；经典新版表单不提交旧手动搜索预算，CNN 使用文档默认固定训练参数。

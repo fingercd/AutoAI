@@ -1,5 +1,11 @@
 # SpecAutoAI
 
+## Agent Skill
+
+仓库提供 `skills/autoai-research` 分类研究 Skill，可安装到具备 Python、文件访问和 HTTP 能力的外部 Agent。它复用现有后端完成表格整理、拉曼/HPLC 预处理、模型推荐、严格预检、可恢复训练与结果交付。模型由 Agent 根据数据推荐，默认训练策略为快速、全特征。
+
+使用与安装见 [AutoAI 分类研究 Skill](docs/autoai-research-skill.md)。后端新增 `/api/training/preflight`，Run/Batch 可通过 `strict_config` 和 `Idempotency-Key` 使用严格校验与提交去重，旧客户端保持兼容。
+
 ## Word 0904 新版训练入口（当前状态核对：2026-09-29）
 
 2026-10-07 起，经典 AI 建模默认快速训练：只运行所选特征处理（默认全特征），五种传统模型最多尝试三套参数，用验证样品检查一次，选定后重训一次；通常共四次拟合。CNN 只训练所选方案，保留最多 200 epochs、调度与早停。逐个留出样品评估仍需主动启用，每个样品会让整套建模重做一次。

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,7 @@ class TrainingRunRequest(BaseModel):
     test_dataset_id: str | None = None
     test_data_path: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    strict_config: bool = False
 
 
 class TrainingBatchRequest(BaseModel):
@@ -35,6 +36,18 @@ class TrainingBatchRequest(BaseModel):
     # 新请求只允许“一模型一个 Run”。仓储/结果投影仍能读取历史 R>1 批次，
     # 但公开创建接口不再接受新的重复训练。
     repeat_count: int = Field(default=1, ge=1, le=1)
+    base_seed: int = 42
+    config: dict[str, Any] = Field(default_factory=dict)
+    strict_config: bool = False
+
+
+class TrainingPreflightRequest(BaseModel):
+    """Dataset-only preview; never enqueues or fits a model."""
+    model_config = ConfigDict(extra='forbid')
+    task_type: Literal['run', 'batch'] = 'run'
+    dataset_id: str
+    test_dataset_id: str | None = None
+    model_types: list[str] = Field(default_factory=list, max_length=50)
     base_seed: int = 42
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -106,6 +119,34 @@ class TrainingSpec:
     def __init__(self, values: dict[str, Any], *, warnings: tuple[str, ...] = ()) -> None:
         self.values = dict(values)
         self.warnings = warnings
+
+    @classmethod
+    def from_strict(cls, values: dict[str, Any]) -> 'TrainingSpec':
+        # The versioned scheme owns candidate parameters and CNN scheduling.
+        # Accept only controls that actually affect that scheme.
+        allowed = {'experiment_version', 'training_profile', 'feature_scheme',
+                   'model_type', 'normalization', 'split_mode', 'split_train',
+                   'split_valid', 'split_test', 'seed', 'split_seed', 'model_seed', 'class_balance'}
+        unsupported = sorted(set(values) - allowed)
+        if unsupported:
+            raise TrainingConfigValidationError('严格模式不支持这些参数：' + ', '.join(unsupported))
+        if values.get('experiment_version') != 'word-0904':
+            raise TrainingConfigValidationError('严格模式必须明确指定 experiment_version=word-0904')
+        if not values.get('model_type'):
+            raise TrainingConfigValidationError('严格模式必须明确选择 model_type')
+        if values.get('class_balance', 'none') != 'none':
+            raise TrainingConfigValidationError('0904 固定策略不支持覆盖 class_balance')
+        for key in ('split_train', 'split_valid', 'split_test'):
+            if key in values:
+                number = _finite_number(values[key], field=key)
+                if not number.is_integer():
+                    raise TrainingConfigValidationError(f'{key} 必须是整数')
+        if values.get('split_mode') not in (None, 'stratified_holdout', 'leave_one_sample_id_cv',
+                                             'external_test_holdout', 'leave_one_sample_id_cv_with_external_test'):
+            raise TrainingConfigValidationError('严格模式必须使用四种明确的评估模式之一')
+        if values.get('training_profile') == 'full' and values.get('feature_scheme', 'full') != 'full':
+            raise TrainingConfigValidationError('完整比较会运行所有适用方案；feature_scheme 请使用 full')
+        return cls(dict(values))
 
     @classmethod
     def from_legacy(cls, values: dict[str, Any] | None) -> 'TrainingSpec':
