@@ -170,6 +170,8 @@ class TrainConfig:
     # ── 模型与结构参数：model_type 会经 canonical_model_type 归一化（如 transformer1d 别名） ──
     model_type: str = "cnn1d"
     experiment_version: str | None = None
+    training_profile: str = "quick"
+    feature_scheme: str = "full"
     early_stopping_patience: int = DEEP_TRAINING_DEFAULTS.early_stopping_patience
     dropout: float | None = None
     hidden_size: int = 64
@@ -610,7 +612,7 @@ def _deep_probabilities(model: nn.Module, values: np.ndarray) -> np.ndarray:
 
     model.eval()
     with torch.no_grad():
-        logits = model(torch.tensor(values, dtype=torch.float32).unsqueeze(1))
+        logits = model(torch.tensor(values, dtype=torch.float32, device=next(model.parameters()).device).unsqueeze(1))
         if logits.ndim == 2 and logits.shape[1] == 1:
             positive = torch.sigmoid(logits)
             probs = torch.cat((1.0 - positive, positive), dim=1)
@@ -2476,7 +2478,8 @@ def _run_legacy_training(
         external_final_split_payload = {
             "fold_index": "external_final", "test_sample_id": "external_test", "train_sample_ids": _sample_ids_for_split(sample_id, final_train_indices),
             "valid_sample_ids": _sample_ids_for_split(sample_id, final_train_indices), "test_sample_ids": _sample_ids_for_split(external_test_sample_id, list(range(len(external_test_sample_id)))),
-            "final_fit_indices": final_fit_indices.tolist(), "best_params": external_best_params, "selection_metric": "mean_balanced_accuracy_grouped_5fold" if model_family(model_type) == "traditional_ml" else None,
+            "final_fit_indices": final_fit_indices.tolist(), "best_params": external_best_params,
+            "selection_metric": external_experiment['selection_metric'] if modern else "mean_balanced_accuracy_grouped_5fold" if model_family(model_type) == "traditional_ml" else None,
             "selection_score": external_selection_score, "metrics": external_metrics, "split_metrics": {"train": final_train_metrics, "valid": final_train_metrics, "test": external_metrics},
             "preprocess": _json_normalizer(final_normalizer), "dscarnet_mapping": external_mapping_metadata,
             "splits": {"train": final_train_indices, "valid": final_train_indices, "test": external_indices}, "external_test_indices": external_indices,
@@ -2525,7 +2528,8 @@ def _run_legacy_training(
     experiment = summarize_experiments(experiment_folds, label_names, external_final=external_experiment) if modern else None
     if modern:
         selected = external_experiment or experiment_folds[-1]
-        model_metadata.update(architecture_version='docx-classification-v4-0904', experiment_version='word-0904', feature_transform=selected['transform'])
+        model_metadata.update(architecture_version='docx-classification-v4-0904', experiment_version='word-0904',
+                              training_profile=config.training_profile, feature_transform=selected['transform'])
         if model_type == 'cnn1d':
             model_metadata.update(profile=selected['profile'], model_profile=selected['profile'], resolved_profile=selected['profile'], N_train=selected['profile']['N'], L=selected['profile']['L'])
             profile_payload = selected['profile']

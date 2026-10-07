@@ -9,7 +9,7 @@ Run，取消和删除均通过仓库状态机校验。成功 Run 的下载必须
 # 模块说明（教学注释）
 #
 # 本文件是训练 Run 生命周期管理的 HTTP 路由层，位于 FastAPI 后端的最外层：
-# 前端（static/index.html 与 static/v2）通过 /api/training/runs 系列接口
+# 前端（static/index.html）通过 /api/training/runs 系列接口
 # 创建、查询、取消、删除训练 Run，并下载训练产物（artifact）。
 #
 # 在系统中的位置与协作关系：

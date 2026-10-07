@@ -14,6 +14,6 @@ from run import CLASSIC_FRONTEND_PATH, main
 
 
 # 直接转发到 run.main，仅传入经典前端路径常量；这也是 run.main 的默认参数，
-# 写在这里是为了与 run_v2.py 保持对称的快捷入口形式。
+# 复用公共启动器的服务与 Worker 生命周期。
 if __name__ == "__main__":
     main(frontend_path=CLASSIC_FRONTEND_PATH)

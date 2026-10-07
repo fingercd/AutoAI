@@ -6,7 +6,6 @@ per scheme, so heatmaps never select winners using their displayed test metrics.
 from __future__ import annotations
 import copy
 import math
-from dataclasses import asdict
 import numpy as np
 import torch
 from torch import nn
@@ -65,6 +64,24 @@ class CNN0904(nn.Module):
 
 def candidate_configs(config, model_type, n_features, min_train):
     from . import training as t
+    if config.training_profile == 'quick':
+        if model_type == 'pls_da':
+            return [t._clone_config(config, pls_components=n) for n in (1, 3, 5)
+                    if n <= min(min_train - 1, n_features)]
+        if model_type == 'logistic_regression':
+            return [t._clone_config(config, logistic_c=c, logistic_l1_ratio=0.5) for c in (.1, 1., 10.)]
+        if model_type == 'svm':
+            return [t._clone_config(config, svm_kernel='rbf', svm_c=c, svm_gamma='scale') for c in (.1, 1., 10.)]
+        if model_type == 'random_forest':
+            return [t._clone_config(config, random_forest_n_estimators=500,
+                                   random_forest_max_depth=depth, random_forest_min_samples_leaf=1,
+                                   random_forest_max_features='sqrt', random_forest_oob_score=False)
+                    for depth in (None, 5, 10)]
+        if model_type == 'xgboost':
+            return [t._clone_config(config, xgboost_n_estimators=100, xgboost_max_depth=depth,
+                                   xgboost_min_child_weight=3, xgboost_learning_rate=.1,
+                                   xgboost_subsample=.8, xgboost_colsample_bytree=.3,
+                                   xgboost_reg_lambda=10.) for depth in (2, 3, 5)]
     if model_type == 'pls_da':
         return [t._clone_config(config, pls_components=n) for n in (1,2,3,4,5,6,8,10,12,15)]
     if model_type == 'svm':
@@ -151,17 +168,32 @@ def train_cnn(config, x, y, splits, groups, labels, cancel, progress, *, fixed_e
 
 def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fold_index, cancel, progress, *, external_final=False):
     from . import training as t
+    from .feature_policy import validate_training_options
+    validate_training_options(config.training_profile, config.feature_scheme, model_type)
+    quick = config.training_profile == 'quick'
     traditional = model_type != 'cnn1d'
     pool = sorted(set(splits['train']) | set(splits['valid']))
-    inner = grouped_experiment_folds(y, groups, pool, config.split_seed, labels) if traditional else []
+    inner = ([(np.asarray(splits['train']), np.asarray(splits['valid']))] if quick else
+             grouped_experiment_folds(y, groups, pool, config.split_seed, labels)) if traditional else []
     results, search, winner = [], [], None
-    for scheme_index, (scheme, name) in enumerate(SCHEMES):
+    selected_schemes = [(key, name) for key, name in SCHEMES if not quick or key == config.feature_scheme]
+    for scheme, name in SCHEMES:
+        if quick and scheme != config.feature_scheme:
+            unsupported = model_type == 'cnn1d' and scheme.startswith('pca_')
+            results.append({'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index,
+                            'status': 'not_applicable' if unsupported else 'not_run',
+                            'reason': 'CNN 不使用 PCA 输入' if unsupported else '快速训练仅运行所选特征方案'})
+    for scheme_index, (scheme, name) in enumerate(selected_schemes):
         cancel()
         item = {'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index, 'status': 'ready', 'reason': None}
         if not traditional and scheme.startswith('pca_'):
             results.append({**item, 'status': 'not_applicable', 'reason': 'CNN 保留光谱顺序，不使用 PCA 输入'}); continue
         def update(**extra):
-            progress({'feature_scheme': name, 'feature_scheme_index': scheme_index + 1, 'feature_scheme_count': 7 if traditional else 4, 'training_stage': 'feature_search', 'training_stage_label': f'{name} · 特征方案比较', **extra})
+            progress({'feature_scheme': name, 'feature_scheme_index': scheme_index + 1,
+                      'feature_scheme_count': 1 if quick else 7 if traditional else 4,
+                      'training_profile': config.training_profile,
+                      'training_stage': 'feature_search',
+                      'training_stage_label': f'{name} · 快速训练' if quick else f'{name} · 特征方案比较', **extra})
         update()
         try:
             if traditional:
@@ -169,8 +201,9 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
                 prepared=[]
                 for train, valid in inner:
                     cancel(); transform=FeatureTransform(scheme, config.normalization).fit(x_raw[train]); prepared.append((train, valid, transform.transform(x_raw[train]), transform.transform(x_raw[valid])))
+                selection_transform = transform
                 candidates=candidate_configs(config, model_type, min(p[2].shape[1] for p in prepared), min(len(p[0]) for p in prepared))
-                best_score, best_candidate, selected_search = -math.inf, None, None
+                best_score, best_candidate, selected_search, selected_estimator = -math.inf, None, None, None
                 for index, candidate in enumerate(candidates):
                     cancel(); scores=[]; reason=None
                     try:
@@ -178,23 +211,28 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
                             cancel(); estimator=build_estimator(candidate,y[train],len(labels)); estimator.fit(train_x,y[train]); scores.append(float(t._evaluate_traditional_model(estimator,valid_x,y[valid],list(range(len(valid))),labels)['balanced_accuracy']))
                     except (ValueError, np.linalg.LinAlgError) as exc:
                         reason=str(exc)
-                    score=float(np.mean(scores)) if reason is None and len(scores)==5 else None
-                    record={**item,'model_type':model_type,'candidate_index':index,'is_selected':False,'selection_metric':'mean_balanced_accuracy_grouped_5fold','selection_score':score,'params':t._traditional_params(candidate,model_type),'inner_fold_scores':scores,'status':'skipped' if reason else 'ready','reason':reason}
+                    score=float(np.mean(scores)) if reason is None and len(scores)==len(inner) else None
+                    metric = 'validation_balanced_accuracy' if quick else 'mean_balanced_accuracy_grouped_5fold'
+                    record={**item,'model_type':model_type,'candidate_index':index,'is_selected':False,'selection_metric':metric,'selection_score':score,'params':t._traditional_params(candidate,model_type),'inner_fold_scores':scores,'status':'skipped' if reason else 'ready','reason':reason}
                     search.append(record)
                     if score is not None and math.isfinite(score) and score>best_score+1e-12:
                         best_score,best_candidate,selected_search=score,candidate,record
+                        selected_estimator = estimator
                     update(search_completed=index+1,search_total=len(candidates))
                 if best_candidate is None:
-                    raise ValueError('当前特征维度下没有完成全部五折的有效参数组合')
+                    raise ValueError('当前特征维度下没有完成验证的有效参数组合')
                 selected_search['scheme_selected']=True
                 transform=FeatureTransform(scheme,config.normalization).fit(x_raw[pool]); estimator=build_estimator(best_candidate,y[pool],len(labels)); estimator.fit(transform.transform(x_raw[pool]),y[pool]); model=FeatureClassifier(transform,estimator)
-                evaluations={key:eval_probabilities(t._traditional_probabilities(estimator,transform.transform(x_raw[indices])),y,indices,labels,estimator.predict(transform.transform(x_raw[indices]))) for key,indices in splits.items() if indices}
+                evaluations={key:eval_probabilities(t._traditional_probabilities(estimator,transform.transform(x_raw[indices])),y,indices,labels,estimator.predict(transform.transform(x_raw[indices]))) for key,indices in splits.items() if indices and (not quick or external_final or key == 'test')}
                 # Validation/train audit comes from a train-only fit, not the train+valid refit.
                 if not external_final:
-                    audit_transform=FeatureTransform(scheme,config.normalization).fit(x_raw[splits['train']]); audit=build_estimator(best_candidate,y[splits['train']],len(labels)); audit.fit(audit_transform.transform(x_raw[splits['train']]),y[splits['train']])
+                    if quick:
+                        audit_transform, audit = selection_transform, selected_estimator
+                    else:
+                        audit_transform=FeatureTransform(scheme,config.normalization).fit(x_raw[splits['train']]); audit=build_estimator(best_candidate,y[splits['train']],len(labels)); audit.fit(audit_transform.transform(x_raw[splits['train']]),y[splits['train']])
                     for key in ('train','valid'):
                         evaluations[key]=eval_probabilities(t._traditional_probabilities(audit,audit_transform.transform(x_raw[splits[key]])),y,splits[key],labels,audit.predict(audit_transform.transform(x_raw[splits[key]])))
-                score,metric,params,history,profile=best_score,'mean_balanced_accuracy_grouped_5fold',t._traditional_params(best_candidate,model_type),[],None
+                score,metric,params,history,profile=best_score,metric,t._traditional_params(best_candidate,model_type),[],None
                 if model_type == 'logistic_regression':
                     params.update(penalty='elasticnet', solver='saga')
             else:
@@ -227,19 +265,20 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
     for row in search:
         row['is_selected']=bool(row.get('scheme_selected') and row['scheme_id']==winner['scheme_id'])
     winner['results']=results;winner['search_rows']=search
+    winner['training_profile'] = config.training_profile
     return winner
 
 
 def summarize_experiments(folds, labels, *, external_final=None):
     from . import training as t
     def config(r):
-        return {k:r.get(k) for k in ('fold_index','test_sample_ids','split_summary','requested_ratio','scheme_id','scheme_name','selection_metric','selection_score','params','transform')}
+        return {k:r.get(k) for k in ('fold_index','test_sample_ids','split_summary','requested_ratio','scheme_id','scheme_name','selection_metric','selection_score','params','transform','training_profile')}
     source=[external_final] if external_final else folds
     schemes=[]
     for scheme,name in SCHEMES:
         entries=[next((r for r in f['results'] if r['scheme_id']==scheme),{}) for f in source]
         ok=[r for r in entries if r.get('status')=='ready']
-        status='ready' if len(ok)==len(source) else 'not_applicable' if all(r.get('status')=='not_applicable' for r in entries) else 'partial' if ok else 'failed'
+        status='ready' if len(ok)==len(source) else 'not_applicable' if all(r.get('status')=='not_applicable' for r in entries) else 'not_run' if all(r.get('status')=='not_run' for r in entries) else 'partial' if ok else 'failed'
         metrics=None
         if status=='ready':
             metrics=t._classification_metrics_payload([v for r in ok for v in r['evals']['test']['true']],[v for r in ok for v in r['evals']['test']['pred']],labels)

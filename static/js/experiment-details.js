@@ -9,8 +9,9 @@ export function configurationRows(experiment) {
   return rows;
 }
 export function configurationScore(row) {
-  return row.selection_metric==='validation_loss'
-    ? `验证损失 ${typeof row.selection_score==='number'?row.selection_score.toFixed(6):'—'}`
+  if(row.selection_metric==='validation_loss') return `验证损失 ${typeof row.selection_score==='number'?row.selection_score.toFixed(6):'—'}`;
+  return row.selection_metric==='validation_balanced_accuracy'
+    ? `验证集 Balanced Accuracy ${pct(row.selection_score)}`
     : `五折平均 Balanced Accuracy ${pct(row.selection_score)}`;
 }
 function node(tag,text) {const value=document.createElement(tag);if(text!=null)value.textContent=text;return value;}

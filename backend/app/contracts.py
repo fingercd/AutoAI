@@ -46,6 +46,7 @@ class TrainingConfigValidationError(ValueError):
 _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
     {
         'experiment_version',
+        'training_profile', 'feature_scheme',
         'epochs', 'batch_size', 'learning_rate', 'weight_decay', 'scheduler_factor',
         'scheduler_patience', 'min_learning_rate', 'seed', 'split_seed', 'model_seed', 'normalization', 'split_mode',
         'split_train', 'split_valid', 'split_test', 'class_balance', 'model_type',
@@ -138,6 +139,12 @@ class TrainingSpec:
                 raise TrainingConfigValidationError('0904 方案仅支持六类公开模型')
             if values.get('normalization', 'zscore') not in {'zscore', 'minmax'}:
                 raise TrainingConfigValidationError('0904 方案要求 zscore 或 minmax 特征标准化')
+            values.setdefault('training_profile', 'quick')
+            values.setdefault('feature_scheme', 'full')
+            try:
+                feature_policy.validate_training_options(values['training_profile'], values['feature_scheme'], model_type)
+            except ValueError as exc:
+                raise TrainingConfigValidationError(str(exc)) from exc
 
         normalization = str(values.get('normalization') or 'zscore').strip().lower()
         if normalization not in {'zscore', 'minmax', 'area', 'none'}:

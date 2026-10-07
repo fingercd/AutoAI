@@ -9,7 +9,6 @@ SpecAutoAI 一键启动脚本
 
 本地前端快捷入口:
     python run_classic.py        # 启动服务并打开经典前端
-    python run_v2.py             # 启动服务并打开 v2 工作台
 
 PyCharm 使用:
     右键 run.py → Run / Debug 即可启动，浏览器会自动打开。
@@ -22,13 +21,13 @@ from __future__ import annotations
 # ----------------------------------------------------------------------------
 # 本文件是 SpecAutoAI 的“一键启动器”，处于整个系统的最外层入口，负责把
 # FastAPI 后端（backend.app.main:app）以 uvicorn 形式拉起，并可选地：
-#   1. 自动打开浏览器（经典前端 "/" 或 v2 工作台 "/v2"）；
+#   1. 自动打开浏览器（经典前端 "/"）；
 #   2. 启动并托管一个独立的训练 worker 子进程（backend.app.runs.worker）。
 #
 # 与系统其它部分的关系：
 #   - Web 进程只负责创建 queued Run，真正的模型训练由 worker 进程领取执行，
 #     二者通过 storage/ 下的运行队列解耦（BackgroundTasks 不承担训练执行）；
-#   - run_classic.py / run_v2.py 是本模块 main() 的薄封装，仅切换默认前端入口；
+#   - run_classic.py 是本模块 main() 的经典前端快捷入口；
 #   - 安全设置由 backend.app.http.security.load_security_settings() 统一校验。
 #
 # 关键设计约束：
@@ -55,7 +54,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 CLASSIC_FRONTEND_PATH = "/"
-V2_FRONTEND_PATH = "/v2"
 WORKER_STOP_EXIT_CODE = 75
 
 
@@ -64,7 +62,7 @@ def build_frontend_url(base_url: str, frontend_path: str) -> str:
 
     参数:
         base_url: 形如 ``http://127.0.0.1:8000`` 的服务根地址。
-        frontend_path: 前端入口路径，只允许 ``/``（经典前端）或 ``/v2``（v2 工作台）。
+        frontend_path: 前端入口路径，只允许 ``/``（经典前端）。
 
     返回:
         拼接后的完整前端 URL。
@@ -72,10 +70,9 @@ def build_frontend_url(base_url: str, frontend_path: str) -> str:
     异常:
         ValueError: 传入白名单之外的入口路径时抛出，防止把任意路径当成前端打开。
     """
-    # 白名单校验：前端入口是固定的两个常量，防御未来调用方传入未审查的路径。
-    if frontend_path not in {CLASSIC_FRONTEND_PATH, V2_FRONTEND_PATH}:
+    if frontend_path != CLASSIC_FRONTEND_PATH:
         raise ValueError(f"不支持的前端入口: {frontend_path}")
-    # rstrip('/') 兜底 base_url 末尾多写的斜杠，避免出现 "http://host:8000//v2"。
+    # 去掉服务根地址末尾的斜杠，避免重复路径分隔符。
     return f"{base_url.rstrip('/')}{frontend_path}"
 
 
@@ -179,8 +176,8 @@ def main(*, frontend_path: str = CLASSIC_FRONTEND_PATH) -> None:
     """解析本地启动参数，并在同一生命周期管理 Web 服务与可选 worker。
 
     参数:
-        frontend_path: 启动后自动打开的前端入口（``/`` 或 ``/v2``），仅允许
-            关键字传参；run_classic.py / run_v2.py 通过它复用本函数。
+        frontend_path: 启动后自动打开的经典前端入口（``/``），仅允许
+            关键字传参；run_classic.py 通过它复用本函数。
 
     流程:
         解析参数 → 推导/校验部署模式与安全设置 → 打印启动信息并打开浏览器

@@ -51,6 +51,6 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall backend/app -q
       - name: Run backend smoke tests
-        run: python -m pytest backend/tests/test_smoke.py -q
+        run: python -m pytest backend/tests/test_smoke.py backend/tests/test_quick_training.py backend/tests/test_frontend_entry.py backend/tests/test_run_launcher.py -q
       - name: Run frontend pure-function tests
-        run: node static/v2/tests/run-tests.mjs
+        run: node --test backend/tests/frontend_word0904.mjs backend/tests/frontend_batch_progress.mjs backend/tests/frontend_comparison_page.mjs

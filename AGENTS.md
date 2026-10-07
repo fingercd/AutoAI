@@ -1,10 +1,11 @@
 # SpecAutoAI Agent 工作规则
 
-当前实现核对日期：2026-09-29。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
+当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
 
 ## 默认协作规则
 
 - 默认使用中文回复，除非用户明确要求英文。
+- 查看、截图和验证前端界面时使用经典前端（`/`，启动入口 `run.py` 或 `run_classic.py`）；v2 工作台已按用户要求移除。
 - 修改代码或文档前先运行 `git status --short`，只处理本次任务相关文件，不回滚用户已有改动。
 - 本文件统一维护项目协作规则，`CLAUDE.md` 引用本文件。按任务读取 `CONTEXT.md`、`README.md` 和相关契约；文档、代码注释与当前实现不一致时，用源码、测试和最新已确认要求核对，不直接复制历史结论。
 - 当前任务的授权持续有效，但过去任务中的提交、推送、训练或服务重启授权不自动延续到新任务。未经当前任务明确授权，不扩大为 commit、push、发布或其他外部写入；只读请求保持只读。
@@ -17,8 +18,8 @@
 
 ## 项目当前形态
 
-- 后端是 FastAPI，ASGI 入口为 `backend.app.main:app`；公共启动器 `run.py` 默认打开经典前端。`run_classic.py` 打开 `/`，`run_v2.py` 打开 `/v2`，二者共享后端、端口与 Worker，不应在同一端口重复启动服务。
-- 经典入口为 `static/index.html`，v2 独立工作台为 `static/v2/index.html`，由后端静态托管；两者共享 `static/js/api-client.js` 与 `run-result-v1`。经典入口和共享脚本仍受字符串契约测试保护，局部修改须保持这些契约，不默认重写整套前端。
+- 后端是 FastAPI，ASGI 入口为 `backend.app.main:app`；`run.py` 与 `run_classic.py` 均打开经典前端 `/`，共享后端、端口与 Worker，不应在同一端口重复启动服务。
+- 正式入口为 `static/index.html`，由后端静态托管，使用 `static/js/api-client.js` 与 `run-result-v1`。经典入口和共享脚本仍受字符串契约测试保护，局部修改须保持这些契约，不默认重写整套前端。
 - 快速回归在 `backend/tests/test_smoke.py`；结果接口、artifact、安全、前端纯函数、迁移和启动器另有专项测试。运行时代码交付运行整个 `backend/tests`；纯文档修改按下方文档检查规则验证。
 - 推荐本机 Python 为 `C:\Users\lenovo\anaconda3\envs\pytorch\python.exe`。
 - 接口与结果以 [前后端契约](docs/frontend_backend_handoff.md)、[Run 结果契约](docs/run_result_contract.md) 和 [模型比较契约](docs/model_comparison_contract.md) 为导航。`AutoAI_开发计划.md` 仅是历史路线，不能据此引入 React/Vite 或 Redis/RQ；当前 Run 队列实际使用 SQLite。
@@ -43,10 +44,11 @@
 
 ## 模型与特征方案训练
 
+- 2026-10-07 用户确认压缩默认计算数量：六公开模型的 `word-0904` 新训练默认 `training_profile=quick`、`feature_scheme=full`，只运行所选方案。传统模型最多三套参数，用当前验证集检查一次，按 Balanced Accuracy 选优后在 Train+Valid 重训；Train/Valid 审计复用获胜候选，普通三候选流程共四次拟合。CNN 只运行所选方案，保留原调度、早停及 epoch 上限。前端提供快速训练/完整比较和特征处理选择，留一法仍需主动启用。下述多方案、完整网格与五折规则仅适用于主动选择 `training_profile=full` 的完整比较；快速模式不要求每类五个搜索样品。未运行方案记 `not_run`，不填零、不误报失败。参数表和固定数据对照见 [数量压缩计划](docs/plans/2026-10-07-quick-training.md)。
 - 当前建模任务仅支持分类；`Label` 即使为数字也按类别名编码，不作为连续回归目标。`PLSR`、`SVR` 是回归变体，本版训练入口不启用。
 - `/api/models` 保留 17 个后端模型，建模 UI 按 `ui_visible` 仅显示六项：`pls_da`、`logistic_regression`（Elastic Net）、`svm`、`random_forest`、`xgboost`、`cnn1d`。其余十一项以 `ui_visible=false` 隐藏，不得删除后端能力或用近似模型替代。
 - 可用性按当前环境检测，不能把 UI 隐藏等同于不可训练。`cnn_mamba1d` 缺少 `mamba-ssm` 时必须返回 `available=false`；DSCARNet 需可选 AggMap 依赖。隐藏模型在依赖可用时仍接受兼容 API；`transformer1d` 继续作为 `cnn_transformer1d` 的兼容别名。
-- 经典新训练以 `/api/models` 返回的 `training_scheme` 为唯一能力来源，显式发送 `experiment_version=word-0904`，对应架构 `docx-classification-v4-0904`。前端不维护独立启停常量；未声明版本的兼容 API 保留原语义，历史权重不直接载入新结构。v2 保持自身已有请求流程，不默认套用经典新版策略。
+- 经典新训练以 `/api/models` 返回的 `training_scheme` 为唯一能力来源，显式发送 `experiment_version=word-0904`，对应架构 `docx-classification-v4-0904`。前端不维护独立启停常量；未声明版本的兼容 API 保留原语义，历史权重不直接载入新结构。
 - 当前 `feature_policy.FEATURE_ENGINEERING_ENABLED=True`，特征方案训练已经恢复；此前暂时停用的记录不代表当前状态。五类传统模型比较全特征、Binning 5/10/20、PCA 90/95/99% 七方案；CNN 只比较全特征和三种 Binning，PCA 标为不适用。
 - 新版传统模型每方案在 Train+Valid 合并池内按独立 `Sample_ID` 分组分层五折搜索；标准化、PCA 等变换只在各内层训练折拟合。按五折平均 Balanced Accuracy 选择参数与方案，并列采用固定候选顺序；锁定后在 Train+Valid 重训，保留 Test 只用于评估。旧手动搜索预算不能截断完整网格。
 - 每次五折搜索的池中每类至少需要 5 个独立 `Sample_ID`，不足时报告具体类别和数量，不静默减折。留一法每个外层折独立拟合、搜索和选优；无效候选或失败方案记录原因，不用 Test 分数补选。
@@ -79,7 +81,7 @@
 - 批次归档支持自动保存和幂等补建，历史比较从训练记录的“查看所属对比”进入；已有真实产物但图集过期或缺图时可原子补建派生归档，缺少训练产物时不补造数据。部分失败只保存可比较结果；归档失败不改写成功 Run，停止/删除阻止迟到归档发布。下载沿用 Principal、Manifest 与公开文件白名单。
 - `GET /api/training/runs?projection=summary` 可返回 `batch_id` 和可空 `test_macro_f1`。仅成功且 Manifest 完整、指标文件通过大小/SHA-256 校验时读取：普通留一法取 pooled OOF，holdout 及留一法加独立 Test 取 direct Test；不能回退为 fold mean，缺失或不一致时返回 `null`。
 - 新 Manifest 使用显式 catalog 与 SHA-256/大小校验；`model.pkl`、`model.pt`、joblib 和 `status.json` 不属于新结果页公开下载。`config.json` 只有在不含服务器路径时才可下载。传统模型不生成或展示 epoch history；当前无正式 ROC-AUC、ROC 或 Precision-Recall 产物，不伪造指标或空图。
-- 特征方案比较已启用，但可解释性仍执行源码中标注 `TEMPORARILY_HIDDEN` 的策略：训练入口强制 `feature_selection_enabled=false`，不计算或生成解释性结果，两套前端不渲染或请求入口。历史 `feature_importance.*`、`sample_feature_importance.*`、`model_feature_visualization.json` 和 `dscarnet_mapping.json` 也不开放下载；旧 Manifest 不得形成旁路。
+- 特征方案比较已启用，但可解释性仍执行源码中标注 `TEMPORARILY_HIDDEN` 的策略：训练入口强制 `feature_selection_enabled=false`，不计算或生成解释性结果，前端不渲染或请求入口。历史 `feature_importance.*`、`sample_feature_importance.*`、`model_feature_visualization.json` 和 `dscarnet_mapping.json` 也不开放下载；旧 Manifest 不得形成旁路。
 - `training_explainability.py` 中窗口遮挡、1D Grad-CAM/Grad-CAM-like、输入梯度 sanity check 与 DSCARNet 回投实现继续保留。DSCARNet 训练仍使用当前训练折拟合的 AggMap/PCA SAR/CAR 双通路 2D 映射，可内部生成映射 JSON/joblib；不要把它当普通 1D CNN。恢复解释性或开放映射下载须有明确需求，并同步接口和测试。
 
 ## 验证命令
@@ -96,7 +98,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
 ```
 
-前端 `static/index.html` 内联脚本改动后，先抽取 `<script>` 内容，再用 `node --check --input-type=commonjs` 做语法解析，并运行相关 Node 纯函数/契约测试；v2 或共享模块改动还需运行 `node static/v2/tests/run-tests.mjs`。没有 Playwright 时不要强行引入新依赖。
+前端 `static/index.html` 内联脚本改动后，先抽取 `<script>` 内容，再用 `node --check --input-type=commonjs` 做语法解析，并运行相关 Node 纯函数/契约测试。没有 Playwright 时不要强行引入新依赖。
 
 训练入口改动重点覆盖四种划分、自定义比例、逐折防泄露与 Test 口径；多模型改动保留进度、刷新恢复、停止重置、比较和归档回归。新版完整训练验收要求传统模型完整网格与 CNN 正常调度/早停流程，不以读取历史结果或仅跑两轮 CNN 代替；合成数据只证明相应功能，不代表真实数据性能。2026-09-07 核对时根目录无 `data.csv`，后续任务仍须重新检查，不能擅自改用上传数据启动训练。
 

@@ -1,5 +1,7 @@
 # SpecAutoAI 前后端接口契约
 
+2026-10-07 增量：`training_scheme` 增加 `default_profile=quick`、`default_feature_scheme=full`、`profiles`、`feature_schemes`、`quick_candidate_count=3`。经典表单发送 `training_profile` 和 `feature_scheme`；默认快速训练只运行所选方案，传统模型最多三候选、一次验证、选定后重训。`full` 主动恢复原完整比较。CNN 快速模式不接受 PCA。HTTP 在入队前验证选项；未声明实验版本的兼容 API 不受影响。下述历史完整网格说明仅对应 full。
+
 2026-09-07 增量：`GET /api/models` 增加 `training_scheme`，含 enabled、version、传统/CNN 方案数量及训练 defaults；models 数组保持兼容。经典页面从该能力组装 `experiment_version=word-0904` 新请求；旧版无版本 API 和 v2 不变。两段划分不发送 split_test，由服务端规范化为 0；默认比例 8:2，可自定义，外部 Test 与留一法可以同时启用。传统模型采用完整五折网格；经典新版表单不提交旧手动搜索预算，CNN 使用文档默认固定训练参数。
 
 2026-09-22 / 2026-09-29 增量：Batch 增加预测 Excel 导出，类别概率按 `label_map` 顺序写为逗号分隔六位小数文本，舍入后总和可能有微小误差。留一法加独立 Test 同时包含主数据 pooled OOF（`test`，审计）和外部预测（`external_test`，主指标）。经典比较页以标签页组织总体表现、分类指标、样品预测、特征方案及参数与划分；特征方案标签由 `training_scheme.enabled` 控制，类别 Recall/Precision 分别显示热图，当前绘图版本为 `comparison-figures-v4`。
@@ -12,16 +14,16 @@
 
 ## 1. 当前架构
 
-- 经典前端入口为 `/`（`static/index.html`），v2 独立工作台入口为 `/v2`（重定向到 `static/v2/index.html`）。两者都使用原生 HTML/CSS/JavaScript，不引入 React、Vue 或 Vite。
-- 两套前端共享 `static/js/api-client.js`、Principal 鉴权、Dataset/Run API、artifact 规则和 `run-result-v1`；v2 是并行正式入口，不改变经典前端 URL。
-- FastAPI 同源托管网页和 API，公共启动器为 `run.py`；`run_classic.py` 与 `run_v2.py` 仅分别选择自动打开 `/` 或 `/v2`，后端和 worker 生命周期完全复用。手动入口仍为 `backend.app.main:app`。
+- 正式前端入口为 `/`（`static/index.html`），使用原生 HTML/CSS/JavaScript，不引入 React、Vue 或 Vite。2026-10-07 按用户要求移除 v2 工作台。
+- 前端使用 `static/js/api-client.js`、Principal 鉴权、Dataset/Run API、artifact 规则和 `run-result-v1`。
+- FastAPI 同源托管网页和 API，`run.py` 与 `run_classic.py` 均自动打开 `/`，复用相同后端和 worker 生命周期。手动入口仍为 `backend.app.main:app`。
 - `POST /api/training/runs` 只创建 SQLite 中的 `queued` Run；训练由独立 `backend.app.runs.worker` 进程执行。
 - `POST /api/training/batches` 原子创建统一 Batch 与其所有 queued 子 Run；仍不在 HTTP 请求或 `BackgroundTasks` 中启动训练。
 - FastAPI BackgroundTasks 不承担训练执行。
 - SQLite `RunRepository` 是任务状态权威；`status.json` 只是历史兼容投影。
 - 每次训练通过唯一 Run ID 关联训练记录、结果页和 artifact。
-- 结果页使用 `#/results?run_id=<Run ID>`；v2 的可复制完整地址为 `/static/v2/index.html#/results?run_id=<Run ID>`。刷新页面后重新请求后端，不依赖浏览器内存中的旧结果。
-- v2 批次比较使用 `#/comparison?batch_id=<Batch ID>`；经典入口在建模页内显示同一比较接口的紧凑视图。
+- 结果页使用 `#/results?run_id=<Run ID>`。刷新页面后重新请求后端，不依赖浏览器内存中的旧结果。
+- 批次比较使用 `#/comparison?batch_id=<Batch ID>`，展示经典多模型对比页。
 
 ## 2. 本机与服务器认证
 
@@ -224,7 +226,7 @@ POST /api/preprocess/chromatography   # 简单截取兼容接口
 
 `adaptive=false` 表示宽表不再为适应单元格字符限制降精度；`xxx_encoding=column_headers` 表示真实坐标直接位于第 5 列起的表头。开启 HPLC 插值时，`curves[].x` 和 `common_time` 是本次实际选择的固定分钟轴；`hplc_axis.start/stop/point_count` 描述实际输出，`grid_start/grid_stop/grid_point_count` 描述动态完整网格，`selected_start_row/selected_end_row` 是完整网格中的 1 基位置。关闭时 `curves[].x` 对应已验证一致的原始公共轴，`common_time=[]`、`hplc_axis=null`。
 
-预处理主文件统一使用响应中的 `download_url`；两套前端都只展示“下载统一建模 CSV”。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 不生成第二时间轴文件或 `common_time_path`。
+预处理主文件统一使用响应中的 `download_url`；前端只展示“下载统一建模 CSV”。`output_path` 等服务器路径不得直接作为浏览器链接；HPLC 不生成第二时间轴文件或 `common_time_path`。
 
 ## 5. 创建训练 Run
 
@@ -491,9 +493,9 @@ Hash 页面：
 
 轮询必须串行执行；切换 Run 后取消旧请求，终态停止。queued/running 显示进度，failed/cancelled/404/403/网络失败和部分产物缺失分别处理。
 
-经典入口和 v2 对相同业务概念使用同一可见术语：建模摘要固定按“数据量、类别数、样本数、每样本测量数、特征数”展示；分组区使用“按样本分组”和“样本编号、类别、每样本测量数”；类别统计使用“类别分布”和“类别、数据量”。结果页把 `curve_count` 显示为“数据量”、`sample_id_count` 显示为“样本数”，各类别 `support` 显示为“数据量”。创建/开始时间合并为一个“训练时间”，优先开始时间，未开始时回退创建时间并标注“任务创建”。训练记录显示可空“测试集 Macro F1”，固定四位小数；无值显示 `—`。内部 CSV/API 字段名不随界面术语改名。
+经典入口使用统一的业务术语：建模摘要固定按“数据量、类别数、样本数、每样本测量数、特征数”展示；分组区使用“按样本分组”和“样本编号、类别、每样本测量数”；类别统计使用“类别分布”和“类别、数据量”。结果页把 `curve_count` 显示为“数据量”、`sample_id_count` 显示为“样本数”，各类别 `support` 显示为“数据量”。创建/开始时间合并为一个“训练时间”，优先开始时间，未开始时回退创建时间并标注“任务创建”。训练记录显示可空“测试集 Macro F1”，固定四位小数；无值显示 `—`。内部 CSV/API 字段名不随界面术语改名。
 
-两套 HPLC 表单在选中文件后先调用 `/api/preprocess/hplc/inspect`，逐文件展示检测结果，并把起始/终止行边界动态更新为 `1–point_count`。请求前调用共享 `validateHplcRowRange(start, end, pointCount)`；后端仍执行同一动态点数的第二道校验。时间输入显示为“保留时间下限/上限（分钟）”，成功结果展示服务端返回的实际首末分钟、完整网格中的首末点和实际点数。
+HPLC 表单在选中文件后先调用 `/api/preprocess/hplc/inspect`，逐文件展示检测结果，并把起始/终止行边界动态更新为 `1–point_count`。请求前调用共享 `validateHplcRowRange(start, end, pointCount)`；后端仍执行同一动态点数的第二道校验。时间输入显示为“保留时间下限/上限（分钟）”，成功结果展示服务端返回的实际首末分钟、完整网格中的首末点和实际点数。
 
 ## 10. 分页面说明边界
 

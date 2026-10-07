@@ -25,11 +25,17 @@
     const modes={holdout:'stratified_holdout',external:'external_test_holdout',loo:'leave_one_sample_id_cv',external_loo:'leave_one_sample_id_cv_with_external_test'};
     return {split_mode:modes[selectedMode],split_train:train,split_valid:valid,...(three?{split_test:test}:{})};
   }
-  function payload(scheme, selectedMode, ratios, normalization, model) {
+  function payload(scheme, selectedMode, ratios, normalization, model, options={}) {
     if (!scheme?.enabled || scheme.version!=='word-0904') throw new Error('新版建模方案尚未就绪，请确认后端已更新后刷新页面');
     if (!['zscore','minmax'].includes(normalization)) throw new Error('新版方案请选择 Z-score 或 Min-Max 标准化');
     const d=scheme.defaults;
+    const profile=options.training_profile || scheme.default_profile;
+    const feature=options.feature_scheme || scheme.default_feature_scheme;
+    if (!scheme.profiles?.some(item=>item.id===profile) || !scheme.feature_schemes?.some(item=>item.id===feature))
+      throw new Error('训练配置尚未就绪，请更新并重启后端与 Worker 后刷新页面');
+    if (profile==='quick' && model==='cnn1d' && feature.startsWith('pca_')) throw new Error('CNN 不支持 PCA，请选择全特征或相邻点合并');
     return {...splitPayload(selectedMode,ratios),experiment_version:scheme.version,model_type:model,normalization,
+      training_profile:profile,feature_scheme:feature,
       epochs:d.epochs,batch_size:d.batch_size,learning_rate:d.learning_rate,weight_decay:d.weight_decay,
       scheduler_factor:d.scheduler_factor,scheduler_patience:d.scheduler_patience,min_learning_rate:d.min_learning_rate,
       early_stopping_patience:d.early_stopping_patience,seed:d.seed,class_balance:'none'};

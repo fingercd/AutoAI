@@ -8,7 +8,7 @@
 #   受控上传目录、按 kind 分派到算法模块、把结果宽表写成 CSV 并组装下载 URL。
 #
 # 在系统中的位置：
-#   前端预处理页（static/index.html / static/v2） -> 本路由 ->
+#   前端预处理页（static/index.html） -> 本路由 ->
 #   backend/app/parsers.py（拉曼/简单色谱数学处理）或
 #   backend/app/hplc.py（HPLC 固定轴/插值处理） ->
 #   storage/preprocessed 下的 wide-feature-v2 宽表 CSV，供训练接口读取。

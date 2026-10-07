@@ -23,6 +23,8 @@ def test_public_capability_and_four_modes():
     from backend.app.main import app
     scheme=TestClient(app).get('/api/models').json()['training_scheme']
     assert scheme['enabled'] and scheme['defaults']['epochs']==200
+    assert scheme['default_profile']=='quick' and scheme['quick_candidate_count']==3
+    assert {item['id'] for item in scheme['profiles']}=={'quick','full'}
     for external,mode in [(False,'stratified_holdout'),(False,'leave_one_sample_id_cv'),(True,'external_test_holdout'),(True,'leave_one_sample_id_cv_with_external_test')]:
         config={'model_type':'svm','experiment_version':scheme['version'],'split_mode':mode,'split_train':6 if mode=='stratified_holdout' else 7,'split_valid':2 if mode=='stratified_holdout' else 3}
         if mode=='stratified_holdout':config['split_test']=2
@@ -32,7 +34,7 @@ def test_public_capability_and_four_modes():
 
 def test_complete_grids_ignore_legacy_manual_search_limits():
     for model,count in [('pls_da',10),('logistic_regression',15),('svm',20),('random_forest',12),('xgboost',12)]:
-        cfg=t.TrainConfig(model_type=model,random_forest_search_iterations=1)
+        cfg=t.TrainConfig(model_type=model,random_forest_search_iterations=1,training_profile='full')
         assert len(candidate_configs(cfg,model,500,100))==count
 
 
