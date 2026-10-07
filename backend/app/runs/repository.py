@@ -62,6 +62,10 @@ class RunNotFound(KeyError):
     pass
 
 
+class SubmissionConflict(ValueError):
+    """An idempotency key was reused with another request or a deleted task."""
+
+
 # 统一把时间戳规范化为带 UTC 时区的 ISO 字符串：naive 时间一律按 UTC 解释。
 # 时间以文本存进 SQLite、比较靠字典序，混入不同时区表示会得出错误的先后关系。
 def _timestamp(value: datetime) -> str:
@@ -252,6 +256,11 @@ class RunRepository:
                 '''
             )
             connection.execute('CREATE INDEX IF NOT EXISTS idx_batches_scope ON training_batches(owner_id, tenant_id, created_at)')
+            connection.execute('''CREATE TABLE IF NOT EXISTS training_submissions (
+                scope TEXT NOT NULL, kind TEXT NOT NULL, request_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, target_id TEXT NOT NULL,
+                PRIMARY KEY (scope, kind, request_key)
+            )''')
             connection.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS worker_heartbeats (
@@ -272,6 +281,35 @@ class RunRepository:
                     'ALTER TABLE worker_heartbeats ADD COLUMN contract_version TEXT'
                 )
 
+    def _submission_target(self, connection, *, kind, request_key, fingerprint, principal):
+        if request_key is None:
+            return None
+        scope = json.dumps([principal.owner_id, principal.tenant_id], separators=(',', ':'))
+        row = connection.execute(
+            'SELECT fingerprint,target_id FROM training_submissions WHERE scope=? AND kind=? AND request_key=?',
+            (scope, kind, request_key),
+        ).fetchone()
+        if row is None:
+            return None
+        if row['fingerprint'] != fingerprint:
+            raise SubmissionConflict('Idempotency-Key 已用于不同请求')
+        table, column = ('runs', 'run_id') if kind == 'run' else ('training_batches', 'batch_id')
+        target = connection.execute(f'SELECT {column} FROM {table} WHERE {column}=?', (row['target_id'],)).fetchone()
+        if target is None:
+            raise SubmissionConflict('原任务已删除；重新运行必须使用新的 Idempotency-Key')
+        return str(row['target_id'])
+
+    def submission_target(self, *, kind, request_key, fingerprint, principal):
+        with self._connection() as connection:
+            return self._submission_target(connection, kind=kind, request_key=request_key,
+                                           fingerprint=fingerprint, principal=principal)
+
+    def _save_submission(self, connection, *, kind, request_key, fingerprint, target_id, principal):
+        if request_key is not None:
+            scope = json.dumps([principal.owner_id, principal.tenant_id], separators=(',', ':'))
+            connection.execute('INSERT INTO training_submissions VALUES (?,?,?,?,?)',
+                               (scope, kind, request_key, fingerprint, target_id))
+
     # 创建 queued Run。HTTP 训练请求只做到这一步（入队），不直接启动训练——
     # 真正的执行由 worker 通过 claim_next 领取。owner/tenant 只来自服务端注入的
     # Principal，请求体里的同名字段一律不被信任。version 从 1 开始计数。
@@ -283,11 +321,19 @@ class RunRepository:
         config: dict[str, Any],
         dataset_snapshot: dict[str, Any] | None = None,
         principal: Principal = Principal(),
+        request_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> RunRecord:
         run_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            previous = self._submission_target(connection, kind='run', request_key=request_key,
+                                               fingerprint=request_fingerprint, principal=principal)
+            if previous is not None:
+                row = connection.execute('SELECT * FROM runs WHERE run_id=?', (previous,)).fetchone()
+                connection.commit()
+                return self._record(row)
             connection.execute(
                 '''
                 INSERT INTO runs (
@@ -309,6 +355,8 @@ class RunRepository:
                 ),
             )
             row = connection.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone()
+            self._save_submission(connection, kind='run', request_key=request_key,
+                                  fingerprint=request_fingerprint, target_id=run_id, principal=principal)
             connection.commit()
         assert row is not None
         return self._record(row)
@@ -325,6 +373,8 @@ class RunRepository:
         base_seed: int,
         dataset_snapshot: dict[str, Any],
         principal: Principal = Principal(),
+        request_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[BatchRecord, list[RunRecord]]:
         """Atomically create a Batch and every queued child Run.
 
@@ -341,6 +391,13 @@ class RunRepository:
         run_ids: list[str] = []
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            previous = self._submission_target(connection, kind='batch', request_key=request_key,
+                                               fingerprint=request_fingerprint, principal=principal)
+            if previous is not None:
+                batch_row = connection.execute('SELECT * FROM training_batches WHERE batch_id=?', (previous,)).fetchone()
+                run_rows = connection.execute('SELECT * FROM runs WHERE batch_id=? ORDER BY batch_model_order,batch_repeat_index', (previous,)).fetchall()
+                connection.commit()
+                return self._batch_record(batch_row), [self._record(row) for row in run_rows]
             connection.execute(
                 '''
                 INSERT INTO training_batches (
@@ -388,6 +445,8 @@ class RunRepository:
                         ),
                     )
             batch_row = connection.execute('SELECT * FROM training_batches WHERE batch_id = ?', (batch_id,)).fetchone()
+            self._save_submission(connection, kind='batch', request_key=request_key,
+                                  fingerprint=request_fingerprint, target_id=batch_id, principal=principal)
             run_rows = [connection.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone() for run_id in run_ids]
             connection.commit()
         assert batch_row is not None and all(row is not None for row in run_rows)

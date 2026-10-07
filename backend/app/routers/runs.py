@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..contracts import TrainingConfigValidationError, TrainingRunRequest, TrainingSpec
@@ -59,7 +59,9 @@ from ..runs.artifacts import (
     discard_run_artifacts,
 )
 from ..runs.contracts import Principal, RunRecord, public_error_message
-from ..runs.repository import InvalidRunTransition, RunNotFound
+from ..runs.repository import InvalidRunTransition, RunNotFound, SubmissionConflict
+from ..training_preflight import inspect_training_data, strict_spec
+from .submissions import existing_submission, request_identity
 from ..runs.result_projection import project_run_result
 from ..runs.status_projection import project_status, recover_status_from_artifacts
 from ..version import WORKER_CONTRACT_VERSION
@@ -472,26 +474,34 @@ def _assert_worker_contract_compatible(repository: Any) -> None:
 
 @router.post('/api/training/runs', status_code=202)
 @router.post('/api/train', status_code=202)
-def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_principal)) -> dict[str, object]:
+def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_principal),
+               idempotency_key: str | None = Header(default=None)) -> dict[str, object]:
     """持久化 queued Run；本请求绝不直接调用训练器。"""
     # 流程总览：解析数据引用 → 校验训练配置 → 检查 Worker 契约 → 组装 config
     # → 数据集指纹快照 → 写入 queued Run → 生成兼容 status.json → 返回 202。
     # 注意 202（Accepted）语义：请求被接受并入队，不代表训练已开始。
     # resolve_training_data_reference 内部强制 server 模式只接受 dataset_id，
     # 拒绝浏览器传入的任意 data_path（防目录穿越/任意文件读）。
+    fingerprint = request_identity(payload, idempotency_key)
+    repository = get_run_repository()
+    previous = existing_submission(repository, kind='run', key=idempotency_key, fingerprint=fingerprint, principal=principal)
+    if previous is not None:
+        record = repository.get_scoped(previous, principal=principal)
+        return {'run_id': record.run_id, 'status': record.legacy_status, 'state': record.state, 'warnings': []}
     data_ref = resolve_training_data_reference(payload, principal=principal)
     try:
         # TrainingSpec.validated 会按是否携带独立测试集校验评估口径等约束
         # （例如 external_test_holdout 必须有独立测试集）。
-        spec = TrainingSpec.from_legacy(payload.config).validated(
-            has_external_test=bool(data_ref.test_dataset_id or data_ref.test_legacy_path)
-        )
-    except TrainingConfigValidationError as exc:
+        has_external = bool(data_ref.test_dataset_id or data_ref.test_legacy_path)
+        spec = (strict_spec(payload.config, has_external_test=has_external) if payload.strict_config else
+                TrainingSpec.from_legacy(payload.config).validated(has_external_test=has_external))
+        if payload.strict_config:
+            inspect_training_data(data_ref, [spec], principal=principal)
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail={'code': 'invalid_training_config', 'message': str(exc)},
         ) from exc
-    repository = get_run_repository()
     _assert_worker_contract_compatible(repository)
     # config 落库时附带数据集名/测试集引用等快照信息，保证历史 Run 在数据集
     # 被清理后仍能展示“当时用的是什么数据”。
@@ -518,15 +528,17 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
         config['test_dataset_sha256'] = test_snapshot['sha256']
     # create_queued 只做状态机允许的“创建 queued”迁移；身份由服务端
     # Principal 注入，请求体里的 owner_id/tenant_id 不会被采信。
-    record = repository.create_queued(
-        dataset_id=data_ref.dataset_id,
-        legacy_data_path=data_ref.legacy_path,
-        config=config,
-        dataset_snapshot=dataset_snapshot,
-        principal=principal,
-    )
+    try:
+        record = repository.create_queued(
+            dataset_id=data_ref.dataset_id, legacy_data_path=data_ref.legacy_path,
+            config=config, dataset_snapshot=dataset_snapshot, principal=principal,
+            request_key=idempotency_key, request_fingerprint=fingerprint,
+        )
+    except SubmissionConflict as exc:
+        raise HTTPException(409, detail={'code': 'idempotency_conflict', 'message': str(exc)}) from exc
     # 同步写一份兼容 status.json，让旧前端在 Worker 尚未拾取时也能看到进度壳。
-    project_status(get_run_dir(record.run_id), record, config=config)
+    if record.state == 'queued':
+        project_status(get_run_dir(record.run_id), record, config=record.config)
     return {
         'run_id': record.run_id,
         'status': record.legacy_status,

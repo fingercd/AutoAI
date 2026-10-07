@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -14,7 +14,9 @@ from ..http.principal import get_principal
 from ..models import canonical_model_type
 from ..runs.batch_projection import batch_status_payload, project_model_comparison
 from ..runs.contracts import Principal
-from ..runs.repository import InvalidRunTransition, RunNotFound
+from ..runs.repository import InvalidRunTransition, RunNotFound, SubmissionConflict
+from ..training_preflight import inspect_training_data, strict_spec
+from .submissions import existing_submission, request_identity
 from ..runs.status_projection import project_status
 from .deps import get_run_dir, get_run_repository, resolve_training_data_reference
 from .runs import _assert_worker_contract_compatible, _dataset_snapshot_for_reference
@@ -41,7 +43,9 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
         model_type = canonical_model_type(str(raw_model))
         if model_type in canonical:
             continue
-        spec = TrainingSpec.from_legacy({**raw, "model_type": model_type}).validated(has_external_test=has_external_test)
+        values = {**raw, 'model_type': model_type}
+        spec = (strict_spec(values, has_external_test=has_external_test) if payload.strict_config else
+                TrainingSpec.from_legacy(values).validated(has_external_test=has_external_test))
         canonical.append(str(spec.to_legacy_dict()["model_type"]))
         warnings.extend(spec.warnings)
         candidate = spec.to_legacy_dict()
@@ -53,20 +57,37 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
     if len(canonical) * int(payload.repeat_count) > 50:
         raise TrainingConfigValidationError("模型数 × 重复次数不能超过 50")
     config = dict(normalized_config or {})
+    if payload.strict_config:
+        for key in ('seed', 'model_seed'):
+            config.pop(key, None)
     config["split_seed"] = base_seed
     config["feature_selection_enabled"] = False
     return canonical, config, warnings
 
 
 @router.post("/api/training/batches", status_code=202)
-def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(get_principal),
+                 idempotency_key: str | None = Header(default=None)) -> dict[str, Any]:
     """Validate every child first, then atomically enqueue all queued Runs."""
+    fingerprint = request_identity(payload, idempotency_key)
+    repository = get_run_repository()
+    previous = existing_submission(repository, kind='batch', key=idempotency_key, fingerprint=fingerprint, principal=principal)
+    if previous is not None:
+        batch = repository.get_batch_scoped(previous, principal=principal)
+        records = repository.list_batch_runs_scoped(previous, principal=principal)
+        return {'batch_id': previous, 'state': batch_status_payload(previous, records)['state'],
+                'model_count': len(batch.model_types), 'repeat_count': batch.repeat_count, 'run_count': len(records),
+                'runs': [{'model_type': record.config['model_type'], 'repeat_index': record.batch_repeat_index,
+                          'run_id': record.run_id, 'state': record.state} for record in records], 'warnings': []}
     data_ref = resolve_training_data_reference(payload, principal=principal)
     try:
         model_types, config, warnings = _batch_config(payload, has_external_test=bool(data_ref.test_dataset_id or data_ref.test_legacy_path))
+        if payload.strict_config:
+            specs = [strict_spec({**payload.config, 'model_type': model, 'seed': payload.base_seed},
+                                 has_external_test=bool(data_ref.test_dataset_id or data_ref.test_legacy_path)) for model in model_types]
+            inspect_training_data(data_ref, specs, principal=principal)
     except (TrainingConfigValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail={"code": "invalid_training_batch", "message": str(exc)}) from exc
-    repository = get_run_repository()
     _assert_worker_contract_compatible(repository)
     config["dataset_name"] = data_ref.dataset_name
     if data_ref.test_dataset_id:
@@ -85,13 +106,17 @@ def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(g
             legacy_data_path=data_ref.legacy_path, config=config, model_types=model_types,
             repeat_count=int(payload.repeat_count), base_seed=int(payload.base_seed),
             dataset_snapshot=snapshot, principal=principal,
+            request_key=idempotency_key, request_fingerprint=fingerprint,
         )
+    except SubmissionConflict as exc:
+        raise HTTPException(409, detail={'code': 'idempotency_conflict', 'message': str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "invalid_training_batch", "message": str(exc)}) from exc
     for record in records:
-        project_status(get_run_dir(record.run_id), record, config=record.config)
+        if record.state == 'queued':
+            project_status(get_run_dir(record.run_id), record, config=record.config)
     return {
-        "batch_id": batch.batch_id, "state": "queued", "model_count": len(model_types),
+        "batch_id": batch.batch_id, "state": batch_status_payload(batch.batch_id, records)['state'], "model_count": len(model_types),
         "repeat_count": batch.repeat_count, "run_count": len(records),
         "runs": [{"model_type": record.config["model_type"], "repeat_index": record.batch_repeat_index, "run_id": record.run_id, "state": record.state} for record in records],
         "warnings": warnings,
