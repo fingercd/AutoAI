@@ -2,7 +2,9 @@
 
 ## Word 0904 新版训练入口（当前状态核对：2026-09-29）
 
-经典 AI 建模入口已接通六模型特征方案比较：传统模型在 Train+Valid 内按 Sample_ID 分层五折搜索，全特征、Binning 5/10/20、PCA 90/95/99% 独立比较；CNN 只比较全特征与三种 Binning，按 validation loss 选择。每模型一个 Run，不增加重复次数。
+2026-10-07 起，经典 AI 建模默认快速训练：只运行所选特征处理（默认全特征），五种传统模型最多尝试三套参数，用验证样品检查一次，选定后重训一次；通常共四次拟合。CNN 只训练所选方案，保留最多 200 epochs、调度与早停。逐个留出样品评估仍需主动启用，每个样品会让整套建模重做一次。
+
+页面可主动选择完整比较：传统模型在 Train+Valid 内按 Sample_ID 分层五折搜索，全特征、Binning 5/10/20、PCA 90/95/99% 独立比较；CNN 比较全特征与三种 Binning，按 validation loss 选择。每模型一个 Run，不增加重复次数。快速训练中未选方案显示未运行；历史结果不重算。详见 [默认训练数量压缩](docs/plans/2026-10-07-quick-training.md)。
 
 有独立 Test、无独立 Test、留一法及留一法加独立 Test 均支持自定义比例（合计 10）；每个模式单独记住比例。结果页/对比页提供可展开的最佳配置、逐折参数与实际划分数量。特征工程热图使用指标切换器，PNG/SVG/CSV/ZIP 与页面同源；旧结果没有特征产物时不会补造或重训。
 
@@ -27,19 +29,16 @@ SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台
 - 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
 - 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
 - 前端建模页显示 Word 0904 六类：PLS-DA、Elastic Net（logistic_regression）、SVM、Random Forest、XGBoost、1D-CNN。其他模型保留后端兼容能力。
-- 多模型批次保持“一模型一 Run”。新版后端支持 experiment_version=word-0904 的七/四种特征方案；历史任务未声明该版本时仍按原训练流程。经典多模型对比页支持响应式四指标条图、墨绿色方形矩阵、正误筛选分页，以及 PNG/SVG/CSV 整套归档下载；v2 和单模型结果页保持原样。没有特征工程结果的历史批次不补造数据。
+- 多模型批次保持“一模型一 Run”。新版后端支持 experiment_version=word-0904 的七/四种特征方案；历史任务未声明该版本时仍按原训练流程。经典多模型对比页支持响应式四指标条图、墨绿色方形矩阵、正误筛选分页，以及 PNG/SVG/CSV 整套归档下载；单模型结果页保持原样。没有特征工程结果的历史批次不补造数据。
 - 可解释性实现已保留，但当前产品面通过内部 `TEMPORARILY_HIDDEN` 开关完全关闭：新训练不计算或生成解释性 artifact，结果投影仅返回隐藏状态，历史 artifact 也不开放直接下载。
 
-## 双前端入口
+## 前端入口
 
 特征方案训练与比较已启用；经典页面依据 `/api/models` 的 `training_scheme.enabled` 展示相应方案结果。历史批次缺少特征产物时只说明缺失，不补造或重训。可解释性仍由 `TEMPORARILY_HIDDEN` 关闭，新训练不生成解释性结果，历史解释性 artifact 也不开放下载。经典混淆矩阵放大窗口限制在视口范围内。
 
-仓库同时维护两个受测试保护的原生静态前端，它们共享同一套 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约：
+当前正式前端为经典入口 `/`，代码位于 `static/index.html` 与 `static/js/`，使用 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约。
 
-- 经典前端：`/`，代码位于 `static/index.html` 与 `static/js/`，继续作为兼容基线。
-- v2 独立工作台：`/v2`（重定向到 `/static/v2/index.html`），代码位于 `static/v2/`。它提供工作台、AI 建模、训练记录、建模结果和分页面说明。
-
-v2 是正式纳入仓库的并行前端，不是历史 UI 画廊，也不会替换或破坏经典入口。两套页面均为原生 HTML/CSS/JavaScript，不依赖 React、Vue、Vite 或外部 CDN。新增接口和结果字段应先维护共享契约，不能只适配其中一个前端。
+2026-10-07 按用户要求移除 v2 工作台及其专属代码。经典前端使用原生 HTML/CSS/JavaScript，不依赖 React、Vue、Vite 或外部 CDN；新增接口和结果字段继续维护接口契约。
 
 ## 环境要求
 
@@ -107,29 +106,21 @@ AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目�
 
 ### 一键启动
 
-本地提供两个明确的前端启动文件。两者启动的是同一个 FastAPI 服务和同一个训练 worker，区别只在于自动打开哪个页面：
-
-| 启动文件 | 自动打开 | 用途 |
-|---|---|---|
-| `run_classic.py` | `http://127.0.0.1:8000/` | 经典前端，保留现有操作习惯与兼容入口 |
-| `run_v2.py` | `http://127.0.0.1:8000/v2` | 新版 v2 独立工作台 |
-
-推荐按需要选择其中一个：
+使用公共启动器或经典前端快捷入口，均打开 `http://127.0.0.1:8000/`：
 
 ```bash
 python run_classic.py
-python run_v2.py
 ```
 
-两个脚本都支持公共启动参数，例如：
+启动器支持公共参数，例如：
 
 ```bash
-python run_v2.py --port 9000
+python run.py --port 9000
 python run_classic.py --no-browser
-python run_v2.py --reload
+python run.py --reload
 ```
 
-不要在同一端口同时运行两个启动文件；如服务已经启动，直接在浏览器中访问 `/` 或 `/v2` 即可切换，不需要再启动第二个进程。
+不要在同一端口重复启动服务；如服务已经启动，直接在浏览器中访问 `/`。
 
 `run.py` 继续作为公共兼容启动器，默认打开经典前端：
 
@@ -184,9 +175,7 @@ python run.py --server --host 0.0.0.0 --no-browser
 ### 正式本地 URL
 
 - 经典前端：<http://127.0.0.1:8000/>
-- v2 独立工作台：<http://127.0.0.1:8000/v2>
 - 经典专属结果页：`http://127.0.0.1:8000/#/results?run_id=<Run ID>`
-- v2 专属结果页：`http://127.0.0.1:8000/static/v2/index.html#/results?run_id=<Run ID>`
 - 训练记录：<http://127.0.0.1:8000/#/runs>
 - API 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/health>
@@ -243,13 +232,11 @@ backend/tests/               自动化测试
 backend/requirements*.txt    核心、开发、DSCARNet 依赖与验证约束
 static/index.html            经典前端入口（兼容基线）
 static/js/                   经典前端与共享 API 客户端
-static/v2/                   v2 独立工作台、组件和 Node 纯函数测试
 deploy/                      集群部署脚本与说明
 docs/                        接口契约、ADR 和发布规范
 storage/                     本地上传、SQLite 与训练产物（不进 Git）
-run.py                       两种前端共享的底层启动器（默认经典前端）
+run.py                       服务与 Worker 启动器（打开经典前端）
 run_classic.py               启动服务并打开经典前端
-run_v2.py                    启动服务并打开 v2 工作台
 ```
 
 ## 验证
@@ -260,7 +247,6 @@ run_v2.py                    启动服务并打开 v2 工作台
 python -m pytest backend/tests/test_smoke.py -q
 python -m pytest backend/tests -q
 python -m compileall backend/app -q
-node static/v2/tests/run-tests.mjs
 python run.py --help
 python -c "from backend.app.main import app; print(app.title)"
 python -c "from backend.app.runs.worker import RunWorker; print(RunWorker.__name__)"

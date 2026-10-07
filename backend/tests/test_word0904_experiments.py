@@ -47,7 +47,7 @@ def test_cnn_length_boundary_and_binary_head():
 
 
 def test_svm_complete_grid():
-    candidates=candidate_configs(t.TrainConfig(model_type='svm'),'svm',500,40)
+    candidates=candidate_configs(t.TrainConfig(model_type='svm',training_profile='full'),'svm',500,40)
     assert len(candidates)==20
     assert sum(c.svm_kernel=='linear' for c in candidates)==5
     assert {c.svm_gamma for c in candidates if c.svm_kernel=='rbf'}=={'scale',.001,.01}
@@ -78,7 +78,7 @@ def test_new_evaluation_paths(tmp_path,monkeypatch,strategy):
     # candidate makes the outer-CV contract test small and deterministic.
     monkeypatch.setattr(e,'candidate_configs',lambda config,*args:[t._clone_config(config,pls_components=1)])
     path=tmp_path/'main.csv';_small_frame().to_csv(path,index=False)
-    config={'model_type':'pls_da','experiment_version':'word-0904','split_mode':strategy}
+    config={'model_type':'pls_da','experiment_version':'word-0904','split_mode':strategy,'training_profile':'full'}
     if 'external' in strategy:
         ext=tmp_path/'external.csv';_small_frame(4,100).to_csv(ext,index=False);config['test_data_path']=str(ext)
     monkeypatch.setattr(t,'RUNS_DIR',tmp_path/'runs')
@@ -114,7 +114,7 @@ def test_selection_ignores_test_values_and_records_partial_scheme(monkeypatch):
     monkeypatch.setattr(e,'candidate_configs',lambda config,*args:[t._clone_config(config,pls_components=1)])
     frame=_small_frame();x=frame.iloc[:,4:].to_numpy(copy=True);y=np.tile([0,1],6);groups=np.arange(12).astype(str)
     splits={'train':list(range(8)),'valid':[8,9],'test':[10,11]}
-    cfg=t.TrainConfig(model_type='pls_da',experiment_version='word-0904')
+    cfg=t.TrainConfig(model_type='pls_da',experiment_version='word-0904',training_profile='full')
     a=e.fit_experiment_fold(cfg,'pls_da',x,y,groups,splits,['1','2'],1,lambda:None,lambda _:None)
     x[10:]*=1000
     b=e.fit_experiment_fold(cfg,'pls_da',x,y,groups,splits,['1','2'],1,lambda:None,lambda _:None)
@@ -133,7 +133,7 @@ def test_failed_feature_scheme_is_not_reported_as_zero(monkeypatch):
         return original(self,x)
     monkeypatch.setattr(FeatureTransform,'fit',fail_one)
     frame=_small_frame();x=frame.iloc[:,4:].to_numpy();y=np.tile([0,1],6);groups=np.arange(12).astype(str)
-    result=e.fit_experiment_fold(t.TrainConfig(model_type='pls_da'),'pls_da',x,y,groups,{'train':list(range(8)),'valid':[8,9],'test':[10,11]},['1','2'],1,lambda:None,lambda _:None)
+    result=e.fit_experiment_fold(t.TrainConfig(model_type='pls_da',training_profile='full'),'pls_da',x,y,groups,{'train':list(range(8)),'valid':[8,9],'test':[10,11]},['1','2'],1,lambda:None,lambda _:None)
     summary=e.summarize_experiments([result],['1','2'])
     failed=next(s for s in summary['schemes'] if s['scheme_id']=='bin_10')
     assert failed['status']=='failed' and failed['metrics'] is None
@@ -144,7 +144,7 @@ def test_cnn_external_loso_refits_selected_epochs(tmp_path,monkeypatch):
     path=tmp_path/'main.csv';_small_frame().to_csv(path,index=False)
     ext=tmp_path/'external.csv';_small_frame(4,100).to_csv(ext,index=False)
     monkeypatch.setattr(t,'RUNS_DIR',tmp_path/'runs')
-    result=t.train_model(path,{'model_type':'cnn1d','experiment_version':'word-0904','epochs':1,'split_mode':'leave_one_sample_id_cv_with_external_test','split_train':7,'split_valid':3,'test_data_path':str(ext)},run_id='cnn')
+    result=t.train_model(path,{'model_type':'cnn1d','experiment_version':'word-0904','training_profile':'full','epochs':1,'split_mode':'leave_one_sample_id_cv_with_external_test','split_train':7,'split_valid':3,'test_data_path':str(ext)},run_id='cnn')
     experiment=json.loads((Path(result['run_dir'])/'feature_experiments.json').read_text(encoding='utf-8'))
     assert len(experiment['fold_configurations'])==12
     assert experiment['selected_configuration']['params']['best_epoch']==1
@@ -172,7 +172,7 @@ def test_six_model_experiment(tmp_path, monkeypatch, model):
     frame.insert(0,'Index',np.arange(1,61))
     path=tmp_path/'fixture.csv';frame.to_csv(path,index=False)
     monkeypatch.setattr(t,'RUNS_DIR',tmp_path/'runs')
-    result=t.train_model(path,{'model_type':model,'experiment_version':'word-0904','epochs':200,'seed':42},run_id=model)
+    result=t.train_model(path,{'model_type':model,'experiment_version':'word-0904','training_profile':'full','epochs':200,'seed':42},run_id=model)
     root=Path(result['run_dir'])
     experiment=json.loads((root/'feature_experiments.json').read_text(encoding='utf-8'))
     assert experiment['selected_configuration']

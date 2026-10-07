@@ -1670,7 +1670,7 @@ def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
     assert "开启交叉验证" in content
-    assert "几个 Sample_ID 就跑几折" in content
+    assert "每个独立样品都会让整套建模重新执行一次" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content
     assert "function historyRows(result)" in results
@@ -1724,7 +1724,7 @@ def test_main_ui_manual_explains_sample_id_group_split():
     assert "已停用" not in content
     assert "相同 Sample_ID 会整组进入同一数据分区" in content
     assert "相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合" in content
-    assert "几个 Sample_ID 就跑几折" in content
+    assert "每个独立样品都会让整套建模重新执行一次" in content
 
 
 def test_main_ui_preserves_hplc_range_and_interpolation_controls():

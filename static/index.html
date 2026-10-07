@@ -15,7 +15,7 @@
       → 用户填写 Label/Sample_ID 后上传为数据集（/api/datasets/upload）
       → 创建训练 Run（POST 仅创建 queued 任务，由独立 worker 执行）
       → 轮询 Run 状态 → 专属结果页（#/results?run_id=...，run-result-v1 契约）
-    并行新前端 static/v2/index.html 复用同一契约；本文件受既有字符串契约
+    本文件受既有字符串契约
     测试保护，因此任何字符串字面量都不可随意改动。
 
   【协作模块】
@@ -1543,6 +1543,13 @@
               <p id="modelCatalogHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
                 请选择一个或多个模型；同一批次使用固定的数据划分进行公平比较。
               </p>
+              <label for="trainingProfile">训练方式</label>
+              <select id="trainingProfile"><option value="quick">快速训练（单方案、一次验证）</option></select>
+              <div id="featureSchemeField">
+                <label for="featureScheme">特征处理</label>
+                <select id="featureScheme"><option value="full">全特征</option></select>
+              </div>
+              <p id="trainingWorkHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0"></p>
               <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
                 <label id="customSplitLabel">训练 / 验证 / 测试比例（总和为 10）</label>
@@ -1560,10 +1567,10 @@
               <div id="cvOptions">
                 <label class="checkbox-line">
                   <input id="cvEnabled" type="checkbox" />
-                  开启交叉验证
+                  逐个留出样品评估（耗时较长）
                 </label>
                 <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                  几个 Sample_ID 就跑几折，折数不可调。
+                  每个独立样品都会让整套建模重新执行一次；日常训练建议保持关闭。
                 </p>
               </div>
               <!-- TEMPORARILY_HIDDEN：解释性计算和入口均暂不向产品界面暴露。 -->
@@ -2111,6 +2118,7 @@
         const selected = selectedModelTypes();
         select.value = selected[0] || "";
         updateModelOptionVisibility();
+        if (trainingScheme?.feature_schemes) updateTrainingWorkHint();
       }
 
       function renderModelCatalog(models, preferredModelId = $("modelType").value) {
@@ -2646,13 +2654,37 @@
 
       function applyTrainingSchemeControls() {
         if (!trainingScheme?.enabled) return;
+        if (!trainingScheme.profiles || !trainingScheme.feature_schemes) {
+          $("trainingWorkHint").textContent='后端尚未提供新版训练配置，请更新并重启后端与 Worker 后刷新页面。';
+          return;
+        }
         const d=trainingScheme.defaults;
         const fixed={epochs:d.epochs,batchSize:d.batch_size,learningRate:d.learning_rate,earlyStoppingPatience:d.early_stopping_patience,seed:d.seed};
         Object.entries(fixed).forEach(([id,value])=>{if($(id))$(id).value=String(value);});
         [...Object.keys(fixed),'dropout','hiddenSize','transformerHeads','rfEstimators','rfSearchIterations','svmC','svmGamma','xgbEstimators','xgbMaxDepth','xgbLearningRate','xgbSubsample','xgbColsample','xgbRegLambda','classBalance'].forEach(id=>{if($(id)){$(id).disabled=true;$(id).title='Word 0904 方案自动搜索或使用固定训练策略';}});
         [...$("normalization").options].forEach(option=>{option.disabled=!['zscore','minmax'].includes(option.value);});
         if (!['zscore','minmax'].includes($("normalization").value)) $("normalization").value='zscore';
-        $("modelCatalogHint").textContent += ' · 已启用特征方案比较：传统模型分组五折选优，CNN 按验证损失选优；每模型一个 Run。';
+        for (const [id, choices] of [['trainingProfile',trainingScheme.profiles],['featureScheme',trainingScheme.feature_schemes]]) {
+          const select=$(id), previous=select.value;
+          select.replaceChildren(...choices.map(choice=>{
+            const option=document.createElement('option');option.value=choice.id;option.textContent=choice.name;return option;
+          }));
+          select.value=choices.some(choice=>choice.id===previous)?previous:(id==='trainingProfile'?trainingScheme.default_profile:trainingScheme.default_feature_scheme);
+        }
+        updateTrainingWorkHint();
+      }
+
+      function updateTrainingWorkHint() {
+        const quick=$("trainingProfile").value==='quick';
+        $("featureSchemeField").classList.toggle('hidden',!quick);
+        const cnnSelected=selectedModelTypes().includes('cnn1d');
+        [...$("featureScheme").options].forEach(option=>{
+          option.disabled=cnnSelected && !trainingScheme.feature_schemes.find(s=>s.id===option.value).cnn_supported;
+        });
+        if (cnnSelected && $("featureScheme").value.startsWith('pca_')) $("featureScheme").value='full';
+        $("trainingWorkHint").textContent=quick
+          ? '传统模型最多尝试 3 套参数，用验证样品检查一次，选定后重训；CNN 只训练所选方案，保留早停。'
+          : '传统模型比较 7 种特征方案，每套参数轮换检查 5 次；CNN 比较 4 种方案。';
       }
 
       // 将表单转换成后端 TrainConfig。四种评估模式在这里先做比例校验，
@@ -2673,7 +2705,8 @@
         return window.SpecAutoAITrainingPolicy.payload(trainingScheme,
           window.SpecAutoAITrainingPolicy.mode(Boolean(testDatasetId || testDatasetPath),$("cvEnabled").checked),
           [readSplitNumber('splitTrain',8),readSplitNumber('splitValid',1),readSplitNumber('splitTest',1)],
-          $("normalization").value,$("modelType").value);
+          $("normalization").value,$("modelType").value,
+          {training_profile:$("trainingProfile").value,feature_scheme:$("featureScheme").value});
       }
 
       /**
@@ -4265,6 +4298,8 @@
       });
       $("modelType").addEventListener("change", updateModelOptionVisibility);
       $("cvEnabled").addEventListener("change", updateSplitOptionVisibility);
+      $("trainingProfile").addEventListener("change", updateTrainingWorkHint);
+      $("featureScheme").addEventListener("change", updateTrainingWorkHint);
       ['splitTrain','splitValid','splitTest'].forEach(id=>$(id).addEventListener('input',rememberSplitPreferences));
       $("advancedToggle").addEventListener("click", () => {
         $("advancedOptions").classList.toggle("hidden");

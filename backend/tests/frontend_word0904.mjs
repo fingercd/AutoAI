@@ -17,7 +17,9 @@ function harness(memory=new Map()) {
   vm.runInContext(`let testDatasetId=null,testDatasetPath=null,displayedSplitMode=null;
     const splitPreferences=window.SpecAutoAITrainingPolicy.createPreferences(window.sessionStorage);
     $('cvEnabled').checked=splitPreferences.getCv();
-    let trainingScheme={enabled:true,version:'word-0904',defaults:{epochs:200,batch_size:8,learning_rate:.001,weight_decay:.0001,scheduler_factor:.5,scheduler_patience:10,min_learning_rate:.000001,early_stopping_patience:20,seed:42}};
+    let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',
+      profiles:[{id:'quick'},{id:'full'}],feature_schemes:[{id:'full'},{id:'bin_10'},{id:'pca_95'}],
+      defaults:{epochs:200,batch_size:8,learning_rate:.001,weight_decay:.0001,scheduler_factor:.5,scheduler_patience:10,min_learning_rate:.000001,early_stopping_patience:20,seed:42}};
     ${source}`,context);
   get('normalization').value='zscore';get('modelType').value='svm';
   return {run:s=>vm.runInContext(s,context),get,memory};
@@ -50,9 +52,22 @@ test('refresh restores CV and per-mode ratios without resetting values on repeat
 test('versioned payload is fixed, invalid ratios and unavailable capability fail closed',()=>{
   const h=harness();h.run('updateSplitOptionVisibility()');const p=h.run('configPayload()');
   assert.equal(p.experiment_version,'word-0904');assert.equal(p.epochs,200);assert.equal(p.seed,42);
+  assert.equal(p.training_profile,'quick');assert.equal(p.feature_scheme,'full');
   for(const key of ['dropout','svm_c','random_forest_search_iterations','hidden_size'])assert.equal(key in p,false);
   h.get('splitValid').value='0';assert.throws(()=>h.run('configPayload()'),/正整数/);
   h.get('splitValid').value='1';h.run('trainingScheme=null');assert.throws(()=>h.run('configPayload()'),/尚未就绪/);
+});
+test('stale backend capability cannot silently run a full search',()=>{
+  const h=harness();h.run('updateSplitOptionVisibility();delete trainingScheme.profiles');
+  assert.throws(()=>h.run('configPayload()'),/重启后端与 Worker/);
+});
+test('quick and full settings are explicit in the request',()=>{
+  const h=harness();h.run('updateSplitOptionVisibility()');
+  h.get('trainingProfile').value='quick';h.get('featureScheme').value='bin_10';
+  assert.equal(h.run('configPayload().feature_scheme'),'bin_10');
+  h.get('trainingProfile').value='full';assert.equal(h.run('configPayload().training_profile'),'full');
+  h.get('trainingProfile').value='quick';h.get('modelType').value='cnn1d';h.get('featureScheme').value='pca_95';
+  assert.throws(()=>h.run('configPayload()'),/CNN 不支持 PCA/);
 });
 test('configuration rows distinguish final selection from per-fold configurations',()=>{
   const source=readFileSync(new URL('../../static/js/experiment-details.js',import.meta.url),'utf8').replaceAll('export function ','function ');

@@ -1,10 +1,12 @@
 # 建模结果接口契约（run-result-v1）
 
+2026-10-07：快速模式的 experiment 配置带 `training_profile=quick`，传统选优指标为 `validation_balanced_accuracy`，界面显示验证集成绩；完整比较保留 `mean_balanced_accuracy_grouped_5fold`。未选特征方案带 `status=not_run`、原因和 null 指标；CNN PCA 仍为 not_applicable。Train/Valid 审计复用快速选参模型，Test 由 Train+Valid 重训模型预测，二者不可混淆。历史结果不重算。
+
 2026-09-07：新版 experiment 的配置审计增加可选 test_sample_ids、split_summary（每分区 sample_count / measurement_count）、requested_ratio。经典结果页在原参数审计区域展示最佳特征方案、完整参数、CV/validation-loss 选择得分及实际划分数量；普通留一法仅展示逐折最优配置。旧结果缺少这些字段时明确标记未记录，不推断或补造。
 
 0904 增量：可选顶层 experiment 只读取 Manifest 完整性校验通过的 feature_experiments.json；未生成时为 null。包含最佳特征方案、参数、选择指标与分数、逐折配置和七种方案的测试指标。feature_experiments.json/csv 加入公开 artifact 目录，拟合变换 joblib 与模型文件仍为私有。CNN0904 采用多类别 CrossEntropyLoss，包括二分类；旧模型契约不改写。
 
-> 最近核对：2026-09-29。该接口是经典前端和 v2 工作台专属建模结果页的共同稳定数据源；原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
+> 前端入口核对：2026-10-07，v2 工作台已移除。该接口是经典前端专属建模结果页的稳定数据源；接口内容最近核对日期为 2026-09-29。原 `GET /api/training/runs/{run_id}` 继续作为兼容状态接口。
 
 前端应先读取匿名 `GET /health` 的 `contracts.run_result`。只有明确发现旧 Web 不支持 `run-result-v1` 时才允许回退旧状态接口；当前 Web 返回 404 表示 Run 不存在或不可见，不能静默解释为“历史 Run”。
 
@@ -18,10 +20,9 @@ GET /api/training/runs/{run_id}/result
 
 ```text
 /#/results?run_id=<URL-encoded Run ID>
-/static/v2/index.html#/results?run_id=<URL-encoded Run ID>
 ```
 
-v2 公共入口 `/v2` 会重定向到静态工作台；结果页刷新、分享链接和自动跳转均以 URL 中的 Run ID 重新取数。两套前端只能下载 `artifacts[]` 中 `downloadable=true` 且 `download_url` 合法的条目。`TEMPORARILY_HIDDEN` 期间两套前端均不渲染或请求可解释性/模型特征图数据。
+结果页刷新、分享链接和自动跳转均以 URL 中的 Run ID 重新取数。前端只能下载 `artifacts[]` 中 `downloadable=true` 且 `download_url` 合法的条目。`TEMPORARILY_HIDDEN` 期间前端不渲染或请求可解释性/模型特征图数据。
 
 Run ID 属于当前 Principal 时返回结果；不存在、已删除或不属于当前 Principal 均返回 404。server 模式还需要 Bearer 令牌。
 

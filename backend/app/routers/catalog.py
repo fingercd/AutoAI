@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 
 from ..parsers import summarize_modeling_csv
 from ..paths import DEFAULT_DATA, PREPROCESSED_DIR, STATIC_DIR, UPLOADS_DIR
@@ -180,15 +180,6 @@ def index() -> FileResponse:
     """返回正式静态前端入口。"""
     # 正式前端入口 static/index.html，由后端直接静态托管。
     return FileResponse(STATIC_DIR / 'index.html')
-
-
-@router.get('/v2', include_in_schema=False)
-@router.get('/v2/', include_in_schema=False)
-def v2_index() -> RedirectResponse:
-    """把简洁入口重定向到 v2 的真实静态基路径，确保共享模块相对导入有效。"""
-    # 307 临时重定向不改变请求方法；真实资源位于 /static/v2/ 下，
-    # 这样 v2 页面里的相对路径导入（如 ../js/api-client.js）才有正确基路径。
-    return RedirectResponse(url='/static/v2/index.html', status_code=307)
 
 
 @router.get('/health')

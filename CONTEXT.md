@@ -9,10 +9,10 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 ## 当前状态
 
 - 后端使用 FastAPI，前端静态页面由后端一起托管。
-- 公共启动器是 `run.py`；本地使用 `run_classic.py` 打开经典前端，使用 `run_v2.py` 打开 v2 工作台。
-- 主要代码在 `backend/` 和 `static/`；经典前端为 `static/index.html`，并行 v2 工作台为 `static/v2/index.html`。
+- 公共启动器是 `run.py`；也可使用 `run_classic.py`，均打开经典前端 `/`。
+- 主要代码在 `backend/` 和 `static/`；正式前端为 `static/index.html`。2026-10-07 按用户要求移除 v2 工作台、启动入口和专属测试。
 - 快速回归在 `backend/tests/test_smoke.py`；Run 结果、artifact、安全、前端纯函数和迁移另有专项测试，交付时运行整个 `backend/tests`。
-- 正式产品包含经典前端与 v2 独立工作台。两者均使用原生 Hash 路由、共享 `static/js/api-client.js`、同一 FastAPI API 与 `run-result-v1`；v2 不覆盖经典入口。
+- 正式前端使用原生 Hash 路由、`static/js/api-client.js`、FastAPI API 与 `run-result-v1`。
 - 色谱主页面默认走 `/api/preprocess/hplc`，旧 `/api/preprocess/chromatography` 仍是简单范围截取兼容接口。
 - `docs/frontend_backend_handoff.md` 是当前前后端接口契约，`docs/run_result_contract.md` 是 `run-result-v1` 结果结构；`AutoAI_开发计划.md` 是历史路线参考，不代表当前主链路。
 - HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。
@@ -39,11 +39,13 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ## 模型与可解释性
 
+2026-10-07 用户确认默认计算数量压缩：`word-0904` 的 `training_profile=quick` 为默认，每次仅运行 `feature_scheme` 所选方案（默认 full）。传统模型最多三套参数，当前验证样品检查一次，选定后 Train+Valid 重训；普通流程四次拟合，审计复用选参模型。CNN 只训练所选方案，原调度与早停保留。`training_profile=full` 才执行下述七/四方案与完整五折；四种划分及比例记忆仍支持，未选方案为 not_run。具体参数与真实数据计时基线见 `docs/plans/2026-10-07-quick-training.md`。
+
 2026-09-07 接通的六模型特征方案训练当前仍启用：`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，外部测试可与 CV 同时使用。解释性则继续由 `TEMPORARILY_HIDDEN` 关闭；这两项能力状态不同。
 
-后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求；v2 不改。
+后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求。
 
-新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，v2/单模型结果页不变。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
+新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，单模型结果页保持原样。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
 
 2026-09-22：新增 `GET /api/training/batches/{batch_id}/predictions.xlsx`。预测类别表与预测概率表共用记录行；概率按 `label_map` 顺序编码为逗号分隔的六位小数文本，舍入后总和可能有微小误差。普通 CV 导出主数据 pooled OOF；CV+external Test 同时导出主数据 OOF（`test`）和外部集预测（`external_test`），后者为主指标、前者仅作审计。holdout 导出最终模型对全量记录的预测。历史 Run 无 `all_predictions.csv` 时只导出已有测试行。对比投影有 `class_metrics` 的类别 Precision/Recall/F1/Support 数据。
 
@@ -51,9 +53,9 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 训练记录使用轻量 `projection=summary`；每项可带 `test_macro_f1`。该字段只在成功、结果完整且指标文件通过 Manifest 大小/SHA-256 校验时读取；holdout 取 `metrics.test.macro_f1`，CV 取 `cv_summary.pooled_test.macro_f1`，不可用时为 `null`，不得回退到 fold mean。
 
-可解释性源码和未来恢复所需的模型分支仍以 `backend/app/training_explainability.py` 为准，但当前由唯一硬编码 `TEMPORARILY_HIDDEN` 开关关闭：新训练不计算、不写入、不投影也不开放直接下载相应 artifact；两套前端不渲染或请求任何解释性数据。
+可解释性源码和未来恢复所需的模型分支仍以 `backend/app/training_explainability.py` 为准，但当前由唯一硬编码 `TEMPORARILY_HIDDEN` 开关关闭：新训练不计算、不写入、不投影也不开放直接下载相应 artifact；前端不渲染或请求任何解释性数据。
 
-2026-09-27：经典比较页将各类别 Recall 与 Precision 改为两张热图，精确数值与 Support 折叠查看，图像与归档均由后端 `comparison_figures.py` 生成。最新绘图版本为 `comparison-figures-v4`；比较页通过能力标签显示特征方案结果，历史缺少方案产物时不补造。v2 的比较视图与单 Run 结果页维持各自流程。
+2026-09-27：经典比较页将各类别 Recall 与 Precision 改为两张热图，精确数值与 Support 折叠查看，图像与归档均由后端 `comparison_figures.py` 生成。最新绘图版本为 `comparison-figures-v4`；比较页通过能力标签显示特征方案结果，历史缺少方案产物时不补造。单 Run 结果页维持已有流程。
 
 - 当前建模任务仅支持分类；`Label` 永远按类别名编码。`PLSR`、`SVR` 属于回归变体，本版不出现在可训练模型列表。
 - 模型算法改动必须使用独立模型计划，并提供固定数据集上的对比验收。
@@ -73,10 +75,9 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 ```powershell
 C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_classic.py
-C:\Users\lenovo\anaconda3\envs\pytorch\python.exe run_v2.py
 ```
 
-二选一运行即可；两者共享端口、后端和 worker，不能同时占用默认 `8000` 端口。服务已启动时直接访问 `/` 与 `/v2` 切换。
+使用一个启动器即可，不能重复占用默认 `8000` 端口。服务已启动时直接访问 `/`。
 
 等效手动启动：
 
@@ -87,9 +88,7 @@ C:\Users\lenovo\anaconda3\envs\pytorch\python.exe -m uvicorn backend.app.main:ap
 打开：
 
 - `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/v2`
 - `http://127.0.0.1:8000/#/results?run_id=<Run ID>`
-- `http://127.0.0.1:8000/static/v2/index.html#/results?run_id=<Run ID>`
 - `http://127.0.0.1:8000/#/runs`
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/health`
@@ -104,7 +103,6 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests\test_smoke.py' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m pytest 'D:\PythonProject\AutoAI\backend\tests' -q
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
-node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 ```
 
 前端 JS 改动后，优先抽取 `static/index.html` 的内联 `<script>` 再用 Node 检查；不要直接 `node --check static/index.html`。没有 Playwright 时不要强行引入新依赖。

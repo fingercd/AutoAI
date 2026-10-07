@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 封装对后端 FastAPI 同源 `/api/` 接口的 fetch 请求，统一处理结构化错误与可选的 Bearer 认证。
- * - 被 `static/index.html`（旧版主界面）和 `static/v2/index.html`（并行新工作台）共同复用；
+ * - 被 `static/index.html` 与经典前端模块复用；
  *   结果数据契约以后端 `run-result-v1`（见 `docs/run_result_contract.md`）为准，本模块只负责传输，不解释业务字段。
  *
  * 关键设计约束（对应 AGENTS.md / docs/frontend_backend_handoff.md）：
@@ -253,7 +253,7 @@ export async function downloadFile(url, options = {}) {
 /**
  * 浏览器环境下的全局桥接：
  * 旧版 `static/index.html` 的内联脚本不是 ES module，无法 import 本文件，
- * 因此把公共 API 挂到 window 上供其使用；新工作台（v2）可直接 import。
+ * 因此把公共 API 挂到 window 上供其使用；ES 模块可直接 import。
  */
 if (typeof window !== 'undefined') {
   window.SpecAutoAIRequest = request;
