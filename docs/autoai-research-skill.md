@@ -18,7 +18,11 @@
 
 ## 安装与维护
 
-本机 Skill 已安装到 Codex 的用户技能目录。开发源在 `skills/autoai-research`，修改后同步安装副本。首次使用或更换设备时，助手按 [环境配置与修复手册](../skills/autoai-research/references/environment-setup.md) 检查 Python、实际依赖、项目源码和计算服务。环境不全或有问题时先通知用户，再补齐或建立专用环境，修复后复查。研究使用者不需要操作内部接口或填写系统编号；只有确实缺少项目来源、权限或远程凭据等信息时才需补充。
+安装入口见 [README 的两种安装方式](../README.md#安装-ai-助手技能)：可以手动下载项目并复制技能文件夹，也可以让 Agent 下载和安装。两种方式都保留完整项目源码，技能目录下直接包含 `SKILL.md`。仓库为私有；Agent 先核对现有 GitHub 登录和仓库访问权限，缺权限时说明原因，不反复登录或把凭据写入命令与配置。
+
+默认安装到 `CODEX_HOME/skills/autoai-research`，未设置 CODEX_HOME 时使用 `~/.codex/skills/autoai-research`。已有安装先检查；更新前保存本机 `runtime.json`，只同步技能源码和资源，排除缓存及其他机器的 runtime.json。复用已有项目时先核对仓库和分支，不覆盖用户改动；新下载的项目保存在持久目录，不能在安装后删除作为临时文件。
+
+首次使用或更换设备时，助手按 [环境配置与修复手册](../skills/autoai-research/references/environment-setup.md) 检查 Python、实际依赖、项目源码和计算服务。环境不全或有问题时先通知用户，再补齐或建立专用环境，修复后复查。检查通过后，将本机真实项目目录和解释器路径写入 runtime.json；技能将在下一轮对话可用。只有确实缺少项目来源、权限或远程凭据等信息时才需补充。
 
 技能的 requirements.txt 管理客户端依赖；本地计算还需项目 backend/requirements.txt。标准库环境检查器可在尚未安装客户端依赖时运行。详细运行方式、文件映射和维护命令放在 Skill 的参考材料中，供 Agent 执行与排障使用。
 
