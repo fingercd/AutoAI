@@ -35,7 +35,10 @@ def write_json(path, value):
 
 def provenance():
     def git(*args):
-        result = subprocess.run(['git', *args], capture_output=True, encoding='utf-8', errors='replace')
+        try:
+            result = subprocess.run(['git', *args], capture_output=True, encoding='utf-8', errors='replace')
+        except FileNotFoundError:
+            return None
         return result.stdout if result.returncode == 0 else None
     untracked = git('ls-files', '--others', '--exclude-standard', '--', 'backend/app', 'skills/autoai-research') or ''
     additions = {name: Path(name).read_text(encoding='utf-8') for name in untracked.splitlines()
@@ -372,10 +375,8 @@ class AutoAIClient:
             self.state['submission'] = {'key': uuid.uuid4().hex, 'task_type': task_type,
                                         'payload': preview['submit_payload']}
             self.state['provenance'] = provenance()
-            self.state['cloud_id'] = uuid.uuid4().hex[:8]
             self.save()
             self.log({'experiment/submission_started': 1})
-            self.sync_cloud(verify=False)
         entry = self.state['submission']
         path = '/api/training/runs' if entry['task_type'] == 'run' else '/api/training/batches'
         response = self.request('POST', path, json=entry['payload'], headers={'Idempotency-Key': entry['key']}).json()
@@ -383,7 +384,6 @@ class AutoAIClient:
         entry['response'] = response
         self.save()
         self.log({'experiment/submitted': 1})
-        self.sync_cloud(verify=False)
         return response
 
     def status(self):
@@ -404,62 +404,12 @@ class AutoAIClient:
         self.state['latest_status'] = result
         self.save()
         self.log({'experiment/cancel_requested': 1})
-        self.sync_cloud(verify=False)
         return result
 
     def log(self, metrics):
         path = self.task_dir / 'events.jsonl'
         with path.open('a', encoding='utf-8') as handle:
             handle.write(json.dumps({'time': time.time(), 'metrics': metrics}, ensure_ascii=False, allow_nan=False) + '\n')
-
-    def sync_cloud(self, *, verify=True):
-        """Replay local events to one online experiment; failures keep the journal."""
-        if 'cloud_id' not in self.state:
-            return {'status': 'not_started'}
-        try:
-            import swanlab
-            datasets = {role: {**item, 'summary': {key: value for key, value in item.get('summary', {}).items()
-                                                  if key != 'curves'}} for role, item in self.state['datasets'].items()}
-            metadata = {**self.state.get('provenance', {}), 'datasets': datasets,
-                        'plan': self.state.get('plan'), 'submission': self.state.get('submission'),
-                        'effective_configs': self.state.get('preflight', {}).get('normalized_configs'),
-                        'weights_version': 'no_pretrained_weights'}
-            cloud = swanlab.init(project='AutoAI-Skill', name=self.task_dir.name,
-                                 id=self.state['cloud_id'], resume='allow', mode='online',
-                                 log_dir=str(self.task_dir / 'swanlab'), config=metadata)
-            self.state['cloud_url'] = cloud.url
-            self.save()
-            events = [json.loads(line) for line in (self.task_dir / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
-            for step, event in enumerate(events):
-                if step >= self.state.get('cloud_synced_count', 0) and event['metrics']:
-                    swanlab.log(event['metrics'], step=step)
-            swanlab.finish()
-            self.state.pop('cloud_error_type', None)
-            self.state['cloud_synced_count'] = len(events)
-            self.state['cloud_status'] = 'uploaded_unverified'
-            if verify:
-                path = cloud.url.replace('https://swanlab.cn/@', '').replace('/runs/', '/')
-                run = swanlab.Api().run(path)
-                expected = {}
-                for event in events:
-                    expected.update(event['metrics'])
-                remote = run.summary(keys=list(expected))
-                remote_config = run.profile.get('config', {})
-                missing_config = [key for key, value in metadata.items() if remote_config.get(key, {}).get('value') != value]
-                metrics_match = all(remote.get(key, {}).get('value') == value for key, value in expected.items())
-                write_json(self.task_dir / 'cloud-verification.json', {'url': cloud.url, 'expected': expected,
-                           'remote_summary': remote, 'config_mismatches': missing_config})
-                self.state['cloud_status'] = 'verified' if metrics_match and not missing_config else 'uploaded_unverified'
-                if not metrics_match:
-                    # SDK upload failures can be logged without raising. Retain
-                    # replay eligibility until the remote metrics are confirmed.
-                    self.state['cloud_synced_count'] = 0
-        except Exception as exc:
-            # Do not print third-party exception strings which may include credentials.
-            self.state['cloud_status'] = 'pending_upload_or_verification'
-            self.state['cloud_error_type'] = type(exc).__name__
-        self.save()
-        return {key: self.state.get(key) for key in ('cloud_status', 'cloud_url', 'cloud_error_type')}
 
     def watch(self, seconds=60, interval=3):
         end = time.monotonic() + seconds
@@ -478,7 +428,6 @@ class AutoAIClient:
             if status['state'] in {'succeeded', 'failed', 'cancelled', 'partial'} or time.monotonic() >= end:
                 break
             time.sleep(min(interval, max(0, end - time.monotonic())))
-        self.sync_cloud(verify=False)
         return status
 
     def result(self, *, download=False):
@@ -528,7 +477,7 @@ class AutoAIClient:
                         continue
                     if artifact['name'] not in {'metrics.json', 'cv_metrics.json'}:
                         self.download_artifact(artifact, run_id, save=True)
-        report = {'result_url': link, 'runs': summaries, 'exports': exports, 'cloud': self.sync_cloud()}
+        report = {'result_url': link, 'runs': summaries, 'exports': exports}
         write_json(self.task_dir / 'summary.json', report)
         return report
 
@@ -582,7 +531,7 @@ def main():
     preprocess.add_argument('files', type=Path, nargs='+')
     preflight = sub.add_parser('preflight')
     preflight.add_argument('--plan', type=Path, required=True)
-    for name in ('submit', 'status', 'stop', 'sync-cloud'):
+    for name in ('submit', 'status', 'stop'):
         sub.add_parser(name)
     watch = sub.add_parser('watch')
     watch.add_argument('--seconds', type=float, default=60)

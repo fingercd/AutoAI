@@ -2,9 +2,11 @@
 
 ## Agent Skill
 
-仓库提供 `skills/autoai-research` 分类研究 Skill。用户指定文件和目标后，Agent 检查数据、推荐模型与训练设置，将必要问题集中确认，然后完成训练和结果交付；明确要求直接运行时不增加确认环节。本地计算环境由 Agent 自动准备，普通对话只解释数据、方案和结果。模型按数据推荐，默认快速训练、全特征。
+仓库提供 `skills/autoai-research` 分类研究 Skill。用户指定文件和目标后，Agent 检查数据、汇报推荐方案，集中询问一轮可选设置并等待回复，然后完成训练和结果交付；仅明确要求“请直接跑”“直接运行”等跳过询问时才当轮执行。本地计算环境由 Agent 自动准备，普通对话只解释数据、方案和结果。模型按数据推荐，默认快速训练、全特征，实验记录保存在本地。
 
 使用与安装见 [AutoAI 分类研究 Skill](docs/autoai-research-skill.md)。后端新增 `/api/training/preflight`，Run/Batch 可通过 `strict_config` 和 `Idempotency-Key` 使用严格校验与提交去重，旧客户端保持兼容。
+
+首次使用及环境异常按 [环境配置与修复手册](skills/autoai-research/references/environment-setup.md) 检查实际依赖，先告知问题再修复；修复后复查解释器、依赖导入和计算服务，保留本地检查记录。
 
 ## Word 0904 新版训练入口（当前状态核对：2026-09-29）
 

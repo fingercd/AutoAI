@@ -25,6 +25,16 @@ prepare = load_script('prepare_dataset')
 client_module = load_script('autoai_client')
 
 
+def test_provenance_allows_a_source_archive_without_git(monkeypatch):
+    def absent_git(*args, **kwargs):
+        raise FileNotFoundError('git executable is unavailable')
+    monkeypatch.setattr(client_module.subprocess, 'run', absent_git)
+    record = client_module.provenance()
+    assert record['commit'] is None and record['git_status'] is None
+    assert record['untracked_code'] == {}
+    assert record['client_sha256'] == prepare.fingerprint(SCRIPTS / 'autoai_client.py')
+
+
 def test_xlsx_transpose_multiheader_and_sort_preserve_correspondence(tmp_path):
     source = tmp_path / 'source.xlsx'
     workbook = Workbook()
@@ -111,7 +121,6 @@ def test_submit_timeout_restores_saved_key_and_payload(tmp_path, monkeypatch):
             raise httpx.ReadTimeout('response lost', request=request)
         return httpx.Response(202, json={'run_id': 'r', 'state': 'queued'})
     monkeypatch.setattr(client_module.time, 'sleep', lambda _: None)
-    monkeypatch.setattr(client_module.AutoAIClient, 'sync_cloud', lambda self, **kwargs: {'status': 'fixture'})
     client = client_module.AutoAIClient('https://autoai.example', task, transport=httpx.MockTransport(handler))
     client.state['plan'] = {'dataset_id': 'd', 'config': {'model_type': 'svm'}}
     with pytest.raises(httpx.ReadTimeout):
@@ -143,32 +152,23 @@ def test_upload_timeout_is_not_blindly_retried_and_credentials_stay_out_of_state
         client.request('GET', 'https://other.example/artifact')
 
 
-def test_cloud_failure_preserves_journal_then_verifies_replayed_metrics(tmp_path, monkeypatch):
-    import types
-    client = client_module.AutoAIClient('https://autoai.example', tmp_path / 'task')
-    client.state['cloud_id'] = 'fake-id'
-    client.log({'test/accuracy': 0.75})
-    fake = types.SimpleNamespace(init=lambda **kwargs: (_ for _ in ()).throw(RuntimeError('failure')))
-    monkeypatch.setitem(sys.modules, 'swanlab', fake)
-    assert client.sync_cloud()['cloud_status'] == 'pending_upload_or_verification'
-    logged = []
-    uploaded_config = {}
-    def init(**kwargs):
-        uploaded_config.update(kwargs['config'])
-        return types.SimpleNamespace(url='https://swanlab.cn/@fixture/AutoAI-Skill/runs/fake-id')
-    fake.init = init
-    fake.log = lambda metrics, step: logged.append((metrics, step))
-    fake.finish = lambda: None
-    fake.Api = lambda: types.SimpleNamespace(run=lambda path: types.SimpleNamespace(
-        summary=lambda keys: {'test/accuracy': {'value': 0.75}},
-        profile={'config': {key: {'value': value} for key, value in uploaded_config.items()}}))
-    assert client.sync_cloud()['cloud_status'] == 'verified'
-    assert logged == [({'test/accuracy': 0.75}, 0)]
-    client.sync_cloud()
-    assert len(logged) == 1
-    fake.Api = lambda: types.SimpleNamespace(run=lambda path: types.SimpleNamespace(
-        summary=lambda keys: {'test/accuracy': {'value': 0.75}}, profile={'config': {}}))
-    assert client.sync_cloud()['cloud_status'] == 'uploaded_unverified'
+def test_result_saves_metrics_locally_using_only_the_modeling_service(tmp_path):
+    calls = []
+    result = {'run': {'run_id': 'r', 'state': 'succeeded'},
+              'model': {'type': 'svm'},
+              'evaluation': {'strategy': 'leave_one_sample_id_cv'},
+              'metrics': {'primary': {'accuracy': 0.75}}, 'artifacts': []}
+    def handler(request):
+        calls.append((request.method, str(request.url)))
+        return httpx.Response(200, json=result)
+    task = tmp_path / 'task'
+    client = client_module.AutoAIClient('https://autoai.example', task, transport=httpx.MockTransport(handler))
+    client.state['submission'] = {'task_type': 'run', 'id': 'r'}
+    report = client.result()
+    assert calls == [('GET', 'https://autoai.example/api/training/runs/r/result')]
+    assert set(report) == {'result_url', 'runs', 'exports'}
+    assert json.loads((task / 'summary.json').read_text(encoding='utf-8')) == report
+    assert json.loads((task / 'events.jsonl').read_text(encoding='utf-8'))['metrics'] == {'pooled_oof/svm/accuracy': 0.75}
 
 
 def ready_response(request):
