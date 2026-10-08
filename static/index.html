@@ -2654,7 +2654,7 @@
 
       function applyTrainingSchemeControls() {
         if (!trainingScheme?.enabled) return;
-        if (!trainingScheme.profiles || !trainingScheme.feature_schemes) {
+        if (!trainingScheme.profiles || !trainingScheme.feature_schemes || !trainingScheme.supported_feature_schemes) {
           $("trainingWorkHint").textContent='后端尚未提供新版训练配置，请更新并重启后端与 Worker 后刷新页面。';
           return;
         }
@@ -2675,16 +2675,18 @@
       }
 
       function updateTrainingWorkHint() {
+        if (!trainingScheme?.supported_feature_schemes) return;
         const quick=$("trainingProfile").value==='quick';
         $("featureSchemeField").classList.toggle('hidden',!quick);
-        const cnnSelected=selectedModelTypes().includes('cnn1d');
+        const selected=selectedModelTypes();
         [...$("featureScheme").options].forEach(option=>{
-          option.disabled=cnnSelected && !trainingScheme.feature_schemes.find(s=>s.id===option.value).cnn_supported;
+          option.disabled=selected.some(model=>!modelCatalogItem(model).supported_feature_schemes.includes(option.value));
         });
-        if (cnnSelected && $("featureScheme").value.startsWith('pca_')) $("featureScheme").value='full';
+        if ($("featureScheme").selectedOptions[0]?.disabled) $("featureScheme").value='full';
+        const counts=selected.map(model=>`${modelCatalogItem(model).display_name}：${modelCatalogItem(model).supported_feature_schemes.length} 种`);
         $("trainingWorkHint").textContent=quick
           ? '传统模型最多尝试 3 套参数，用验证样品检查一次，选定后重训；CNN 只训练所选方案，保留早停。'
-          : '传统模型比较 7 种特征方案，每套参数轮换检查 5 次；CNN 比较 4 种方案。';
+          : `完整比较适用方案（${counts.join('；')}）；传统模型按样品分组做 5 折选参，CNN 使用验证损失选优。`;
       }
 
       // 将表单转换成后端 TrainConfig。四种评估模式在这里先做比例校验，

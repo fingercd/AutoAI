@@ -1,6 +1,6 @@
 # SpecAutoAI Agent 工作规则
 
-当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
+当前实现核对日期：2026-10-08。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。三个模型开放后，按用户指定的测试.csv 完成真实快速训练及整套回归（595 passed、9 skipped），范围与限制见 docs/plans/2026-10-08-public-traditional-models.md 的后续测试记录。
 
 ## 默认协作规则
 
@@ -46,10 +46,10 @@
 
 - 2026-10-07 用户确认压缩默认计算数量：六公开模型的 `word-0904` 新训练默认 `training_profile=quick`、`feature_scheme=full`，只运行所选方案。传统模型最多三套参数，用当前验证集检查一次，按 Balanced Accuracy 选优后在 Train+Valid 重训；Train/Valid 审计复用获胜候选，普通三候选流程共四次拟合。CNN 只运行所选方案，保留原调度、早停及 epoch 上限。前端提供快速训练/完整比较和特征处理选择，留一法仍需主动启用。下述多方案、完整网格与五折规则仅适用于主动选择 `training_profile=full` 的完整比较；快速模式不要求每类五个搜索样品。未运行方案记 `not_run`，不填零、不误报失败。参数表和固定数据对照见 [数量压缩计划](docs/plans/2026-10-07-quick-training.md)。
 - 当前建模任务仅支持分类；`Label` 即使为数字也按类别名编码，不作为连续回归目标。`PLSR`、`SVR` 是回归变体，本版训练入口不启用。
-- `/api/models` 保留 17 个后端模型，建模 UI 按 `ui_visible` 仅显示六项：`pls_da`、`logistic_regression`（Elastic Net）、`svm`、`random_forest`、`xgboost`、`cnn1d`。其余十一项以 `ui_visible=false` 隐藏，不得删除后端能力或用近似模型替代。
+- `/api/models` 保留 17 个后端模型，建模 UI 按 `ui_visible` 显示九项：`pls_da`、`spls_da`、`pca_lda`、`logistic_regression`（Elastic Net）、`svm`、`pca_svm`、`random_forest`、`xgboost`、`cnn1d`。其余八项以 `ui_visible=false` 隐藏，不得删除后端能力或用近似模型替代。
 - 可用性按当前环境检测，不能把 UI 隐藏等同于不可训练。`cnn_mamba1d` 缺少 `mamba-ssm` 时必须返回 `available=false`；DSCARNet 需可选 AggMap 依赖。隐藏模型在依赖可用时仍接受兼容 API；`transformer1d` 继续作为 `cnn_transformer1d` 的兼容别名。
 - 经典新训练以 `/api/models` 返回的 `training_scheme` 为唯一能力来源，显式发送 `experiment_version=word-0904`，对应架构 `docx-classification-v4-0904`。前端不维护独立启停常量；未声明版本的兼容 API 保留原语义，历史权重不直接载入新结构。
-- 当前 `feature_policy.FEATURE_ENGINEERING_ENABLED=True`，特征方案训练已经恢复；此前暂时停用的记录不代表当前状态。五类传统模型比较全特征、Binning 5/10/20、PCA 90/95/99% 七方案；CNN 只比较全特征和三种 Binning，PCA 标为不适用。
+- 当前 `feature_policy.FEATURE_ENGINEERING_ENABLED=True`，特征方案训练已经恢复；此前暂时停用的记录不代表当前状态。六类传统模型比较全特征、Binning 5/10/20、PCA 90/95/99% 七方案；PCA-LDA/PCA-SVM 自带 PCA，与 CNN 一样只比较全特征和三种 Binning，外层 PCA 标为不适用。新增候选参数见 [三个传统模型说明](docs/plans/2026-10-08-public-traditional-models.md)。模型目录的 `supported_feature_schemes` 是具体能力来源，快速模式多选取交集，完整比较按各模型适用方案计数。Worker 能力版本为 `run-artifact-manifest-v2-quick-training-v2`。
 - 新版传统模型每方案在 Train+Valid 合并池内按独立 `Sample_ID` 分组分层五折搜索；标准化、PCA 等变换只在各内层训练折拟合。按五折平均 Balanced Accuracy 选择参数与方案，并列采用固定候选顺序；锁定后在 Train+Valid 重训，保留 Test 只用于评估。旧手动搜索预算不能截断完整网格。
 - 每次五折搜索的池中每类至少需要 5 个独立 `Sample_ID`，不足时报告具体类别和数量，不静默减折。留一法每个外层折独立拟合、搜索和选优；无效候选或失败方案记录原因，不用 Test 分数补选。
 - 经典新版 CNN 使用后端公布的默认策略：AdamW、最多 200 epochs、batch size 8、学习率调度与早停；每方案保存最低 validation loss checkpoint，再按 validation loss 选方案。二分类也使用两类别输出与 CrossEntropyLoss。经典请求不混入与固定策略冲突的旧手动搜索参数。

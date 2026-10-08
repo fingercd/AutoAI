@@ -4,6 +4,10 @@
 
 ## 怎么使用
 
+第一次使用先按 [README 的安装与数据指南](../README.md)准备环境和文件。助手支持九个公开分类模型，包括新增开放的 sPLS-DA、PCA-LDA、PCA-SVM。模型与特征方案以实时目录为准；PCA-LDA/PCA-SVM 自带 PCA，快速训练选择全特征或 Binning。
+
+只咨询时可以说“检查文件并推荐方案，先不运行”；接受助手已经给出的设置时回复“按推荐方案开始”。下面分别是普通请求、明确直接运行和数据整理示例。
+
 > 使用 $autoai-research 对 D:\PythonProject\AutoAI\测试.csv 做分类，推荐一个快速方案并运行。
 
 > 使用 $autoai-research 对 D:\PythonProject\AutoAI\测试.csv 做分类，推荐一个快速方案，请直接跑。

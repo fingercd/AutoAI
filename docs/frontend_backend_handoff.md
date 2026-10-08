@@ -10,7 +10,7 @@
 
 2026-09-05 增量：经典多模型对比页新增批次历史、归档与绘图接口，详见 `docs/model_comparison_contract.md` 的“经典对比页与持久归档”。Run summary 新增可空 batch_id；原 Run/Batch 契约、v2 和单模型结果页保持兼容。本轮没有改动训练请求和算法。
 
-当前建模入口仅支持分类，具体六模型与 0904 特征工程见第六节。
+当前建模入口仅支持分类，具体九模型与 0904 特征工程见第六节。
 
 > 最近核对：2026-08-22。本文记录当前 FastAPI + 静态前端的稳定接口、状态和下载边界。实现与自动化测试优先于历史计划；`AutoAI_开发计划.md` 仅作历史资料。
 
@@ -391,7 +391,11 @@ GET /api/training/runs/{run_id}/artifact/{name}
 
 ## 6. 分类模型与评估契约
 
-能力目录保留 17 个后端分类模型，UI 通过 ui_visible=true 展示六类：PLS-DA、Elastic Net、SVM、Random Forest、XGBoost、1D-CNN。Label 即使为数字也按类别处理。
+能力目录保留 17 个后端分类模型，UI 通过 ui_visible=true 展示九类：PLS-DA、sPLS-DA、PCA-LDA、Elastic Net、SVM、PCA-SVM、Random Forest、XGBoost、1D-CNN。Label 即使为数字也按类别处理。
+
+每个模型新增 `supported_feature_schemes` 数组，`training_scheme.supported_feature_schemes` 同时提供按模型 ID 索引的同源映射；原字段继续保留。这些字段只描述 `word-0904` 能力，隐藏模型返回空数组，未声明版本的兼容训练行为不变。快速训练选项使用已选模型方案交集。PCA-LDA、PCA-SVM 和 CNN 支持 full/bin_5/bin_10/bin_20；其余六类传统模型支持全部七种。完整比较按每个模型适用方案执行，PCA-LDA/PCA-SVM 的外层 PCA 结果为 `not_applicable`，进度按实际方案数计数。新版三个传统模型的候选参数见 [模型说明](plans/2026-10-08-public-traditional-models.md)。
+
+Web/Worker 执行能力同步升级为 `run-artifact-manifest-v2-quick-training-v2`，避免新 Web 向旧 Worker 提交新增模型；更新后须让两者加载相同代码，不能只刷新浏览器。
 
 UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-v4-0904。未指定版本的旧请求保留原训练行为。隐藏模型继续通过兼容 API 调用；cnn_mamba1d 依赖不可用时必须真实返回 available=false。
 
@@ -404,7 +408,7 @@ UI 配置新增 experiment_version=word-0904，对应架构 docx-classification-
 
 交叉验证的 Test 主指标来自所有折合并后的 OOF 预测。Train/Valid 标量展示折均值，折标准差作为审计值；图表分析使用跨折预测合并并标记 `pooled_cross_fold`，样本可能重复。不得把 fold mean、pooled cross-fold 和 pooled OOF 混在同一口径中。
 
-传统模型以 `Sample_ID` 分组的内层 5 折 Balanced Accuracy 选优，所有 normalizer/PCA 仅在内层训练折拟合，再使用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
+快速传统模型使用当前验证集 Balanced Accuracy 选优；完整比较以 `Sample_ID` 分组的内层 5 折平均 Balanced Accuracy 选优。所有 normalizer/PCA/稀疏变量选择仅在相应训练折拟合，锁定配置后使用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并保存最低 validation loss 权重。
 
 可解释性实现保留，但由内部常量 `TEMPORARILY_HIDDEN` 关闭。新训练不计算或生成解释性 artifact；前端不显示入口或发起解释性请求；结果投影仅返回 `{"status":"temporarily_hidden"}`，历史解释性 artifact 也不得下载。
 

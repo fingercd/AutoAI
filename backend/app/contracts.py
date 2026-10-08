@@ -177,7 +177,7 @@ class TrainingSpec:
                 raise TrainingConfigValidationError('特征工程暂时停用，请使用普通训练配置')
             from .feature_engineering import MODELS
             if model_type not in MODELS:
-                raise TrainingConfigValidationError('0904 方案仅支持六类公开模型')
+                raise TrainingConfigValidationError('0904 方案仅支持九类公开模型')
             if values.get('normalization', 'zscore') not in {'zscore', 'minmax'}:
                 raise TrainingConfigValidationError('0904 方案要求 zscore 或 minmax 特征标准化')
             values.setdefault('training_profile', 'quick')

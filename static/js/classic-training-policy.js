@@ -30,10 +30,12 @@
     if (!['zscore','minmax'].includes(normalization)) throw new Error('新版方案请选择 Z-score 或 Min-Max 标准化');
     const d=scheme.defaults;
     const profile=options.training_profile || scheme.default_profile;
-    const feature=options.feature_scheme || scheme.default_feature_scheme;
-    if (!scheme.profiles?.some(item=>item.id===profile) || !scheme.feature_schemes?.some(item=>item.id===feature))
+    const feature=profile==='full' ? scheme.default_feature_scheme : (options.feature_scheme || scheme.default_feature_scheme);
+    if (!scheme.profiles?.some(item=>item.id===profile) || !scheme.feature_schemes?.some(item=>item.id===feature)
+        || !scheme.supported_feature_schemes?.[model])
       throw new Error('训练配置尚未就绪，请更新并重启后端与 Worker 后刷新页面');
-    if (profile==='quick' && model==='cnn1d' && feature.startsWith('pca_')) throw new Error('CNN 不支持 PCA，请选择全特征或相邻点合并');
+    if (!scheme.supported_feature_schemes[model].includes(feature))
+      throw new Error('所选模型不支持该特征方案，请选择全特征或相邻点合并');
     return {...splitPayload(selectedMode,ratios),experiment_version:scheme.version,model_type:model,normalization,
       training_profile:profile,feature_scheme:feature,
       epochs:d.epochs,batch_size:d.batch_size,learning_rate:d.learning_rate,weight_decay:d.weight_decay,

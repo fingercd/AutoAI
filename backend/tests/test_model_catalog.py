@@ -19,6 +19,7 @@ def test_model_catalog_matches_supported_training_models():
         'unavailable_reason',
         'ui_visible',
         'visibility_reason',
+        'supported_feature_schemes',
     }
     assert models
     assert {model['id'] for model in models} == TARGET_MODEL_TYPES

@@ -27,9 +27,9 @@ RUN_SUMMARY_CONTRACT_VERSION = 'v1'
 TRAINING_BATCH_CONTRACT_VERSION = 'training-batch-v1'
 MODEL_COMPARISON_CONTRACT_VERSION = 'model-comparison-v1'
 
-# 快速训练改变默认计算策略；旧 Worker 不能忽略新配置后执行完整搜索。
+# 九模型训练扩展选参和特征能力；旧 Worker 不能执行新的公开模型配置。
 # Manifest 格式保持 v2，执行能力单独升级以阻止新 Web 与旧 Worker 混用。
-WORKER_CONTRACT_VERSION = 'run-artifact-manifest-v2-quick-training-v1'
+WORKER_CONTRACT_VERSION = 'run-artifact-manifest-v2-quick-training-v2'
 
 # 汇总字典：一次性暴露全部 Web 端契约版本，供契约/健康类接口原样返回，
 # 前端可据此快速判断前后端契约是否匹配；键名同样是公开协议的一部分。

@@ -61,6 +61,7 @@ MODEL_DISPLAY_NAMES = {
     "xgboost": "XGBoost",
     "cnn1d": "1D-CNN",
     "spls_da": "sPLS-DA",
+    "pca_lda": "PCA-LDA",
     "pca_svm": "PCA-SVM",
 }
 EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
