@@ -64,6 +64,25 @@ class CNN0904(nn.Module):
 
 def candidate_configs(config, model_type, n_features, min_train):
     from . import training as t
+    if model_type in {'spls_da', 'pca_lda', 'pca_svm'}:
+        cap = min(min_train - 1, n_features)
+        if cap < 1:
+            return []
+        if config.training_profile == 'quick':
+            if model_type == 'spls_da':
+                return [t._clone_config(config, spls_components=n, spls_keepx=min(keepx, n_features))
+                        for n, keepx in ((1, 25), (2, 50), (3, 100)) if n <= cap]
+            if model_type == 'pca_lda':
+                return [t._clone_config(config, pca_components=n) for n in (1, 3, 5) if n <= cap]
+            return [t._clone_config(config, pca_components=min(5, cap), svm_c=c,
+                                   svm_kernel='linear', svm_gamma='scale') for c in (.1, 1., 10.)]
+        if model_type in {'pca_lda', 'pca_svm'}:
+            components = [n for n in (1, 2, 3, 5, 8, 10, 15, 20, 30, 40, 50) if n <= cap]
+            if model_type == 'pca_lda':
+                return [t._clone_config(config, pca_components=n) for n in components]
+            return [t._clone_config(config, pca_components=n, svm_c=c,
+                                   svm_kernel='linear', svm_gamma='scale')
+                    for n in components for c in (.01, .1, 1., 10., 100.)]
     if config.training_profile == 'quick':
         if model_type == 'pls_da':
             return [t._clone_config(config, pls_components=n) for n in (1, 3, 5)
@@ -168,29 +187,29 @@ def train_cnn(config, x, y, splits, groups, labels, cancel, progress, *, fixed_e
 
 def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fold_index, cancel, progress, *, external_final=False):
     from . import training as t
-    from .feature_policy import validate_training_options
+    from .feature_policy import supported_feature_schemes, unsupported_feature_reason, validate_training_options
     validate_training_options(config.training_profile, config.feature_scheme, model_type)
     quick = config.training_profile == 'quick'
     traditional = model_type != 'cnn1d'
+    applicable = supported_feature_schemes(model_type)
     pool = sorted(set(splits['train']) | set(splits['valid']))
     inner = ([(np.asarray(splits['train']), np.asarray(splits['valid']))] if quick else
              grouped_experiment_folds(y, groups, pool, config.split_seed, labels)) if traditional else []
     results, search, winner = [], [], None
-    selected_schemes = [(key, name) for key, name in SCHEMES if not quick or key == config.feature_scheme]
+    selected_schemes = [(key, name) for key, name in SCHEMES
+                        if key in applicable and (not quick or key == config.feature_scheme)]
     for scheme, name in SCHEMES:
-        if quick and scheme != config.feature_scheme:
-            unsupported = model_type == 'cnn1d' and scheme.startswith('pca_')
+        if scheme not in applicable or (quick and scheme != config.feature_scheme):
+            unsupported = scheme not in applicable
             results.append({'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index,
                             'status': 'not_applicable' if unsupported else 'not_run',
-                            'reason': 'CNN 不使用 PCA 输入' if unsupported else '快速训练仅运行所选特征方案'})
+                            'reason': unsupported_feature_reason(model_type) if unsupported else '快速训练仅运行所选特征方案'})
     for scheme_index, (scheme, name) in enumerate(selected_schemes):
         cancel()
         item = {'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index, 'status': 'ready', 'reason': None}
-        if not traditional and scheme.startswith('pca_'):
-            results.append({**item, 'status': 'not_applicable', 'reason': 'CNN 保留光谱顺序，不使用 PCA 输入'}); continue
         def update(**extra):
             progress({'feature_scheme': name, 'feature_scheme_index': scheme_index + 1,
-                      'feature_scheme_count': 1 if quick else 7 if traditional else 4,
+                      'feature_scheme_count': len(selected_schemes),
                       'training_profile': config.training_profile,
                       'training_stage': 'feature_search',
                       'training_stage_label': f'{name} · 快速训练' if quick else f'{name} · 特征方案比较', **extra})
@@ -202,7 +221,10 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
                 for train, valid in inner:
                     cancel(); transform=FeatureTransform(scheme, config.normalization).fit(x_raw[train]); prepared.append((train, valid, transform.transform(x_raw[train]), transform.transform(x_raw[valid])))
                 selection_transform = transform
-                candidates=candidate_configs(config, model_type, min(p[2].shape[1] for p in prepared), min(len(p[0]) for p in prepared))
+                min_train = min(len(p[0]) for p in prepared)
+                if model_type in {'spls_da', 'pca_lda', 'pca_svm'}:
+                    min_train = min(min_train, len(splits['train']))
+                candidates=candidate_configs(config, model_type, min(p[2].shape[1] for p in prepared), min_train)
                 best_score, best_candidate, selected_search, selected_estimator = -math.inf, None, None, None
                 for index, candidate in enumerate(candidates):
                     cancel(); scores=[]; reason=None

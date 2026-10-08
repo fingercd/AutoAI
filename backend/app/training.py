@@ -1872,7 +1872,7 @@ def _run_legacy_training(
         from .feature_engineering import MODELS
         from .training_experiments import fit_experiment_fold, summarize_experiments
         if model_type not in MODELS:
-            raise ValueError('0904 方案仅支持六类公开模型')
+            raise ValueError('0904 方案仅支持九类公开模型')
     experiment_folds = []
     external_experiment = None
     evaluation_strategy = policy.strategy

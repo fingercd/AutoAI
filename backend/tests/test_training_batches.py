@@ -35,14 +35,14 @@ def _batch(repository: RunRepository, *, principal: Principal = Principal()):
     )
 
 
-def test_catalog_has_exactly_ten_ui_models_and_keeps_hidden_models_callable() -> None:
+def test_catalog_has_exactly_nine_ui_models_and_keeps_hidden_models_callable() -> None:
     from backend.app.routers.catalog import _MODEL_CATALOG
     from backend.app.main import app
     from fastapi.testclient import TestClient
 
     visible = [item[0] for item in _MODEL_CATALOG if item[-1] is True]
     assert visible == [
-        "pls_da", "logistic_regression", "svm", "random_forest", "xgboost", "cnn1d",
+        "pls_da", "spls_da", "pca_lda", "logistic_regression", "svm", "pca_svm", "random_forest", "xgboost", "cnn1d",
     ]
     assert canonical_model_type("resnet1d") == "resnet1d"
     assert canonical_model_type("dscarnet") == "dscarnet"
@@ -52,7 +52,7 @@ def test_catalog_has_exactly_ten_ui_models_and_keeps_hidden_models_callable() ->
     catalog = response.json()["models"]
     assert [item["id"] for item in catalog if item["ui_visible"]] == visible
     hidden = {item["id"]: item for item in catalog if not item["ui_visible"]}
-    assert set(hidden) == {"spls_da", "pca_lda", "pca_svm", "pca_mlp", "cnn1d_se", "resnet1d", "inception1d", "tcn1d", "cnn_transformer1d", "cnn_mamba1d", "dscarnet"}
+    assert set(hidden) == {"pca_mlp", "cnn1d_se", "resnet1d", "inception1d", "tcn1d", "cnn_transformer1d", "cnn_mamba1d", "dscarnet"}
     assert all(item["visibility_reason"] == "temporarily_hidden_from_ui" for item in hidden.values())
     assert all("explainability_method" not in item for item in catalog)
 

@@ -19,6 +19,7 @@ function harness(memory=new Map()) {
     $('cvEnabled').checked=splitPreferences.getCv();
     let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',
       profiles:[{id:'quick'},{id:'full'}],feature_schemes:[{id:'full'},{id:'bin_10'},{id:'pca_95'}],
+      supported_feature_schemes:{svm:['full','bin_10','pca_95'],cnn1d:['full','bin_10'],pca_lda:['full','bin_10'],pca_svm:['full','bin_10'],spls_da:['full','bin_10','pca_95']},
       defaults:{epochs:200,batch_size:8,learning_rate:.001,weight_decay:.0001,scheduler_factor:.5,scheduler_patience:10,min_learning_rate:.000001,early_stopping_patience:20,seed:42}};
     ${source}`,context);
   get('normalization').value='zscore';get('modelType').value='svm';
@@ -66,8 +67,32 @@ test('quick and full settings are explicit in the request',()=>{
   h.get('trainingProfile').value='quick';h.get('featureScheme').value='bin_10';
   assert.equal(h.run('configPayload().feature_scheme'),'bin_10');
   h.get('trainingProfile').value='full';assert.equal(h.run('configPayload().training_profile'),'full');
+  assert.equal(h.run('configPayload().feature_scheme'),'full');
   h.get('trainingProfile').value='quick';h.get('modelType').value='cnn1d';h.get('featureScheme').value='pca_95';
-  assert.throws(()=>h.run('configPayload()'),/CNN 不支持 PCA/);
+  assert.throws(()=>h.run('configPayload()'),/不支持该特征方案/);
+});
+test('new traditional models use the live feature capability and reject nested PCA',()=>{
+  const h=harness();h.run('updateSplitOptionVisibility()');
+  for(const model of ['spls_da','pca_lda','pca_svm']) {
+    h.get('modelType').value=model;h.get('featureScheme').value='bin_10';
+    assert.equal(h.run('configPayload().model_type'),model);
+    h.get('featureScheme').value='pca_95';
+    if(model==='spls_da')assert.equal(h.run('configPayload().feature_scheme'),'pca_95');
+    else assert.throws(()=>h.run('configPayload()'),/不支持该特征方案/);
+  }
+});
+test('multi-model feature choices use their intersection and actual full counts',()=>{
+  const source=html.slice(html.indexOf('      function updateTrainingWorkHint()'),html.indexOf('\n      }',html.indexOf('      function updateTrainingWorkHint()'))+8);
+  const options=['full','bin_5','pca_95'].map(value=>({value,disabled:false}));
+  const select={value:'pca_95',options,get selectedOptions(){return options.filter(item=>item.value===this.value);}};
+  const nodes={trainingProfile:{value:'quick'},featureScheme:select,featureSchemeField:{classList:{toggle(){}}},trainingWorkHint:{textContent:''}};
+  const catalog={svm:{display_name:'SVM',supported_feature_schemes:['full','bin_5','bin_10','bin_20','pca_90','pca_95','pca_99']},pca_lda:{display_name:'PCA-LDA',supported_feature_schemes:['full','bin_5','bin_10','bin_20']}};
+  const context=vm.createContext({trainingScheme:{supported_feature_schemes:{}},$:id=>nodes[id],selectedModelTypes:()=>['svm','pca_lda'],modelCatalogItem:model=>catalog[model]});
+  vm.runInContext(source+';updateTrainingWorkHint()',context);
+  assert.equal(options[2].disabled,true);assert.equal(select.value,'full');
+  assert.equal(options[1].disabled,false);
+  nodes.trainingProfile.value='full';vm.runInContext('updateTrainingWorkHint()',context);
+  assert.match(nodes.trainingWorkHint.textContent,/SVM：7 种/);assert.match(nodes.trainingWorkHint.textContent,/PCA-LDA：4 种/);
 });
 test('configuration rows distinguish final selection from per-fold configurations',()=>{
   const source=readFileSync(new URL('../../static/js/experiment-details.js',import.meta.url),'utf8').replaceAll('export function ','function ');

@@ -19,9 +19,9 @@ from .. import feature_policy
 DRAWING_VERSION = 'comparison-figures-v4'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
-NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
-PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f']
-MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'], PALETTE))
+NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_lda': 'PCA-LDA', 'pca_svm': 'PCA-SVM'}
+PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f', '#5278a3', '#a45477', '#7b6ca5']
+MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d', 'spls_da', 'pca_lda', 'pca_svm'], PALETTE))
 SCHEMES = [('full', '全部特征'), ('bin_5', '分箱（宽度 5）'), ('bin_10', '分箱（宽度 10）'), ('bin_20', '分箱（宽度 20）'), ('pca_90', 'PCA（90%）'), ('pca_95', 'PCA（95%）'), ('pca_99', 'PCA（99%）')]
 _LOCK = RLock()
 _FONT_NAMES = {font.name for font in font_manager.fontManager.ttflist}

@@ -41,11 +41,15 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 
 2026-10-07 用户确认默认计算数量压缩：`word-0904` 的 `training_profile=quick` 为默认，每次仅运行 `feature_scheme` 所选方案（默认 full）。传统模型最多三套参数，当前验证样品检查一次，选定后 Train+Valid 重训；普通流程四次拟合，审计复用选参模型。CNN 只训练所选方案，原调度与早停保留。`training_profile=full` 才执行下述七/四方案与完整五折；四种划分及比例记忆仍支持，未选方案为 not_run。具体参数与真实数据计时基线见 `docs/plans/2026-10-07-quick-training.md`。
 
-2026-09-07 接通的六模型特征方案训练当前仍启用：`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，外部测试可与 CV 同时使用。解释性则继续由 `TEMPORARILY_HIDDEN` 关闭；这两项能力状态不同。
+2026-09-07 接通的特征方案训练当前仍启用，2026-10-08 公开模型扩展为九类：`feature_policy.FEATURE_ENGINEERING_ENABLED=True`，`/api/models.training_scheme` 是经典前端唯一能力来源，经典新请求显式发送 `experiment_version=word-0904`。四种划分场景保留各自比例与留一法勾选状态，外部测试可与 CV 同时使用。解释性则继续由 `TEMPORARILY_HIDDEN` 关闭；这两项能力状态不同。
 
-后端保留 17 个分类模型，UI 显示 Word 0904 六类：pls_da、logistic_regression（Elastic Net）、svm、random_forest、xgboost、cnn1d。其余十一项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求。
+后端保留 17 个分类模型，UI 显示 Word 0904 九类：pls_da、spls_da、pca_lda、logistic_regression（Elastic Net）、svm、pca_svm、random_forest、xgboost、cnn1d。其余八项隐藏但保留后端兼容能力。新版架构版本为 docx-classification-v4-0904；未声明 experiment_version 的兼容 API 请求保留原训练行为。经典页面固定使用文档默认训练策略，旧手工搜索预算不进入新请求。
 
-新版传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%，CNN 仅比较全特征与 Binning。每模型一个 Run，选优仅用内层五折或 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，单模型结果页保持原样。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
+新版六类传统模型比较全特征、Binning 5/10/20、PCA 90/95/99%；PCA-LDA/PCA-SVM 已内置 PCA，与 CNN 一样仅支持全特征和三种 Binning，外层 PCA 标为不适用。模型目录新增 supported_feature_schemes，具体进度按适用方案数计数。每模型一个 Run，快速选优使用当前验证集，完整传统比较使用分组五折，CNN 使用 validation loss。feature_experiments.json/csv 记录最佳配置、逐折审计及方案测试指标，Manifest 校验后投影。此前 scientific-results 前端已回退；目前仅经典多模型对比页使用 static/js/comparison-page.js/css 与后端 comparison_figures.py，单模型结果页保持原样。新版对比支持批次归档、PNG/SVG/CSV/ZIP、历史重新查看；图格内数字按用户要求缩小。历史缺特征工程数据时只说明，不重训。
+
+2026-10-08 三个新增公开模型的新版候选参数见 docs/plans/2026-10-08-public-traditional-models.md；不增加依赖。Worker 能力升级为 run-artifact-manifest-v2-quick-training-v2，Web 和 Worker 须同步加载代码。该轮仅做静态核对，未执行训练或运行测试。
+
+同日用户随后指定 `测试.csv` 验证：三个模型 quick/full 与四种评估口径的合成回归通过，整套 backend/tests 为 595 passed、9 skipped。真实 CSV 使用 quick、full 特征、seed=42，三模型实际 16/4/4 样品划分一致；sPLS-DA/PCA-LDA Test Balanced Accuracy=0.833333，PCA-SVM=0.75。结果、图表及 Excel 导出已核验，SwanLab 指标与配置已回读；真实测试仅四个独立样品，不代表普遍性能。细节见上述模型说明的后续测试记录。
 
 2026-09-22：新增 `GET /api/training/batches/{batch_id}/predictions.xlsx`。预测类别表与预测概率表共用记录行；概率按 `label_map` 顺序编码为逗号分隔的六位小数文本，舍入后总和可能有微小误差。普通 CV 导出主数据 pooled OOF；CV+external Test 同时导出主数据 OOF（`test`）和外部集预测（`external_test`），后者为主指标、前者仅作审计。holdout 导出最终模型对全量记录的预测。历史 Run 无 `all_predictions.csv` 时只导出已有测试行。对比投影有 `class_metrics` 的类别 Precision/Recall/F1/Support 数据。
 

@@ -48,11 +48,13 @@ def test_models_catalog_exposes_all_backend_models_with_explicit_ui_visibility()
             "unavailable_reason",
             "ui_visible",
             "visibility_reason",
+            "supported_feature_schemes",
         }
         assert item["display_name"]
         assert item["family"]
         assert isinstance(item["available"], bool)
         assert isinstance(item["ui_visible"], bool)
+        assert isinstance(item["supported_feature_schemes"], list)
         assert (item["visibility_reason"] is None) is item["ui_visible"]
         assert (item["unavailable_reason"] is None) is item["available"]
 
@@ -73,6 +75,7 @@ def test_models_catalog_degrades_optional_dependencies_without_server_error(monk
         "unavailable_reason": "mamba test dependency missing",
         "ui_visible": False,
         "visibility_reason": "temporarily_hidden_from_ui",
+        "supported_feature_schemes": [],
     }
     assert by_id["dscarnet"]["available"] is False
     assert by_id["dscarnet"]["unavailable_reason"] == "aggmap test dependency missing"

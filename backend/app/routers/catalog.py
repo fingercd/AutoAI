@@ -12,7 +12,7 @@
 #   边界，不影响后端兼容训练能力。
 #
 # 关键设计约束：
-#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的六项；
+#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的九项；
 #     可选依赖（mamba-ssm、aggmap）缺失时只标 available=false，
 #     绝不用近似实现静默顶替。
 #   - capability 探测运行在 Web 请求路径上，必须廉价：只查文件存在性与
@@ -49,11 +49,11 @@ router = APIRouter()
 # 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族, ui_visible) 四元组。
 _MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml", True),
-    ("spls_da", "sPLS-DA", "traditional_ml", False),
-    ("pca_lda", "PCA-LDA", "traditional_ml", False),
+    ("spls_da", "sPLS-DA", "traditional_ml", True),
+    ("pca_lda", "PCA-LDA", "traditional_ml", True),
     ("logistic_regression", "Elastic Net", "traditional_ml", True),
     ("svm", "SVM", "traditional_ml", True),
-    ("pca_svm", "PCA-SVM", "traditional_ml", False),
+    ("pca_svm", "PCA-SVM", "traditional_ml", True),
     ("random_forest", "Random Forest", "traditional_ml", True),
     ("xgboost", "XGBoost", "traditional_ml", True),
     ("pca_mlp", "PCA-MLP", "basic_deep", False),
@@ -238,6 +238,7 @@ def get_models_catalog() -> dict[str, object]:
     """返回完整后端模型目录及当前 capability，不启动训练。"""
 
     models: list[dict[str, object]] = []
+    from ..feature_policy import supported_feature_schemes, training_scheme
     # 按 _MODEL_CATALOG 的固定顺序逐项探测 capability 并组装响应；
     # 该顺序即前端展示顺序，新增模型必须同步 registry 与契约测试。
     for model_type, display_name, family, ui_visible in _MODEL_CATALOG:
@@ -251,9 +252,9 @@ def get_models_catalog() -> dict[str, object]:
                 "unavailable_reason": unavailable_reason,
                 "ui_visible": ui_visible,
                 "visibility_reason": None if ui_visible else "temporarily_hidden_from_ui",
+                "supported_feature_schemes": supported_feature_schemes(model_type),
             }
         )
-    from ..feature_policy import training_scheme
     return {"models": models, "training_scheme": training_scheme()}
 
 

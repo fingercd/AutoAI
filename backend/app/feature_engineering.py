@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 EXPERIMENT_VERSION = 'word-0904'
 SCHEMES = [('full', '全特征'), ('bin_5', 'Binning 5'), ('bin_10', 'Binning 10'), ('bin_20', 'Binning 20'), ('pca_90', 'PCA 90%'), ('pca_95', 'PCA 95%'), ('pca_99', 'PCA 99%')]
-MODELS = {'pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'}
+MODELS = {'pls_da', 'spls_da', 'pca_lda', 'logistic_regression', 'svm', 'pca_svm', 'random_forest', 'xgboost', 'cnn1d'}
 
 
 def bin_mean(x: np.ndarray, width: int) -> np.ndarray:

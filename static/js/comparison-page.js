@@ -4,7 +4,7 @@ import { experimentDetails } from './experiment-details.js';
 
 const metrics = [['accuracy','Accuracy'],['balanced_accuracy','Balanced Accuracy'],['macro_f1','Macro-F1'],['weighted_f1','Weighted-F1']];
 const featureMetrics = [['accuracy','准确率'],['balanced_accuracy','平衡准确率'],['macro_f1','宏平均 F1'],['weighted_f1','加权 F1']];
-const names = {pls_da:'PLS-DA',logistic_regression:'Elastic Net',svm:'SVM',random_forest:'Random Forest',xgboost:'XGBoost',cnn1d:'1D-CNN'};
+const names = {pls_da:'PLS-DA',spls_da:'sPLS-DA',pca_lda:'PCA-LDA',logistic_regression:'Elastic Net',svm:'SVM',pca_svm:'PCA-SVM',random_forest:'Random Forest',xgboost:'XGBoost',cnn1d:'1D-CNN'};
 // 新版能力只从后端目录获取，不设置另一个独立的前端开关。
 let trainingScheme = null;
 let capabilityRequest = null;
