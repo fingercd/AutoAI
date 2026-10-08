@@ -26,7 +26,7 @@ python run_classic.py
 
 ## 安装 AI 助手技能
 
-两种安装方式任选其一。仓库为私有，需要 GitHub 访问权限。
+两种安装方式任选其一。仓库公开，无需 GitHub 登录即可下载。
 
 ### 手动安装
 
@@ -38,7 +38,7 @@ python run_classic.py
 
 把这段话发给 Codex：
 
-> 请从 GitHub 的 fingercd/AutoAI 仓库 qzt/skills 分支下载完整项目，将 skills/autoai-research 安装到我的 Codex 技能目录。复用现有 GitHub 登录和已有项目；安装目录已存在时先检查，更新时保留本机 runtime.json。按环境配置手册检查依赖，发现问题先告知再修复，验证通过后配置本机运行路径，并告诉我如何开始使用。
+> 请从 GitHub 的 fingercd/AutoAI 仓库 qzt/skills 分支下载完整项目，将 skills/autoai-research 安装到我的 Codex 技能目录。复用已有项目；安装目录已存在时先检查，更新时保留本机 runtime.json。按环境配置手册检查依赖，发现问题先告知再修复，验证通过后配置本机运行路径，并告诉我如何开始使用。
 
 完整项目目录用于本地计算，请保留；本机 `runtime.json` 不从其他机器复制。安装与更新细节见[技能使用说明](docs/autoai-research-skill.md)。
 
