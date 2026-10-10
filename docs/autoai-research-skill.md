@@ -4,7 +4,7 @@
 
 ## 怎么使用
 
-第一次使用先按 [README 的安装与数据指南](../README.md)准备环境和文件。助手支持九个公开分类模型，包括新增开放的 sPLS-DA、PCA-LDA、PCA-SVM。模型与特征方案以实时目录为准；PCA-LDA/PCA-SVM 自带 PCA，快速训练选择全特征或 Binning。
+第一次使用先按 [安装提示词](install-autoai-research.md)配置技能和环境，使用示例见 [README](../README.md)。助手支持九个公开分类模型，包括新增开放的 sPLS-DA、PCA-LDA、PCA-SVM。模型与特征方案以实时目录为准；PCA-LDA/PCA-SVM 自带 PCA，快速训练选择全特征或 Binning。
 
 只咨询时可以说“检查文件并推荐方案，先不运行”；接受助手已经给出的设置时回复“按推荐方案开始”。下面分别是普通请求、明确直接运行和数据整理示例。
 
@@ -22,7 +22,7 @@
 
 ## 安装与维护
 
-安装入口见 [README 的两种安装方式](../README.md#安装-ai-助手技能)：可以手动下载项目并复制技能文件夹，也可以让 Agent 下载和安装。两种方式都保留完整项目源码，技能目录下直接包含 `SKILL.md`。仓库公开，可直接用 Git 或 ZIP 下载，无需登录；已有 GitHub 登录可复用，不把凭据写入命令与配置。
+安装入口见 [给 Agent 的安装提示词](install-autoai-research.md)：复制文档中的提示词，让 Agent 下载完整项目并按当前工具的规则安装技能，技能目录下直接包含 `SKILL.md`。仓库公开，可直接用 Git 或 ZIP 下载，无需登录；已有 GitHub 登录可复用，不把凭据写入命令与配置。
 
 默认安装到 `CODEX_HOME/skills/autoai-research`，未设置 CODEX_HOME 时使用 `~/.codex/skills/autoai-research`。已有安装先检查；更新前保存本机 `runtime.json`，只同步技能源码和资源，排除缓存及其他机器的 runtime.json。复用已有项目时先核对仓库和分支，不覆盖用户改动；新下载的项目保存在持久目录，不能在安装后删除作为临时文件。
 
