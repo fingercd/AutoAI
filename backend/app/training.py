@@ -35,8 +35,12 @@
 # ──────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
+from .experiment_accounting import record_training, timed, measured_model_fit, measured_deep_fit
+from .benchmark_cache import active_cache, cache_deep_fit, cache_final_fit
+
 import json
 import pickle
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -52,6 +56,13 @@ from sklearn.model_selection import ParameterSampler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from .execution_runtime import (
+    initialize_execution_runtime,
+    model_device,
+    resolve_execution_device,
+    synchronize_device,
+    validate_execution_options,
+)
 from .model_config import TRADITIONAL_TRAINING_DEFAULTS
 from .classification_policy import DEEP_TRAINING_DEFAULTS, EvaluationPolicy, resolve_evaluation_policy
 from .feature_selection import (
@@ -93,6 +104,9 @@ class TrainConfig:
     scheduler_patience: int = DEEP_TRAINING_DEFAULTS.scheduler_patience
     min_learning_rate: float = DEEP_TRAINING_DEFAULTS.min_learning_rate
     seed: int = DEEP_TRAINING_DEFAULTS.seed
+    # Explicit worker execution options; ordinary callers keep the CPU default.
+    execution_device: str = "cpu"
+    cpu_threads: int | None = None
     # ── 预处理与划分：normalization 只用当前折 train 拟合；split_* 为 10 份制比例 ──
     normalization: str = "zscore"
     split_mode: str = "stratified"
@@ -141,6 +155,9 @@ class TrainConfig:
     feature_top_k: int = 5
     feature_n_repeats: int = 5
     feature_eval_split: str = "valid"
+
+    def __post_init__(self) -> None:
+        validate_execution_options(self.execution_device, self.cpu_threads)
 
 
 @dataclass
@@ -331,29 +348,26 @@ def _evaluate_deep_loss(
         与 logits 同形，以适配 BCEWithLogitsLoss 的目标形状约定。"""
     model.eval()
     losses: list[float] = []
+    device = model_device(model)
     with torch.no_grad():
         for batch in loader:
             batch_x, batch_y = batch
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
             logits = model(batch_x)
             target = batch_y.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else batch_y
             losses.append(float(criterion(logits, target).detach().item()))
     return float(np.mean(losses)) if losses else 0.0
 
 
+@timed('model_evaluation')
 def _evaluate(model: nn.Module, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     """对 1D 深度模型做一次前向评估，输出全套分类指标与逐样品概率。
 
         二分类网络只输出 1 个 logit，这里用 sigmoid 后拼成 [1-p, p] 两列概率；
         多分类直接 softmax。confusion_matrix 显式给定 labels，保证某集合缺少
         类别时矩阵维度仍与 label_names 对齐；zero_division=0 避免 NaN/告警。"""
-    model.eval()
-    with torch.no_grad():
-        logits = model(torch.tensor(x[indices], dtype=torch.float32).unsqueeze(1))
-        if logits.ndim == 2 and logits.shape[1] == 1:
-            positive = torch.sigmoid(logits)
-            probs = torch.cat((1.0 - positive, positive), dim=1).cpu().numpy()
-        else:
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
+    probs = _deep_probabilities(model, x[indices])
     pred = probs.argmax(axis=1)
     true = y[indices]
     return {
@@ -374,14 +388,21 @@ def _deep_probabilities(model: nn.Module, values: np.ndarray) -> np.ndarray:
     """Return class probabilities for a normalized 1D deep-model batch."""
 
     model.eval()
+    device = model_device(model)
+    batch_size = 8 if device.type == 'cuda' else len(values)
+    parts = []
     with torch.no_grad():
-        logits = model(torch.tensor(values, dtype=torch.float32).unsqueeze(1))
-        if logits.ndim == 2 and logits.shape[1] == 1:
-            positive = torch.sigmoid(logits)
-            probs = torch.cat((1.0 - positive, positive), dim=1)
-        else:
-            probs = torch.softmax(logits, dim=1)
-    return probs.cpu().numpy()
+        for begin in range(0, len(values), batch_size):
+            logits = model(torch.tensor(values[begin:begin + batch_size],
+                dtype=torch.float32, device=device).unsqueeze(1))
+            if logits.ndim == 2 and logits.shape[1] == 1:
+                positive = torch.sigmoid(logits)
+                probs = torch.cat((1.0 - positive, positive), dim=1)
+            else:
+                probs = torch.softmax(logits, dim=1)
+            parts.append(probs.cpu().numpy())
+    return np.concatenate(parts, axis=0)
+
 
 
 
@@ -399,6 +420,7 @@ def _traditional_probabilities(model: Any, values: np.ndarray) -> np.ndarray:
     return exp / exp.sum(axis=1, keepdims=True)
 
 
+@timed('model_evaluation')
 def _evaluate_traditional_model(model: Any, x: np.ndarray, y: np.ndarray, indices: list[int], labels: list[str]) -> dict[str, Any]:
     """传统模型评估：predict 出标签 + _traditional_probabilities 出概率，
         指标字段与深度模型完全对齐，便于上层不区分模型族地汇总。"""
@@ -494,6 +516,7 @@ def _unsupported_explainability_summary(reason: str, *, method: str = "unsupport
     }
 
 
+@timed("sample_explanation")
 def _deep_sample_feature_result(
     *,
     config: TrainConfig,
@@ -678,6 +701,7 @@ def _clone_config(config: TrainConfig, **overrides: Any) -> TrainConfig:
     return TrainConfig(**{**config.__dict__, **overrides})
 
 
+@timed('model_preprocessing')
 def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
     """Fit feature statistics on the current Train partition only."""
     from .processing_policy import NORMALIZATIONS
@@ -704,6 +728,7 @@ def _fit_x_normalizer(x_train: np.ndarray, mode: str) -> dict[str, Any]:
     return result
 
 
+@timed('model_transform')
 def _transform_x_with_normalizer(x: np.ndarray, normalizer: dict[str, Any]) -> np.ndarray:
     """Apply frozen Train statistics and reject overflow after float32 conversion."""
     from .processing_policy import NORMALIZATIONS
@@ -1102,6 +1127,22 @@ def _traditional_params(config: TrainConfig, model_type: str) -> dict[str, Any]:
 
 
 
+def _candidate_validation_payload(evaluation, sample_ids, label_names, accounting=None,
+                                  fold_index=1, trial_index=0):
+    if sample_ids is None:
+        return evaluation
+    from .probability_evaluation import grouped_evaluation_payload, EVALUATION_VERSION
+    grouped = grouped_evaluation_payload(evaluation, sample_ids, label_names)
+    if accounting is not None:
+        from .search_accounting import _atomic_json
+        path = accounting.run_dir / 'candidate_validation' / f'{fold_index}_{trial_index}.json'
+        path.parent.mkdir(exist_ok=True)
+        _atomic_json(path, dict(evaluation_version=EVALUATION_VERSION,
+            sample_ids=list(map(str, sample_ids)), labels=label_names,
+            row_evaluation=evaluation, grouped_evaluation=grouped))
+    return grouped
+
+
 def _select_traditional_config(
     config: TrainConfig,
     model_type: str,
@@ -1116,13 +1157,14 @@ def _select_traditional_config(
     fold_index: int = 1,
     parent_span: str | None = None,
     cancel_check: Any | None = None,
+    valid_sample_ids: list[str] | None = None,
 ) -> TraditionalSelection:
     """传统模型超参选择主循环：逐候选 fit(train) → 评估 valid，以
         balanced_accuracy 为选择指标（类别不均衡时比 accuracy 更公平）。
 
         更新最优用 1e-12 容差，标记选中行时用 (-index) 保证平手取先者，结果
         完全确定；random_forest 走 OOB 专用路径（不消耗 valid）。"""
-    if model_type == "random_forest":
+    if model_type == "random_forest" and (accounting is None or accounting.plan['policy_version'] != 'benchmark-three-config-v1'):
         return _select_random_forest_config(
             config,
             x_train,
@@ -1147,37 +1189,50 @@ def _select_traditional_config(
                  if accounting is not None else nullcontext({}))
         with scope as trial_fact:
             if cancel_check is not None: cancel_check()
-            model = build_traditional_model(candidate, y_train, len(label_names))
-            fit_scope = (accounting.span('trial_fit', fold_index=fold_index,
-                trial_index=index, parent_span=trial_fact['span_id'],
-                measurement_scope='train') if accounting is not None else nullcontext())
-            with fit_scope:
-                fit_event = (accounting.enter_fit(fold_index, index, 'trial')
-                             if accounting is not None else None)
-                model.fit(x_train, y_train)
-                if accounting is not None:
-                    accounting.complete_fit(fit_event)
-            if cancel_check is not None: cancel_check()
-            valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
-                trial_index=index, parent_span=trial_fact['span_id'],
-                measurement_scope='valid') if accounting is not None else nullcontext())
-            with valid_scope:
-                valid_eval = _evaluate_traditional_model(
-                    model, x_valid, y_valid, list(range(len(y_valid))), label_names)
-            trial_fact['selection_score'] = float(valid_eval['balanced_accuracy'])
+            fitted_cache = active_cache()
+            cached = fitted_cache.load('traditional_candidate', candidate) if fitted_cache else None
+            trial_fact['cached'] = cached is not None
+            if cached is not None:
+                model, valid_eval = cached['model'], cached['valid_eval']
+                trial_fact['source_fit_seconds'] = cached['fit_seconds']
+            else:
+                fit_started = time.monotonic()
+                model = build_traditional_model(candidate, y_train, len(label_names))
+                fit_scope = (accounting.span('trial_fit', fold_index=fold_index,
+                    trial_index=index, parent_span=trial_fact['span_id'],
+                    measurement_scope='train') if accounting is not None else nullcontext())
+                with fit_scope:
+                    fit_event = (accounting.enter_fit(fold_index, index, 'trial')
+                                 if accounting is not None else None)
+                    measured_model_fit(model.fit, x_train, y_train)
+                    if accounting is not None:
+                        accounting.complete_fit(fit_event)
+                if cancel_check is not None: cancel_check()
+                valid_scope = (accounting.span('trial_validation', fold_index=fold_index,
+                    trial_index=index, parent_span=trial_fact['span_id'],
+                    measurement_scope='valid') if accounting is not None else nullcontext())
+                with valid_scope:
+                    valid_eval = _evaluate_traditional_model(
+                        model, x_valid, y_valid, list(range(len(y_valid))), label_names)
+                if fitted_cache:
+                    fitted_cache.save('traditional_candidate', candidate,
+                        {'model': model, 'valid_eval': valid_eval, 'fit_seconds': time.monotonic()-fit_started})
+            selection_eval = _candidate_validation_payload(valid_eval, valid_sample_ids, label_names,
+                accounting, fold_index, index)
+            trial_fact['selection_score'] = float(selection_eval['balanced_accuracy'])
             if accounting is not None:
                 trial_fact['artifact_digest'] = accounting.save_traditional_candidate(
                     fold_index=fold_index,trial_index=index,model=model)
         params = _traditional_params(candidate, model_type)
-        balanced_accuracy = float(valid_eval["balanced_accuracy"])
-        macro_f1 = float(valid_eval["macro_f1"])
+        balanced_accuracy = float(selection_eval["balanced_accuracy"])
+        macro_f1 = float(selection_eval["macro_f1"])
         search_rows.append(
             {
                 "model_type": model_type,
                 "is_selected": False,
                 "valid_balanced_accuracy": balanced_accuracy,
                 "valid_macro_f1": macro_f1,
-                "valid_accuracy": float(valid_eval["accuracy"]),
+                "valid_accuracy": float(selection_eval["accuracy"]),
                 "selection_metric": "balanced_accuracy",
                 "selection_score": balanced_accuracy,
                 "oob_accuracy": None,
@@ -1206,7 +1261,7 @@ def _select_traditional_config(
     return TraditionalSelection(
         config=best_config,
         valid_balanced_accuracy=best_balanced_accuracy,
-        valid_macro_f1=float(best_eval["macro_f1"]),
+        valid_macro_f1=float(search_rows[selected_index]["valid_macro_f1"]),
         search_rows=search_rows,
         model=best_model,
         valid_eval=best_eval,
@@ -1265,7 +1320,7 @@ def _select_random_forest_config(
             with fit_scope:
                 fit_event = (accounting.enter_fit(fold_index, index, 'trial')
                              if accounting is not None else None)
-                model.fit(x_train, y_train)
+                measured_model_fit(model.fit, x_train, y_train)
                 if accounting is not None:
                     accounting.complete_fit(fit_event)
             if cancel_check is not None: cancel_check()
@@ -1343,6 +1398,7 @@ def _fit_traditional_fold(
     *, planned_candidates: list[dict[str, Any]] | None = None,
     accounting: Any | None = None, fold_index: int = 1,
     parent_span: str | None = None, cancel_check: Any | None = None,
+    valid_sample_ids: list[str] | None = None,
 ) -> tuple[Any, TrainConfig, dict[str, Any], list[dict[str, Any]]]:
     """单个训练折的传统模型拟合：只在 train/valid 上完成候选搜索，
         返回胜出模型、胜出配置、valid 评估与全部搜索审计行。"""
@@ -1356,10 +1412,13 @@ def _fit_traditional_fold(
         label_names,
         planned_candidates=planned_candidates, accounting=accounting,
         fold_index=fold_index, parent_span=parent_span, cancel_check=cancel_check,
+        valid_sample_ids=valid_sample_ids,
     )
     return selection.model, selection.config, selection.valid_eval, selection.search_rows
 
 
+@timed('final_refit')
+@cache_final_fit
 def _fit_final_traditional_model(
     *,
     selected_config: TrainConfig | TraditionalSelection,
@@ -1396,12 +1455,15 @@ def _fit_final_traditional_model(
     model = build_traditional_model(selected_config, y[final_indices], len(label_names))
     fit_event = (accounting.enter_fit(fold_index, None, 'final_refit')
                  if accounting is not None else None)
-    model.fit(x_final[final_indices], y[final_indices])
+    measured_model_fit(model.fit, x_final[final_indices], y[final_indices])
     if accounting is not None:
         accounting.complete_fit(fit_event)
     return model, normalizer, final_indices
 
 
+@timed('candidate_train_and_validation')
+@cache_deep_fit
+@measured_deep_fit
 def _fit_deep_fold(
     *,
     config: TrainConfig,
@@ -1423,22 +1485,24 @@ def _fit_deep_fold(
         多分类 CE）→ AdamW + ReduceLROnPlateau 逐 epoch 训练 → 以最低 valid_loss
         保存并回灌最佳权重；early_stopping_patience 控制早停，cancel_check 每个
         epoch 检查取消/替换。test 在整个循环中完全不出现。"""
+    device = resolve_execution_device(config.execution_device)
     counts = np.bincount(y[splits["train"]], minlength=len(label_names)).astype(np.float32)
     class_weights = None
-    if config.class_balance == "class_weight":
-        class_weights = torch.tensor((counts.sum() / np.maximum(counts, 1.0)) / len(label_names), dtype=torch.float32)
+    if config.class_balance == "class_weight" and len(label_names) > 2:
+        class_weights = torch.tensor((counts.sum() / np.maximum(counts, 1.0)) / len(label_names), dtype=torch.float32, device=device)
     model = build_deep_model(
         config,
         input_length=x.shape[1],
         class_count=len(label_names),
         sample_count=sample_count,
         x_train=x[splits["train"]] if model_type == "pca_mlp" else None,
-    )
+    ).to(device=device, dtype=torch.float32)
     if model_type == "pca_mlp" and getattr(model, "pca_model", None) is not None:
         try:
             import joblib
 
-            joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
+            if active_cache() is None:
+                joblib.dump(model.pca_model, run_dir / "pca_mlp_pca.joblib")
         except Exception:
             pass
         # 二分类用单 logit + BCEWithLogitsLoss（数值上比 sigmoid+BCE 稳定），
@@ -1446,10 +1510,11 @@ def _fit_deep_fold(
     if len(label_names) == 2:
         pos_weight = None
         if config.class_balance == "class_weight":
-            pos_weight = torch.tensor([float(counts[0] / max(counts[1], 1.0))], dtype=torch.float32)
+            pos_weight = torch.tensor([float(counts[0] / max(counts[1], 1.0))], dtype=torch.float32, device=device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     else:
         criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = criterion.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -1468,6 +1533,7 @@ def _fit_deep_fold(
     best_state = None
     bad_epochs = 0
     completed_batches = 0
+    last_progress_save = time.monotonic()
     if accounting is not None:
         if trial_fact is None:
             raise ValueError('deep trial accounting requires a ledger row')
@@ -1480,6 +1546,8 @@ def _fit_deep_fold(
             if accounting is not None else nullcontext())
 
     fit_event = None
+    train_loader = _loader(x, y, splits["train"], config.batch_size, True)
+    valid_loader = _loader(x, y, splits["valid"], config.batch_size, False)
     for epoch in range(1, config.epochs + 1):
         if progress_callback is not None:
             progress_callback("epoch_training", f"正在训练 Epoch {epoch}/{config.epochs}", epoch)
@@ -1494,7 +1562,9 @@ def _fit_deep_fold(
         with phase('trial_fit', epoch):
             model.train()
             losses = []
-            for bx, by in _loader(x, y, splits["train"], config.batch_size, True):
+            for bx, by in train_loader:
+                bx = bx.to(device)
+                by = by.to(device)
                 optimizer.zero_grad()
                 logits = model(bx)
                 target = by.float().view_as(logits) if logits.ndim == 2 and logits.shape[1] == 1 else by
@@ -1504,21 +1574,28 @@ def _fit_deep_fold(
                 losses.append(float(loss.item()))
                 completed_batches += 1
                 if accounting is not None:
-                    accounting.record_trial_progress(trial_fact, training_batches=completed_batches)
+                    progress_now = time.monotonic()
+                    persist_progress = progress_now - last_progress_save >= 5.0
+                    accounting.record_trial_progress(trial_fact, training_batches=completed_batches,
+                                                     persist=persist_progress)
+                    if persist_progress:
+                        last_progress_save = progress_now
+            synchronize_device(device)
         with phase('trial_validation', epoch):
             valid_loss = _evaluate_deep_loss(
                 model,
-                _loader(x, y, splits["valid"], config.batch_size, False),
+                valid_loader,
                 criterion,
             )
             valid_eval = _evaluate(model, x, y, splits["valid"], label_names)
+            synchronize_device(device)
             # 学习率调度、最佳权重与早停都只盯 valid_loss；valid 指标仅记录，不进决策。
         scheduler.step(valid_loss)
         current_learning_rate = float(optimizer.param_groups[0]["lr"])
         improved = valid_loss < best_valid_loss - 1e-8
         if improved:
             best_valid_loss = valid_loss
-            best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             bad_epochs = 0
         else:
             bad_epochs += 1
@@ -1547,6 +1624,7 @@ def _fit_deep_fold(
             break
     if best_state is not None:
         model.load_state_dict(best_state)
+        synchronize_device(device)
     if accounting is not None:
         accounting.complete_fit(fit_event)
     return model, history
@@ -1687,6 +1765,7 @@ class PreparedTrainingInputs:
     x_axis_warning: dict[str, Any]
 
 
+@timed('split_preparation')
 def prepare_training_inputs(data_path, config_data=None, *, repository=None, record=None):
     raw_config = dict(config_data or {})
     from .contracts import TrainingSpec
@@ -1800,7 +1879,10 @@ def prepare_training_inputs(data_path, config_data=None, *, repository=None, rec
         from .processing_policy import PROCESSING_POLICY_VERSION
         if evaluation_plan is None or len(folds) != 1 or evaluation_strategy != 'stratified_holdout':
             raise ValueError('finite search requires a frozen single holdout plan')
-        validate_search_plan(search_plan, model_id=model_type, config=config.__dict__,
+        search_config = dict(config.__dict__)
+        if 'benchmark_context' in raw_config:
+            search_config['benchmark_context'] = raw_config['benchmark_context']
+        validate_search_plan(search_plan, model_id=model_type, config=search_config,
             train_count=len(folds[0]['splits']['train']), feature_count=x_raw.shape[1],
             class_count=len(label_names), dataset_sha256=evaluation_plan.dataset_sha256,
             evaluation_plan_digest=evaluation_plan.plan_digest,
@@ -1828,6 +1910,7 @@ def prepare_training_inputs(data_path, config_data=None, *, repository=None, rec
     )
 
 
+@record_training
 def _run_legacy_training(
     data_path: str | Path,
     config_data: dict[str, Any] | None = None,
@@ -1850,10 +1933,12 @@ def _run_legacy_training(
     run_dir = Path(output_dir) if output_dir is not None else RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     search_plan = raw_config.get('execution_search_plan')
+    from .probability_evaluation import EVALUATION_VERSION, grouped_evaluation_payload
+    group_probability_metrics = bool(search_plan and search_plan.get('evaluation_version') == EVALUATION_VERSION)
     search_accounting = None
     preparation_stage = None
     if search_plan is not None:
-        from .search_accounting import SearchAccounting
+        from .search_accounting import SearchAccounting, _atomic_json
         search_accounting = SearchAccounting(run_dir, search_plan, run_id,
                                              training_budget=training_budget)
         search_accounting.record_queue_wait(record.created_at if record else None,
@@ -1888,6 +1973,7 @@ def _run_legacy_training(
         record=record, repository=repository,
         prepare=lambda: prepare_training_inputs(data_path, raw_config, repository=repository, record=record))
     config = prepared.config
+    initialize_execution_runtime(config.cpu_threads)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     model_type = prepared.model_type
@@ -1907,6 +1993,11 @@ def _run_legacy_training(
     metadata = prepared.metadata
     feature_x_axis = prepared.feature_x_axis
     x_axis_warning = prepared.x_axis_warning
+
+    def metric_evaluation(payload, indices):
+        if not group_probability_metrics:
+            return payload
+        return grouped_evaluation_payload(payload, sample_id[indices].tolist(), label_names)
     if search_accounting is not None:
         search_accounting.end_stage(preparation_stage)
         with search_accounting.span('upstream_spectral_preprocessing', applicable=False):
@@ -2006,6 +2097,8 @@ def _run_legacy_training(
         with transform_scope:
             normalizer = _fit_x_normalizer(x_model_raw[splits["train"]], config.normalization)
             x = _transform_x_with_normalizer(x_model_raw, normalizer)
+        if active_cache() is not None:
+            active_cache().normalizer = normalizer
         selection_audit = _processing_stage_audit(
             stage='selection_train' if model_family(model_type) == 'traditional_ml' else 'train',
             indices=splits['train'], normalizer=normalizer,
@@ -2027,7 +2120,8 @@ def _run_legacy_training(
                         config, model_type, x, y_model, splits, label_names,
                         planned_candidates=search_plan['candidates'][:search_plan['effective_trials']],
                         accounting=search_accounting, fold_index=fold_index,
-                        parent_span=search_stage['span_id'], cancel_check=check_run_active)
+                        parent_span=search_stage['span_id'], cancel_check=check_run_active,
+                        valid_sample_ids=sample_id[splits['valid']].tolist() if group_probability_metrics else None)
             else:
                 model, selected_config, valid_eval, search_rows = _fit_traditional_fold(config, model_type, x, y_model, splits, label_names)
             check_run_active()
@@ -2047,7 +2141,8 @@ def _run_legacy_training(
                 run_id=run_id, fold_index=fold_index, model_id=model_type,
                 train_indices=splits["train"], valid_indices=splits["valid"],
                 labels=y_model, sample_groups=sample_id, class_count=len(label_names),
-                train_eval=train_eval, valid_eval=valid_eval, processing_stage=selection_audit,
+                train_eval=metric_evaluation(train_eval, splits['train']),
+                valid_eval=metric_evaluation(valid_eval, splits['valid']), processing_stage=selection_audit,
                 selected_trial_index=selected_search_row.get("trial_index") if search_accounting else None,
                 selection_criterion=fold_selection_metric, best_epoch=None))
             train_valid_indices = sorted({*splits["train"], *splits["valid"]})
@@ -2062,7 +2157,7 @@ def _run_legacy_training(
                     parent_span=refit_stage['span_id'] if refit_stage else None)
                 check_run_active()
                 if search_accounting is not None:
-                    final_refit_count += 1
+                    final_refit_count += int(active_cache() is None or not active_cache().final_cache_hit)
             processing_stages.append(_processing_stage_audit(
                 stage='final_train_valid', indices=fold_final_fit_indices,
                 normalizer=final_normalizer, y=y_model, label_names=label_names,
@@ -2125,7 +2220,8 @@ def _run_legacy_training(
                 best_model = None
                 best_history = None
                 best_trial_index = None
-                best_loss = float('inf')
+                maximize = search_plan['selection_metric'] == 'valid_balanced_accuracy'
+                best_loss = float('-inf') if maximize else float('inf')
                 with search_accounting.span('parameter_search', fold_index=fold_index) as search_stage:
                     for candidate in search_plan['candidates'][:search_plan['effective_trials']]:
                         check_run_active()
@@ -2147,17 +2243,27 @@ def _run_legacy_training(
                                  accounting=search_accounting, trial_fact=trial_fact)
                             if not trial_history:
                                 raise ValueError('deep trial produced no training history')
-                            score = float(trial_history[-1]['best_valid_loss'])
+                            if maximize:
+                                trial_eval = _evaluate(trial_model, x, y_model, splits['valid'], label_names)
+                                selected_eval = _candidate_validation_payload(trial_eval,
+                                    sample_id[splits['valid']].tolist() if group_probability_metrics else None,
+                                    label_names, search_accounting, fold_index, candidate['index'])
+                                score = float(selected_eval['balanced_accuracy'])
+                            else:
+                                score = float(trial_history[-1]['best_valid_loss'])
                             if not np.isfinite(score):
                                 raise ValueError('deep trial produced nonfinite valid loss')
                             trial_fact['selection_score'] = score
                             if trial_fact['actual_epochs'] != len(trial_history):
                                 raise ValueError('deep trial epoch ledger differs from history')
-                            weight_file = trial_dir / 'model.pt'
-                            torch.save(trial_model.state_dict(), weight_file)
-                            trial_fact['artifact_digest'] = hashlib.sha256(weight_file.read_bytes()).hexdigest()
+                            if active_cache() is not None:
+                                trial_fact['artifact_digest'] = active_cache().latest_artifact['sha256']
+                            else:
+                                weight_file = trial_dir / 'model.pt'
+                                torch.save(trial_model.state_dict(), weight_file)
+                                trial_fact['artifact_digest'] = hashlib.sha256(weight_file.read_bytes()).hexdigest()
                             (trial_dir / 'history.json').write_text(json.dumps(trial_history, ensure_ascii=False), encoding='utf-8')
-                        if score < best_loss - 1e-8:
+                        if (score > best_loss + 1e-12 if maximize else score < best_loss - 1e-8):
                             best_model, best_history, best_loss = trial_model, trial_history, score
                             best_trial_index = candidate['index']
                 if best_model is None or best_history is None or best_trial_index is None:
@@ -2167,7 +2273,7 @@ def _run_legacy_training(
                     params=search_plan['candidates'][best_trial_index]['params'], selection_score=best_loss))
                 fold_best_params = {'learning_rate': search_plan['candidates'][best_trial_index]['params']['learning_rate'],
                                     'weight_decay': search_plan['candidates'][best_trial_index]['params']['weight_decay']}
-                fold_selection_metric = 'best_valid_loss'
+                fold_selection_metric = search_plan['selection_metric']
                 fold_selection_score = best_loss
                 if model_type == 'pca_mlp':
                     from shutil import copyfile
@@ -2186,7 +2292,8 @@ def _run_legacy_training(
                 run_id=run_id, fold_index=fold_index, model_id=model_type,
                 train_indices=splits["train"], valid_indices=splits["valid"],
                 labels=y_model, sample_groups=sample_id, class_count=len(label_names),
-                train_eval=train_eval, valid_eval=valid_eval, processing_stage=selection_audit,
+                train_eval=metric_evaluation(train_eval, splits['train']),
+                valid_eval=metric_evaluation(valid_eval, splits['valid']), processing_stage=selection_audit,
                 selected_trial_index=best_trial_index if search_accounting else None,
                 selection_criterion="best_valid_loss", best_epoch=best_epoch))
             eval_scope = search_accounting.span('final_evaluation', fold_index=fold_index) if search_accounting else nullcontext()
@@ -2199,6 +2306,31 @@ def _run_legacy_training(
                 "splits": splits,
             }
             check_run_active()
+            cache = active_cache()
+            if (cache is not None and cache.context.get('role') == 'development'
+                    and search_plan['max_trials'] == 1):
+                # A technical CUDA check uses the already fitted default model.
+                # It adds no fitting and exposes no information to the Agent.
+                from .experiment_accounting import account
+                from .search_accounting import _atomic_json
+                with account().span('cuda_explanation_acceptance'):
+                    acceptance_result = _deep_sample_feature_result(
+                        config=_clone_config(config, feature_selection_enabled=True),
+                        model=model, x=x, y=y_model,
+                        splits={**splits, 'test': splits['valid'][:1]},
+                        x_axis=feature_x_axis, x_axis_warning=x_axis_warning,
+                        label_names=label_names, metadata=metadata)
+                    evidence = dict(status=acceptance_result['status'],
+                        method=acceptance_result['method'],
+                        sample_count=len(acceptance_result.get('samples', [])),
+                        model_id=model_type, requested_device=config.execution_device,
+                        actual_device=str(next(model.parameters()).device),
+                        dtype=str(next(model.parameters()).dtype), additional_fits=0,
+                        source_run_id=run_id, source_digest=cache.context['source_digest'],
+                        source_partition='Valid technical check, excluded from model selection')
+                    _atomic_json(account().directory / 'cuda_explanation_acceptance.json', evidence)
+                    if evidence['status'] != 'ready' or evidence['sample_count'] != 1:
+                        raise RuntimeError('CUDA explanation acceptance failed: ' + str(acceptance_result.get('reason')))
             deep_sample_results.append(
                 _tag_fold_sample_result(
                     _deep_sample_feature_result(
@@ -2217,10 +2349,14 @@ def _run_legacy_training(
             )
         last_model = model
         split_evals = {"train": train_eval, "valid": valid_eval, "test": test_eval}
+        if group_probability_metrics:
+            split_evals = {name: metric_evaluation(payload, splits[name])
+                           for name, payload in split_evals.items()}
+            _atomic_json(run_dir / f'grouped_evaluation_{fold_index}.json', split_evals)
         split_metrics = {name: _metrics_from_eval(eval_payload, label_names) for name, eval_payload in split_evals.items()}
         fold_split_evals.append(split_evals)
-        all_true.extend(int(item) for item in test_eval["true"])
-        all_pred.extend(int(item) for item in test_eval["pred"])
+        all_true.extend(int(item) for item in split_evals["test"]["true"])
+        all_pred.extend(int(item) for item in split_evals["test"]["pred"])
         fold_metrics = split_metrics["test"]
         fold_metric_rows.append(
             {
@@ -2457,7 +2593,9 @@ def _run_legacy_training(
         index=False,
         encoding="utf-8-sig",
     )
-    if last_model is not None and last_model_family == "traditional_ml":
+    if active_cache() is not None:
+        pass  # Private bounded cache holds fitted weights; none are promised by this Run.
+    elif last_model is not None and last_model_family == "traditional_ml":
         with (run_dir / "model.pkl").open("wb") as fh:
             pickle.dump(last_model, fh)
     elif last_model is not None:

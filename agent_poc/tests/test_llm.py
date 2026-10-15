@@ -32,7 +32,7 @@ def envelope(content, *, usage=True):
 
 
 def adapter(payload, protocol='json_action'):
-    return LLMAdapter(LLMConfig('http://localhost:9000/v1', 'local-model', protocol=protocol),
+    return LLMAdapter(LLMConfig('http://localhost:9000/v1', 'local-model', protocol=protocol, allow_unapproved_model=True),
                       transport=FakeTransport([Response(200, payload)]))
 
 
@@ -177,7 +177,7 @@ def test_protocol_does_not_silently_switch_to_native():
 
 
 def test_response_limit_and_unknown_usage_are_explicit():
-    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model', max_response_bytes=1024),
+    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model', max_response_bytes=1024, allow_unapproved_model=True),
                       transport=FakeTransport([Response(200, envelope('x' * 5000))]))
     with pytest.raises(LLMError) as info:
         llm.propose('submit', context())
@@ -189,7 +189,7 @@ def test_response_limit_and_unknown_usage_are_explicit():
 
 def test_transport_secrets_are_not_in_repr_or_traceback_and_no_hidden_retries():
     sentinel = 'SYNTHETIC_SECRET'
-    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model'), token=sentinel,
+    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model', allow_unapproved_model=True), token=sentinel,
                       transport=FakeTransport([TimeoutError(sentinel)]))
     with pytest.raises(LLMError) as info:
         llm.propose('submit', context())
@@ -199,15 +199,15 @@ def test_transport_secrets_are_not_in_repr_or_traceback_and_no_hidden_retries():
 
 
 def test_config_is_frozen_and_endpoint_sensitive_without_exposing_endpoint():
-    first = LLMConfig('http://localhost/v1', 'local-model')
-    second = LLMConfig('http://other/v1', 'local-model')
+    first = LLMConfig('http://localhost/v1', 'local-model', allow_unapproved_model=True)
+    second = LLMConfig('http://other/v1', 'local-model', allow_unapproved_model=True)
     assert first.fingerprint() != second.fingerprint()
     assert 'base_url' not in first.public_config()
     with pytest.raises(AttributeError):
         first.model = 'changed'
     credential_url = 'http://user:SYNTHETIC_SECRET@localhost/v1'
     with pytest.raises(ValueError) as info:
-        LLMConfig(credential_url, 'local-model')
+        LLMConfig(credential_url, 'local-model', allow_unapproved_model=True)
     assert 'SYNTHETIC_SECRET' not in ''.join(traceback.format_exception(info.value))
 
 
@@ -215,14 +215,14 @@ def test_config_is_frozen_and_endpoint_sensitive_without_exposing_endpoint():
                                   'model?credential=value', 'model#private', '', 'model\nprivate'])
 def test_served_model_rejects_unsafe_or_malformed_identifiers(model):
     with pytest.raises(ValueError):
-        LLMConfig('http://localhost/v1', model)
+        LLMConfig('http://localhost/v1', model, allow_unapproved_model=True)
 
 
 @pytest.mark.parametrize('prefix', ['/srv/models/', 'C:/models/', 'C:\\models\\'])
 def test_path_named_provider_model_is_private_http_metadata(prefix):
     sentinel = 'SYNTHETIC_SECRET_MODEL_PATH'
     served_id = prefix + sentinel
-    config = LLMConfig('http://localhost/v1', served_id)
+    config = LLMConfig('http://localhost/v1', served_id, allow_unapproved_model=True)
     payload = envelope(json.dumps(action()))
     payload['model'] = served_id
     llm = LLMAdapter(config, transport=FakeTransport([Response(200, payload)]))
@@ -235,7 +235,7 @@ def test_path_named_provider_model_is_private_http_metadata(prefix):
 
 def test_fingerprint_compatible_with_private_model_binding():
     import hashlib
-    config = LLMConfig('http://localhost/v1', 'local-model')
+    config = LLMConfig('http://localhost/v1', 'local-model', allow_unapproved_model=True)
     original = {**config.public_config(), 'endpoint': config.base_url, 'model': config.model}
     original.pop('model_id_sha256')
     expected = hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -299,7 +299,7 @@ def test_repair_request_adds_fixed_guidance_without_the_bad_response():
     sentinel = 'SYNTHETIC_SECRET_BAD_RESPONSE'
     transport = FakeTransport([Response(200, envelope(sentinel)),
                                Response(200, envelope(json.dumps(action())))])
-    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model'), transport=transport)
+    llm = LLMAdapter(LLMConfig('http://localhost/v1', 'local-model', allow_unapproved_model=True), transport=transport)
     with pytest.raises(LLMError) as info:
         llm.propose('submit', context())
     proposal = llm.propose('submit', context(), repair_code=info.value.code)
@@ -314,3 +314,16 @@ def test_repair_request_adds_fixed_guidance_without_the_bad_response():
         llm.propose('submit', context(), repair_code=sentinel)
     assert invalid.value.code == 'llm_context_invalid'
     assert len(transport.calls) == 2
+
+
+@pytest.mark.parametrize('protocol', ['json_action', 'native_tools'])
+@pytest.mark.parametrize('phase', ['submit', 'finalize'])
+def test_default_requests_explicitly_disable_qwen_thinking(protocol, phase):
+    llm = LLMAdapter(LLMConfig('http://localhost:9000/v1', 'qwen35_9b', protocol=protocol))
+    displayed = context() if phase == 'submit' else finalization_context(
+        task=TASK, session_id='s', run_id='r',
+        validation={key: 0.8 for key in ('accuracy', 'balanced_accuracy',
+            'macro_precision', 'macro_recall', 'macro_f1', 'weighted_f1')},
+        validation_score=0.8, allowed_actions=['finalize_ml_session'])
+    request, *_ = llm._build_request(phase, displayed)
+    assert request['chat_template_kwargs'] == {'enable_thinking': False}

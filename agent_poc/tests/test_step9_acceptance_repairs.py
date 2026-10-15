@@ -95,7 +95,7 @@ def test_full_pool_token_boundaries(tmp_path,budget_config,protocol,awareness,ou
     journal,_,_=setup(tmp_path)
     after='finalize_decision' if outcome=='success' else 'terminated'
     raw=build_input(state,after=after,generation=0,adapter=None,journal=journal)
-    cfg=LLMConfig('http://fixture.invalid','fixture',protocol=protocol,diagnosis_phase=True,**budget_config)
+    cfg=LLMConfig('http://fixture.invalid','fixture',protocol=protocol,diagnosis_phase=True,**budget_config, allow_unapproved_model=True)
     adapter=LLMAdapter(cfg)
     request=adapter._build_request('diagnose',raw['context'],'llm_output_invalid')[0]
     total=adapter._prompt_tokens(request)+cfg.max_tokens

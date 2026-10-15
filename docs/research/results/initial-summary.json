@@ -1,0 +1,208 @@
+{
+  "by_data_type": {
+    "一般表格": {
+      "families": 25,
+      "higher": 14,
+      "lower": 11,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.01690099645229992,
+          "delta_percentage_points": 1.6900996452299921,
+          "selected_mean": 0.7883210300868435,
+          "uniform_random_mean": 0.7714200336345436
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.012276422907832374,
+          "delta_percentage_points": 1.2276422907832374,
+          "selected_mean": 0.7245484856893334,
+          "uniform_random_mean": 0.712272062781501
+        },
+        "test_macro_f1": {
+          "delta": 0.01221579558166952,
+          "delta_percentage_points": 1.221579558166952,
+          "selected_mean": 0.7179667008882431,
+          "uniform_random_mean": 0.7057509053065736
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 0,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 25,
+        "svm": 0,
+        "xgboost": 0
+      },
+      "tasks": 25,
+      "tied": 0
+    },
+    "基因表达数据": {
+      "families": 5,
+      "higher": 5,
+      "lower": 0,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.10074261142584118,
+          "delta_percentage_points": 10.074261142584117,
+          "selected_mean": 0.8358337314859053,
+          "uniform_random_mean": 0.7350911200600642
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.10174843674843681,
+          "delta_percentage_points": 10.17484367484368,
+          "selected_mean": 0.8129882154882155,
+          "uniform_random_mean": 0.7112397787397787
+        },
+        "test_macro_f1": {
+          "delta": 0.12411614858311215,
+          "delta_percentage_points": 12.411614858311214,
+          "selected_mean": 0.8087137467717259,
+          "uniform_random_mean": 0.6845975981886138
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 1,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 1,
+        "svm": 3,
+        "xgboost": 0
+      },
+      "tasks": 5,
+      "tied": 0
+    },
+    "拉曼数据": {
+      "families": 11,
+      "higher": 14,
+      "lower": 3,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.0937857456750486,
+          "delta_percentage_points": 9.37857456750486,
+          "selected_mean": 0.7795400430633181,
+          "uniform_random_mean": 0.6857542973882695
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.12669276906437033,
+          "delta_percentage_points": 12.669276906437032,
+          "selected_mean": 0.7872449792032823,
+          "uniform_random_mean": 0.660552210138912
+        },
+        "test_macro_f1": {
+          "delta": 0.12466772769154466,
+          "delta_percentage_points": 12.466772769154467,
+          "selected_mean": 0.7526094470341664,
+          "uniform_random_mean": 0.6279417193426218
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 0,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 0,
+        "svm": 6,
+        "xgboost": 11
+      },
+      "tasks": 17,
+      "tied": 0
+    },
+    "时序数据": {
+      "families": 75,
+      "higher": 55,
+      "lower": 27,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.026992209678823098,
+          "delta_percentage_points": 2.69922096788231,
+          "selected_mean": 0.6958420265061894,
+          "uniform_random_mean": 0.6688498168273663
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.03024654493349832,
+          "delta_percentage_points": 3.024654493349832,
+          "selected_mean": 0.6561293018488907,
+          "uniform_random_mean": 0.6258827569153924
+        },
+        "test_macro_f1": {
+          "delta": 0.03646583524086067,
+          "delta_percentage_points": 3.6465835240860667,
+          "selected_mean": 0.6424671020868905,
+          "uniform_random_mean": 0.6060012668460298
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 37,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 32,
+        "svm": 5,
+        "xgboost": 8
+      },
+      "tasks": 82,
+      "tied": 0
+    }
+  },
+  "new_classification_fits_during_selection_or_comparison": 0,
+  "overall": {
+    "families": 116,
+    "higher": 88,
+    "lower": 41,
+    "metrics": {
+      "test_accuracy": {
+        "delta": 0.03669733983392276,
+        "delta_percentage_points": 3.669733983392276,
+        "selected_mean": 0.7302203202727485,
+        "uniform_random_mean": 0.6935229804388258
+      },
+      "test_balanced_accuracy": {
+        "delta": 0.042245321822319104,
+        "delta_percentage_points": 4.22453218223191,
+        "selected_mean": 0.6927474466491416,
+        "uniform_random_mean": 0.6505021248268225
+      },
+      "test_macro_f1": {
+        "delta": 0.04678701932530338,
+        "delta_percentage_points": 4.678701932530338,
+        "selected_mean": 0.6780573583470586,
+        "uniform_random_mean": 0.6312703390217552
+      }
+    },
+    "model_counts": {
+      "cnn1d": 0,
+      "logistic_regression": 38,
+      "pca_lda": 0,
+      "pls_da": 0,
+      "random_forest": 58,
+      "svm": 14,
+      "xgboost": 19
+    },
+    "tasks": 129,
+    "tied": 0
+  },
+  "random_definition": "For each task the arithmetic mean of the same seven existing model metric values, not prediction averaging, ensemble, maximum, or an additional fit",
+  "scope": "internal exploratory, same tasks used to manually form knowledge and evaluate choice; not independent generalization",
+  "selection_accounting": {
+    "全部请求": 131,
+    "历史字段格式失败": 2,
+    "原始JSON合法回复": 129,
+    "合法选择中的末尾括号补全": 0,
+    "合法选择任务": 129,
+    "字段错误历史回复的括号补全尝试": 2,
+    "已知总用量": 246411,
+    "已知输入用量": 239261,
+    "已知输出用量": 7150,
+    "新增分类拟合": 0,
+    "最终合法任务": 129,
+    "末尾外层括号补全": 2,
+    "本修订执行请求": 129,
+    "正常选模请求": 129,
+    "用量未知请求": 0,
+    "结束调用": 0,
+    "额外请求": 2
+  },
+  "tie_tolerance": 1e-12,
+  "version": "knowledge-vs-uniform-seven-defaults-20261013-v1"
+}

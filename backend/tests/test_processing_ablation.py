@@ -257,7 +257,7 @@ def test_planned_row_uses_only_its_models_from_frozen_global_config(tmp_path,mon
     config['conditions'].update(scope_binding=digest('test'),
         model_configs_digest=digest(configs),
         llm_binding=LLMConfig(BACKEND_URL+'/v1','fixture',protocol='json_action',
-            timeout=180,max_tokens=1024,prompt_version='agent-decision-processing-v1').fingerprint())
+            timeout=180,max_tokens=1024,prompt_version='agent-decision-processing-v1', allow_unapproved_model=True).fingerprint())
     plan=register_processing_plan(config,'comparison')
     plan_path=tmp_path/'comparison'/'plan.json'
     save(plan_path,plan)
@@ -288,7 +288,7 @@ def test_planned_row_uses_only_its_models_from_frozen_global_config(tmp_path,mon
         '--allowed-models',*row['allowed_models'],'--decision-mode','recipe_id',
         '--processing-mode',row['processing_mode'],'--fixed-processing',str(fixed_path),
         '--model-configs',str(config_path),'--defer-test','--plan',str(plan_path),
-        '--knowledge','off','--llm-url',BACKEND_URL+'/v1','--llm-model','fixture']
+        '--knowledge','off','--llm-url',BACKEND_URL+'/v1','--llm-model','fixture','--allow-unapproved-llm']
     assert agent_ablation.main(argv)==2
     assert observed==[{'logistic_regression':{'logistic_c':2.0}}]
     stored=json.loads((tmp_path/row['experiment_id']/'record.json').read_text())

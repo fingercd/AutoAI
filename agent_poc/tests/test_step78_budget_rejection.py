@@ -46,7 +46,7 @@ def setup_task(api, tmp_path, budget_config, *, version=8, awareness='off',
                guard='on', protocol='json_action'):
     test_client, storage, dataset = api
     config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', protocol=protocol, **budget_config)
+        prompt_version='agent-decision-budget-v1', protocol=protocol, **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', config)
     wire = CountTransport(test_client)
     revision = f'agent-recipes-revision-v{version - 2}'

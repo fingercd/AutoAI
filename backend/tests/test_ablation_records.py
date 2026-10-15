@@ -128,7 +128,7 @@ def test_agent_start_failure_keeps_original_reason_without_frozen_config(recorde
     state['lifecycle'].update(status='needs_attention',reason_code='contract_validation_failed')
     monkeypatch.setattr(runtime,'start_task',lambda *args,**kwargs:state)
     argv[argv.index('baseline')]='agent'
-    argv+=['--llm-url','http://fixture.invalid/v1','--llm-model','fixture']
+    argv+=['--llm-url','http://fixture.invalid/v1','--llm-model','fixture','--allow-unapproved-llm']
     assert ablation.main(argv)==2
     record=json.loads(path.read_text())
     assert record['failure_reason']=='contract_validation_failed'

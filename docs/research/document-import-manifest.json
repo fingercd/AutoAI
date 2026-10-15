@@ -1,0 +1,163 @@
+[
+  {
+    "path": "docs/research/history/benchmark-20261010-summary.md",
+    "source_document": "benchmark_20261010/final_delivery/REPORT_zh.md",
+    "original_sha256": "0aed3fce2e18bd14cb33514df98911e0c50688866b49f60dd115d36f7b37c80a",
+    "published_sha256": "16f84ba77022ff3e3c00c6e192cd2cf316cf0e9d71f2856dd33a78d4d0428c56",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/benchmark-20261010-statistics.md",
+    "source_document": "benchmark_20261010/final_delivery/report.md",
+    "original_sha256": "55cf9270463ea684adf986557a7bf95ee1a38c622224642762d72ec49fb2269a",
+    "published_sha256": "921affccba06c2f90d283249110e075adebbb724ebec7b1c7b00d3ac8eaa5e7e",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/data-audit-20261010.md",
+    "source_document": "benchmark_20261010/final_delivery/audit/DATA_AUDIT.md",
+    "original_sha256": "45382089550070a7d759269a5432543e741f3e062e3cd692b14b8b89d3f083c1",
+    "published_sha256": "35ee886ce9fdaaf12a0b85c56d998794d62aee086962f5ac8f7a11c8bbfc508d",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/benchmark-20261011-review.md",
+    "source_document": "benchmark_20261011_review/综合复盘与下一步.md",
+    "original_sha256": "1437ca7015dfa96edd265c6b5381b7bd605dac71971db2926f81ded37fabcfaf",
+    "published_sha256": "d03bac07e0502ff964c551365a350f562c48acc53445e198d78f8134af2ce211",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-independent-review-20261011.md",
+    "source_document": "benchmark_20261011_review/PRO_INDEPENDENT_REVIEW_96343fe4-4463-4db1-ae63-7f4e1e71c190.md",
+    "original_sha256": "e6309832a8c533cb38da7b0d8f2ff3e0b1519a9d1812853321e6e559ebf71ef1",
+    "published_sha256": "84a075fc6e420d53ecbe1bfea24f0c013d1eb99bba8fe4c3526b41a3f3a163c1",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-full-review-20261011.md",
+    "source_document": "benchmark_20261011_review/PRO_FULL_REVIEW.md",
+    "original_sha256": "ee28a98badad95143c68a1d02a466ff3531c231b89112f8a44dab4a72383fa7e",
+    "published_sha256": "9cf7b10063f9399db3d81ad8e81ea8b3930cd5b3c386fed631882b93a392d4d2",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-svm-response-20261011.md",
+    "source_document": "benchmark_20261011_review/PRO_RESPONSE_5944ab55-026f-4172-b6e7-432a65e1ad8b.md",
+    "original_sha256": "e79a89d49bf136d81b5ab3e69f47dd7a9ec4b8024a0451833f082f0f9a6904c3",
+    "published_sha256": "dde20b6c32eab71cda659ccc5e3777d805c1f83986cc2f6bd05c6e90a48d77cf",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-response-20261011.md",
+    "source_document": "benchmark_20261011_review/PRO_RESPONSE_c34da773-4183-43a7-8485-5f06ecf42dfc.md",
+    "original_sha256": "c7a90847d09acfea940a525cb843a8a5e81d1d62c5be2e084b095b1377748e63",
+    "published_sha256": "859499c43d1a78650e8ba6503ab9f673688e3e27694aa51a8150cf3437d8aeeb",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-review-corrections-20261011.md",
+    "source_document": "benchmark_20261011_review/PRO_REVIEW_采纳与更正.md",
+    "original_sha256": "31b6f2a5350bfe6596306ce0652228fd98308673511ea4bde90bcb83508d7ff8",
+    "published_sha256": "e3d6a457f03eb99db01d06397ed36782ca0c601388e0cce89392f9c22a25aed6",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/svm-metric-review-20261011.md",
+    "source_document": "benchmark_20261011_review/SVM_评估口径补充.md",
+    "original_sha256": "af5da43f198f53d0a43b2a5600bfe728c37e9edf68a8613a46bd8e1d46a89de0",
+    "published_sha256": "86c7990c90036902c0035a8ba7302be34c5bfd09b53e2d95b6c0ed7cbcf16e9f",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/pro-review-reader-20261011.md",
+    "source_document": "benchmark_20261011_review/GPT_Pro_review/00_README_问题与事实.md",
+    "original_sha256": "62fa1e40b40654deaa86bfbd0246fd8266ecdd956da3f0cb9032f4d28ead8f04",
+    "published_sha256": "ec47c264f8c5e92cdadfbe298896772664806d0f53ff4d0ce035866a168fe693",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/diagnosis-20261011-report.md",
+    "source_document": "diagnosis_20261011_v5/final_delivery/REPORT_zh.md",
+    "original_sha256": "12df817326631391b185ccb00aeb1abf9d0b36c5ef4d398d1e747777353fd16d",
+    "published_sha256": "9c21bd2bcefc500492cb26b3456279ce699224face3ac79e37ee0f50a8657ab2",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/prompt-fix-20261011-report.md",
+    "source_document": "prompt_fix_20261011/delivery/CHANGE_REPORT_zh.md",
+    "original_sha256": "2b5abbc6462ba5f5cd6ebb1bbdbb9672ce4ece5e2a4af30d15df544d12fdefdd",
+    "published_sha256": "c61739e68761668edaf54ee3c6a696714763aad21d7a94c3941dced703f385c8",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/benchmark-20261012-statistics.md",
+    "source_document": "benchmark_20261012_v5_review/report.md",
+    "original_sha256": "40ca6c61fe4f690f575739f7b7d7e68a0f5d082a3bbc747fd5a429649c34553f",
+    "published_sha256": "d12dde61b4907a74b3c3c52a00b558f87fc6cb9109d9aee3517db70ab56e3467",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/history/protocol-proposal-20261010.md",
+    "source_document": "protocol_review_20261010/benchmark-protocol-proposal-20261010.md",
+    "original_sha256": "739bf67a4846bd917084bf6452c53681e0a0402bbfc9d445a4f4624a44d4eb3e",
+    "published_sha256": "dc5d08ecd2968895c46c1a04a5d8666f0b0807623fc9c025cacc30a7fd9e0fd7",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261013/execution-plan.md",
+    "source_document": "knowledge_plan_20261013/知识库选模验证执行计划.md",
+    "original_sha256": "16266e430d0b56a09faf3f2c58fade545334ef22a2fd4e5ed6f3f8fb8a7c604e",
+    "published_sha256": "10efb5deedaa7b25bf25f0cbabc3f8c4128b3779817f4d564a908305728e95f3",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261013/knowledge-reviewed.md",
+    "source_document": "knowledge_pilot_20261013/知识卡初稿待确认.md",
+    "original_sha256": "5ead031a54929cea1d58c886878b35485d3336d70a182e7f5eb48e4fc4cc9ebe",
+    "published_sha256": "40ae480da1db71d7a7d5443a44c14f60a341181d71f08efd88607bdd714d0640",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261013/supplement-and-review.md",
+    "source_document": "knowledge_pilot_20261013/补测完成与知识审核说明.md",
+    "original_sha256": "6424c5cc8e89c7698b0e5d2419b02dd0cb06939bbe8e40570ae888f9aa4a2a99",
+    "published_sha256": "6564420ee75966c9cdb2fcb6b8b7687108b3aea28e1e280b38c0f01d86f0fe7b",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261013/report.md",
+    "source_document": "knowledge_pilot_20261013/知识选模内部验证结果报告.md",
+    "original_sha256": "aa6ea705e7f74d8b7a257014ba9016bac8117a8c9236fe8548d8f5bb831b1bee",
+    "published_sha256": "21184f28f31c64aee61a6f771ac440c3c14b8aa5b76e8e4097d8f4120bc6212d",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261013/tasks.md",
+    "source_document": "knowledge_pilot_20261013/129个任务选模与随机比较完整明细.md",
+    "original_sha256": "40dc30c00ab38c486e9c1ff686329ee9d9796da02c2efcc93f179ed1f74dcb2a",
+    "published_sha256": "9ef409991912e834c49e603c6216f5e70d00d92008a87041e7c7b3ecc7f08046",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261014/advantage-review.md",
+    "source_document": "knowledge_pilot_20261013/advantage-review-20261014/优势知识修订草案_20261014.md",
+    "original_sha256": "62e041426ebf4de5bc4c2f87c8f1299c5e46ffff0cfe8a7516d5e79c3fa48a92",
+    "published_sha256": "396e1d18827a3074e60ec5f998ca187a25ac817f6e9b76e346d55a679ba8dad8",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261014/report.md",
+    "source_document": "knowledge_rerun_20261014/修订知识选模结果报告.md",
+    "original_sha256": "94ef861fee7b4185f6ea9f0629848ed169cf554189cc054f28ae011add549216",
+    "published_sha256": "94cfb443a73bf2e2af311aa51af24f84b96186927278277582422aaa865ffd56",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  },
+  {
+    "path": "docs/research/knowledge-20261014/tasks.md",
+    "source_document": "knowledge_rerun_20261014/129个任务两轮选模与随机比较明细.md",
+    "original_sha256": "c3fd152a10dfee25a3f4bfdbb2a385281582ed907e055dc494c7c94128b13dc2",
+    "published_sha256": "6fc3d0026a2f32c75ab04164d9333eae8cc07cdd2464b77238bf5875ecbb87ec",
+    "changes": "Added archival context; converted unavailable local links to historical references; omitted private ChatGPT conversation URLs. Normalized public-copy line endings and trailing whitespace; original document retained."
+  }
+]

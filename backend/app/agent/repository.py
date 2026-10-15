@@ -915,7 +915,7 @@ def _decode_preparation(raw):
                 plan = plans[key]
                 body = {k: v for k, v in plan.items() if k != 'plan_digest'}
                 if (key != plan['plan_digest'] or semantic_digest(body) != key or
-                        plan['policy_version'] != POLICY_VERSION or
+                        plan['policy_version'] not in (POLICY_VERSION, 'benchmark-three-config-v1') or
                         plan['mode'] != frozen['search_mode'] or plan['max_trials'] != limit):
                     raise ValueError('search plan mismatch')
         except (KeyError, TypeError, ValueError) as exc:

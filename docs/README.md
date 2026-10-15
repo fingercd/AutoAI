@@ -1,6 +1,6 @@
 # Pan 文档导航
 
-> 最近核对：2026-09-29，源码基准 019f1cc。用户当前要求决定任务目标；代码和接口用于确认现状；历史计划不授予操作权限，也不覆盖当前规则。
+> 最近核对：2026-10-15，当前开发分支 pan/agent。用户当前要求决定任务目标；代码和接口用于确认现状；历史计划不授予操作权限，也不覆盖当前规则。
 
 ## 先读的入口
 
@@ -10,6 +10,15 @@
 - [CLAUDE](../CLAUDE.md)：共用上述规则的协作入口。
 - [Git 与发布规范](github_publish_policy.md)：仅在服务器 Pan 根目录核对、提交及推送 pan/agent；操作须单独授权。
 - [部署说明](../deploy/server_deploy.md) 与 [服务控制](service_control.md)：当前 release、storage 和受控启停。
+
+## 研究文档、实验结果与提示词
+
+- [研究总入口](research/README.md)：最新两轮知识选模、历史完整实验与已知限制。
+- [用户下一步想法](research/next-steps-20261015.md)、[Pro分析请求](research/pro-review-request.md)。
+- [结果数据说明](research/results/README.md)、[执行源代码参考](research/execution-reference/README.md)。
+- [代码与验证记录](research/code-and-validation.md)。
+
+文档和可共享结果默认纳入Git，原始数据、逐样本预测、凭据、权重、日志和数据库继续排除。个人知识不得因统一检索或文档入库而越权公开。
 
 ## 现行接口和阶段契约
 

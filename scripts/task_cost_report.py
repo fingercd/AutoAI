@@ -444,7 +444,7 @@ def build_report(*, journal: Path, agent_db: Path, thread_id: str,
         coverage['task_wall_duration'] = _measure([{
             'duration_seconds':_duration(task_started, completed_at)}], 'duration_seconds')
     coverage['monitor_wait_duration'] = _measure(waits, 'duration_seconds')
-    search_parents = [event for event in events if event['stage'] == 'search']
+    search_parents = [event for event in events if event['stage'] == 'parameter_search']
     coverage['search_parent_duration'] = _measure(search_parents, 'duration_seconds')
     dimensions = ({name: _report_dimension(value) for name, value in
                    {**backend_budget['dimensions'], **journal_dimensions}.items()}

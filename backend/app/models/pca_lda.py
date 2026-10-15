@@ -10,7 +10,7 @@
       ``build_pca_lda`` 构造，PCA 维度来自配置 ``pca_components``
       （缺省为 2）；
     - 输入特征来自预处理输出的 ``wide-feature-v2`` 宽表（公共轴
-      对齐后的强度向量），外层训练流程负责训练集-only 的标准化
+      对齐后的强度向量），训练编排流程负责训练集-only 的标准化
       与 train/valid/test 划分。
 
 算法原理：
@@ -48,7 +48,7 @@ def build_pca_lda(n_components: int = 2) -> Pipeline:
         两步 Pipeline：``("pca", PCA(...))`` 负责无监督降维，
         ``("lda", LinearDiscriminantAnalysis())`` 用默认参数
         （solver="svd"，对奇异协方差稳健）负责线性分类。
-        实例尚未拟合，由外层训练流程在训练集上 fit。
+        实例尚未拟合，由训练编排流程在训练集上 fit。
     """
     return Pipeline(
         [

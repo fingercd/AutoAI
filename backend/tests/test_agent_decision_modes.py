@@ -106,7 +106,7 @@ def test_independent_contexts_and_proposal_restore(api,evidence,risks,knowledge,
     assert (context['train_statistics'] is not None)==evidence
     assert (context['train_risks'] is not None)==risks
     assert context['knowledge']['status']==('ready' if knowledge else 'disabled')
-    cfg=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1')
+    cfg=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1', allow_unapproved_model=True)
     proposal=LLMAdapter(cfg,transport=ExpressionProvider(protocol)).propose('submit',context)
     saved=store_proposal(proposal,context)
     assert StoredProposal.model_validate(saved).bind(context).arguments==proposal.arguments

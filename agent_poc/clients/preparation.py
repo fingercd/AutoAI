@@ -117,7 +117,7 @@ class RecipeCatalog(ClosedModel):
 
 class EvaluationPlanReference(ClosedModel):
     schema_version: Literal['evaluation-plan-v1']
-    split_algorithm_version: Literal['group-stratified-test-first-v1']
+    split_algorithm_version: Literal['group-stratified-test-first-v1', 'benchmark-held-test-v1']
     dataset_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
     axis_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
     evaluation_config_digest: str = Field(pattern=r'^[a-f0-9]{64}$')

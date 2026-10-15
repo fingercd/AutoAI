@@ -1,0 +1,2726 @@
+{
+  "summary": {
+    "tasks": 129,
+    "model_choices_changed": 113,
+    "model_choices_unchanged": 16,
+    "balanced_accuracy_higher": 58,
+    "balanced_accuracy_tied": 25,
+    "balanced_accuracy_lower": 46,
+    "overall_changes_percentage_points": {
+      "test_balanced_accuracy": 2.2314569002894302,
+      "test_accuracy": 2.2407682907378614,
+      "test_macro_f1": 2.195208885915676
+    }
+  },
+  "tasks": [
+    {
+      "task_index": 1,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Beef",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8,
+        "test_accuracy": 0.8,
+        "test_macro_f1": 0.801025641025641
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 9.999999999999998,
+        "test_accuracy": 9.999999999999998,
+        "test_macro_f1": 10.07059607059606
+      }
+    },
+    {
+      "task_index": 2,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "BeetleFly",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.95,
+        "test_accuracy": 0.95,
+        "test_macro_f1": 0.949874686716792
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -4.999999999999993,
+        "test_accuracy": -4.999999999999993,
+        "test_macro_f1": -4.987468671679196
+      }
+    },
+    {
+      "task_index": 3,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "BirdChicken",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6499999999999999,
+        "test_accuracy": 0.65,
+        "test_macro_f1": 0.6491228070175439
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 15.000000000000014,
+        "test_accuracy": 15.000000000000002,
+        "test_macro_f1": 14.885699096225412
+      }
+    },
+    {
+      "task_index": 4,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Coffee",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_macro_f1": 1.0
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -40.256410256410255,
+        "test_accuracy": -39.28571428571429,
+        "test_macro_f1": -40.57971014492754
+      }
+    },
+    {
+      "task_index": 5,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ECGFiveDays",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9742990654205608,
+        "test_accuracy": 0.9744483159117305,
+        "test_macro_f1": 0.9744231641713657
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -28.802799421553605,
+        "test_accuracy": -28.919860627177695,
+        "test_macro_f1": -29.875661750927673
+      }
+    },
+    {
+      "task_index": 6,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Meat",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9666666666666667,
+        "test_accuracy": 0.9666666666666667,
+        "test_macro_f1": 0.9665831244778613
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -16.666666666666675,
+        "test_accuracy": -16.666666666666664,
+        "test_macro_f1": -18.08688387635756
+      }
+    },
+    {
+      "task_index": 7,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "OliveOil",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8541666666666666,
+        "test_accuracy": 0.9,
+        "test_macro_f1": 0.8708333333333333
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -50.0,
+        "test_accuracy": -46.666666666666664,
+        "test_macro_f1": -56.31410256410256
+      }
+    },
+    {
+      "task_index": 8,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "SonyAIBORobotSurface",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6773623070490655,
+        "test_accuracy": 0.632279534109817,
+        "test_macro_f1": 0.6130431615901178
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 22.795330756887466,
+        "test_accuracy": 26.622296173044923,
+        "test_macro_f1": 28.480775385358882
+      }
+    },
+    {
+      "task_index": 9,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "SonyAIBORobotSurfaceII",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8123194483272761,
+        "test_accuracy": 0.8100734522560336,
+        "test_macro_f1": 0.8036784748897425
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 2.815441244991146,
+        "test_accuracy": 2.833158447009443,
+        "test_macro_f1": 2.8817119562463023
+      }
+    },
+    {
+      "task_index": 10,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Wine",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9444444444444444,
+        "test_accuracy": 0.9444444444444444,
+        "test_macro_f1": 0.9442724458204335
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -44.44444444444444,
+        "test_accuracy": -44.44444444444444,
+        "test_macro_f1": -44.582043343653254
+      }
+    },
+    {
+      "task_index": 11,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_aids",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7,
+        "test_accuracy": 0.7,
+        "test_macro_f1": 0.696969696969697
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 12,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "appendicitis",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8,
+        "test_accuracy": 0.9090909090909091,
+        "test_macro_f1": 0.8472222222222222
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 13,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "parity5",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.125,
+        "test_accuracy": 0.14285714285714285,
+        "test_macro_f1": 0.125
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 14,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "prnn_crabs",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.825,
+        "test_accuracy": 0.825,
+        "test_macro_f1": 0.8248905565978737
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 17.500000000000004,
+        "test_accuracy": 17.500000000000004,
+        "test_macro_f1": 17.51094434021263
+      }
+    },
+    {
+      "task_index": 15,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "glass2",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9,
+        "test_accuracy": 0.9090909090909091,
+        "test_macro_f1": 0.905982905982906
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -23.33333333333334,
+        "test_accuracy": -24.242424242424242,
+        "test_macro_f1": -24.054511796447276
+      }
+    },
+    {
+      "task_index": 16,
+      "suite": "biology5",
+      "data_type": "基因表达数据",
+      "task_id": "ALLAML",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "pls_da",
+      "revised_model_name": "偏最小二乘判别",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_macro_f1": 1.0
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 17,
+      "suite": "biology5",
+      "data_type": "基因表达数据",
+      "task_id": "CLL_SUB_111",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "pls_da",
+      "revised_model_name": "偏最小二乘判别",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7744107744107743,
+        "test_accuracy": 0.6956521739130435,
+        "test_macro_f1": 0.7660818713450293
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -11.111111111111105,
+        "test_accuracy": -13.043478260869568,
+        "test_macro_f1": -10.278220804536598
+      }
+    },
+    {
+      "task_index": 18,
+      "suite": "biology5",
+      "data_type": "基因表达数据",
+      "task_id": "Carcinom",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "pls_da",
+      "revised_model_name": "偏最小二乘判别",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8030303030303031,
+        "test_accuracy": 0.9142857142857143,
+        "test_macro_f1": 0.7704840613931523
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -47.575757575757585,
+        "test_accuracy": -37.142857142857146,
+        "test_macro_f1": -52.578709169618264
+      }
+    },
+    {
+      "task_index": 19,
+      "suite": "biology5",
+      "data_type": "基因表达数据",
+      "task_id": "GLIOMA",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "pls_da",
+      "revised_model_name": "偏最小二乘判别",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.75,
+        "test_accuracy": 0.8,
+        "test_macro_f1": 0.7619047619047619
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 20,
+      "suite": "biology5",
+      "data_type": "基因表达数据",
+      "task_id": "colon",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "pls_da",
+      "revised_model_name": "偏最小二乘判别",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7375,
+        "test_accuracy": 0.7692307692307693,
+        "test_macro_f1": 0.7450980392156863
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 19.999999999999996,
+        "test_accuracy": 15.384615384615385,
+        "test_macro_f1": 17.611408199643485
+      }
+    },
+    {
+      "task_index": 21,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "cancer_cell_(cooh)2",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9831649831649831,
+        "test_accuracy": 0.9841269841269841,
+        "test_macro_f1": 0.9831932773109244
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 22,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "cancer_cell_cooh",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9549533799533799,
+        "test_accuracy": 0.952755905511811,
+        "test_macro_f1": 0.9544454814191656
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 23,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "cancer_cell_nh2",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.940491452991453,
+        "test_accuracy": 0.937007874015748,
+        "test_macro_f1": 0.939795079486155
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 24,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "chlorinated_samples",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9,
+        "test_accuracy": 0.9347826086956522,
+        "test_macro_f1": 0.9213675213675214
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 25,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "comfile_stroke",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.75,
+        "test_accuracy": 0.75,
+        "test_macro_f1": 0.7333333333333334
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 25.0,
+        "test_accuracy": 25.0,
+        "test_macro_f1": 26.66666666666666
+      }
+    },
+    {
+      "task_index": 26,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "cspp_serum_metabolites",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6666666666666666,
+        "test_accuracy": 0.6666666666666666,
+        "test_macro_f1": 0.5555555555555555
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 27,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "diabetes_skin_ear_lobe",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6666666666666666,
+        "test_accuracy": 0.5,
+        "test_macro_f1": 0.5
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 28,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "diabetes_skin_inner_arm",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8333333333333333,
+        "test_accuracy": 0.75,
+        "test_macro_f1": 0.7333333333333334
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 29,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "diabetes_skin_thumbnail",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.16666666666666666,
+        "test_accuracy": 0.25,
+        "test_macro_f1": 0.2
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 30,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "diabetes_skin_vein",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8333333333333333,
+        "test_accuracy": 0.75,
+        "test_macro_f1": 0.7333333333333334
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 31,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "hair_dyes_sers",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8774493731918998,
+        "test_accuracy": 0.9008746355685131,
+        "test_macro_f1": 0.8991337381254251
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 32,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "head_neck_cancer",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5848214285714286,
+        "test_accuracy": 0.6521739130434783,
+        "test_macro_f1": 0.5861111111111111
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 33,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "locust_phase_hemolymph",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "svm",
+      "revised_model_name": "支持向量机（线性核）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.949874686716792,
+        "test_accuracy": 0.95,
+        "test_macro_f1": 0.949874686716792
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 34,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "marine_pathogens",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9694444444444444,
+        "test_accuracy": 0.9692982456140351,
+        "test_macro_f1": 0.9677646842533446
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 35,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "marine_pathogens_binary",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9833333333333334,
+        "test_accuracy": 0.9811320754716981,
+        "test_macro_f1": 0.9808871258564731
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 36,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "pharmaceutical_ingredients",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9896315640880858,
+        "test_accuracy": 0.99002849002849,
+        "test_macro_f1": 0.9895656717116941
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 37,
+      "suite": "raman34",
+      "data_type": "拉曼数据",
+      "task_id": "serum_alzheimer_disease",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "xgboost",
+      "revised_model_name": "梯度提升树（当前XGBoost实现）",
+      "model_changed": false,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.3333333333333333,
+        "test_accuracy": 0.3333333333333333,
+        "test_macro_f1": 0.16666666666666666
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 38,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_asbestos",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5763888888888888,
+        "test_accuracy": 0.5882352941176471,
+        "test_macro_f1": 0.5641025641025641
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 24.305555555555557,
+        "test_accuracy": 23.529411764705877,
+        "test_macro_f1": 25.695006747638327
+      }
+    },
+    {
+      "task_index": 39,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_bankruptcy",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8,
+        "test_accuracy": 0.8,
+        "test_macro_f1": 0.8
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 9.999999999999998,
+        "test_accuracy": 9.999999999999998,
+        "test_macro_f1": 9.898989898989896
+      }
+    },
+    {
+      "task_index": 40,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_creditscore",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_macro_f1": 1.0
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -30.000000000000004,
+        "test_accuracy": -15.000000000000002,
+        "test_macro_f1": -25.974025974025984
+      }
+    },
+    {
+      "task_index": 41,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_fraud",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5,
+        "test_accuracy": 0.6666666666666666,
+        "test_macro_f1": 0.4
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 25.0,
+        "test_accuracy": 11.111111111111116,
+        "test_macro_f1": 35.0
+      }
+    },
+    {
+      "task_index": 42,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "analcatdata_japansolvent",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_macro_f1": 1.0
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -9.999999999999998,
+        "test_accuracy": -9.090909090909093,
+        "test_macro_f1": -9.401709401709402
+      }
+    },
+    {
+      "task_index": 43,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "backache",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5,
+        "test_accuracy": 0.8611111111111112,
+        "test_macro_f1": 0.4626865671641791
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 1.9354838709677469,
+        "test_accuracy": -11.111111111111116,
+        "test_macro_f1": 5.445203194163306
+      }
+    },
+    {
+      "task_index": 44,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "biomed",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7666666666666666,
+        "test_accuracy": 0.8333333333333334,
+        "test_macro_f1": 0.7904490377761939
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 45,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "breast_cancer",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6520803443328551,
+        "test_accuracy": 0.7758620689655172,
+        "test_macro_f1": 0.6685714285714286
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.2195121951219523,
+        "test_accuracy": -1.7241379310344862,
+        "test_macro_f1": -1.5579975579975591
+      }
+    },
+    {
+      "task_index": 46,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "bupa",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5668067226890756,
+        "test_accuracy": 0.5652173913043478,
+        "test_macro_f1": 0.5606960950764006
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 15.88235294117647,
+        "test_accuracy": 15.94202898550725,
+        "test_macro_f1": 16.301307246838338
+      }
+    },
+    {
+      "task_index": 47,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "corral",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8928571428571428,
+        "test_accuracy": 0.90625,
+        "test_macro_f1": 0.9015384615384616
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -9.126984126984116,
+        "test_accuracy": -9.375,
+        "test_macro_f1": -9.58704453441297
+      }
+    },
+    {
+      "task_index": 48,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "haberman",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5294117647058824,
+        "test_accuracy": 0.7419354838709677,
+        "test_macro_f1": 0.48008385744234805
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 3.6601307189542465,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 7.784840637226864
+      }
+    },
+    {
+      "task_index": 49,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "hepatitis",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6666666666666666,
+        "test_accuracy": 0.8709677419354839,
+        "test_macro_f1": 0.712962962962963
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 23.00000000000001,
+        "test_accuracy": 6.451612903225801,
+        "test_macro_f1": 18.37037037037037
+      }
+    },
+    {
+      "task_index": 50,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "irish",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_macro_f1": 1.0
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -23.9448051948052,
+        "test_accuracy": -23.0,
+        "test_macro_f1": -23.684481515806823
+      }
+    },
+    {
+      "task_index": 51,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "labor",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9375,
+        "test_accuracy": 0.9166666666666666,
+        "test_macro_f1": 0.9111111111111111
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 52,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "lupus",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7662337662337663,
+        "test_accuracy": 0.7777777777777778,
+        "test_macro_f1": 0.7662337662337663
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": 0.0
+      }
+    },
+    {
+      "task_index": 53,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "molecular_biology_promoters",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9090909090909092,
+        "test_accuracy": 0.9090909090909091,
+        "test_macro_f1": 0.9083333333333333
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -13.636363636363647,
+        "test_accuracy": -13.636363636363635,
+        "test_macro_f1": -13.607660455486547
+      }
+    },
+    {
+      "task_index": 54,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "mux6",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7619047619047619,
+        "test_accuracy": 0.7692307692307693,
+        "test_macro_f1": 0.7636363636363637
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -15.476190476190466,
+        "test_accuracy": -15.384615384615385,
+        "test_macro_f1": -15.75757575757577
+      }
+    },
+    {
+      "task_index": 55,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "postoperative_patient_data",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5,
+        "test_accuracy": 0.7222222222222222,
+        "test_macro_f1": 0.41935483870967744
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 2.3076923076923106,
+        "test_accuracy": -5.555555555555558,
+        "test_macro_f1": 9.850230414746536
+      }
+    },
+    {
+      "task_index": 56,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "prnn_synth",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8400000000000001,
+        "test_accuracy": 0.84,
+        "test_macro_f1": 0.8397435897435898
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.0,
+        "test_accuracy": 0.0,
+        "test_macro_f1": -0.07741855567943157
+      }
+    },
+    {
+      "task_index": 57,
+      "suite": "tabmini25",
+      "data_type": "一般表格",
+      "task_id": "saheart",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "logistic_regression",
+      "revised_model_name": "逻辑回归",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5981045081967213,
+        "test_accuracy": 0.6774193548387096,
+        "test_macro_f1": 0.5995981630309989
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.7930327868852514,
+        "test_accuracy": -4.3010752688172005,
+        "test_macro_f1": -1.785213128496721
+      }
+    },
+    {
+      "task_index": 58,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Adiac",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7288657288657289,
+        "test_accuracy": 0.7263427109974424,
+        "test_macro_f1": 0.7006808618370428
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 1.746762996762996,
+        "test_accuracy": 0.2557544757033292,
+        "test_macro_f1": 1.5412919280890613
+      }
+    },
+    {
+      "task_index": 59,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ArrowHead",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7466958344727007,
+        "test_accuracy": 0.7314285714285714,
+        "test_macro_f1": 0.7314328783746618
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -19.050223316014947,
+        "test_accuracy": -19.428571428571427,
+        "test_macro_f1": -19.745022624631435
+      }
+    },
+    {
+      "task_index": 60,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "CBF",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8496096122790643,
+        "test_accuracy": 0.8488888888888889,
+        "test_macro_f1": 0.8478159986813577
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -7.6365566864700085,
+        "test_accuracy": -7.666666666666666,
+        "test_macro_f1": -8.1401585946974
+      }
+    },
+    {
+      "task_index": 61,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Car",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8525882012724117,
+        "test_accuracy": 0.85,
+        "test_macro_f1": 0.8515122265122266
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -35.97455176402544,
+        "test_accuracy": -35.0,
+        "test_macro_f1": -35.6091238831177
+      }
+    },
+    {
+      "task_index": 62,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ChlorineConcentration",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7324490995794432,
+        "test_accuracy": 0.78125,
+        "test_macro_f1": 0.7540684545323645
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.4994841022586414,
+        "test_accuracy": -3.255208333333337,
+        "test_macro_f1": -3.1275230609796756
+      }
+    },
+    {
+      "task_index": 63,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "CinC_ECG_torso",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6881308083874282,
+        "test_accuracy": 0.686231884057971,
+        "test_macro_f1": 0.6722536984872677
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -5.7978201196573265,
+        "test_accuracy": -5.724637681159416,
+        "test_macro_f1": -4.1390076092186145
+      }
+    },
+    {
+      "task_index": 64,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Computers",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.484,
+        "test_accuracy": 0.484,
+        "test_macro_f1": 0.4837935174069628
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 27.6,
+        "test_accuracy": 27.6,
+        "test_macro_f1": 27.545147488887693
+      }
+    },
+    {
+      "task_index": 65,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Cricket_X",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.391356377165228,
+        "test_accuracy": 0.358974358974359,
+        "test_macro_f1": 0.2903710114573052
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 31.179489989023946,
+        "test_accuracy": 33.84615384615384,
+        "test_macro_f1": 40.49553869605234
+      }
+    },
+    {
+      "task_index": 66,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Cricket_Y",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4608330035025547,
+        "test_accuracy": 0.4564102564102564,
+        "test_macro_f1": 0.4309255195877864
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 22.38420509462066,
+        "test_accuracy": 22.564102564102566,
+        "test_macro_f1": 24.30575290764077
+      }
+    },
+    {
+      "task_index": 67,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Cricket_Z",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.3971338223528426,
+        "test_accuracy": 0.38461538461538464,
+        "test_macro_f1": 0.34817333013516727
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 30.466300635545046,
+        "test_accuracy": 32.56410256410256,
+        "test_macro_f1": 35.04782198728115
+      }
+    },
+    {
+      "task_index": 68,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "DistalPhalanxOutlineAgeGroup",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7286881764861173,
+        "test_accuracy": 0.85,
+        "test_macro_f1": 0.7660658739046197
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -23.522491190615558,
+        "test_accuracy": -8.999999999999996,
+        "test_macro_f1": -28.471990649054074
+      }
+    },
+    {
+      "task_index": 69,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "DistalPhalanxOutlineCorrect",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6549406549406549,
+        "test_accuracy": 0.68,
+        "test_macro_f1": 0.6555023923444976
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 14.8970398970399,
+        "test_accuracy": 13.49999999999999,
+        "test_macro_f1": 14.698812512441538
+      }
+    },
+    {
+      "task_index": 70,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "DistalPhalanxTW",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.47686631422964476,
+        "test_accuracy": 0.795,
+        "test_macro_f1": 0.4268365260359161
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -2.4606845822152836,
+        "test_accuracy": -4.5000000000000036,
+        "test_macro_f1": -1.7412779298230374
+      }
+    },
+    {
+      "task_index": 71,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ECG200",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8385416666666667,
+        "test_accuracy": 0.84,
+        "test_macro_f1": 0.830220713073005
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -4.427083333333348,
+        "test_accuracy": -1.0000000000000009,
+        "test_macro_f1": -2.395290680519868
+      }
+    },
+    {
+      "task_index": 72,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ECG5000",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4340442628574438,
+        "test_accuracy": 0.9288888888888889,
+        "test_macro_f1": 0.4498488626123436
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -6.778804118267306,
+        "test_accuracy": -5.24444444444444,
+        "test_macro_f1": -9.126779038907223
+      }
+    },
+    {
+      "task_index": 73,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Earthquakes",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5138453500522466,
+        "test_accuracy": 0.7763975155279503,
+        "test_macro_f1": 0.5071428571428571
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.384535005224663,
+        "test_accuracy": 4.347826086956519,
+        "test_macro_f1": -5.663091175036566
+      }
+    },
+    {
+      "task_index": 74,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ElectricDevices",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4885832611137796,
+        "test_accuracy": 0.6101672934768513,
+        "test_macro_f1": 0.4836298560845043
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 12.522878544697758,
+        "test_accuracy": 10.750875372843982,
+        "test_macro_f1": 12.440853658709578
+      }
+    },
+    {
+      "task_index": 75,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FISH",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7264831637984347,
+        "test_accuracy": 0.72,
+        "test_macro_f1": 0.7113573860870119
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 2.40662785490372,
+        "test_accuracy": 3.4285714285714364,
+        "test_macro_f1": 3.0925896281986387
+      }
+    },
+    {
+      "task_index": 76,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FaceAll",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7028234531003262,
+        "test_accuracy": 0.6940828402366864,
+        "test_macro_f1": 0.6360709972330113
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 20.144710995178773,
+        "test_accuracy": 18.16568047337278,
+        "test_macro_f1": 20.638445810511897
+      }
+    },
+    {
+      "task_index": 77,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FaceFour",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8138111888111887,
+        "test_accuracy": 0.7840909090909091,
+        "test_macro_f1": 0.8048713738368911
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -38.52397602397601,
+        "test_accuracy": -37.49999999999999,
+        "test_macro_f1": -51.651411705858166
+      }
+    },
+    {
+      "task_index": 78,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FacesUCR",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5956745203353091,
+        "test_accuracy": 0.6839024390243903,
+        "test_macro_f1": 0.6081623273800328
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 9.612583286108878,
+        "test_accuracy": 6.829268292682922,
+        "test_macro_f1": 9.392759861634904
+      }
+    },
+    {
+      "task_index": 79,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FordA",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4992777175875768,
+        "test_accuracy": 0.4995834490419328,
+        "test_macro_f1": 0.49927758332253025
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 43.14533927209984,
+        "test_accuracy": 43.126909191891144,
+        "test_macro_f1": 43.15194338723829
+      }
+    },
+    {
+      "task_index": 80,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "FordB",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.503358398721302,
+        "test_accuracy": 0.5022002200220022,
+        "test_macro_f1": 0.5014611129426366
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 42.25388695146759,
+        "test_accuracy": 42.409240924092416,
+        "test_macro_f1": 42.472207947096926
+      }
+    },
+    {
+      "task_index": 81,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Gun_Point",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.852773826458037,
+        "test_accuracy": 0.8533333333333334,
+        "test_macro_f1": 0.8529149581030486
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 7.3968705547652895,
+        "test_accuracy": 7.333333333333325,
+        "test_macro_f1": 7.374844915949641
+      }
+    },
+    {
+      "task_index": 82,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Ham",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6465141612200436,
+        "test_accuracy": 0.6476190476190476,
+        "test_macro_f1": 0.6464646464646464
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -3.4858387799564294,
+        "test_accuracy": -2.857142857142858,
+        "test_macro_f1": -5.887627254477213
+      }
+    },
+    {
+      "task_index": 83,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "HandOutlines",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8166490586951627,
+        "test_accuracy": 0.84,
+        "test_macro_f1": 0.8229892687244165
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -10.150851244392879,
+        "test_accuracy": -12.8,
+        "test_macro_f1": -12.13099717668733
+      }
+    },
+    {
+      "task_index": 84,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Haptics",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.3674187398774683,
+        "test_accuracy": 0.37012987012987014,
+        "test_macro_f1": 0.3562200226678066
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -7.127242586017895,
+        "test_accuracy": -6.493506493506496,
+        "test_macro_f1": -10.426147722304858
+      }
+    },
+    {
+      "task_index": 85,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Herring",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5870445344129555,
+        "test_accuracy": 0.625,
+        "test_macro_f1": 0.5844155844155844
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -11.33603238866397,
+        "test_accuracy": -6.25,
+        "test_macro_f1": -22.441558441558442
+      }
+    },
+    {
+      "task_index": 86,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "InlineSkate",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.2980589731464872,
+        "test_accuracy": 0.28909090909090907,
+        "test_macro_f1": 0.30125064755089426
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 3.0109618633453294,
+        "test_accuracy": 5.090909090909096,
+        "test_macro_f1": 2.1810825849115645
+      }
+    },
+    {
+      "task_index": 87,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "InsectWingbeatSound",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.604040404040404,
+        "test_accuracy": 0.604040404040404,
+        "test_macro_f1": 0.5853649479885668
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -12.222222222222223,
+        "test_accuracy": -12.222222222222223,
+        "test_macro_f1": -10.902504523919148
+      }
+    },
+    {
+      "task_index": 88,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ItalyPowerDemand",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9631046284963054,
+        "test_accuracy": 0.9630709426627794,
+        "test_macro_f1": 0.9630681174203786
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -4.7644952173716,
+        "test_accuracy": -4.761904761904756,
+        "test_macro_f1": -4.7616222376646755
+      }
+    },
+    {
+      "task_index": 89,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "LargeKitchenAppliances",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.39199999999999996,
+        "test_accuracy": 0.392,
+        "test_macro_f1": 0.392153634463293
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 30.13333333333334,
+        "test_accuracy": 30.133333333333333,
+        "test_macro_f1": 30.065085580040474
+      }
+    },
+    {
+      "task_index": 90,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Lighting2",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7456709956709957,
+        "test_accuracy": 0.7540983606557377,
+        "test_macro_f1": 0.7473073736536868
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -4.383116883116878,
+        "test_accuracy": -3.2786885245901565,
+        "test_macro_f1": -5.257672896719878
+      }
+    },
+    {
+      "task_index": 91,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Lighting7",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6278613199665831,
+        "test_accuracy": 0.6301369863013698,
+        "test_macro_f1": 0.5868436794735841
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -14.16935195130684,
+        "test_accuracy": -9.589041095890405,
+        "test_macro_f1": -12.872481919838958
+      }
+    },
+    {
+      "task_index": 92,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MALLAT",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8268462474329221,
+        "test_accuracy": 0.8247334754797442,
+        "test_macro_f1": 0.7834164693627681
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -19.49537924462714,
+        "test_accuracy": -19.53091684434969,
+        "test_macro_f1": -21.268428139289174
+      }
+    },
+    {
+      "task_index": 93,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MedicalImages",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.1521290322580645,
+        "test_accuracy": 0.5447368421052632,
+        "test_macro_f1": 0.14799311424100156
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 32.255100535687944,
+        "test_accuracy": 11.71052631578947,
+        "test_macro_f1": 31.610137345485924
+      }
+    },
+    {
+      "task_index": 94,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MiddlePhalanxOutlineAgeGroup",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6687486681157567,
+        "test_accuracy": 0.78,
+        "test_macro_f1": 0.6658340161302336
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -6.615451277898532,
+        "test_accuracy": -0.7500000000000062,
+        "test_macro_f1": -12.766754716407892
+      }
+    },
+    {
+      "task_index": 95,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MiddlePhalanxOutlineCorrect",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5876288659793815,
+        "test_accuracy": 0.54,
+        "test_macro_f1": 0.53995399539954
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.937852557868125,
+        "test_accuracy": -4.166666666666669,
+        "test_macro_f1": -4.421057991277605
+      }
+    },
+    {
+      "task_index": 96,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MiddlePhalanxTW",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.38457578053661284,
+        "test_accuracy": 0.6441102756892231,
+        "test_macro_f1": 0.34941042086723645
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -3.3208020050125295,
+        "test_accuracy": -3.007518796992481,
+        "test_macro_f1": -4.556496381721398
+      }
+    },
+    {
+      "task_index": 97,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "MoteStrain",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8602772963604852,
+        "test_accuracy": 0.8618210862619808,
+        "test_macro_f1": 0.8607657510849351
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -35.59445407279029,
+        "test_accuracy": -31.869009584664543,
+        "test_macro_f1": -50.09780156575631
+      }
+    },
+    {
+      "task_index": 98,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "NonInvasiveFatalECG_Thorax1",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5466029549145045,
+        "test_accuracy": 0.5307888040712468,
+        "test_macro_f1": 0.4838377733688349
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 32.94075302949919,
+        "test_accuracy": 35.06361323155216,
+        "test_macro_f1": 38.94551999937846
+      }
+    },
+    {
+      "task_index": 99,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "NonInvasiveFatalECG_Thorax2",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5630547020937522,
+        "test_accuracy": 0.5480916030534351,
+        "test_macro_f1": 0.48478488907437756
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 33.61446163772368,
+        "test_accuracy": 35.470737913486005,
+        "test_macro_f1": 41.10754625744584
+      }
+    },
+    {
+      "task_index": 100,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "OSULeaf",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.36402475845410626,
+        "test_accuracy": 0.371900826446281,
+        "test_macro_f1": 0.29460411383488305
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 57.30164611958091,
+        "test_accuracy": 57.851239669421496,
+        "test_macro_f1": 65.10091875822886
+      }
+    },
+    {
+      "task_index": 101,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "PhalangesOutlinesCorrect",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6074430803060149,
+        "test_accuracy": 0.6678321678321678,
+        "test_macro_f1": 0.602877767943419
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 14.882152182875997,
+        "test_accuracy": 8.508158508158514,
+        "test_macro_f1": 14.3858553567898
+      }
+    },
+    {
+      "task_index": 102,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Plane",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9815476190476191,
+        "test_accuracy": 0.9809523809523809,
+        "test_macro_f1": 0.9815476190476191
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 1.8452380952380887,
+        "test_accuracy": 1.904761904761909,
+        "test_macro_f1": 1.8452380952380887
+      }
+    },
+    {
+      "task_index": 103,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ProximalPhalanxOutlineAgeGroup",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.80174688057041,
+        "test_accuracy": 0.8634146341463415,
+        "test_macro_f1": 0.7890424266682511
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 0.9367201426024985,
+        "test_accuracy": -2.9268292682926855,
+        "test_macro_f1": -2.6408987290379105
+      }
+    },
+    {
+      "task_index": 104,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ProximalPhalanxOutlineCorrect",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8101376447454665,
+        "test_accuracy": 0.852233676975945,
+        "test_macro_f1": 0.8219575703248388
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 5.060629233122138,
+        "test_accuracy": 4.123711340206193,
+        "test_macro_f1": 5.05497434391704
+      }
+    },
+    {
+      "task_index": 105,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ProximalPhalanxTW",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4446641358219973,
+        "test_accuracy": 0.81,
+        "test_macro_f1": 0.40630095672464256
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -1.4482572529169901,
+        "test_accuracy": -2.2500000000000075,
+        "test_macro_f1": 1.4956351261222467
+      }
+    },
+    {
+      "task_index": 106,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "RefrigerationDevices",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.3706666666666667,
+        "test_accuracy": 0.37066666666666664,
+        "test_macro_f1": 0.3709459805821262
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 16.266666666666662,
+        "test_accuracy": 16.26666666666667,
+        "test_macro_f1": 15.453384894288652
+      }
+    },
+    {
+      "task_index": 107,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ScreenType",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.39199999999999996,
+        "test_accuracy": 0.392,
+        "test_macro_f1": 0.39104405942790327
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 14.400000000000007,
+        "test_accuracy": 14.400000000000002,
+        "test_macro_f1": 14.412983927154627
+      }
+    },
+    {
+      "task_index": 108,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ShapeletSim",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.47777777777777775,
+        "test_accuracy": 0.4777777777777778,
+        "test_macro_f1": 0.4725028058361392
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 37.77777777777778,
+        "test_accuracy": 37.77777777777777,
+        "test_macro_f1": 38.28920773674203
+      }
+    },
+    {
+      "task_index": 109,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ShapesAll",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6416666666666667,
+        "test_accuracy": 0.6416666666666667,
+        "test_macro_f1": 0.6254663076567829
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 15.16666666666666,
+        "test_accuracy": 15.16666666666666,
+        "test_macro_f1": 16.241626610797553
+      }
+    },
+    {
+      "task_index": 110,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "SmallKitchenAppliances",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.4106666666666667,
+        "test_accuracy": 0.4106666666666667,
+        "test_macro_f1": 0.41191690318254803
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 30.66666666666667,
+        "test_accuracy": 30.66666666666667,
+        "test_macro_f1": 29.35683324687587
+      }
+    },
+    {
+      "task_index": 111,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "StarLightCurves",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8932002606978613,
+        "test_accuracy": 0.9339485186983972,
+        "test_macro_f1": 0.9025262889469542
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 5.757730182484522,
+        "test_accuracy": 3.387566779990292,
+        "test_macro_f1": 5.097563005333083
+      }
+    },
+    {
+      "task_index": 112,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Strawberry",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9596516236701202,
+        "test_accuracy": 0.9559543230016313,
+        "test_macro_f1": 0.9527342511758607
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -0.5580279535498223,
+        "test_accuracy": -0.32626427406199365,
+        "test_macro_f1": -0.36897564743504363
+      }
+    },
+    {
+      "task_index": 113,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "SwedishLeaf",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6988810641546205,
+        "test_accuracy": 0.6864,
+        "test_macro_f1": 0.6598890009763846
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 24.006438892126734,
+        "test_accuracy": 25.119999999999997,
+        "test_macro_f1": 27.815928656161436
+      }
+    },
+    {
+      "task_index": 114,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Symbols",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8206888880291365,
+        "test_accuracy": 0.8231155778894472,
+        "test_macro_f1": 0.8214855385788656
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -16.309761741377603,
+        "test_accuracy": -16.48241206030151,
+        "test_macro_f1": -18.82137822654988
+      }
+    },
+    {
+      "task_index": 115,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ToeSegmentation1",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5819444444444444,
+        "test_accuracy": 0.5789473684210527,
+        "test_macro_f1": 0.5786555786555787
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 30.50925925925927,
+        "test_accuracy": 30.263157894736835,
+        "test_macro_f1": 30.253712615962925
+      }
+    },
+    {
+      "task_index": 116,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "ToeSegmentation2",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7315251572327044,
+        "test_accuracy": 0.7461538461538462,
+        "test_macro_f1": 0.6682391153043075
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 7.743710691823901,
+        "test_accuracy": 9.999999999999998,
+        "test_macro_f1": 10.416984828112675
+      }
+    },
+    {
+      "task_index": 117,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Trace",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7781792844179414,
+        "test_accuracy": 0.76,
+        "test_macro_f1": 0.7415878239407652
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 21.289214415348724,
+        "test_accuracy": 23.0,
+        "test_macro_f1": 24.74564651035238
+      }
+    },
+    {
+      "task_index": 118,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "TwoLeadECG",
+      "previous_model_id": "svm",
+      "previous_model_name": "支持向量机（线性核）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.9402784201276477,
+        "test_accuracy": 0.9402985074626866,
+        "test_macro_f1": 0.9402649407060972
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -26.492615545894605,
+        "test_accuracy": -26.514486391571555,
+        "test_macro_f1": -28.253699757086803
+      }
+    },
+    {
+      "task_index": 119,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Two_Patterns",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8370386392163522,
+        "test_accuracy": 0.83675,
+        "test_macro_f1": 0.8365100647699788
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 16.047663249333365,
+        "test_accuracy": 16.075000000000006,
+        "test_macro_f1": 16.099732359929153
+      }
+    },
+    {
+      "task_index": 120,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "UWaveGestureLibraryAll",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8171614165294715,
+        "test_accuracy": 0.81714126186488,
+        "test_macro_f1": 0.8184483103149962
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 3.6376120297964776,
+        "test_accuracy": 3.5734226689000503,
+        "test_macro_f1": 3.354417535930987
+      }
+    },
+    {
+      "task_index": 121,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "WordsSynonyms",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.12160389610389612,
+        "test_accuracy": 0.36990595611285265,
+        "test_macro_f1": 0.08859923778646817
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 5.480064184241081,
+        "test_accuracy": 4.075235109717868,
+        "test_macro_f1": 5.485046699704996
+      }
+    },
+    {
+      "task_index": 122,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "Worms",
+      "previous_model_id": "xgboost",
+      "previous_model_name": "梯度提升树（当前XGBoost实现）",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.3077983371616898,
+        "test_accuracy": 0.4088397790055249,
+        "test_macro_f1": 0.3020267777763034
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 12.637441326275844,
+        "test_accuracy": 12.707182320441984,
+        "test_macro_f1": 12.683403603320286
+      }
+    },
+    {
+      "task_index": 123,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "WormsTwoClass",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5199874686716792,
+        "test_accuracy": 0.580110497237569,
+        "test_macro_f1": 0.46830550401978976
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 18.46491228070175,
+        "test_accuracy": 16.574585635359117,
+        "test_macro_f1": 23.7198174531427
+      }
+    },
+    {
+      "task_index": 124,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "synthetic_control",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.8733333333333334,
+        "test_accuracy": 0.8733333333333333,
+        "test_macro_f1": 0.8724159470448561
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 11.333333333333329,
+        "test_accuracy": 11.33333333333334,
+        "test_macro_f1": 11.424137814784396
+      }
+    },
+    {
+      "task_index": 125,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "uWaveGestureLibrary_X",
+      "previous_model_id": "random_forest",
+      "previous_model_name": "随机森林",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6356181226276618,
+        "test_accuracy": 0.6390284757118928,
+        "test_macro_f1": 0.5679652019430602
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 13.210519007932199,
+        "test_accuracy": 13.06532663316583,
+        "test_macro_f1": 19.545915778464263
+      }
+    },
+    {
+      "task_index": 126,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "uWaveGestureLibrary_Y",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5833466114976646,
+        "test_accuracy": 0.5820770519262981,
+        "test_macro_f1": 0.5784970302313147
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 10.823315457714966,
+        "test_accuracy": 10.80402010050252,
+        "test_macro_f1": 10.747409105708773
+      }
+    },
+    {
+      "task_index": 127,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "uWaveGestureLibrary_Z",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.5425052480932516,
+        "test_accuracy": 0.5399218313791178,
+        "test_macro_f1": 0.5225575268198989
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 17.300475128384505,
+        "test_accuracy": 17.308766052484646,
+        "test_macro_f1": 18.139239999051306
+      }
+    },
+    {
+      "task_index": 128,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "wafer",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.7680957713432517,
+        "test_accuracy": 0.9388384166125893,
+        "test_macro_f1": 0.813225197399973
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": -26.809577134325167,
+        "test_accuracy": -4.672290720311489,
+        "test_macro_f1": -34.173415735881726
+      }
+    },
+    {
+      "task_index": 129,
+      "suite": "ucr85",
+      "data_type": "时序数据",
+      "task_id": "yoga",
+      "previous_model_id": "logistic_regression",
+      "previous_model_name": "逻辑回归",
+      "revised_model_id": "cnn1d",
+      "revised_model_name": "简单一维卷积网络",
+      "model_changed": true,
+      "previous_metrics": {
+        "test_balanced_accuracy": 0.6605634627042225,
+        "test_accuracy": 0.666,
+        "test_macro_f1": 0.6608410149947536
+      },
+      "changes_percentage_points": {
+        "test_balanced_accuracy": 4.0637448063501775,
+        "test_accuracy": 4.199999999999992,
+        "test_macro_f1": 4.085834517988629
+      }
+    }
+  ]
+}

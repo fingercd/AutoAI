@@ -82,7 +82,7 @@ def load_dataset_view(path: Path, expected_sha256: str, limits=None) -> DatasetV
 class EvaluationPlan(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
     schema_version: Literal['evaluation-plan-v1'] = 'evaluation-plan-v1'
-    split_algorithm_version: Literal['group-stratified-test-first-v1'] = SPLIT_ALGORITHM_VERSION
+    split_algorithm_version: Literal['group-stratified-test-first-v1', 'benchmark-held-test-v1'] = SPLIT_ALGORITHM_VERSION
     dataset_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
     axis_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
     evaluation_config_digest: str = Field(pattern=r'^[a-f0-9]{64}$')

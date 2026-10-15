@@ -9,7 +9,7 @@ import pytest
 
 def test_v8_graph_freezes_guard_and_submits(api, tmp_path, budget_config, monkeypatch):
     test_client, _, dataset = api
-    config = LLMConfig('http://scripted.invalid/v1','fixture', prompt_version='agent-decision-budget-v1', **budget_config)
+    config = LLMConfig('http://scripted.invalid/v1','fixture', prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid','local',config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport, api_version='v2',
@@ -52,7 +52,7 @@ def test_v8_real_run_finalization_or_no_candidate_termination(api, tmp_path, bud
     from backend.app.runs.worker import RunWorker, execute_with_budget_supervision
     from agent_poc.orchestration.runtime import resume_task
     test_client, storage, dataset = api
-    config = LLMConfig('http://scripted.invalid/v1','fixture', prompt_version='agent-decision-budget-v1', **budget_config)
+    config = LLMConfig('http://scripted.invalid/v1','fixture', prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid','local',config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport, api_version='v2',

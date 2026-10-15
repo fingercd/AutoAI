@@ -74,7 +74,7 @@ def test_metric_pair_rejects_non_scores(value):
 def test_real_tokenizer_schema_and_output_capacity(budget_config,protocol):
     from agent_poc.orchestration.llm import LLMAdapter,LLMConfig,LLMError
     from dataclasses import replace
-    cfg=LLMConfig('http://fixture.invalid','fixture',protocol=protocol,diagnosis_phase=True,**budget_config)
+    cfg=LLMConfig('http://fixture.invalid','fixture',protocol=protocol,diagnosis_phase=True,**budget_config, allow_unapproved_model=True)
     adapter=LLMAdapter(cfg)
     ctx=context();frozen=adapter.prepare_context('diagnose',ctx)
     request=adapter._build_request('diagnose',frozen)[0]
@@ -104,7 +104,7 @@ def test_single_action_finalization_example_roundtrips_original_envelope():
     from dataclasses import replace
     ctx=finalization_context(task=TASK,session_id='session-1',run_id='run-1',validation={'macro_f1':.3},
         validation_score=.3,allowed_actions=['finalize_ml_session'],context_version='agent-context-budget-v1',budget_awareness='off')
-    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True)
+    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True, allow_unapproved_model=True)
     adapter=LLMAdapter(cfg)
     system=adapter._build_request('finalize',ctx)[0]['messages'][0]['content']
     value=json.loads(system.split('Complete JSON object example: ',1)[1].split('\n',1)[0])
@@ -126,6 +126,6 @@ def test_real_invalid_finalization_forms_remain_rejected(content):
     from agent_poc.tests.test_llm import TASK,envelope,FakeTransport,Response
     ctx=finalization_context(task=TASK,session_id='session-1',run_id='run-1',validation={'macro_f1':.3},
         validation_score=.3,allowed_actions=['finalize_ml_session'],context_version='agent-context-budget-v1',budget_awareness='off')
-    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True)
+    cfg=LLMConfig('http://fixture.invalid','local-model',prompt_version='agent-decision-budget-v1',diagnosis_phase=True, allow_unapproved_model=True)
     adapter=LLMAdapter(cfg,transport=FakeTransport([Response(200,envelope(content))]))
     with pytest.raises(LLMError,match='llm_output_invalid'):adapter.propose('finalize',ctx)

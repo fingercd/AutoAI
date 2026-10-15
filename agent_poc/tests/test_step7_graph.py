@@ -13,7 +13,7 @@ from agent_poc.tests.test_review_recovery import CountTransport
 def test_v7_graph_creates_budgeted_session(api, tmp_path, budget_config):
     test_client, _, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,
@@ -51,7 +51,7 @@ def test_v7_zero_fit_budget_terminates_without_training(api, tmp_path, budget_co
 
     test_client, _, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,
@@ -87,7 +87,7 @@ def test_v7_budget_awareness_can_stop_before_training(api, tmp_path, budget_conf
     import httpx
     test_client, _, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', protocol=protocol, **budget_config)
+        prompt_version='agent-decision-budget-v1', protocol=protocol, **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,
@@ -130,7 +130,7 @@ def test_v7_replays_saved_proposal_without_new_llm_call(api, tmp_path, budget_co
     from agent_poc.orchestration.runtime import resume_task, TaskInterrupted
     test_client, _, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,
@@ -165,7 +165,7 @@ def test_v7_work_deadline_terminates_before_new_decision(api, tmp_path,
     from agent_poc.orchestration.runtime import resume_task, read_status, TaskInterrupted
     test_client, _, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid','local',llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,
@@ -209,7 +209,7 @@ def test_v7_training_and_finalization_closes_session(api, tmp_path, budget_confi
 
     test_client, storage, dataset = api
     llm_config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid','local',llm_config)
     transport = CountTransport(test_client)
     client = AutoAIClient(runtime.backend_url, transport=transport,

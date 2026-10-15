@@ -99,6 +99,7 @@ class TrainingExecution:
             data_path=data_path,
             test_data_path=test_data_path,
         )
+        publication_started = time.monotonic()
         # 训练完成后、写结果前再查一次：训练期间被取消则结果直接丢弃
         self.cancel_check(record)
         # 把训练实际统计出的数据规模回填到 dataset_snapshot
@@ -155,9 +156,15 @@ class TrainingExecution:
                 run_dir=self.run_dir, stage='pre_publish', active=publication_active,
                 usage=usage, manifest_bytes=encoded)
             result['guard_report_id'] = checked.report_id
-        writer.finalize(run_id=record.run_id, metadata=metadata,
-                        active=publication_active,
-                        validate=validate if record.guard_policy is not None else None)
+        from ..experiment_accounting import finish_publication
+        try:
+            writer.finalize(run_id=record.run_id, metadata=metadata,
+                            active=publication_active,
+                            validate=validate if record.guard_policy is not None else None)
+        except BaseException:
+            finish_publication(self.run_dir, record.config, publication_started, status='failed')
+            raise
+        finish_publication(self.run_dir, record.config, publication_started)
         return result
 
 

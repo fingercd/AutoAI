@@ -18,7 +18,7 @@ from agent_poc.orchestration.persistence import CallJournal
 def test_graph_default_low_dimension_session_request_replays(monkeypatch,tmp_path,budget_config):
     test_client,_,dataset=low_feature_api(monkeypatch,tmp_path,2)
     llm_config=LLMConfig('http://scripted.invalid/v1','fixture',
-        prompt_version='agent-decision-search-v1',**budget_config)
+        prompt_version='agent-decision-search-v1',**budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',llm_config)
     wire=CountTransport(test_client)
     client=AutoAIClient(runtime.backend_url,transport=wire,
@@ -45,7 +45,7 @@ def test_graph_default_low_dimension_session_request_replays(monkeypatch,tmp_pat
 def test_bounded_search_graph_finalizes_one_run_and_replays(api,tmp_path,budget_config):
     test_client,storage,dataset=api
     llm_config=LLMConfig('http://scripted.invalid/v1','fixture',
-        prompt_version='agent-decision-search-v1',**budget_config)
+        prompt_version='agent-decision-search-v1',**budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',llm_config)
     client=AutoAIClient(runtime.backend_url,transport=CountTransport(test_client),
         api_version='v2',execution_profile='train-evidence-recipes-v1',
@@ -96,7 +96,7 @@ def test_bounded_search_graph_finalizes_one_run_and_replays(api,tmp_path,budget_
 def test_xgboost_graph_worker_finalize_and_replay(api,tmp_path,budget_config,search_mode,max_trials):
     test_client,storage,dataset=api
     llm_config=LLMConfig('http://scripted.invalid/v1','fixture',
-        prompt_version='agent-decision-search-v1',**budget_config)
+        prompt_version='agent-decision-search-v1',**budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',llm_config)
     wire=CountTransport(test_client)
     client=AutoAIClient(runtime.backend_url,transport=wire,

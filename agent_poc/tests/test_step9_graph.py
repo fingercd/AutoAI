@@ -53,7 +53,7 @@ def started(api,tmp_path,budget_config, *, protocol='json_action', diagnosis='on
         allowed=full_state()['task']['allowed_models']
         processing='dynamic'
     config=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,
-        prompt_version='agent-decision-budget-v1',diagnosis_phase=True,**budget_config)
+        prompt_version='agent-decision-budget-v1',diagnosis_phase=True,**budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',config)
     transport=CountTransport(test_client)
     client=AutoAIClient(runtime.backend_url,transport=transport,api_version='v2',

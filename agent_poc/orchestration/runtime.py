@@ -537,6 +537,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument('--principal-scope')
         command.add_argument('--llm-base-url')
         command.add_argument('--llm-model')
+        command.add_argument('--allow-unapproved-llm', action='store_true',
+            help='Only when the user explicitly authorizes this other --llm-model')
         command.add_argument('--protocol', choices=('json_action', 'native_tools'))
         command.add_argument('--llm-timeout', type=float)
         command.add_argument('--llm-max-tokens', type=int)
@@ -580,6 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _config_from_args(args, environ: Mapping[str, str]) -> RuntimeConfig:
+    from agent_poc.llm_policy import LLMModelNotApproved
+    authorized = bool(getattr(args, 'allow_unapproved_llm', False))
+    if authorized and not getattr(args, 'llm_model', None):
+        raise RuntimeErrorCode('llm_model_override_requires_explicit_argument')
     def setting(name, environment, default=None, convert=str):
         value = getattr(args, name, None)
         if value is None:
@@ -591,6 +597,7 @@ def _config_from_args(args, environ: Mapping[str, str]) -> RuntimeConfig:
         config = LLMConfig(
             base_url=setting('llm_base_url', 'AUTOAI_LLM_BASE_URL'),
             model=setting('llm_model', 'AUTOAI_LLM_MODEL'),
+            allow_unapproved_model=authorized,
             protocol=setting('protocol', 'AUTOAI_LLM_PROTOCOL', 'json_action'),
             timeout=setting('llm_timeout', 'AUTOAI_LLM_TIMEOUT', 30.0, float),
             max_tokens=setting('llm_max_tokens', 'AUTOAI_LLM_MAX_TOKENS', 1024, int),
@@ -606,6 +613,8 @@ def _config_from_args(args, environ: Mapping[str, str]) -> RuntimeConfig:
             backend_token=environ.get('AUTOAI_API_TOKEN') or None,
             llm_token=environ.get('AUTOAI_LLM_TOKEN') or None,
             api_timeout=setting('api_timeout', 'AUTOAI_API_TIMEOUT', 10.0, float))
+    except LLMModelNotApproved:
+        raise RuntimeErrorCode('llm_model_not_approved') from None
     except RuntimeErrorCode:
         raise
     except Exception:

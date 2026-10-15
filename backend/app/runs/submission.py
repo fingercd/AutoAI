@@ -209,6 +209,7 @@ class RunSubmissionService:
         audit_fields={'execution_recipe_digest','execution_catalog_digest','execution_evidence_digest','execution_search_digest',
             'execution_processing_policy_version','execution_processing_digest','execution_search_plan',
             'search_mode','max_trials'}
+        audit_fields.add('benchmark_context')
         audit_fields.update({'execution_budget_task_id', 'execution_budget_policy_digest'})
         audit_fields.update({'execution_guard_policy', 'execution_guard_policy_digest'})
         if submission_source!='agent' and audit_fields.intersection(raw_config):

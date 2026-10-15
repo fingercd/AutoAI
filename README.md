@@ -1,10 +1,21 @@
 # SpecAutoAI
 
-最近核对：2026-09-29，主线 `pan/agent` / `019f1cc`。新 recipe 任务为 revision-v7 / State-v9，见 [当前状态](CONTEXT.md) 与 [第九步协议](docs/step9_diagnosis_contract.md)。所有开发 Git 操作仅在服务器 `/users/fotile/AutoAI/Pan` 根目录，禁止新分支、worktree、fork 或可开发复制；详见 [AGENTS](AGENTS.md)。
+最近核对：2026-10-15，开发主线 `pan/agent`；生产发布仍为 `019f1cc`。新 recipe 任务为 revision-v7 / State-v9，见 [当前状态](CONTEXT.md) 与 [第九步协议](docs/step9_diagnosis_contract.md)。所有开发 Git 操作仅在服务器 `/users/fotile/AutoAI/Pan` 根目录，禁止新分支、worktree、fork 或可开发复制；详见 [AGENTS](AGENTS.md)。
 
 SpecAutoAI 在既有拉曼与色谱/HPLC 分类建模平台上开发小样本训练 Agent。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
 
 当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
+
+## 最新研究文档与结果
+
+请读取 `pan/agent` 分支。项目维护文档、提示词和可共享实验结果随代码进入 Git；原始实验数据、权重、数据库和日志不进入仓库。
+
+- [研究入口与结果导航](docs/research/README.md)
+- [修订知识后的129任务结果](docs/research/knowledge-20261014/report.md)：平均平衡准确率71.5062%，同七模型均匀随机期望65.0502%；仅为内部探索验证。
+- [三请求流程、个人经验与三候选路线的讨论](docs/research/next-steps-20261015.md)
+- [给ChatGPT Pro的分析请求](docs/research/pro-review-request.md)
+
+最新代码与研究资料入库不等于生产部署，不代表上述待讨论功能已经实现。原始实验完整包仍在服务器保留。
 
 ## 正式功能
 
@@ -33,10 +44,16 @@ Agent 只接收工具契约规定的后端输入，其中不含 Test。通用结
 训练后，编排器仅读取 Validation 并由后端确认 Finalize。当前协议固定一次实验；
 Train Evidence 与合法配方已启用；动态处理与有界搜索可显式开启，诊断默认启用且建议不执行；案例记忆与多 Run 重规划不属于当前主线。人工训练与 Agent 共用独立后端的划分准备和执行入口。
 
+2026-10-10 用户批准的第一轮实验及后续来源记录划分、合理任务剔除修订已完成：129 个保留任务，114 个正式任务全部完整，实际训练 11,905 次。当前执行目录为 `work/benchmark-20261010-full-v4-buffered`，主登记 `work/benchmark-20261010-full-v4/approval/current-execution-root.json` 指向该目录。见 [中文结果报告](work/benchmark-20261010-full-v4-buffered/delivery/REPORT_zh.md) 与 [执行和核验说明](docs/benchmark_execution.md)。当前条件下 LM 选择模型未显示相对随机选择的平均优势。[旧提案](docs/benchmark_protocol_proposal.md)保留为历史背景。按用户明确要求，本轮采用完整本地记录，跳过 SwanLab，批准副本见执行目录 `delivery/recording-override.json`。
+
 Agent 依赖单独安装：`python -m pip install -r agent_poc/requirements.txt -c agent_poc/constraints-verified.txt`。
 完整 [State、配置与启动/恢复命令](docs/langgraph_state_contract.md) 和
 [节点及崩溃恢复契约](docs/langgraph_orchestration.md) 已独立记录。
 此入口使用本机 SQLite 检查点；LLM 推理服务须另行配置，`run_v2.py` 启动网站和训练 worker。
+
+## Agent 使用的 LLM
+
+默认实验只允许 Qwen3.5-9B、Qwen3.5-27B、Qwen3.8-27B，登记和真实权重路径见 [models.toml](agent_poc/config/models.toml)。`--llm-model` 使用登记的 served ID；不自动启动服务或回退到 4B/8B。用户明确指定其他 LLM 时，才在同一命令中使用 `--allow-unapproved-llm` 和显式 `--llm-model`，例外会记录到冻结配置。更多边界见 [LLM 策略](docs/llm_model_policy.md)。
 
 ## 双前端入口
 

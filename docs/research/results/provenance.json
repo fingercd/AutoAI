@@ -1,0 +1,18 @@
+{
+  "published_date": "2026-10-15",
+  "classification_score_cells": 903,
+  "tasks": 129,
+  "source_snapshot_digest": "c7bf6477249adc1b519073d1e89d6d6f7cc9f47e6b8cf0ae9b95b206f911f497",
+  "source_base_commit": "517270e51eafde06123b8bb9f2c4f1ec93d75c12",
+  "new_training_in_initial_pilot": 30,
+  "reused_training_records_in_initial_pilot": 873,
+  "new_training_in_revised_selection": 0,
+  "original_full_archives_retained_outside_git": true,
+  "export_scope": "Aggregate experimental results, task-level scores/choices, frozen parameters/knowledge and reference execution source. Not original experimental data.",
+  "original_artifact_hashes": {
+    "work/knowledge-pilot-20261013/analysis/comparison-matrix-903.json": "bb2528d8730a9db643f366784afee833f177b1501f523e15a3073022f5388ae3",
+    "work/knowledge-pilot-20261013/comparison/summary.json": "9c4f9cd2ba2556956aa5043cabaefe579cbc1ecf9191bb82caa9b784e884bff1",
+    "work/knowledge-rerun-20261014/comparison/summary.json": "92cbd08af7354df648451cae144b91c1985a650f9e81b10848507535cddf338b",
+    "work/knowledge-rerun-20261014/approval/selection-entry-freeze.json": "9fd41774f99a4e8a8974437c2ef5cca2fdadaa50ec1c145867e2fb5f23b70c6e"
+  }
+}

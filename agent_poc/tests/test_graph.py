@@ -96,7 +96,7 @@ class Backend:
 
 
 def configuration():
-    return RuntimeConfig('http://backend.local', 'local', LLMConfig('http://model.local/v1', 'local-model'))
+    return RuntimeConfig('http://backend.local', 'local', LLMConfig('http://model.local/v1', 'local-model', allow_unapproved_model=True))
 
 
 def run(tmp_path, *, backend=None, model=None, clock=None, **kwargs):

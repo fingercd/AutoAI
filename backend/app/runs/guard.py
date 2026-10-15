@@ -259,6 +259,8 @@ def required_artifacts(config: dict) -> set[str]:
     names = {'metrics.json', 'cv_metrics.json', 'fold_metrics.csv', 'predictions.csv', 'cv_predictions.csv',
         'model_metadata.json', 'label_map.json', 'split.json', 'config.json',
         'model.pt' if deep else 'model.pkl'}
+    if config.get('benchmark_context'):
+        names.discard('model.pt' if deep else 'model.pkl')
     if deep:
         names.add('history.csv')
     if deep or config.get('feature_selection_enabled', True):
@@ -430,9 +432,14 @@ def check_output_semantics(snapshot, record, repository):
     search = config.get('execution_search_plan')
     if search is not None:
         summary, trials = docs['search_summary.json'], docs['search_trials.json']
+        benchmark_cache = search['policy_version'] == 'benchmark-three-config-v1'
+        cached = sum(trial.get('cached') is True for trial in trials) if benchmark_cache else 0
+        if benchmark_cache and (summary.get('cache_hit_count') != cached or
+                summary.get('candidate_evaluation_count') != len(trials)):
+            raise GuardError('guard_execution_audit_mismatch')
         if (docs['search_plan.json'] != search or summary.get('plan_digest') != search['plan_digest'] or
                 summary.get('integrity') != 'complete' or summary.get('completed_trials') != search['effective_trials'] or
-                summary.get('candidate_fit_count') != len(trials) or
+                summary.get('candidate_fit_count') != len(trials) - cached or
                 len(trials) != search['effective_trials'] or any(t.get('state') != 'succeeded' for t in trials)):
             raise GuardError('guard_execution_audit_mismatch')
         for trial, candidate in zip(trials, search['candidates']):

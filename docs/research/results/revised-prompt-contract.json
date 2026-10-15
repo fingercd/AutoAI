@@ -1,0 +1,58 @@
+{
+  "system_prompt": "Choose one canonical model_id from the seven candidates for submit_ml_experiment. Select the legal model expected to achieve the highest balanced accuracy on held-out samples under the frozen default training conditions. Use only the supplied training-data summary and retrieved observational knowledge. Candidate display order does not indicate priority. The cards are internal exploratory priors, not universally proven rules. Compare their applicability, support and counterexamples; resolve conflicts using the current training profile. A card never removes a candidate, the numerical layer is not automatically more reliable, and no model diversity quota is required. Do not change parameters or preprocessing. Give one short natural Chinese rationale sentence without private reasoning, external references, slashes or control characters. Respond with exactly one compact JSON object on one physical line, containing only tool_name, arguments and rationale. The only tool_name is submit_ml_experiment. arguments must contain only model_id, one of pls_da,pca_lda,logistic_regression,svm,random_forest,xgboost,cnn1d. No markdown, extra fields, duplicate keys or parallel actions. Include the final closing brace. No classifier is trained by this decision; the evaluator later reads the existing frozen score for the selected model. Rationale is a top-level sibling of arguments, NEVER a field inside arguments. The exact output structure is {\"tool_name\":\"submit_ml_experiment\",\"arguments\":{\"model_id\":\"<canonical_model_id>\"},\"rationale\":\"<one short Chinese sentence>\"}. Permitted complete output JSON Schema: {\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"tool_name\",\"arguments\",\"rationale\"],\"properties\":{\"tool_name\":{\"type\":\"string\",\"const\":\"submit_ml_experiment\"},\"arguments\":{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"model_id\"],\"properties\":{\"model_id\":{\"type\":\"string\",\"enum\":[\"pls_da\",\"pca_lda\",\"logistic_regression\",\"svm\",\"random_forest\",\"xgboost\",\"cnn1d\"]}}},\"rationale\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":1000}}}",
+  "settings": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "max_tokens": 1024,
+    "model": "qwen35_9b",
+    "stream": false,
+    "temperature": 0,
+    "top_p": 1
+  },
+  "candidate_ids": [
+    "pls_da",
+    "pca_lda",
+    "logistic_regression",
+    "svm",
+    "random_forest",
+    "xgboost",
+    "cnn1d"
+  ],
+  "train_summary_fields": [
+    "adjacent_feature_correlation_median",
+    "balanced_class_centroid_energy_retention",
+    "batch_or_instrument_noise",
+    "class_count",
+    "class_counts",
+    "class_imbalance",
+    "constant_feature_fraction",
+    "features",
+    "features_per_train_group",
+    "near_constant_rule",
+    "profile_repeated_measurements",
+    "profile_rows",
+    "raw_feature_variance_quantiles",
+    "redundancy_rule",
+    "standardized_covariance_effective_dimension",
+    "top_components_variance_fraction",
+    "train_groups",
+    "train_rows",
+    "train_subspace_description"
+  ],
+  "retrieval_caps": {
+    "数据类型": 1,
+    "数理特征": 2,
+    "结构与质量": 1
+  },
+  "excluded_from_public_export": [
+    "raw feature matrices",
+    "individual labels and Sample_IDs",
+    "predictions and per-sample probabilities",
+    "per-task Train numerical descriptors",
+    "credentials",
+    "runtime logs",
+    "databases",
+    "weights"
+  ]
+}

@@ -46,7 +46,7 @@ def test_all_available_graph_models(api,tmp_path,model,_lose_response=False):
     from backend.app.runs.worker import RunWorker
     from backend.app.runs.status_projection import project_status
     transport,storage,dataset=api
-    llm_config=LLMConfig('http://scripted.invalid/v1','scripted',prompt_version='agent-decision-step2-v1')
+    llm_config=LLMConfig('http://scripted.invalid/v1','scripted',prompt_version='agent-decision-step2-v1', allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',llm_config)
     provider=ScriptedDecision(model)
     adapter=LLMAdapter(llm_config,transport=provider)
@@ -97,7 +97,7 @@ def test_new_model_proposals_bind_fixed_params(protocol):
         evaluation_config=dict(mode='stratified_holdout',train_weight=8,validation_weight=1,heldout_weight=1)),
         models=['cnn1d'],session_id='s',client_request_id='e',model_configs={'cnn1d':{'epochs':2}})
     provider=ScriptedDecision('cnn1d',protocol)
-    adapter=LLMAdapter(LLMConfig('http://scripted.invalid/v1','scripted',protocol=protocol,prompt_version='agent-decision-step2-v1'),transport=provider)
+    adapter=LLMAdapter(LLMConfig('http://scripted.invalid/v1','scripted',protocol=protocol,prompt_version='agent-decision-step2-v1', allow_unapproved_model=True),transport=provider)
     proposal=adapter.propose('submit',context)
     assert proposal.arguments['model_params']=={'epochs':2}
     assert 'model_params' not in json.dumps(provider.requests[0].get('tools',[]))

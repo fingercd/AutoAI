@@ -212,7 +212,7 @@ def run(args):
         if args.llm_url and not args.recipes:
             choices=[m['id'] for m in catalog['models'] if m['available']]
             groups=[choices,[m for m in choices if m not in ('logistic_regression','svm','random_forest')]]
-            llm_config=LLMConfig(args.llm_url,args.llm_model,timeout=180,max_tokens=1024,prompt_version='agent-decision-step2-v1')
+            llm_config=LLMConfig(args.llm_url,args.llm_model,allow_unapproved_model=args.allow_unapproved_llm,tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'llm_context_window',None),timeout=180,max_tokens=1024,prompt_version='agent-decision-step2-v1')
             runtime=RuntimeConfig(base,'step2-acceptance',llm_config,backend_token=token,api_timeout=30)
             class AuditedLLM(LLMAdapter):
                 def propose(self,phase,context,**kwargs):
@@ -295,7 +295,7 @@ def recipe_acceptance(args,root,storage,base,token,env,datasets,report,audit):
     from backend.app.runs.repository import RunRepository
     from backend.app.runs.artifacts import RunArtifactWriter
     repo=RunRepository(storage/'runs.sqlite3')
-    cfg=LLMConfig(args.llm_url,args.llm_model,timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1' if args.knowledge_ablation else 'agent-decision-recipes-v1')
+    cfg=LLMConfig(args.llm_url,args.llm_model,allow_unapproved_model=args.allow_unapproved_llm,tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'llm_context_window',None),timeout=180,max_tokens=1024,prompt_version='agent-decision-knowledge-v1' if args.knowledge_ablation else 'agent-decision-recipes-v1')
     runtime=RuntimeConfig(base,'step3-acceptance',cfg,backend_token=token,api_timeout=30)
     def client():return AutoAIClient(base,token=token,api_version='v2',execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2' if args.knowledge_ablation else 'agent-recipes-revision-v1',max_retries=0,timeout=30)
     scenarios=[('traditional',['logistic_regression','svm','random_forest'],True),
@@ -421,7 +421,11 @@ def light_ablation(args,root,base,env,datasets,report):
     for name,kind,mode in [('fixed-lr','baseline','recipe_id'),('recipe','agent','recipe_id'),('structured','agent','structured_config')]:
         experiment_id=name+'-'+root.name.rsplit('-',1)[-1]
         command=common+['--experiment-id',experiment_id,'--kind',kind,'--decision-mode',mode]
-        if kind=='agent':command+=['--llm-url',args.llm_url,'--llm-model',args.llm_model,'--knowledge','off']
+        if kind=='agent':
+            command+=['--llm-url',args.llm_url,'--llm-model',args.llm_model,'--knowledge','off']
+            if args.allow_unapproved_llm:command+=['--allow-unapproved-llm']
+            if args.llm_tokenizer:command+=['--llm-tokenizer',args.llm_tokenizer]
+            if args.llm_context_window:command+=['--context-window',str(args.llm_context_window)]
         with (root/(name+'.log')).open('w') as log:
             completed=subprocess.run(command,cwd=REPO,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=720)
         if completed.returncode:raise RuntimeError('light ablation task failed: '+name)
@@ -453,8 +457,18 @@ def main():
     parser.add_argument('--backend-only',action='store_true')
     parser.add_argument('--request-file',type=Path)
     parser.add_argument('--llm-url')
-    parser.add_argument('--llm-model',default='qwen3-4b')
+    parser.add_argument('--llm-model')
+    parser.add_argument('--allow-unapproved-llm',action='store_true')
+    parser.add_argument('--llm-tokenizer')
+    parser.add_argument('--llm-context-window',type=int)
     args=parser.parse_args()
+    if args.llm_url:
+        if not args.llm_model:parser.error('--llm-model is required with --llm-url')
+        from agent_poc.llm_policy import require_approved_model, LLMModelNotApproved
+        try:require_approved_model(args.llm_model,user_authorized=args.allow_unapproved_llm)
+        except LLMModelNotApproved:parser.error('llm_model_not_approved')
+    elif args.allow_unapproved_llm:
+        parser.error('model override requires explicit --llm-url and --llm-model')
     if args.light_ablation and (not args.recipes or not args.llm_url):parser.error('light ablation requires recipes and real LLM endpoint')
     if args.knowledge_ablation and not args.recipes:parser.error('knowledge ablation requires recipes')
     if args.backend_only:

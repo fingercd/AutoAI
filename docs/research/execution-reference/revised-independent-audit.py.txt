@@ -1,0 +1,111 @@
+"""Independent read-only checks of serialized decisions, retrieval and score binding."""
+from pathlib import Path
+from collections import Counter
+import json,hashlib,math
+R=Path('/users/fotile/AutoAI/Pan/work/knowledge-rerun-20261014')
+load=lambda p:json.loads(Path(p).read_text())
+def digest(p):
+ with Path(p).open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
+def canonical(x):return json.dumps(x,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+def unique_json(text):
+ def pairs(items):
+  d={}
+  for k,v in items:
+   if k in d:raise ValueError('duplicate field')
+   d[k]=v
+  return d
+ return json.loads(text,object_pairs_hook=pairs)
+def satisfied(condition,p):
+ if 'all' in condition:return all(satisfied(x,p) for x in condition['all'])
+ if 'suite' in condition:return p['suite']==condition['suite']
+ if 'axis_kind' in condition:return p['axis_kind']==condition['axis_kind']
+ x=p[condition['field']];v=condition['value'];op=condition['operator']
+ if x is None:return False
+ if op=='le':return x<=v
+ if op=='ge':return x>=v
+ if op=='gt':return x>v
+ if op=='eq':return x==v
+ raise ValueError(op)
+
+manifest=load(R/'approval/selection-manifest-v2.json');assert digest(R/'analysis/comparison-matrix-903.json')==manifest['matrix_sha256'];assert digest(R/'knowledge/cards-v1.json')==manifest['cards_sha256'];assert digest(R/'analysis/training-profiles.json')==manifest['training_profiles_sha256']
+book=load(R/'knowledge/cards-v1.json');approval=load(R/'approval/knowledge-approval.json');assert book['approved_draft_sha256']==approval['draft_sha256']==digest(R/'knowledge/approved-advantage-draft.md') and approval['user_approved']
+models=['pls_da','pca_lda','logistic_regression','svm','random_forest','xgboost','cnn1d'];profiles={(x['suite'],x['task_id']):x for x in load(R/'analysis/training-profiles.json')};choices=load(R/'selection/completed-choices.json');by={(x['suite'],x['task_id']):x for x in choices};assert len(by)==len(choices)==len(manifest['tasks'])==129
+receipts=[load(p) for folder in ['selection/attempts'] for p in (R/folder).glob('*/*.json') if not p.name.endswith('.response.json')];normal=[x for x in receipts if x['normal_request']];assert len(normal)==129 and len({(x['suite'],x['task_id']) for x in normal})==129
+checks=Counter();owned_ids=set()
+for item in manifest['tasks']:
+ c=by[item['suite'],item['task_id']];data=load(item['input_path']);request=data['request'];assert hashlib.sha256(canonical(request)).hexdigest()==item['request_sha256']
+ for k,v in manifest['settings'].items():assert request[k]==v
+ p=profiles[c['suite'],c['task_id']];p={**p,'class_count':len(p['class_counts']),'axis_is_ordered':p['axis_kind']!='feature_index'}
+ expected=[]
+ for layer,cap in [('数据类型',1),('数理特征',2),('结构与质量',1)]:
+  candidates=[]
+  for pos,card in enumerate(book['cards']):
+   if card['layer']!=layer or not satisfied(card['condition'],p):continue
+   ref=card.get('reference',{});distance=sum(abs(math.log(p[k]/v)) for k,v in ref.items())/len(ref) if ref else 0
+   candidates.append((distance,pos,card['id']))
+  candidates.sort();expected.extend(x[2] for x in candidates[:cap])
+ actual=[x['card_id'] for x in data['retrieval']['selected']];assert actual==expected and len(actual)<=4
+ assert [x['id'] for x in data['semantic_input']['retrieved_knowledge']]==expected
+ for card in data['semantic_input']['retrieved_knowledge']:
+  frozen=next(x for x in book['cards'] if x['id']==card['id']);assert all(card[k]==frozen[k] for k in ['id','layer','title','text'])
+ forbidden={'test','test_scores','test_metrics','validation','metrics','prediction_rows','run_id','artifact_directory','task_id','task_name','family_id','record_path','dataset_sha256','winner'}
+ def inspect(x):
+  if isinstance(x,dict):
+   assert not forbidden.intersection(x)
+   for v in x.values():inspect(v)
+  elif isinstance(x,list):
+   for v in x:inspect(v)
+ inspect(data['semantic_input']);assert len(data['semantic_input']['candidates'])==7 and {x['model_id'] for x in data['semantic_input']['candidates']}==set(models)
+ assert json.loads(request['messages'][1]['content'])==data['semantic_input']
+ receipt=load(c['accepted_receipt']);payload=load(receipt['response_path']);assert payload['model']=='qwen35_9b' and payload['id']==c['server_request_id'] and payload['usage']==c['usage'];owned_ids.add(payload['id'])
+ raw=payload['choices'][0]['message']['content'];assert raw==c['raw_content']
+ try:action=unique_json(raw);raw_valid=True
+ except ValueError:action=unique_json(raw+'}');raw_valid=False
+ assert set(action)=={'tool_name','arguments','rationale'} and action['tool_name']=='submit_ml_experiment' and set(action['arguments'])=={'model_id'}
+ assert action['arguments']['model_id']==c['model_id'] and c['model_id'] in models and action['rationale'].strip()==c['rationale']
+ assert raw_valid==c['raw_json_valid'];assert bool('append_final_object_brace' in c['format_operations'])==(not raw_valid)
+ usage=payload['usage'];assert all(type(usage[k]) is int and usage[k]>=0 for k in ['prompt_tokens','completion_tokens','total_tokens']);assert usage['total_tokens']==usage['prompt_tokens']+usage['completion_tokens'];assert usage['prompt_tokens']+1024<=32768
+ checks.update(tasks=1,retrievals=1,input_projections=1,raw_reply_bindings=1)
+# Reconcile every real POST to the service's own durable request measurements.
+start=load(R/'approval/selection-server-log-start.json');owned={x.get('server_request_id'):x for x in receipts if x.get('server_request_id')}
+with Path(start['path']).open('rb') as f:f.seek(start['size_bytes']);logs=[json.loads(line) for line in f if line.strip()]
+matched=[x for x in logs if x['request_id'] in owned];assert len(matched)==len(owned) and len({x['request_id'] for x in matched})==len(owned)
+for x in matched:
+ a=owned[x['request_id']];assert x['prompt_tokens']==a['usage']['prompt_tokens'] and x['completion_tokens']==a['usage']['completion_tokens'] and x['total_tokens']==a['usage']['total_tokens']
+ assert x['generate_seconds']>=0 and x['server_seconds']>=x['generate_seconds']
+# Validate that selection-only execution did not change the classifier records.
+matrix=load(R/'analysis/comparison-matrix-903.json');assert len(matrix)==129
+for row in matrix:
+ assert set(row['models'])==set(models)
+ for fact in row['models'].values():assert digest(fact['record_path'])==fact['record_sha256'];checks['classifier_record_hashes']+=1
+assert not (R/'driver').exists(), 'Selection-only root must not contain classifier driver records'
+comparisons=load(R/'comparison/task-comparison.json');summary=load(R/'comparison/summary.json');assert len(comparisons)==129
+for r,row in zip(comparisons,matrix):
+ assert r['task_id']==row['task_id'] and r['suite']==row['suite'] and r['model_id']==by[r['suite'],r['task_id']]['model_id']
+ for metric,value in r['metrics'].items():
+  expected=sum(row['models'][m]['metrics'][metric] for m in models)/7;selected=row['models'][r['model_id']]['metrics'][metric]
+  assert abs(value['selected']-selected)<=1e-12 and abs(value['uniform_random_expectation']-expected)<=1e-12 and abs(value['delta']-(selected-expected))<=1e-12
+ checks['comparisons']+=1
+for metric,item in summary['overall']['metrics'].items():
+ a=sum(r['metrics'][metric]['selected'] for r in comparisons)/129;b=sum(r['metrics'][metric]['uniform_random_expectation'] for r in comparisons)/129
+ assert abs(item['selected_mean']-a)<=1e-12 and abs(item['uniform_random_mean']-b)<=1e-12 and abs(item['delta_percentage_points']-100*(a-b))<=1e-10
+assert summary['overall']['higher']+summary['overall']['tied']+summary['overall']['lower']==129
+assert sum(summary['overall']['model_counts'].values())==129
+assert load(R/'approval/selection-cloud-verification.json')['verified'] and load(R/'approval/comparison-cloud-verification.json')['verified']
+# Verify the two new Train descriptors were supplied unchanged, and old scientific settings were preserved.
+descriptors=load(R/'analysis/train-subspace-descriptors.json')
+assert digest(R/'analysis/train-subspace-descriptors.json')==manifest['train_subspace_descriptors_sha256']
+descriptions={(x['suite'],x['task_id']):x for x in descriptors['records']}
+previous=load(R/'previous-round/completed-choices.json');previous_by={(x['suite'],x['task_id']):x for x in previous}
+for item in manifest['tasks']:
+ data=load(item['input_path']);train_summary=data['semantic_input']['task']['train_summary'];d=descriptions[item['suite'],item['task_id']]
+ for field in ['top_components_variance_fraction','balanced_class_centroid_energy_retention']:assert train_summary[field]==d[field]
+ assert d['dataset_sha256']==data['dataset_sha256']
+ assert data['retrieval']['selected']==load(previous_by[item['suite'],item['task_id']]['input_path'])['retrieval']['selected']
+ checks['new_train_descriptors']+=1
+oldroot=R.parent/'knowledge-pilot-20261013'
+for name in ['comparison-matrix-903.json','training-profiles.json']:assert digest(R/'analysis'/name)==digest(oldroot/'analysis'/name)
+assert digest(R/'previous-round/completed-choices.json')==digest(oldroot/'selection-v2/completed-choices.json')
+assert digest(R/'previous-round/summary.json')==digest(oldroot/'comparison/summary.json')
+result=dict(passed=True,checks=dict(checks),normal_requests=len(normal),extra_requests=len(receipts)-len(normal),service_requests_matched=len(matched),unrelated_service_requests_during_interval=len(logs)-len(matched),final_choices=129,classification_records_unchanged=903,new_classifier_records=0,normal_finalization_requests=0,append_brace_model_unchanged=True,task_weighting='129 equal-weight single-arrangement tasks',task_families=summary['overall']['families'],selection_dataset_reuse='internal exploratory; no independent generalization claim')
+(R/'approval/final-selection-audit.json').write_text(json.dumps(result,ensure_ascii=False,indent=2));(R/'approval/owned-service-request-measurements.json').write_text(json.dumps(matched,ensure_ascii=False,indent=2));print(json.dumps(result,ensure_ascii=False))

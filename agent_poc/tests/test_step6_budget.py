@@ -43,7 +43,7 @@ def test_step6_full_candidates_fit_both_request_budgets(
     assert len(context['model_profiles'])==len(models)
     if knowledge:assert context['knowledge']['entries']
     adapter=LLMAdapter(LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,
-        max_tokens=1024,prompt_version='agent-decision-search-v1',**budget_config))
+        max_tokens=1024,prompt_version='agent-decision-search-v1',**budget_config, allow_unapproved_model=True))
     prepared=adapter.prepare_context('submit',context)
     assert {recipe['recipe_id'] for recipe in prepared['recipes']}==catalog_ids
     for repair in (None,'llm_output_invalid'):

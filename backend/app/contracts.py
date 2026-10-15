@@ -45,6 +45,7 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'execution_recipe_digest', 'execution_catalog_digest', 'execution_evidence_digest', 'execution_search_digest',
         'execution_processing_policy_version', 'execution_processing_digest',
         'execution_search_plan',
+        'execution_device', 'cpu_threads', 'benchmark_context',
         'execution_budget_task_id', 'execution_budget_policy_digest',
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split',
@@ -115,6 +116,13 @@ class TrainingSpec:
                 raise TrainingConfigValidationError('invalid evaluation_plan_digest')
         if 'execution_processing_policy_version' in values and values['execution_processing_policy_version'] != 'finite-processing-v1':
             raise TrainingConfigValidationError('invalid execution processing policy')
+        if values.get('execution_device', 'cpu') not in ('cpu', 'cuda'):
+            raise TrainingConfigValidationError('execution_device must be cpu or cuda')
+        if values.get('cpu_threads') is not None and (type(values['cpu_threads']) is not int or values['cpu_threads'] < 1):
+            raise TrainingConfigValidationError('cpu_threads must be a positive integer')
+        if 'benchmark_context' in values:
+            from .benchmark_protocol import validate_context_reference
+            validate_context_reference(values['benchmark_context'])
         raw_model = str(values.get('model_type') or 'cnn1d').strip().lower()
         if raw_model in RETIRED_MODEL_ALIASES:
             raise TrainingConfigValidationError('model_retired: DSCARNet 已退役，不再接受新训练')

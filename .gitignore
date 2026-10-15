@@ -79,9 +79,8 @@ vendor/
 *.out
 *.err
 
-# Local planning/review material and non-product UI explorations.
-docs/superpowers/
-docs/*-prompt.md
+# Maintained documents/prompts/results under docs/ are versioned; raw outputs remain ignored.
+# Non-product UI explorations.
 static/ui-*.html
 static/instrument-workbench.css
 static/lims-portal.css
