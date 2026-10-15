@@ -27,7 +27,7 @@ class CountTransport(BackendTransport):
 def components(api, model):
     transport, storage, dataset = api
     wire = CountTransport(transport)
-    config = LLMConfig('http://scripted.invalid/v1', 'scripted', prompt_version='agent-decision-step2-v1')
+    config = LLMConfig('http://scripted.invalid/v1', 'scripted', prompt_version='agent-decision-step2-v1', allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', config)
     llm = LLMAdapter(config, transport=ScriptedDecision(model))
     def client():

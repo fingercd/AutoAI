@@ -45,7 +45,7 @@ class CheckedTransport(CountTransport):
 ])
 def test_explicit_query_reaches_prepared_graph(api,tmp_path,monkeypatch,budget_config,query):
     wire=CheckedTransport(api[0])
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config)
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
     client=AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2',max_retries=0)
     def stop(self,state):raise KeyboardInterrupt()
@@ -99,7 +99,7 @@ def test_llm_reference_boundary(api,protocol,refs):
                 action=json.loads(message['tool_calls'][0]['function']['arguments']);action['knowledge_refs']=refs
                 message['tool_calls'][0]['function']['arguments']=json.dumps(action)
             return httpx.Response(200,json=body)
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1')
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1', allow_unapproved_model=True)
     adapter=LLMAdapter(cfg,transport=AlteredProvider(protocol))
     if refs:
         with pytest.raises(LLMError) as error:adapter.propose('submit',context)
@@ -118,7 +118,7 @@ def test_knowledge_graph_and_prepared_restart(api,tmp_path,monkeypatch,budget_co
     from backend.app.runs.worker import RunWorker
     from backend.app.runs.status_projection import project_status
     client_api,storage,dataset=api;wire=CheckedTransport(client_api)
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1', **budget_config)
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-knowledge-v1', **budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
     from backend.tests.test_agent_decision_modes import ExpressionProvider
     provider=ExpressionProvider(protocol);adapter=LLMAdapter(cfg,transport=provider)
@@ -168,7 +168,7 @@ def test_new_revision_lost_response_and_journal_replay(api,tmp_path,monkeypatch,
                 self.lost=True
                 raise TimeoutError('response lost after server commit')
             return response
-    wire=LostResponse(api[0]);cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config)
+    wire=LostResponse(api[0]);cfg=LLMConfig('http://scripted.invalid/v1','fixture',prompt_version='agent-decision-knowledge-v1', **budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg);provider=KnowledgeProvider('json_action');adapter=LLMAdapter(cfg,transport=provider)
     def client():return AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',max_retries=0,
         execution_profile='train-evidence-recipes-v1',protocol_revision='agent-recipes-revision-v2')
@@ -216,7 +216,7 @@ def test_prompt_budget_drops_whole_cards_and_preserves_recipes(api, monkeypatch)
     context = recipe_selection_context(task=locked, session_id=created['session_id'],
         preparation=locked['preparation'], context_policy={**locked['context_policy'], 'projection':'agent-context-knowledge-v1'})
     config = LLMConfig('http://fixture.invalid/v1', 'fixture', max_tokens=64,
-        prompt_version='agent-decision-knowledge-v1', tokenizer_path='fixture', context_window=350)
+        prompt_version='agent-decision-knowledge-v1', tokenizer_path='fixture', context_window=350, allow_unapproved_model=True)
     # Synthetic tokenizer budget fixture; actual tokenizer is exercised in real runs.
     monkeypatch.setattr(LLMConfig, 'public_config', lambda self: {'context_version':'agent-context-knowledge-v1'})
     adapter = LLMAdapter(config, transport=KnowledgeProvider('json_action'))

@@ -46,6 +46,7 @@ def build_xgboost(
     reg_lambda: float = 2.0,
     min_child_weight: float = 1.0,
     gamma: float = 0.0,
+    cpu_threads: int | None = None,
 ) -> Any:
     """按类别数量与 class_balance 构造 XGBClassifier。
 
@@ -66,6 +67,9 @@ def build_xgboost(
     colsample_bytree / reg_lambda / min_child_weight / gamma:
         XGBoost 常规超参数，默认值为训练服务的小样本保守基线
         （浅树 + 行/列子采样 + L2 正则，抑制过拟合）。
+
+    cpu_threads:
+        隔离 worker 的明确线程配额；None 保留普通入口的单线程默认。
 
     返回
     ----
@@ -89,7 +93,7 @@ def build_xgboost(
         raise ValueError("The current environment does not have xgboost installed, so XGBoost cannot be trained.") from exc
 
     # 通用超参数：eval_metric 按任务类型选择 logloss/mlogloss，与 objective 配套；
-    # n_jobs 固定为 1，避免与外层训练编排的并行策略叠加造成线程超额订阅。
+    # 普通入口默认 n_jobs=1；benchmark worker 传入明确的 CPU 线程配额。
     params: dict[str, Any] = {
         "n_estimators": n_estimators,
         "max_depth": max_depth,
@@ -101,7 +105,7 @@ def build_xgboost(
         "gamma": gamma,
         "eval_metric": "logloss" if class_count == 2 else "mlogloss",
         "random_state": seed,
-        "n_jobs": 1,
+        "n_jobs": 1 if cpu_threads is None else cpu_threads,
     }
     if class_count == 2:
         # 二分类：logistic 目标直接输出正类概率。

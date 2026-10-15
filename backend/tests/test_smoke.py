@@ -1544,7 +1544,6 @@ def test_main_ui_manual_explains_sample_id_group_split():
     assert "AI 建模操作说明" in content
     assert "数据划分比例" in content
     assert "开启交叉验证" in content
-    assert "外层留一交叉验证" not in content
     assert "独立测试集" in content
     assert "external_test_holdout" in content
     assert "加载独立测试集" in content

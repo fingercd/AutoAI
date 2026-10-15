@@ -1,0 +1,82 @@
+"""129 selection-only calls, durable per-attempt receipts, no classifier submission."""
+from pathlib import Path
+from datetime import datetime,timezone
+import sys,os,time,json,hashlib,urllib.request,urllib.error,platform
+from selection_core import ROOT,SOURCE,SETTINGS,MODELS,prepare,parse_content,canonical,sha,atomic_json,read_json
+from backend.app.benchmark_tracking import OnlineJournal
+from backend.app.benchmark_driver import exclusive
+TASK='修订优势知识后的129次单次模型选择'
+
+def state(phase,**extra):atomic_json(ROOT/'approval/selection-state.json',dict(phase=phase,pid=os.getpid(),node=os.uname().nodename,updated_at=time.time(),classification_fits=0,**extra))
+def utc():return datetime.now(timezone.utc).isoformat()
+
+def log_attempt(online,receipt):
+ if receipt.get('tracking_event_id'):return
+ usage=receipt.get('usage',{});known=all(type(usage.get(k)) is int for k in ['prompt_tokens','completion_tokens','total_tokens'])
+ event=online.emit(TASK,'lm.request',dict(model_id='qwen35_9b',budget=1,status=receipt['outcome'],phase='selection',retry_index=receipt['attempt_index'],usage=usage,token_status='known' if known else 'unknown',
+  measurement=dict(model_id='qwen35_9b',phase='selection',request_started_at_utc=receipt['started_at_utc'],request_duration_seconds=receipt.get('request_duration_seconds'),request_id=receipt.get('server_request_id')),
+  原始JSON合法=int(receipt.get('raw_json_valid',False)),补末尾外层括号=int('append_final_object_brace' in receipt.get('format_operations',[])),额外尝试=int(receipt['attempt_index']>0)))
+ receipt['tracking_event_id']=event;atomic_json(Path(receipt['receipt_path']),receipt)
+
+def request_one(data,index,attempt,online,opener):
+ directory=ROOT/'selection/attempts'/data['key'];directory.mkdir(parents=True,exist_ok=True);rp=directory/(str(attempt)+'.json');response_path=directory/(str(attempt)+'.response.json');previous=read_json(rp)
+ if previous:
+  if previous['state']=='dispatched' and not response_path.exists():raise RuntimeError('Prior call outcome is uncertain; do not blindly resend '+data['task_id'])
+  if previous.get('outcome'):
+   log_attempt(online,previous);return previous
+ body=data['request']
+ if attempt:
+  body={**body,'messages':[dict(x) for x in body['messages']]};body['messages'][0]['content']+=' The previous response was rejected only for execution format. Return a valid compact JSON action with the exact permitted fields and canonical model_id; no other fields or commentary.'
+ online.ensure_online(TASK,timeout=60)
+ receipt=dict(receipt_path=str(rp),task_id=data['task_id'],suite=data['suite'],task_index=index,attempt_index=attempt,normal_request=attempt==0,state='dispatched',started_at_utc=utc(),request=body,request_sha256=hashlib.sha256(canonical(body)).hexdigest(),response_path=str(response_path))
+ atomic_json(rp,receipt);started=time.monotonic()
+ try:
+  request=urllib.request.Request('http://127.0.0.1:8101/v1/chat/completions',data=canonical(body),headers={'Content-Type':'application/json'},method='POST')
+  try:
+   with opener.open(request,timeout=120) as response:status=response.status;raw=response.read(32769)
+  except urllib.error.HTTPError as response:status=response.code;raw=response.read(32769)
+  receipt.update(state='responded',http_status=status,request_duration_seconds=time.monotonic()-started,response_ended_at_utc=utc())
+  if len(raw)>32768:raise ValueError('Response exceeds inherited 32768-byte bound')
+  response_path.write_bytes(raw);payload=json.loads(raw.decode('utf-8'));receipt.update(server_request_id=payload.get('id'),usage=payload.get('usage',{}),finish_reason=payload.get('choices',[{}])[0].get('finish_reason'))
+  if status!=200:raise ValueError('Provider HTTP status '+str(status))
+  if payload.get('model')!='qwen35_9b' or type(payload.get('choices')) is not list or len(payload['choices'])!=1:raise ValueError('Unexpected provider model or choice count')
+  message=payload['choices'][0]['message']
+  if message.get('tool_calls') or type(message.get('content')) is not str:raise ValueError('Expected the inherited json_action text response')
+  receipt['raw_content']=message['content'];parsed=parse_content(message['content']);receipt.update(parsed,outcome='accepted')
+ except Exception as error:
+  receipt.update(state='recorded_failure',outcome='rejected',error_class=type(error).__name__,error=str(error),request_duration_seconds=time.monotonic()-started,response_ended_at_utc=utc())
+ atomic_json(rp,receipt);log_attempt(online,receipt);return receipt
+
+def main():
+ with exclusive(ROOT/'approval/selection-controller.lock'):
+  try:
+   manifest=prepare();asset=read_json(ROOT/'approval/selection-llm-asset.json');opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+   health=json.load(opener.open('http://127.0.0.1:8101/health',timeout=10))
+   for k in ['model','asset','dtype','gpu_physical_index','service_context_window','enable_thinking','asset_metadata']:assert health[k]==asset[k]
+   for p,h in read_json(ROOT/'approval/selection-entry-freeze.json')['entry_files'].items():assert sha(Path(p))==h
+   online=OnlineJournal(ROOT)
+   config=dict(purpose='参考人工经验进行129次单次模型选择，随后读取已有成绩',knowledge_version='manually-confirmed-advantage-knowledge-20261014-v2',approved_draft_sha256=manifest['approved_draft_sha256'],cards_sha256=manifest['cards_sha256'],input_manifest_sha256=sha(ROOT/'approval/selection-manifest-v2.json'),matrix_sha256=manifest['matrix_sha256'],training_profiles_sha256=manifest['training_profiles_sha256'],train_subspace_descriptors_sha256=manifest['train_subspace_descriptors_sha256'],source_digest=SOURCE['source_digest'],entry_files=read_json(ROOT/'approval/selection-entry-freeze.json')['entry_files'],llm_asset=str(asset['asset']),llm_weight_sha256=asset['weight_sha256'],settings=SETTINGS,planned_normal_requests=129,planned_classifier_fits=0,planned_finalization_requests=0,numerical_tie_tolerance=1e-12,retrieval_caps={'数据类型':1,'数理特征':2,'结构与质量':1},python_executable=sys.executable,python_version=platform.python_version())
+   online.start_task(TASK,config);state('waiting_cloud',completed=0);online.ensure_online(TASK,timeout=180)
+   choices=[]
+   for index,item in enumerate(manifest['tasks']):
+    data=read_json(Path(item['input_path']));cp=ROOT/'selection/choices'/(item['key']+'.json');choice=read_json(cp)
+    if choice is None:
+     state('selecting',task_id=data['task_id'],completed=len(choices),total_tasks=129)
+     for attempt in range(2):
+      receipt=request_one(data,index,attempt,online,opener)
+      if receipt['outcome']=='accepted':break
+      if receipt.get('http_status') in (400,401,403):raise RuntimeError('Provider request rejected; no scientific-setting workaround: '+str(receipt.get('http_status')))
+     if receipt['outcome']!='accepted':raise RuntimeError('Task has no legal choice after the bounded extra attempt: '+data['task_id'])
+     choice=dict(task_id=data['task_id'],suite=data['suite'],family_id=data['family_id'],task_index=index,model_id=receipt['model_id'],rationale=receipt['rationale'],input_path=item['input_path'],request_sha256=receipt['request_sha256'],accepted_receipt=receipt['receipt_path'],server_request_id=receipt['server_request_id'],raw_content=receipt['raw_content'],normalized_action=receipt['normalized_action'],raw_json_valid=receipt['raw_json_valid'],format_operations=receipt['format_operations'],retrieved_cards=data['retrieval']['selected'],usage=receipt['usage'],request_duration_seconds=receipt['request_duration_seconds'])
+     atomic_json(cp,choice)
+    assert choice['task_id']==data['task_id'] and choice['suite']==data['suite'] and choice['model_id'] in MODELS
+    choices.append(choice);atomic_json(ROOT/'selection/completed-choices.json',choices)
+    print(json.dumps(dict(completed=len(choices),task_id=data['task_id'],model_id=choice['model_id'],format_operations=choice['format_operations']),ensure_ascii=False),flush=True)
+   receipts=[read_json(p) for p in (ROOT/'selection/attempts').glob('*/*.json') if not p.name.endswith('.response.json')]
+   summary=dict(正常选模请求=sum(x['attempt_index']==0 for x in receipts),额外请求=sum(x['attempt_index']>0 for x in receipts),全部请求=len(receipts),合法选择任务=len(choices),新增分类拟合=0,结束调用=0,原始JSON合法回复=sum(x.get('raw_json_valid',False) for x in receipts),末尾外层括号补全=sum('append_final_object_brace' in x.get('format_operations',[]) for x in receipts),最终合法任务=len(choices),已知输入用量=sum(x.get('usage',{}).get('prompt_tokens',0) for x in receipts),已知输出用量=sum(x.get('usage',{}).get('completion_tokens',0) for x in receipts),已知总用量=sum(x.get('usage',{}).get('total_tokens',0) for x in receipts),用量未知请求=sum(not all(type(x.get('usage',{}).get(k)) is int for k in ['prompt_tokens','completion_tokens','total_tokens']) for x in receipts))
+   assert summary['正常选模请求']==summary['合法选择任务']==129
+   atomic_json(ROOT/'approval/selection-accounting.json',summary);online.finish_task(TASK,summary);state('waiting_cloud_finish',completed=129,accounting=summary)
+   verified=online.wait_verified(TASK,timeout=300);atomic_json(ROOT/'approval/selection-cloud-verification.json',verified);state('selection_complete_pending_comparison',completed=129,cloud_ref=verified['cloud_ref'],accounting=summary)
+  except BaseException as e:state('needs_attention',error_class=type(e).__name__,error=str(e));raise
+
+if __name__=='__main__':main()

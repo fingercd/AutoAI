@@ -88,13 +88,17 @@ class AgentService:
     def __init__(self, *, session_repository: AgentSessionRepository,
                  run_repository: RunRepository, dataset_repository: DatasetRepository,
                  submission_service: RunSubmissionService, run_root: Path,
-                 contract_version: str = AGENT_API_CONTRACT_VERSION) -> None:
+                 contract_version: str = AGENT_API_CONTRACT_VERSION,
+                 search_plan_builder=None, compiled_config_transform=None, evidence_builder=None) -> None:
         self.contract_version = contract_version
         self.sessions = session_repository
         self.runs = run_repository
         self.datasets = dataset_repository
         self.submissions = submission_service
         self.run_root = Path(run_root)
+        self.search_plan_builder = search_plan_builder
+        self.compiled_config_transform = compiled_config_transform
+        self.evidence_builder = evidence_builder
 
     def create_session(self, payload: CreateAgentSessionRequest, *, principal: Principal) -> dict[str, Any]:
         payload.validate_business()
@@ -177,7 +181,7 @@ class AgentService:
                 view, plan = self.submissions.prepare_evaluation(dataset_id=payload.dataset_id,
                     raw_config={**payload.evaluation.model_dump(), 'seed':payload.seed},
                     principal=principal, expected_sha256=digest, limits=limits)
-                evidence = compute_train_evidence(select_train(view, plan), limits)
+                evidence = (self.evidence_builder or compute_train_evidence)(select_train(view, plan), limits)
                 search_plans = {}
                 if payload.protocol_revision in REVISIONS_SINCE[4]:
                     from ..search_policy import adjust_baselines_for_train
@@ -185,7 +189,8 @@ class AgentService:
                     adjust_baselines_for_train(snapshot, train_count=stats.observation_count,
                         feature_count=stats.feature_count, class_count=len(stats.classes),
                         explicit_configs=payload.model_configs)
-                recipes = compile_recipe_catalog(body, snapshot, evidence, plan, search_plans=search_plans)
+                recipes = compile_recipe_catalog(body, snapshot, evidence, plan, search_plans=search_plans,
+                    search_plan_builder=self.search_plan_builder)
                 limits.check()
             except PreparationResourceExhausted as exc:
                 raise AgentDomainError('preparation_resource_exhausted','Preparation resource limit exceeded',status_code=422) from exc
@@ -296,6 +301,8 @@ class AgentService:
             if payload.client_request_id:
                 replay_reservation = self.sessions.find_experiment_request_scoped(
                     session_id, payload.client_request_id, payload_hash=_hash_payload(body), principal=principal)
+            if replay_reservation is not None and replay_reservation.compiled_config is not None and self.compiled_config_transform is not None:
+                self.compiled_config_transform(session, deepcopy(replay_reservation.compiled_config), replay=True)
             if replay_reservation is not None and replay_reservation.state == 'bound' and replay_reservation.run_id:
                 return self._experiment_response(session, replay_reservation, self._run(replay_reservation.run_id, principal), replay=True)
             # A durable mapping wins over capability drift after a lost bind.
@@ -358,6 +365,8 @@ class AgentService:
             if session.budget_task_id is not None:
                 prepared['execution_budget_task_id'] = session.budget_task_id
                 prepared['execution_budget_policy_digest'] = session.budget_policy_digest
+            if self.compiled_config_transform is not None:
+                prepared = self.compiled_config_transform(session, prepared, replay=replay_reservation is not None)
             if session.frozen_preparation and session.frozen_preparation['protocol_revision'] in REVISIONS_SINCE[6]:
                 prepared['execution_guard_policy'] = session.frozen_preparation['guard_policy']
                 prepared['execution_guard_policy_digest'] = session.frozen_preparation['guard_policy_digest']

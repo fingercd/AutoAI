@@ -187,3 +187,13 @@ def test_frozen_plan_rejects_row_corruption_without_repartition(fault):
     else:indices['test'][0]=indices['train'][0]
     changed=plan.model_copy(update={'indices':indices})
     with pytest.raises(ValueError):validate_plan(changed,data,EVAL,42)
+
+@pytest.fixture(autouse=True)
+def offline_tracking_for_guard_checks(monkeypatch):
+    from backend.app import benchmark_tracking
+    class Journal:
+        def __init__(self, root): pass
+        def start_task(self, *args, **kwargs): pass
+        def ensure_online(self, *args, **kwargs): pass
+        def emit(self, *args, **kwargs): pass
+    monkeypatch.setattr(benchmark_tracking, 'OnlineJournal', Journal)

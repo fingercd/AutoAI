@@ -1,0 +1,204 @@
+{
+  "by_data_type": {
+    "一般表格": {
+      "families": 25,
+      "higher": 15,
+      "lower": 10,
+      "metrics": {
+        "test_accuracy": {
+          "delta": -0.002253814530212228,
+          "delta_percentage_points": -0.2253814530212228,
+          "selected_mean": 0.7691662191043314,
+          "uniform_random_mean": 0.7714200336345436
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.01030082036569746,
+          "delta_percentage_points": 1.030082036569746,
+          "selected_mean": 0.7225728831471985,
+          "uniform_random_mean": 0.712272062781501
+        },
+        "test_macro_f1": {
+          "delta": 0.020363497250688645,
+          "delta_percentage_points": 2.0363497250688645,
+          "selected_mean": 0.7261144025572622,
+          "uniform_random_mean": 0.7057509053065736
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 25,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 0,
+        "svm": 0,
+        "xgboost": 0
+      },
+      "tasks": 25,
+      "tied": 0
+    },
+    "基因表达数据": {
+      "families": 5,
+      "higher": 3,
+      "lower": 2,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.03113917138761857,
+          "delta_percentage_points": 3.113917138761857,
+          "selected_mean": 0.7662302914476827,
+          "uniform_random_mean": 0.7350911200600642
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.024374699374699382,
+          "delta_percentage_points": 2.4374699374699382,
+          "selected_mean": 0.7356144781144781,
+          "uniform_random_mean": 0.7112397787397787
+        },
+        "test_macro_f1": {
+          "delta": 0.03362510503408944,
+          "delta_percentage_points": 3.362510503408944,
+          "selected_mean": 0.7182227032227032,
+          "uniform_random_mean": 0.6845975981886138
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 0,
+        "pca_lda": 0,
+        "pls_da": 5,
+        "random_forest": 0,
+        "svm": 0,
+        "xgboost": 0
+      },
+      "tasks": 5,
+      "tied": 0
+    },
+    "拉曼数据": {
+      "families": 11,
+      "higher": 15,
+      "lower": 2,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.10849162802798984,
+          "delta_percentage_points": 10.849162802798984,
+          "selected_mean": 0.7942459254162594,
+          "uniform_random_mean": 0.6857542973882695
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.14139865141731156,
+          "delta_percentage_points": 14.139865141731157,
+          "selected_mean": 0.8019508615562235,
+          "uniform_random_mean": 0.660552210138912
+        },
+        "test_macro_f1": {
+          "delta": 0.14035400220134864,
+          "delta_percentage_points": 14.035400220134864,
+          "selected_mean": 0.7682957215439704,
+          "uniform_random_mean": 0.6279417193426218
+        }
+      },
+      "model_counts": {
+        "cnn1d": 0,
+        "logistic_regression": 0,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 0,
+        "svm": 7,
+        "xgboost": 10
+      },
+      "tasks": 17,
+      "tied": 0
+    },
+    "时序数据": {
+      "families": 75,
+      "higher": 53,
+      "lower": 29,
+      "metrics": {
+        "test_accuracy": {
+          "delta": 0.06927853370084447,
+          "delta_percentage_points": 6.927853370084447,
+          "selected_mean": 0.7381283505282108,
+          "uniform_random_mean": 0.6688498168273663
+        },
+        "test_balanced_accuracy": {
+          "delta": 0.06762261995539387,
+          "delta_percentage_points": 6.762261995539387,
+          "selected_mean": 0.6935053768707863,
+          "uniform_random_mean": 0.6258827569153924
+        },
+        "test_macro_f1": {
+          "delta": 0.07078187758457033,
+          "delta_percentage_points": 7.078187758457033,
+          "selected_mean": 0.6767831444306002,
+          "uniform_random_mean": 0.6060012668460298
+        }
+      },
+      "model_counts": {
+        "cnn1d": 81,
+        "logistic_regression": 1,
+        "pca_lda": 0,
+        "pls_da": 0,
+        "random_forest": 0,
+        "svm": 0,
+        "xgboost": 0
+      },
+      "tasks": 82,
+      "tied": 0
+    }
+  },
+  "new_classification_fits_during_selection_or_comparison": 0,
+  "overall": {
+    "families": 116,
+    "higher": 86,
+    "lower": 43,
+    "metrics": {
+      "test_accuracy": {
+        "delta": 0.05910502274130136,
+        "delta_percentage_points": 5.9105022741301365,
+        "selected_mean": 0.7526280031801271,
+        "uniform_random_mean": 0.6935229804388258
+      },
+      "test_balanced_accuracy": {
+        "delta": 0.0645598908252134,
+        "delta_percentage_points": 6.455989082521341,
+        "selected_mean": 0.7150620156520359,
+        "uniform_random_mean": 0.6505021248268225
+      },
+      "test_macro_f1": {
+        "delta": 0.06873910818446005,
+        "delta_percentage_points": 6.873910818446005,
+        "selected_mean": 0.7000094472062153,
+        "uniform_random_mean": 0.6312703390217552
+      }
+    },
+    "model_counts": {
+      "cnn1d": 81,
+      "logistic_regression": 26,
+      "pca_lda": 0,
+      "pls_da": 5,
+      "random_forest": 0,
+      "svm": 7,
+      "xgboost": 10
+    },
+    "tasks": 129,
+    "tied": 0
+  },
+  "random_definition": "For each task the arithmetic mean of the same seven existing model metric values, not prediction averaging, ensemble, maximum, or an additional fit",
+  "scope": "internal exploratory, same tasks used to manually form knowledge and evaluate choice; not independent generalization",
+  "selection_accounting": {
+    "全部请求": 129,
+    "原始JSON合法回复": 129,
+    "合法选择任务": 129,
+    "已知总用量": 293808,
+    "已知输入用量": 286966,
+    "已知输出用量": 6842,
+    "新增分类拟合": 0,
+    "最终合法任务": 129,
+    "末尾外层括号补全": 0,
+    "正常选模请求": 129,
+    "用量未知请求": 0,
+    "结束调用": 0,
+    "额外请求": 0
+  },
+  "tie_tolerance": 1e-12,
+  "version": "advantage-knowledge-vs-uniform-seven-defaults-20261014-v1"
+}

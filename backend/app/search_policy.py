@@ -97,7 +97,7 @@ def _legal_domain(model_id: str, train_count: int, feature_count: int,
 def _digest_source() -> str:
     # Bind the policy and the single authoritative training implementation.
     h = hashlib.sha256()
-    for name in ('search_policy.py', 'training.py', 'diagnostic_evidence.py'):
+    for name in ('search_policy.py', 'training.py', 'diagnostic_evidence.py', 'probability_evaluation.py'):
         h.update((Path(__file__).parent / name).read_bytes())
     return h.hexdigest()
 
@@ -167,6 +167,13 @@ def validate_search_plan(plan: dict[str, Any], *, model_id: str, config: dict[st
                          train_count: int, feature_count: int, class_count: int,
                          dataset_sha256: str, evaluation_plan_digest: str,
                          architecture_version: str, processing_policy_version: str) -> None:
+    if type(plan) is dict and plan.get('policy_version') == 'benchmark-three-config-v1':
+        from .benchmark_protocol import validate_benchmark_search_plan
+        validate_benchmark_search_plan(plan, model_id=model_id, config=config, train_count=train_count,
+            feature_count=feature_count, class_count=class_count, dataset_sha256=dataset_sha256,
+            evaluation_plan_digest=evaluation_plan_digest, architecture_version=architecture_version,
+            processing_policy_version=processing_policy_version)
+        return
     if type(plan) is not dict or set(plan) != {
         'schema_version', 'policy_version', 'model_id', 'architecture_version',
         'dataset_sha256', 'evaluation_plan_digest', 'processing', 'mode', 'max_trials',

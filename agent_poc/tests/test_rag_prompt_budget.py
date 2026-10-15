@@ -47,7 +47,7 @@ def test_processing_full_catalog_fits_real_tokenizer_without_dropping_members(
     if knowledge:
         assert context['knowledge']['entries']
     config=LLMConfig('http://fixture.invalid/v1','fixture',protocol=protocol,max_tokens=1024,
-        prompt_version='agent-decision-processing-v1',**budget_config)
+        prompt_version='agent-decision-processing-v1',**budget_config, allow_unapproved_model=True)
     adapter=LLMAdapter(config)
     prepared=adapter.prepare_context('submit',context)
     assert {recipe['recipe_id'] for recipe in prepared['recipes']}==expected
@@ -65,7 +65,7 @@ def test_cli_requires_budget_before_building_graph(tmp_path, monkeypatch, capsys
     result = runtime.main(['start', '--dataset-id', 'fixture-data', '--knowledge', 'on',
         '--storage', str(storage), '--protocol', protocol], environ={
         'AUTOAI_LLM_BASE_URL': 'http://fixture.invalid/v1',
-        'AUTOAI_LLM_MODEL': 'fixture', 'AUTOAI_PRINCIPAL_SCOPE': 'local'})
+        'AUTOAI_LLM_MODEL': 'qwen35_9b', 'AUTOAI_PRINCIPAL_SCOPE': 'local'})
     assert result == 2
     assert 'rag_prompt_budget_configuration_required' in capsys.readouterr().err
     assert not storage.exists()
@@ -99,7 +99,7 @@ def test_start_rejects_budget_configuration_before_any_effect(tmp_path, budget_c
         config_path.write_text(json.dumps(config))
         options['tokenizer_path'] = str(root)
     cfg = LLMConfig('http://fixture.invalid/v1', 'fixture', protocol=protocol,
-                    prompt_version='agent-decision-knowledge-v1', **options)
+                    prompt_version='agent-decision-knowledge-v1', **options, allow_unapproved_model=True)
     wire = NoRequests()
     adapter_cfg = replace(cfg, context_window=64000) if failure == 'adapter_mismatch' else cfg
     adapter = LLMAdapter(adapter_cfg, transport=wire)
@@ -126,7 +126,7 @@ def test_real_tokenizer_trimming_references_and_stored_context(api, tmp_path, bu
         'projection': 'agent-context-knowledge-v1'})
     assert len(context['knowledge']['entries']) == 2
     cfg = LLMConfig('http://fixture.invalid/v1', 'fixture', protocol=protocol, max_tokens=64,
-                    prompt_version='agent-decision-knowledge-v1', **budget_config)
+                    prompt_version='agent-decision-knowledge-v1', **budget_config, allow_unapproved_model=True)
     provider = KnowledgeProvider(protocol)
     adapter = LLMAdapter(cfg, transport=provider)
     adapter.validate_prompt_budget()

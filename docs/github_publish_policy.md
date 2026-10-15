@@ -1,6 +1,6 @@
 # Pan Git 与发布规范
 
-> 最近核对：2026-09-29。长期规则以 [AGENTS](../AGENTS.md) 为准；当前状态见 [CONTEXT](../CONTEXT.md)。旧的 AutoAI-v2/main 首次发布流程已停止作为操作指南。
+> 最近核对：2026-10-15。长期规则以 [AGENTS](../AGENTS.md) 为准；当前状态见 [CONTEXT](../CONTEXT.md)。旧的 AutoAI-v2/main 首次发布流程已停止作为操作指南。
 
 ## 仓库和权限边界
 
@@ -26,6 +26,10 @@ git remote get-url origin
 
 origin 必须对应 fingercd/AutoAI。若目录、分支、远端或已有改动不符合当前任务，不切换到别处继续操作。
 
+## 账号与署名
+
+提交作者、提交者均使用 fingercd 和 `202753694+fingercd@users.noreply.github.com`。实际 GitHub 推送认证账号必须另外验证为 fingercd，不能仅凭 remote URL 或 Git user.name 推断；不借用旧人员账号。不能读取或复制令牌来搬运认证。网络或身份未确认时保留本地提交并说明阻塞。
+
 ## 经授权的提交和推送
 
 只对本次授权文件使用精确路径暂存，检查 staged 文件清单和完整 diff；禁止 `git add .`/`git add -A`。数据、凭据、数据库、模型、日志、缓存及归档都不进入提交。
@@ -40,7 +44,7 @@ git push origin HEAD:refs/heads/pan/agent
 
 ## 仓库内容与发布快照
 
-Git 保存源码、配置、测试和维护文档。真实数据、storage、权重、日志、数据库、凭据、压缩归档、环境与本地工具状态均排除。忽略规则不能代替 staged diff 检查；敏感文件检查只报告文件名，不输出内容。
+Git 保存源码、配置、测试、维护文档和经过审阅的实验结果摘要。结果入口为 `docs/research/`；允许逐任务指标、模型选择、参数和审计摘要，不允许原始实验数据和逐样本预测。真实数据、storage、权重、日志、数据库、凭据、压缩归档、环境与本地工具状态均排除。忽略规则不能代替 staged diff 检查；敏感文件检查只报告文件名，不输出内容。
 
 服务使用已验收的不可变 release 和持久 storage。发布快照不是开发副本，不在其中编辑、建分支、提交或推送。服务发布与 Git push 是两项不同操作，按 [部署说明](../deploy/server_deploy.md) 和 [服务控制契约](service_control.md) 单独授权执行。
 

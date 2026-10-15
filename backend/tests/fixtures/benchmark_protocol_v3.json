@@ -1,0 +1,342 @@
+{
+  "protocol_id": "autoai-classification-benchmark-v3",
+  "date": "2026-10-10",
+  "status": "approved_implementation_pending_freeze",
+  "task": "classification",
+  "primary_metric": "balanced_accuracy",
+  "secondary_metrics": [
+    "macro_f1",
+    "accuracy"
+  ],
+  "split_seed": 42,
+  "training_seed": 42,
+  "hpo_seed": 42,
+  "group_unit": "original independent physical sample or subject; archive row IDs are not evidence of independence",
+  "official_test": {
+    "preserve_if_independent": true,
+    "evaluation_rounds": 1,
+    "validation_group_fraction": 0.2,
+    "parameter_selection": "fixed stratified grouped holdout within official training data",
+    "reason_for_fixed_validation": "Keep v1 affordable and consistent with the current single-run Agent; three-way repeated validation is reserved for a predefined stability subset",
+    "group_overlap_policy": "Use a documented corrected grouped protocol or exclude from the independent primary pool; never silently retain subject leakage"
+  },
+  "without_official_test": {
+    "evaluation_partitions": 5,
+    "test_partition_strategy": "StratifiedGroupKFold for grouped measurements; StratifiedKFold only for justified independent rows",
+    "shuffle": true,
+    "validation_group_fraction": 0.2,
+    "rerun_agent_and_parameter_selection_each_round": true,
+    "fallback": "Try fixed-seed 3-fold only when all 5-fold partitions cannot retain every class in Train, Valid and Test; otherwise exclude from the primary pool with a recorded reason",
+    "no_seed_selection_based_on_scores": true
+  },
+  "selection_boundary": {
+    "evidence_and_retrieval": "Train only",
+    "hpo_and_early_stopping": "Valid only",
+    "final_evaluation": "official Test or Test only",
+    "normalization_and_feature_transforms": "fit only on the applicable training subset",
+    "agent_access_to_test_metrics_or_cached_results": false,
+    "memory_update_during_primary_benchmark": false
+  },
+  "model_eligibility": {
+    "shared_across_methods_per_round": true,
+    "unavailable_retired_or_dimension_invalid_models": "exclude with reason before selection",
+    "unordered_tabular_features": "do not assume that a synthetic feature index is a physically ordered spectral or time axis",
+    "round_eligibility_manifest_required": true
+  },
+  "primary_comparisons": {
+    "R0": "uniform random eligible model with one fixed default candidate",
+    "A0": "LLM selects eligible model with the same one fixed default candidate",
+    "R1": "uniform random eligible model with the same frozen up-to-three configurations as A1",
+    "A1": "LLM selects eligible model with the same frozen up-to-three configurations as R1",
+    "fixed_model": "chosen only from the development pool and frozen before primary evaluation",
+    "portfolio_default_and_hpo": "select by Valid; separately report the full multi-model cost",
+    "test_oracle": "descriptive upper reference only, never a deployable baseline"
+  },
+  "primary_agent_modules": {
+    "knowledge": "off for the first model-selection attribution comparison; static knowledge receives a separately named ablation",
+    "memory": "off",
+    "feedback_diagnosis": "off",
+    "processing_mode": "fixed",
+    "budget_awareness": "off; hard execution limits and fail-fast guard stay on",
+    "LLM_hyperparameter_choice": "A0/A1 first isolate model choice with common model defaults and HPO; direct LM parameter proposals require a separately named equal-budget comparison",
+    "normal_LM_calls": "selection plus finalization; repairs and network retries are additionally measured"
+  },
+  "hpo": {
+    "candidate_budgets": [
+      1,
+      3
+    ],
+    "default_candidate_counts_toward_budget": true,
+    "methods": [
+      "frozen_small_parameter_table"
+    ],
+    "shared_parameter_domains_and_actual_candidate_count": true,
+    "objective": "Valid balanced accuracy for all compared candidate-search methods",
+    "deep_checkpoint_selection": "existing lowest Valid loss within each candidate; candidate comparison uses the balanced accuracy of that checkpoint",
+    "random_forest_oob": "auxiliary audit only for the shared-objective comparison; current OOB-driven search may be reported as a separately named native baseline",
+    "final_training": "retain the same model-specific trainer for every method: classical Train+Valid refit; current deep best-Valid-loss checkpoint without additional refit",
+    "proposal_parameter_tables": {
+      "pls_da": {
+        "pls_components": [
+          1,
+          3,
+          5
+        ]
+      },
+      "pca_lda": {
+        "pca_components": [
+          3,
+          10,
+          30
+        ]
+      },
+      "logistic_regression": {
+        "logistic_c": [
+          0.1,
+          1.0,
+          10.0
+        ]
+      },
+      "svm": {
+        "svm_c": [
+          0.1,
+          1.0,
+          10.0
+        ],
+        "svm_kernel": [
+          "linear"
+        ],
+        "svm_gamma": [
+          "scale"
+        ]
+      },
+      "random_forest": {
+        "random_forest_max_depth": [
+          3,
+          5,
+          10
+        ],
+        "random_forest_min_samples_leaf": [
+          2
+        ],
+        "random_forest_max_features": [
+          "sqrt"
+        ]
+      },
+      "xgboost": {
+        "xgboost_max_depth": [
+          2,
+          3,
+          5
+        ],
+        "xgboost_n_estimators": [
+          100
+        ],
+        "xgboost_min_child_weight": [
+          3
+        ]
+      },
+      "implemented_deep_models": {
+        "learning_rate": [
+          0.0003,
+          0.001,
+          0.003
+        ],
+        "weight_decay": [
+          0.0001
+        ]
+      }
+    },
+    "table_resolution": "Use existing frozen defaults for other parameters, put the default first, filter dimension-invalid choices before LM selection; record fewer than three when only fewer distinct legal choices remain. Never silently use the old enumeration prefix.",
+    "deferred_comparisons": [
+      "random_search versus optuna_tpe versus native enumeration",
+      "six-candidate budget"
+    ],
+    "budget_unit": "distinct hyperparameter configurations for one selected model in one task evaluation round; candidate training and final combined-data training are separately counted"
+  },
+  "predictions_and_aggregation": {
+    "within_task_evaluation": "pooled predictions collected while each sample is held out for testing for primary metrics; fold mean/std are audit fields",
+    "repeated_measurement_prediction_unit": "independent sample or subject",
+    "repeated_measurement_aggregation": "mean class probabilities within each sample, fixed before evaluation",
+    "random_baseline": "reuse the hidden per-model result matrix on identical evaluation rounds; recompute pooled metrics for cached random selections",
+    "across_tasks": "equal-weight task summaries within suites, plus family-aware summaries when tasks share original samples",
+    "report": [
+      "paired score differences",
+      "win/tie/loss",
+      "average ranks",
+      "wall time",
+      "model fits",
+      "LM requests",
+      "LM tokens"
+    ],
+    "statistical_unit": "independent task family, never individual evaluation rounds",
+    "incomplete_rounds": "Do not calculate a complete task score from only successful evaluation rounds; report the task as incomplete, failure coverage and the common-complete subset explicitly",
+    "inference": "family-level paired bootstrap intervals and, where appropriate, paired Wilcoxon tests with Holm multiple-comparison correction",
+    "random_macro_f1_draws": 10000,
+    "family_bootstrap_draws": 2000,
+    "bootstrap_seed": 42,
+    "primary_summary": "equal-weight mean task balanced_accuracy on complete locked tasks, with suite/family breakdown and explicit all-planned coverage"
+  },
+  "development_and_locking": {
+    "previous_prompt_and_strategy_development_tasks": "development pool",
+    "split_by_original_task_family": true,
+    "freeze_before_primary_scoring": [
+      "task roles",
+      "independence/group metadata",
+      "data hashes",
+      "evaluation round IDs",
+      "eligible models",
+      "defaults",
+      "HPO domains",
+      "budget",
+      "code commit and dirty patch",
+      "LM weights/tokenizer/runtime",
+      "prompts",
+      "memory snapshot"
+    ],
+    "stability_subset": "20-30 tasks selected by metadata before observing method scores",
+    "stability_seeds": [
+      43,
+      44
+    ],
+    "task_roles_pending_evidence_audit": true,
+    "proposed_development_tasks": {
+      "ucr_tasks": [
+        "Beef",
+        "BeetleFly",
+        "BirdChicken",
+        "Coffee",
+        "ECGFiveDays",
+        "Meat",
+        "OliveOil",
+        "SonyAIBORobotSurface1",
+        "SonyAIBORobotSurface2",
+        "Wine"
+      ],
+      "tabular_tasks": [
+        "analcatdata_aids",
+        "appendicitis",
+        "parity5",
+        "prnn_crabs",
+        "glass2"
+      ],
+      "selection_not_based_on_method_scores": true
+    }
+  },
+  "logging": {
+    "local_durable_records_default": true,
+    "swanlab_online_required": true,
+    "no_LM": "explicit zero requests and zero tokens",
+    "missing_provider_usage": "unknown or partial; never zero",
+    "retries_failures_and_cancellations": "include time and known usage",
+    "cache_costs": "record actual executed cost separately from the uncached method cost",
+    "parent_child_spans": "retain hierarchy; never sum overlapping durations",
+    "required_stages": [
+      "data_loading",
+      "split_preparation",
+      "evidence",
+      "knowledge_retrieval",
+      "LM_prepare",
+      "LM_request",
+      "LM_parse",
+      "queue_wait",
+      "model_preprocessing",
+      "candidate_fit",
+      "candidate_validation",
+      "final_refit",
+      "final_evaluation",
+      "explainability",
+      "artifact_publication",
+      "total_wall"
+    ]
+  },
+  "scope_limit": "Approved first-round fixed-processing comparisons; dynamic processing has two functional checks only. Memory, feedback actions, external agents and extra seeds are outside this execution.",
+  "governance": {
+    "user_approved": true,
+    "approved_at": "2026-10-10",
+    "change_requires_explicit_user_approval": true,
+    "instruction_date": "2026-10-06",
+    "rule": "Initial protocol requires explicit user approval; after approval, any scientific protocol change requires separate explicit user authorization and a retained version/change record.",
+    "approval_basis": "Historical protocol used only as an offline test fixture; this file does not authorize experiments."
+  },
+  "stages": {
+    "first": "fixed processing full comparisons",
+    "dynamic_acceptance": [
+      {
+        "task_id": "Coffee",
+        "model_id": "logistic_regression",
+        "normalization": "minmax",
+        "class_balance": "class_weight",
+        "budget": 1
+      },
+      {
+        "task_id": "Coffee",
+        "model_id": "cnn1d",
+        "normalization": "area",
+        "class_balance": "class_weight",
+        "budget": 1
+      }
+    ]
+  },
+  "execution": {
+    "training_gpu_ids": [
+      1,
+      2,
+      3,
+      5
+    ],
+    "llm_gpu_id": 4,
+    "cpu_threads_total": 32,
+    "traditional_cpu_threads": 4,
+    "deep_cpu_threads": 1,
+    "gpu_initial_processes": 2,
+    "gpu_process_levels": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "gpu_sample_seconds": 5,
+    "deep_precision": "float32",
+    "batch_size": 8,
+    "max_epochs": 200,
+    "infrastructure_retry_limit": 1
+  },
+  "weights": {
+    "limit_bytes": 50000000000,
+    "high_water_bytes": 40000000000,
+    "low_water_bytes": 35000000000,
+    "retained_limit_bytes": 5000000000,
+    "cleanup_interval_seconds": 60,
+    "representative_rule": "first successful default model in fixed development-task order; never choose by Test",
+    "only_registered_goal_artifacts": true
+  },
+  "data_sources": {
+    "existing_manifest": "outputs/benchmark-task-manifest.json",
+    "existing_tasks": 110,
+    "raman_revision": "c92289ec9a786d2dde4c35f7e14c6701a10fcc68",
+    "raman_classification_candidates": 34,
+    "raman_independent_sample_limit": 500,
+    "tabmini_revision": "385961ec4ed9657ec4bb9efb9d085da13f358612",
+    "gene_revision": "48cffad4e88ff4b9d2f1c7baffb314d1b3303792",
+    "gene_candidates": [
+      "ALLAML",
+      "colon",
+      "GLIOMA",
+      "CLL_SUB_111",
+      "Carcinom"
+    ],
+    "candidate_total": 149
+  },
+  "budget_estimate": {
+    "normal_fit_upper_bound": 17958,
+    "normal_lm_calls_upper_bound": 1620,
+    "model_result_records_upper_bound": 8730,
+    "development_fit_upper_bound": 1335,
+    "locked_fit_upper_bound": 16620,
+    "candidate_cache_required": true,
+    "extra_infrastructure_attempts_reported_separately": true,
+    "exact_job_manifest_required_before_batch": true
+  },
+  "approval_digest": "57b61d015251fd636ef5eeeb03cfd31ae1f1948cb0f03b5a4537fbfc4a5539c3"
+}

@@ -923,7 +923,7 @@ def run(args):
     llm=None
     if args.kind=='agent':
         from agent_poc.orchestration.llm import LLMConfig
-        llm=LLMConfig(args.llm_url,args.llm_model,protocol=args.protocol,timeout=180,max_tokens=1024,
+        llm=LLMConfig(args.llm_url,args.llm_model,allow_unapproved_model=bool(getattr(args,'allow_unapproved_llm',False)),protocol=args.protocol,timeout=180,max_tokens=1024,
             prompt_version='agent-decision-search-v1' if getattr(args,'search_mode',None) is not None else
                 'agent-decision-processing-v1' if processing_mode is not None else 'agent-decision-knowledge-v1',
             tokenizer_path=getattr(args,'llm_tokenizer',None),context_window=getattr(args,'context_window',None))
@@ -1116,6 +1116,7 @@ def main(argv=None):
     p.add_argument('--hide-risk-context',action='store_true')
     p.add_argument('--llm-url')
     p.add_argument('--llm-model')
+    p.add_argument('--allow-unapproved-llm',action='store_true')
     p.add_argument('--protocol',choices=['json_action','native_tools'],default='json_action')
     p.add_argument('--timeout',type=float,default=600)
     p.add_argument('--max-llm-calls',type=int,default=6)

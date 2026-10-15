@@ -37,7 +37,7 @@ def test_admission_recovery_preserves_uncertainty_and_usage(api, tmp_path, budge
             return response
 
     config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', config)
     transport = FaultTransport(wire)
     client = AutoAIClient(runtime.backend_url, transport=transport, api_version='v2',

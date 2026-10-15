@@ -201,7 +201,7 @@ def test_explicit_dimension_baseline_is_rejected_not_silently_reduced():
 def test_interrupted_trial_ledger_is_not_replayed_as_fresh_work(tmp_path):
     from backend.app.search_accounting import SearchAccounting
     plan={'plan_digest':'a'*64,'mode':'bounded','selection_metric':'valid_balanced_accuracy',
-          'effective_search':True}
+          'fit_strategy':'train_then_train_valid_refit','effective_search':True}
     first=SearchAccounting(tmp_path,plan,'run-1')
     with first.trial(1,{'index':0,'params':{'logistic_c':1.0},'params_digest':'b'*64},
                      parent_span='search') as trial:
@@ -411,7 +411,7 @@ def test_failed_deep_batch_preserves_completed_progress(api, monkeypatch):
 def test_unentered_deep_trial_progress_stays_unknown(tmp_path):
     from backend.app.search_accounting import SearchAccounting
     plan={'plan_digest':'a'*64,'mode':'bounded','selection_metric':'best_valid_loss',
-          'effective_search':True}
+          'fit_strategy':'train_best_epoch_no_refit','effective_search':True}
     accounting=SearchAccounting(tmp_path,plan,'partial')
     with pytest.raises(ValueError):
         with accounting.trial(1,{'index':0,'params':{},'params_digest':'b'*64},
@@ -421,3 +421,56 @@ def test_unentered_deep_trial_progress_stays_unknown(tmp_path):
     assert summary['actual_epochs'] is None and summary['training_batches'] is None
     assert summary['actual_epochs_unknown_trials']==1
     assert summary['training_batches_unknown_trials']==1
+
+
+def test_deferred_batch_progress_persists_exactly_at_epoch_boundary(tmp_path, monkeypatch):
+    from backend.app.search_accounting import SearchAccounting
+    plan = {'plan_digest':'a'*64, 'mode':'bounded', 'selection_metric':'best_valid_loss',
+            'fit_strategy':'train_best_epoch_no_refit', 'effective_search':True}
+    accounting = SearchAccounting(tmp_path, plan, 'deferred-progress')
+    with accounting.trial(1, {'index':0, 'params':{}, 'params_digest':'b'*64}, parent_span='search') as row:
+        accounting.record_trial_progress(row, actual_epochs=0, training_batches=0)
+        flushes = []
+        original = accounting._flush
+        monkeypatch.setattr(accounting, '_flush', lambda: (flushes.append(True), original()))
+        for batch in range(1, 10001):
+            accounting.record_trial_progress(row, training_batches=batch, persist=False)
+        assert flushes == []
+        assert json.loads((tmp_path/'search_trials.json').read_text())[0]['training_batches'] == 0
+        accounting.record_trial_progress(row, actual_epochs=1)
+        assert len(flushes) == 1
+        saved = json.loads((tmp_path/'search_trials.json').read_text())[0]
+        assert saved['actual_epochs'] == 1 and saved['training_batches'] == 10000
+
+
+def test_deferred_batch_progress_is_preserved_when_trial_fails(tmp_path):
+    from backend.app.search_accounting import SearchAccounting
+    plan = {'plan_digest':'a'*64, 'mode':'bounded', 'selection_metric':'best_valid_loss',
+            'fit_strategy':'train_best_epoch_no_refit', 'effective_search':True}
+    accounting = SearchAccounting(tmp_path, plan, 'failed-deferred-progress')
+    with pytest.raises(ValueError, match='controlled failure'):
+        with accounting.trial(1, {'index':0, 'params':{}, 'params_digest':'b'*64}, parent_span='search') as row:
+            accounting.record_trial_progress(row, actual_epochs=0, training_batches=17, persist=False)
+            raise ValueError('controlled failure')
+    saved = json.loads((tmp_path/'search_trials.json').read_text())[0]
+    assert saved['state'] == 'failed' and saved['training_batches'] == 17
+
+
+def test_reused_deep_loaders_preserve_seeded_epoch_order_and_tail_batches():
+    import torch
+    import numpy as np
+    from backend.app.training import _loader
+    x = np.arange(19, dtype=np.float32).reshape(-1, 1)
+    y = np.arange(19)
+    def epochs(reuse):
+        torch.manual_seed(42)
+        train = _loader(x, y, list(range(19)), 8, True) if reuse else None
+        valid = _loader(x, y, list(range(19)), 8, False) if reuse else None
+        result=[]
+        for _ in range(5):
+            batches=list(train if reuse else _loader(x, y, list(range(19)), 8, True))
+            result.append(([by.tolist() for _,by in batches], [len(by) for _,by in batches]))
+            list(valid if reuse else _loader(x, y, list(range(19)), 8, False))
+        return result
+    assert epochs(True) == epochs(False)
+    assert all(sizes == [8, 8, 3] for _, sizes in epochs(True))

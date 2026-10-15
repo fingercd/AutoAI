@@ -97,7 +97,8 @@ def canonical_execution(value):
 
 
 def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: TrainEvidence,
-                           evaluation_plan: EvaluationPlan, *, search_plans: dict | None = None) -> RecipeCatalog:
+                           evaluation_plan: EvaluationPlan, *, search_plans: dict | None = None,
+                           search_plan_builder=None) -> RecipeCatalog:
     if evidence.plan_digest!=evaluation_plan.plan_digest or evidence.dataset_sha256!=evaluation_plan.dataset_sha256:
         raise ValueError('recipe_evidence_binding_mismatch')
     policies={m['id']:m for m in frozen_capabilities['models']}
@@ -132,7 +133,7 @@ def compile_recipe_catalog(task: dict, frozen_capabilities: dict, evidence: Trai
             plan = None
             if search_revision:
                 from .search_policy import build_search_plan
-                plan = build_search_plan(model_id=model_id, baseline=params,
+                plan = (search_plan_builder or build_search_plan)(model_id=model_id, baseline=params,
                     mode=task['search_mode'], max_trials=task['max_trials'],
                     train_count=stats.observation_count, feature_count=stats.feature_count,
                     class_count=class_count, dataset_sha256=evidence.dataset_sha256,

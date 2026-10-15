@@ -19,6 +19,7 @@ from agent_poc.clients.http_transport import ResponseTooLarge, bounded_request
 from agent_poc.tools import TOOL_SCHEMAS, validate_tool_arguments
 from .projection import CONTEXT_VERSION, validate_context
 from .state import validate_safe_text
+from agent_poc.llm_policy import require_approved_model
 
 PROMPT_VERSION = 'agent-decision-step1-v2'
 LLM_CONFIG_VERSION = 'agent-llm-http-v1'
@@ -42,6 +43,7 @@ class LLMConfig:
     tokenizer_path: str | None = None
     context_window: int | None = None
     diagnosis_phase: bool = False
+    allow_unapproved_model: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, 'base_url', validate_base_url(self.base_url))
@@ -54,6 +56,7 @@ class LLMConfig:
                 '://' in self.model or
                 self.model.lower().startswith('file:')):
             raise ValueError('LLM served model ID 无效')
+        require_approved_model(self.model, user_authorized=self.allow_unapproved_model)
         if self.prompt_version not in (PROMPT_VERSION,'agent-decision-step2-v1','agent-decision-recipes-v1','agent-decision-knowledge-v1','agent-decision-processing-v1','agent-decision-search-v1','agent-decision-budget-v1'):
             raise ValueError('Unknown Prompt version')
         if self.protocol not in ('json_action', 'native_tools'):
@@ -80,6 +83,8 @@ class LLMConfig:
                 'temperature': self.temperature, 'top_p': self.top_p,
                 'prompt_version': self.prompt_version, 'context_version': ('agent-context-budget-v1' if self.prompt_version=='agent-decision-budget-v1' else 'agent-context-search-v1' if self.prompt_version=='agent-decision-search-v1' else 'agent-context-processing-v1' if self.prompt_version=='agent-decision-processing-v1' else 'agent-context-knowledge-v1' if self.prompt_version=='agent-decision-knowledge-v1' else 'agent-context-recipes-v1' if self.prompt_version=='agent-decision-recipes-v1' else 'agent-context-step2-v1' if self.prompt_version == 'agent-decision-step2-v1' else CONTEXT_VERSION)}
 
+        if self.allow_unapproved_model:
+            result['model_policy_exception'] = 'explicit_user_authorization'
         if self.diagnosis_phase:
             from backend.app.agent.diagnosis import PROMPT_VERSION as diagnosis_prompt, rules_digest
             result['diagnosis_phase'] = dict(prompt=diagnosis_prompt, context='agent-context-diagnosis-v1', rules_digest=rules_digest())
@@ -417,14 +422,25 @@ class LLMAdapter:
             system += ('The cost card contains upper bounds, not measured runtimes. '
                        'You may stop before training when the permitted choices do not justify their cost. '
                        'A stop carries only the bound session_id. ')
-        if self.config.diagnosis_phase and phase == 'finalize' and not stop_allowed and self.config.protocol == 'json_action':
+        if phase == 'finalize' and not stop_allowed and self.config.protocol == 'json_action':
             # Demonstrate the existing envelope without choosing between actions or repairing model output.
             example = dict(tool_name=tool, arguments=projected['bindings'],
                 rationale='The selected run is eligible for finalization.')
             system += 'Complete JSON object example: ' + json.dumps(example,separators=(',',':')) + '\n'
+        if recipe_profile and not structured and phase == 'submit' and self.config.protocol == 'json_action':
+            # Show envelope syntax only; placeholders do not select a candidate or binding.
+            example = dict(tool_name=tool, arguments=dict(session_id='<copy supplied session_id>',
+                recipe_id='<select supplied recipe_id>'),
+                rationale='The selected recipe is permitted.')
+            if knowledge_profile:
+                example['arguments']['knowledge_refs'] = []
+            system += ('A JSON syntax example (placeholders are not actual bindings): '
+                + json.dumps(example,separators=(',',':'))
+                + '. Replace placeholders with exact supplied bindings and your selected recipe. Close the complete JSON object. ')
         request: dict[str, Any] = {
             'model': self.config.model, 'temperature': self.config.temperature,
             'top_p': self.config.top_p, 'max_tokens': self.config.max_tokens, 'stream': False,
+            'chat_template_kwargs': {'enable_thinking': False},
             'messages': [],
         }
         if self.config.protocol == 'json_action':
@@ -502,7 +518,8 @@ class LLMAdapter:
             'Do not infer training performance. ')
 
         request = dict(model=self.config.model, temperature=self.config.temperature,
-            top_p=self.config.top_p, max_tokens=self.config.max_tokens, stream=False)
+            top_p=self.config.top_p, max_tokens=self.config.max_tokens, stream=False,
+            chat_template_kwargs={'enable_thinking': False})
         if self.config.protocol == 'json_action':
             system += 'Return plain JSON only, no wrapper or markdown. Schema: ' + json.dumps(schema,separators=(',',':'))
         else:

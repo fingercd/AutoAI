@@ -1,0 +1,56 @@
+"""Compare fixed choices with the analytic seven-model random expectation; no fits."""
+from pathlib import Path
+from collections import Counter
+import json,time,csv
+from selection_core import ROOT,MODELS,NAMES,TYPES,sha,atomic_json,read_json
+from backend.app.benchmark_tracking import OnlineJournal
+from backend.app.benchmark_driver import exclusive
+TASK='修订优势知识与七模型均匀随机期望的完整比较'
+METRICS={'test_balanced_accuracy':'平衡准确率','test_accuracy':'准确率','test_macro_f1':'宏平均F1'}
+TOL=1e-12
+
+def summarize(rows):
+ n=len(rows);metrics={}
+ for metric in METRICS:
+  a=sum(r['metrics'][metric]['selected'] for r in rows)/n;b=sum(r['metrics'][metric]['uniform_random_expectation'] for r in rows)/n
+  metrics[metric]=dict(selected_mean=a,uniform_random_mean=b,delta=a-b,delta_percentage_points=100*(a-b))
+ differences=[r['metrics']['test_balanced_accuracy']['delta'] for r in rows]
+ return dict(tasks=n,families=len(set(r['family_id'] for r in rows)),metrics=metrics,higher=sum(d>TOL for d in differences),tied=sum(abs(d)<=TOL for d in differences),lower=sum(d< -TOL for d in differences),model_counts={m:sum(r['model_id']==m for r in rows) for m in MODELS})
+
+def main():
+ with exclusive(ROOT/'approval/comparison-controller.lock'):
+  state_path=ROOT/'approval/comparison-state.json'
+  try:
+   manifest=read_json(ROOT/'approval/selection-manifest-v2.json');assert sha(ROOT/'analysis/comparison-matrix-903.json')==manifest['matrix_sha256']
+   assert read_json(ROOT/'approval/selection-cloud-verification.json')['verified'] is True
+   matrix=read_json(ROOT/'analysis/comparison-matrix-903.json');choices=read_json(ROOT/'selection/completed-choices.json');assert len(matrix)==len(choices)==129
+   index={(c['suite'],c['task_id']):c for c in choices};assert len(index)==129
+   rows=[]
+   for i,data in enumerate(matrix):
+    c=index[data['suite'],data['task_id']];model=c['model_id'];assert model in MODELS and set(data['models'])==set(MODELS)
+    metrics={}
+    for metric in METRICS:
+     selected=data['models'][model]['metrics'][metric];random=sum(data['models'][m]['metrics'][metric] for m in MODELS)/7
+     assert abs(random-data['uniform_random_expectation'][metric])<=TOL
+     metrics[metric]=dict(selected=selected,uniform_random_expectation=random,delta=selected-random,delta_percentage_points=100*(selected-random))
+    rows.append(dict(task_index=i+1,suite=data['suite'],data_type=TYPES[data['suite']],task_id=data['task_id'],family_id=data['family_id'],round_id='01',model_id=model,model_name=NAMES[model],rationale=c['rationale'],metrics=metrics,selected_record_path=data['models'][model]['record_path'],selected_record_sha256=data['models'][model]['record_sha256'],dataset_sha256=data['dataset_sha256'],partition_digest=data['partition_digest'],selection_request_id=c['server_request_id'],selection_receipt_path=c['accepted_receipt'],retrieved_cards=c['retrieved_cards']))
+   overall=summarize(rows);types={TYPES[suite]:summarize([r for r in rows if r['suite']==suite]) for suite in TYPES};accounting=read_json(ROOT/'approval/selection-accounting.json')
+   result=dict(version='advantage-knowledge-vs-uniform-seven-defaults-20261014-v1',scope='internal exploratory, same tasks used to manually form knowledge and evaluate choice; not independent generalization',overall=overall,by_data_type=types,tie_tolerance=TOL,random_definition='For each task the arithmetic mean of the same seven existing model metric values, not prediction averaging, ensemble, maximum, or an additional fit',selection_accounting=accounting,new_classification_fits_during_selection_or_comparison=0)
+   out=ROOT/'comparison';out.mkdir(parents=True,exist_ok=True);atomic_json(out/'task-comparison.json',rows);atomic_json(out/'summary.json',result)
+   with (out/'逐任务选模与随机比较.csv').open('w',encoding='utf-8-sig',newline='') as f:
+    w=csv.writer(f);w.writerow(['任务序号','数据类型','任务名称','所选模型','选择理由']+[label+suffix for label in METRICS.values() for suffix in ['百分比','随机期望百分比','差值百分点']])
+    for r in rows:w.writerow([r['task_index'],r['data_type'],r['task_id'],r['model_name'],r['rationale']]+[v for m in METRICS for v in [100*r['metrics'][m]['selected'],100*r['metrics'][m]['uniform_random_expectation'],r['metrics'][m]['delta_percentage_points']]])
+   online=OnlineJournal(ROOT);config=dict(purpose='比较129次已固定选择与同七模型的均匀随机期望',tasks=129,model_count=7,selection_choices_sha256=sha(ROOT/'selection/completed-choices.json'),matrix_sha256=manifest['matrix_sha256'],knowledge_sha256=manifest['cards_sha256'],new_classification_fits=0,new_llm_requests=0,tie_tolerance=TOL,metric_units='scores in percent; differences in percentage points',task_order=[r['data_type']+':'+r['task_id'] for r in rows])
+   online.start_task(TASK,config);atomic_json(state_path,dict(phase='waiting_cloud',tasks=129,new_classification_fits=0));online.ensure_online(TASK,timeout=180)
+   marker=out/'cloud-task-event-markers.json';markers=read_json(marker,{})
+   for r in rows:
+    identity=str(r['task_index'])
+    if identity in markers:continue
+    data=dict(任务序号=r['task_index'],数据类型=r['data_type'],所选模型=r['model_name'],**{label:{'参考经验百分比':100*r['metrics'][m]['selected'],'随机期望百分比':100*r['metrics'][m]['uniform_random_expectation'],'差值百分点':r['metrics'][m]['delta_percentage_points']} for m,label in METRICS.items()})
+    markers[identity]=online.emit(TASK,'evaluation.task',data);atomic_json(marker,markers)
+   summary=dict(完成任务=129,候选模型数=7,比较阶段新增分类拟合=0,比较阶段新增大模型调用=0,此前正常选模请求=accounting['正常选模请求'],高于随机期望=overall['higher'],数值并列=overall['tied'],低于随机期望=overall['lower'],**{label:{'参考经验平均百分比':100*overall['metrics'][m]['selected_mean'],'随机期望平均百分比':100*overall['metrics'][m]['uniform_random_mean'],'平均差值百分点':overall['metrics'][m]['delta_percentage_points']} for m,label in METRICS.items()},模型选择数量={NAMES[m]:overall['model_counts'][m] for m in MODELS},按数据类型={name:{'任务数':v['tasks'],'高于随机期望':v['higher'],'低于随机期望':v['lower'],'参考经验平衡准确率百分比':100*v['metrics']['test_balanced_accuracy']['selected_mean'],'随机期望平衡准确率百分比':100*v['metrics']['test_balanced_accuracy']['uniform_random_mean'],'差值百分点':v['metrics']['test_balanced_accuracy']['delta_percentage_points']} for name,v in types.items()})
+   online.finish_task(TASK,summary);atomic_json(state_path,dict(phase='waiting_cloud_finish',tasks=129));verified=online.wait_verified(TASK,timeout=300);atomic_json(ROOT/'approval/comparison-cloud-verification.json',verified)
+   atomic_json(state_path,dict(phase='comparison_complete_pending_independent_audit_and_delivery',tasks=129,new_classification_fits=0,cloud_ref=verified['cloud_ref']));print(json.dumps(result,ensure_ascii=False),flush=True)
+  except BaseException as e:atomic_json(state_path,dict(phase='needs_attention',error_class=type(e).__name__,error=str(e)));raise
+
+if __name__=='__main__':main()

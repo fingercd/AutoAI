@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "checks": {
+    "tasks": 129,
+    "retrievals": 129,
+    "input_projections": 129,
+    "raw_reply_bindings": 129,
+    "classifier_record_hashes": 903,
+    "comparisons": 129,
+    "new_train_descriptors": 129
+  },
+  "normal_requests": 129,
+  "extra_requests": 0,
+  "service_requests_matched": 129,
+  "unrelated_service_requests_during_interval": 0,
+  "final_choices": 129,
+  "classification_records_unchanged": 903,
+  "new_classifier_records": 0,
+  "normal_finalization_requests": 0,
+  "append_brace_model_unchanged": true,
+  "task_weighting": "129 equal-weight single-arrangement tasks",
+  "task_families": 116,
+  "selection_dataset_reuse": "internal exploratory; no independent generalization claim"
+}

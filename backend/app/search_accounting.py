@@ -103,7 +103,9 @@ class SearchAccounting:
             interrupted_trials=counts['interrupted'], pending_trials=counts['prepared'] + counts['running'],
             effective_search=self.plan['effective_search'], selected=None,
             selection_metric=self.plan['selection_metric'],
-            candidate_fit_count=counts['succeeded'] + counts['failed'] + counts['interrupted'],
+            candidate_fit_count=sum(row['state'] in ('succeeded', 'failed', 'interrupted') and not row.get('cached', False) for row in self.trials),
+            candidate_evaluation_count=counts['succeeded'] + counts['failed'] + counts['interrupted'],
+            cache_hit_count=sum(row.get('cached', False) for row in self.trials),
             final_refit_count=None, total_fit_count=None,
             **progress,
             integrity='incomplete'))
@@ -111,14 +113,14 @@ class SearchAccounting:
     def _progress_totals(self) -> dict[str, int | None]:
         # Traditional models do not have epochs/batches.  Deep trial counters
         # remain unknown until the trainer has actually begun recording them.
-        if self.plan['selection_metric'] != 'best_valid_loss':
+        if self.plan['fit_strategy'] != 'train_best_epoch_no_refit':
             return dict(actual_epochs=0, training_batches=0,
                         actual_epochs_known=0, training_batches_known=0,
                         actual_epochs_known_trials=0, training_batches_known_trials=0,
                         actual_epochs_unknown_trials=0, training_batches_unknown_trials=0)
         result: dict[str, int | None] = {}
         for field in ('actual_epochs', 'training_batches'):
-            values = [row[field] for row in self.trials if row[field] is not None]
+            values = [row.get('executed_epochs' if field == 'actual_epochs' else 'executed_training_batches', row[field]) for row in self.trials if row[field] is not None]
             unknown = len(self.trials) - len(values)
             result[field + '_known'] = sum(values)
             result[field + '_known_trials'] = len(values)
@@ -231,7 +233,8 @@ class SearchAccounting:
 
     def record_trial_progress(self, row: dict[str, Any], *,
                               actual_epochs: int | None = None,
-                              training_batches: int | None = None) -> None:
+                              training_batches: int | None = None,
+                              persist: bool = True) -> None:
         if row not in self.trials or row['state'] != 'running':
             raise ValueError('trial progress requires a running ledger row')
         for field, value in (('actual_epochs', actual_epochs),
@@ -242,7 +245,8 @@ class SearchAccounting:
             if type(value) is not int or value < 0 or (previous is not None and value < previous):
                 raise ValueError('trial progress must be nonnegative and monotonic')
             row[field] = value
-        self._flush()
+        if persist:
+            self._flush()
 
     def sync_trial_durations(self) -> None:
         spans = {(s['fold_index'], s['trial_index']): s for s in self.spans
@@ -256,6 +260,9 @@ class SearchAccounting:
     def save_traditional_candidate(self, *, fold_index: int, trial_index: int,
                                    model: Any) -> str:
         """Persist a private fitted candidate before its ledger row can succeed."""
+        from .benchmark_cache import active_cache
+        if active_cache() is not None:
+            return active_cache().latest_artifact['sha256']
         folder=self.run_dir/f'trial_{fold_index}_{trial_index}'
         folder.mkdir(exist_ok=True)
         target=folder/'model.pkl'
@@ -287,8 +294,9 @@ class SearchAccounting:
                     completed_trials=len(self.trials), failed_trials=0, interrupted_trials=0,
                     effective_search=self.plan['effective_search'], selected=selected,
                     selection_metric=self.plan['selection_metric'],
-                    candidate_fit_count=len(self.trials), final_refit_count=refit_count,
-                    total_fit_count=len(self.trials)+refit_count,
+                    candidate_fit_count=sum(not row.get('cached', False) for row in self.trials), final_refit_count=refit_count,
+                    candidate_evaluation_count=len(self.trials), cache_hit_count=sum(row.get('cached', False) for row in self.trials),
+                    total_fit_count=sum(not row.get('cached', False) for row in self.trials)+refit_count,
                     **progress,
                     integrity='complete')
         _atomic_json(self.run_dir / 'search_summary.json', body)

@@ -97,7 +97,7 @@ class ScriptedProvider:
 
 
 def synthetic_llm() -> LLMAdapter:
-    return LLMAdapter(LLMConfig('http://synthetic.invalid/v1', 'synthetic-provider'),
+    return LLMAdapter(LLMConfig('http://synthetic.invalid/v1', 'synthetic-provider', allow_unapproved_model=True),
                       transport=ScriptedProvider())
 
 

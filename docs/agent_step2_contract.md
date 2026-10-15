@@ -78,7 +78,7 @@ python -m agent_poc.orchestration start --dataset-id DATASET_ID \
   --allowed-models logistic_regression,svm,random_forest --wait
 python scripts/agent_step2_acceptance.py --backend-only --root /tmp/autoai-step3-native-UNIQUE
 python scripts/agent_step2_acceptance.py --recipes \
-  --root /tmp/autoai-step3-UNIQUE --llm-url http://127.0.0.1:18762/v1
+  --root /tmp/autoai-step3-UNIQUE --llm-url http://127.0.0.1:8101/v1
 ```
 
 准备限制由 `AUTOAI_PREPARATION_SECONDS`、`AUTOAI_PREPARATION_MAX_BYTES`、`AUTOAI_PREPARATION_BLOCK_SIZE` 控制。超时、资源不足、数据或计划不合法会显式失败，不将缺失证据记为零。验收驱动复用原 Web/worker 生命周期；`--backend-only` 场景不启动 Agent/LLM，原生请求不携带配方或计划引用，并强制检查 Agent 表无记录。另在新隔离目录完成真实 LLM 传统/深度/恢复场景，并用独立普通 HTTP 进程提交相同配方配置与计划；比较实际分区、执行审计和模型 profile，传统模型额外以固定容差比较指标与预测。普通提交不新增 Agent Session 或预约；worker 与普通请求进程阻断 Agent/LLM 导入。Web 仍托管原 Agent 路由。产物完整性、退出清理和运行版本均进入验收记录。
@@ -100,7 +100,7 @@ python scripts/agent_step2_acceptance.py --recipes \
 
 ```bash
 python -m agent_poc.orchestration start --dataset-id DATASET_ID   --allowed-models logistic_regression,svm --knowledge on --wait
-python scripts/agent_step2_acceptance.py --recipes --knowledge-ablation   --root /tmp/autoai-step4-UNIQUE --llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b
+python scripts/agent_step2_acceptance.py --recipes --knowledge-ablation   --root /tmp/autoai-step4-UNIQUE --llm-url http://127.0.0.1:8101/v1 --llm-model qwen35_9b --llm-tokenizer /users/fotile/AutoAI/Agent/.local/shared/models/original/qwen3.5-9b --llm-context-window 32768
 ```
 
 受控协议测试与真实 LLM 验收分开报告。知识消融驱动固定数据、种子和候选执行 on/off，要求真实 on 实际引用已展示知识；分别为选中配方运行普通后端配对，检查参数、实际划分、搜索审计、指标/预测容差及 Manifest。失败状态与调用计量保留，不能用脚本选择器冒充真实 LLM。
@@ -124,7 +124,7 @@ structured_config 的 LLM 提案包含 `session_id, model_id, normalization, cla
 ```bash
 PY=/users/fotile/work/autoai-server-acceptance-20260912/venv/bin/python
 COMMON=(--backend-url http://127.0.0.1:18771 --dataset-id "$DATASET_ID" --scope-key step3-acceptance --seed 42 --allowed-models logistic_regression svm)
-LLM=(--llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b --protocol json_action)
+LLM=(--llm-url http://127.0.0.1:8101/v1 --llm-model qwen35_9b --protocol json_action --llm-tokenizer /users/fotile/AutoAI/Agent/.local/shared/models/original/qwen3.5-9b --context-window 32768)
 $PY scripts/agent_ablation.py "${COMMON[@]}" --experiment-id fixed-lr-001 --kind baseline
 $PY scripts/agent_ablation.py "${COMMON[@]}" "${LLM[@]}" --experiment-id recipe-001 --kind agent --decision-mode recipe_id --knowledge off
 $PY scripts/agent_ablation.py "${COMMON[@]}" "${LLM[@]}" --experiment-id structured-001 --kind agent --decision-mode structured_config --knowledge off
@@ -136,7 +136,7 @@ Evidence 关闭：在对应新实验命令增加 `--hide-evidence-context`；风
 完整隔离工程联调复用原验收脚本（真实本地 LLM 服务须已就绪）：
 
 ```bash
-$PY scripts/agent_step2_acceptance.py --recipes --light-ablation --root /tmp/autoai-step4-ablation-UNIQUE --port 18771 --llm-url http://127.0.0.1:18762/v1 --llm-model qwen3-4b
+$PY scripts/agent_step2_acceptance.py --recipes --light-ablation --root /tmp/autoai-step4-ablation-UNIQUE --port 18771 --llm-url http://127.0.0.1:8101/v1 --llm-model qwen35_9b --llm-tokenizer /users/fotile/AutoAI/Agent/.local/shared/models/original/qwen3.5-9b --llm-context-window 32768
 ```
 
 该命令创建自有 Web/worker、确定性合成分类数据，依次执行固定 LR、recipe Agent、structured Agent，并核对同数据/实际划分/固定参数以及终态不重复提交。它是实际 HTTP/worker/LLM 工程联调，不能称为真实业务数据验收或科研贡献证明。原 `--recipes` 中 Agent 选后普通 API 重放在记录中标为 `backend-equivalence`，不是独立科研基线。

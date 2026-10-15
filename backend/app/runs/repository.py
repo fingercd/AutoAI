@@ -433,13 +433,15 @@ class RunRepository:
     # 回滚抛 InvalidRunTransition。claim_token 是本次执行的随机凭证，后续所有写操作
     # 都要出示；lease_expires_at 是租约死线，worker 须周期续租，过期可被回收重排。
     # started_at 用 COALESCE 保留首次启动时间（重排后再次 claim 不刷新）。
-    def claim_next(self, *, worker_id: str, now: datetime, lease_seconds: int = 30) -> RunRecord | None:
+    def claim_next(self, *, worker_id: str, now: datetime, lease_seconds: int = 30,
+                   run_id: str | None = None) -> RunRecord | None:
         now_text = _timestamp(now)
         lease_text = _timestamp(now + timedelta(seconds=lease_seconds))
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
             row = connection.execute(
-                "SELECT * FROM runs WHERE state = 'queued' ORDER BY created_at, run_id LIMIT 1"
+                "SELECT * FROM runs WHERE state = 'queued' AND (? IS NULL OR run_id = ?) "
+                "ORDER BY created_at, run_id LIMIT 1", (run_id, run_id)
             ).fetchone()
             if row is None:
                 connection.commit()

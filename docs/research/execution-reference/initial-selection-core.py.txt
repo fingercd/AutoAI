@@ -1,0 +1,121 @@
+"""Selection-only pilot. Never submits a classifier Run or creates knowledge cards."""
+from pathlib import Path
+from datetime import datetime,timezone
+import json,hashlib,math,os,sys,time,urllib.request
+ROOT=Path('/users/fotile/AutoAI/Pan/work/knowledge-pilot-20261013')
+SELECTION=ROOT/'selection-v2'
+SOURCE=json.loads((ROOT/'approval/source-freeze.json').read_text())
+sys.path.insert(0,SOURCE['snapshot_path'])
+from backend.app.benchmark_tracking import atomic_json,read_json
+from backend.app.benchmark_llm import _semantic_action
+from agent_poc.orchestration.llm import _strict_json,_rationale
+MODELS=['pls_da','pca_lda','logistic_regression','svm','random_forest','xgboost','cnn1d']
+NAMES={'pls_da':'偏最小二乘判别','pca_lda':'主成分降维加线性判别','logistic_regression':'逻辑回归','svm':'支持向量机（线性核）','random_forest':'随机森林','xgboost':'梯度提升树（XGBoost实现）','cnn1d':'简单一维卷积网络'}
+TYPES={'ucr85':'时序数据','tabmini25':'一般表格','raman34':'拉曼数据','biology5':'基因表达数据'}
+SETTINGS=dict(model='qwen35_9b',temperature=0,top_p=1,max_tokens=1024,stream=False,chat_template_kwargs={'enable_thinking':False})
+SYSTEM=("Choose one canonical model_id from the seven candidates for submit_ml_experiment. "
+ "Select the legal model expected to achieve the highest balanced accuracy on held-out samples under the frozen default training conditions. "
+ "Use only the supplied training-data summary and retrieved observational knowledge. Candidate display order does not indicate priority. "
+ "The cards are internal exploratory priors, not universally proven rules. Compare their applicability, support and counterexamples; "
+ "resolve conflicts using the current training profile. A card never removes a candidate, the numerical layer is not automatically more reliable, "
+ "and no model diversity quota is required. Do not change parameters or preprocessing. "
+ "Give one short natural Chinese rationale sentence without private reasoning, external references, slashes or control characters. "
+ "Respond with exactly one compact JSON object on one physical line, containing only tool_name, arguments and rationale. "
+ "The only tool_name is submit_ml_experiment. arguments must contain only model_id, one of " + ','.join(MODELS) + ". "
+ "No markdown, extra fields, duplicate keys or parallel actions. Include the final closing brace. "
+ "No classifier is trained by this decision; the evaluator later reads the existing frozen score for the selected model.")
+
+OUTPUT_SCHEMA={'type': 'object', 'additionalProperties': False, 'required': ['tool_name', 'arguments', 'rationale'], 'properties': {'tool_name': {'type': 'string', 'const': 'submit_ml_experiment'}, 'arguments': {'type': 'object', 'additionalProperties': False, 'required': ['model_id'], 'properties': {'model_id': {'type': 'string', 'enum': ['pls_da', 'pca_lda', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d']}}}, 'rationale': {'type': 'string', 'minLength': 1, 'maxLength': 1000}}}
+SYSTEM += (' Rationale is a top-level sibling of arguments, NEVER a field inside arguments. ' 'The exact output structure is {"tool_name":"submit_ml_experiment","arguments":{"model_id":"<canonical_model_id>"},"rationale":"<one short Chinese sentence>"}. ' 'Permitted complete output JSON Schema: '+json.dumps(OUTPUT_SCHEMA,separators=(',',':')))
+
+def canonical(x):return json.dumps(x,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+def sha(p):
+ with Path(p).open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
+def key(suite,task):return hashlib.sha256((suite+':'+task).encode()).hexdigest()[:24]
+def matches(c,p):
+ if 'all' in c:return all(matches(z,p) for z in c['all'])
+ if 'suite' in c:return p['suite']==c['suite']
+ if 'axis_kind' in c:return p['axis_kind']==c['axis_kind']
+ x=p[c['field']];v=c['value']
+ if x is None:return False
+ return {'le':lambda:x<=v,'ge':lambda:x>=v,'gt':lambda:x>v,'eq':lambda:x==v}[c['operator']]()
+def retrieve(cards,p):
+ candidates=[]
+ for position,c in enumerate(cards):
+  applicable=matches(c['condition'],p)
+  distance=sum(abs(math.log(p[f]/v)) for f,v in c.get('reference',{}).items())/len(c['reference']) if applicable and 'reference' in c else 0 if applicable else None
+  candidates.append(dict(card_id=c['id'],layer=c['layer'],applicable=applicable,distance=distance,tie_order=position))
+ chosen=[]
+ for layer,cap in [('数据类型',1),('数理特征',2),('结构与质量',1)]:
+  group=sorted((x for x in candidates if x['layer']==layer and x['applicable']),key=lambda x:(x['distance'],x['tie_order']))[:cap]
+  chosen.extend(group)
+ ids=[x['card_id'] for x in chosen]
+ return [dict(id=c['id'],layer=c['layer'],title=c['title'],text=c['text']) for i in ids for c in cards if c['id']==i],dict(candidates=candidates,selected=chosen,rule='condition match then mean absolute natural-log proportional distance to reviewed Train-profile median; fixed card order breaks ties')
+
+def build_input(row,p,cards):
+ p={**p,'class_count':len(p['class_counts']),'axis_is_ordered':p['axis_kind']!='feature_index'}
+ knowledge,retrieval=retrieve(cards,p)
+ fields=['train_rows','train_groups','profile_rows','profile_repeated_measurements','features','features_per_train_group','class_counts','class_count','class_imbalance','constant_feature_fraction','raw_feature_variance_quantiles','standardized_covariance_effective_dimension','adjacent_feature_correlation_median','near_constant_rule','redundancy_rule','batch_or_instrument_noise']
+ candidates=[]
+ for model in MODELS:
+  fact=row['models'][model];fixed=fact['fixed_config']
+  params={k:v for k,v in fixed.items() if k not in ['model_type','normalization','class_balance','seed','feature_selection_enabled','split_mode','split_train','split_valid','split_test']}
+  item=dict(model_id=model,display_name=NAMES[model],model_params=params)
+  if model=='cnn1d':item['train_resolved_model_profile']=read_json(Path(fact['artifact_directory'])/'config.json')['model_profile']
+  candidates.append(item)
+ semantic=dict(version='knowledge-selection-only-20261013-v1',task=dict(data_type=TYPES[row['suite']],axis_kind=p['axis_kind'],feature_order='frozen original column order',train_summary={k:p[k] for k in fields}),
+  shared_conditions=dict(normalization='zscore',class_balance='none',feature_selection_enabled=False,seed=42,max_parameter_candidates=1,classical_final_fit='original Train plus Valid refit of the frozen default',deep_final_fit='best original Valid-loss checkpoint; no refit'),candidates=candidates,retrieved_knowledge=knowledge)
+ request={**SETTINGS,'messages':[dict(role='system',content=SYSTEM),dict(role='user',content=json.dumps(semantic,ensure_ascii=False,separators=(',',':')))]}
+ assert len(knowledge)<=4 and len(candidates)==7
+ forbidden={'test','test_scores','test_metrics','validation','metrics','prediction_rows','run_id','artifact_directory','task_id','task_name','family_id','record_path','dataset_sha256','winner'}
+ def check(obj):
+  if isinstance(obj,dict):
+   assert not forbidden.intersection(obj)
+   for value in obj.values():check(value)
+  elif isinstance(obj,list):
+   for value in obj:check(value)
+ check(semantic)
+ return dict(task_id=row['task_id'],suite=row['suite'],family_id=row['family_id'],key=key(row['suite'],row['task_id']),semantic_input=semantic,retrieval=retrieval,request=request,request_sha256=hashlib.sha256(canonical(request)).hexdigest(),profile_sha256=hashlib.sha256(canonical(p)).hexdigest(),dataset_sha256=row['dataset_sha256'],partition_digest=row['partition_digest'])
+
+def parse_content(text):
+ raw_valid=False
+ try:_strict_json(text);raw_valid=True
+ except ValueError:pass
+ trace={};action=_semantic_action(text,trace)
+ operations=trace.get('semantic_format_normalization',{}).get('operations',[])
+ if set(operations)-{'append_final_object_brace','trim_rationale_edge_whitespace'}:raise ValueError('Only the reviewed trailing outer brace repair is permitted')
+ if type(action) is not dict or set(action)!={'tool_name','arguments','rationale'}:raise ValueError('Invalid action fields')
+ if action['tool_name']!='submit_ml_experiment' or type(action['arguments']) is not dict or set(action['arguments'])!={'model_id'}:raise ValueError('Invalid tool or arguments')
+ if type(action['arguments']['model_id']) is not str or action['arguments']['model_id'] not in MODELS:raise ValueError('Model is not in the frozen seven-model menu')
+ rationale=_rationale(action['rationale'])
+ return dict(model_id=action['arguments']['model_id'],rationale=rationale,raw_json_valid=raw_valid,format_operations=operations,normalized_action=action,normalization_trace=trace)
+
+def prepare():
+ approval=read_json(ROOT/'approval/knowledge-approval.json');assert approval['user_approved']
+ book=read_json(ROOT/'knowledge/cards-v1.json');assert book['approved_draft_sha256']==approval['draft_sha256'] and len(book['cards'])==12
+ matrix=read_json(ROOT/'analysis/comparison-matrix-903.json');profiles={(p['suite'],p['task_id']):p for p in read_json(ROOT/'analysis/training-profiles.json')};assert len(matrix)==len(profiles)==129
+ items=[]
+ for row in matrix:
+  data=build_input(row,profiles[row['suite'],row['task_id']],book['cards']);path=SELECTION/'inputs'/(data['key']+'.json');previous=read_json(path)
+  if previous is not None:assert previous==data,'Frozen selection input changed'
+  else:atomic_json(path,data)
+  items.append(dict(task_id=data['task_id'],suite=data['suite'],key=data['key'],input_path=str(path),request_sha256=data['request_sha256']))
+ manifest=dict(version='knowledge-selection-manifest-v2-output-structure-only',tasks=items,cards_sha256=sha(ROOT/'knowledge/cards-v1.json'),matrix_sha256=sha(ROOT/'analysis/comparison-matrix-903.json'),training_profiles_sha256=sha(ROOT/'analysis/training-profiles.json'),knowledge_approval_sha256=sha(ROOT/'approval/knowledge-approval.json'),approved_draft_sha256=approval['draft_sha256'],prompt_sha256=hashlib.sha256(SYSTEM.encode()).hexdigest(),settings=SETTINGS,normal_requests=129,classifier_fits=0,finalization_requests=0,tie_tolerance=1e-12,extra_attempts_per_task_max=1)
+ path=ROOT/'approval/selection-manifest-v2.json';previous=read_json(path)
+ if previous is not None:assert previous==manifest
+ else:atomic_json(path,manifest)
+ return manifest
+
+def offline_checks():
+ s='{"tool_name":"submit_ml_experiment","arguments":{"model_id":"svm"},"rationale":"训练分组较少，优先采用线性核支持向量机。"}'
+ assert parse_content(s)['raw_json_valid']
+ repaired=parse_content(s[:-1]);assert repaired['model_id']=='svm' and repaired['format_operations']==['append_final_object_brace']
+ for invalid in [s[:-2],s.replace('"svm"','"rbf_svm"'),s.replace('"tool_name":','"unexpected":'),s.replace('"svm"','"svm","model_id":"svm"')]:
+  try:parse_content(invalid)
+  except ValueError:pass
+  else:raise AssertionError('Invalid action accepted')
+ manifest=prepare();assert len(manifest['tasks'])==129
+ atomic_json(ROOT/'approval/selection-offline-checks-v2.json',dict(passed=True,normal_llm_requests=0,classifier_fits=0,tests=['valid JSON','single trailing brace preserves model','reject deeper truncation','reject illegal model','reject unexpected action fields','reject duplicate fields','129 frozen inputs exclude result fields and contain at most four matching cards']))
+ print('offline_checks_passed inputs',len(manifest['tasks']),flush=True)
+
+if __name__=='__main__':offline_checks()

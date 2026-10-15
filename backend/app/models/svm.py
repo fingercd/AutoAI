@@ -43,7 +43,7 @@ def build_svm(
            后量级选定的经验值。来自训练配置 ``svm_gamma``。
         class_weight: 类别权重，通常为 None 或 "balanced"；后者按
            类别频率反比加权，用于缓解类别不平衡（每类至少 3 个
-           Sample_ID 的划分约束由外层评估流程保证）。
+           Sample_ID 的划分约束由数据划分与评测流程保证）。
         seed: 随机种子，传入 ``random_state``。SVC 的
            ``probability=True`` 内部使用 Platt scaling（带交叉验证
            的逻辑回归校准），该过程有随机性；固定种子保证同一

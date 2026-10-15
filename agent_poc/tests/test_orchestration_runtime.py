@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def fixture_config():
     return RuntimeConfig(backend_url='http://127.0.0.1:8000', principal_scope='fixture-local',
-                         llm_config=LLMConfig(base_url='http://127.0.0.1:9999/v1', model='fixture-model'))
+                         llm_config=LLMConfig(base_url='http://127.0.0.1:9999/v1', model='fixture-model', allow_unapproved_model=True))
 
 
 def build_wait_graph(dependencies, saver):

@@ -16,7 +16,9 @@ sys.path.insert(0,str(REPO))
 from scripts.agent_step2_acceptance import bind_storage, code_binding, save
 
 
-def run(root, llm_url):
+def run(root, llm_url, llm_model, *, allow_unapproved_llm=False, tokenizer_path=None, context_window=None):
+    from agent_poc.llm_policy import require_approved_model
+    require_approved_model(llm_model,user_authorized=allow_unapproved_llm)
     root=root.resolve()
     root.mkdir(parents=True,exist_ok=False)
     bind_storage(root)
@@ -61,7 +63,7 @@ def run(root, llm_url):
                 files={'file':(source.name,handle,'text/csv')},trust_env=False,timeout=30)
         response.raise_for_status();dataset=response.json()['dataset_id']
         report['data']=dict(dataset_id=dataset,sha256=hashlib.sha256(source.read_bytes()).hexdigest(),source='deterministic engineering synthetic grouped curves')
-        config=LLMConfig(llm_url,'qwen3-4b',timeout=180,max_tokens=512,prompt_version='agent-decision-step2-v1')
+        config=LLMConfig(llm_url,llm_model,allow_unapproved_model=allow_unapproved_llm,tokenizer_path=tokenizer_path,context_window=context_window,timeout=180,max_tokens=512,prompt_version='agent-decision-step2-v1')
         runtime=RuntimeConfig(base,'step2-recovery',config,backend_token=token,api_timeout=30)
         for model,window in [('logistic_regression','submit_prepared'),('cnn1d','choose_end')]:
             calls=[];proposals=[]
@@ -127,6 +129,10 @@ def run(root, llm_url):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--root',type=Path,required=True)
-    parser.add_argument('--llm-url',default='http://127.0.0.1:18762/v1')
+    parser.add_argument('--llm-url',required=True)
+    parser.add_argument('--llm-model',required=True)
+    parser.add_argument('--allow-unapproved-llm',action='store_true')
+    parser.add_argument('--llm-tokenizer')
+    parser.add_argument('--llm-context-window',type=int)
     args=parser.parse_args()
-    run(args.root,args.llm_url)
+    run(args.root,args.llm_url,args.llm_model,allow_unapproved_llm=args.allow_unapproved_llm,tokenizer_path=args.llm_tokenizer,context_window=args.llm_context_window)

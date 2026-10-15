@@ -27,6 +27,8 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+from .execution_runtime import model_device as _model_device
 from .training_explainability import explainability_method
 
 
@@ -797,14 +799,6 @@ def aggregate_attribution_sanity(samples: list[dict[str, Any]]) -> dict[str, Any
     return _aggregate_attribution_sanity(samples)
 
 
-
-
-# 取模型所在设备；无参数模型（极端情况）回退 CPU。
-def _model_device(model: nn.Module) -> torch.device:
-    try:
-        return next(model.parameters()).device
-    except StopIteration:
-        return torch.device("cpu")
 
 
 # 统一两种输出形式的“真实类别得分 + 概率矩阵”：

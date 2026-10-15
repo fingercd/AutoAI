@@ -149,7 +149,7 @@ def test_deterministic_admission_failure_closes_session(api, tmp_path, budget_co
     monkeypatch.setattr(training, 'prepare_training_inputs', fail_preflight)
     wire, storage, dataset = api
     config = LLMConfig('http://scripted.invalid/v1', 'fixture',
-        prompt_version='agent-decision-budget-v1', **budget_config)
+        prompt_version='agent-decision-budget-v1', **budget_config, allow_unapproved_model=True)
     runtime = RuntimeConfig('http://backend.invalid', 'local', config)
     transport = CountTransport(wire)
     client = AutoAIClient(runtime.backend_url, transport=transport, api_version='v2',

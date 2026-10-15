@@ -39,7 +39,7 @@ def test_recipe_graph_recovery(api,tmp_path,monkeypatch,model,protocol,interrupt
     from backend.app.runs.worker import RunWorker
     from backend.app.runs.status_projection import project_status
     api_client,storage,dataset=api;wire=CountTransport(api_client)
-    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-recipes-v1')
+    cfg=LLMConfig('http://scripted.invalid/v1','fixture',protocol=protocol,prompt_version='agent-decision-recipes-v1', allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',cfg)
     provider=RecipeDecision(model,protocol);adapter=LLMAdapter(cfg,transport=provider)
     def client():return AutoAIClient(runtime.backend_url,transport=wire,api_version='v2',execution_profile='train-evidence-recipes-v1',max_retries=0)
@@ -100,7 +100,7 @@ def test_processing_recipe_graph_keeps_nondefault_member(api,tmp_path,budget_con
     api_client,storage,dataset=api
     wire=CountTransport(api_client)
     config=LLMConfig('http://scripted.invalid/v1','fixture',protocol='json_action',
-        prompt_version='agent-decision-processing-v1',max_tokens=64,**budget_config)
+        prompt_version='agent-decision-processing-v1',max_tokens=64,**budget_config, allow_unapproved_model=True)
     runtime=RuntimeConfig('http://backend.invalid','local',config)
 
     class ProcessingDecision(RecipeDecision):
