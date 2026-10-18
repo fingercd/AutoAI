@@ -224,6 +224,8 @@ def build_prediction_workbook(
         for key, row in _column_entries(rows):
             by_key.setdefault(key, row)
         display = MODEL_DISPLAY_NAMES.get(model_type, model_type)
+        if model.get('feature_scheme'):
+            display += ' · ' + str(model.get('feature_name') or model['feature_scheme']).split('（', 1)[0]
         if display in used_names:
             display = f"{display}（{model_type}）"
         used_names.add(display)

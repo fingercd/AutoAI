@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch import nn
 from sklearn.cross_decomposition import PLSRegression
-from .feature_engineering import SCHEMES, FeatureTransform, FeatureClassifier
+from .feature_engineering import SCHEMES, STUDENT_SCHEMES, ALL_SCHEMES, FeatureTransform, FeatureClassifier
 
 
 class PLS0904:
@@ -176,8 +176,9 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
     inner = ([(np.asarray(splits['train']), np.asarray(splits['valid']))] if quick else
              grouped_experiment_folds(y, groups, pool, config.split_seed, labels)) if traditional else []
     results, search, winner = [], [], None
-    selected_schemes = [(key, name) for key, name in SCHEMES if not quick or key == config.feature_scheme]
-    for scheme, name in SCHEMES:
+    schemes = STUDENT_SCHEMES if quick and config.feature_scheme in dict(STUDENT_SCHEMES) else SCHEMES
+    selected_schemes = [(key, name) for key, name in schemes if not quick or key == config.feature_scheme]
+    for scheme, name in schemes:
         if quick and scheme != config.feature_scheme:
             unsupported = model_type == 'cnn1d' and scheme.startswith('pca_')
             results.append({'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index,
@@ -190,7 +191,7 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
             results.append({**item, 'status': 'not_applicable', 'reason': 'CNN 保留光谱顺序，不使用 PCA 输入'}); continue
         def update(**extra):
             progress({'feature_scheme': name, 'feature_scheme_index': scheme_index + 1,
-                      'feature_scheme_count': 1 if quick else 7 if traditional else 4,
+                      'feature_scheme_count': len(selected_schemes) if traditional else sum(not key.startswith('pca_') for key, _ in selected_schemes),
                       'training_profile': config.training_profile,
                       'training_stage': 'feature_search',
                       'training_stage_label': f'{name} · 快速训练' if quick else f'{name} · 特征方案比较', **extra})
@@ -275,7 +276,10 @@ def summarize_experiments(folds, labels, *, external_final=None):
         return {k:r.get(k) for k in ('fold_index','test_sample_ids','split_summary','requested_ratio','scheme_id','scheme_name','selection_metric','selection_score','params','transform','training_profile')}
     source=[external_final] if external_final else folds
     schemes=[]
-    for scheme,name in SCHEMES:
+    recorded_schemes = {row['scheme_id'] for fold in source for row in fold['results']}
+    for scheme,name in ALL_SCHEMES:
+        if scheme not in recorded_schemes:
+            continue
         entries=[next((r for r in f['results'] if r['scheme_id']==scheme),{}) for f in source]
         ok=[r for r in entries if r.get('status')=='ready']
         status='ready' if len(ok)==len(source) else 'not_applicable' if all(r.get('status')=='not_applicable' for r in entries) else 'not_run' if all(r.get('status')=='not_run' for r in entries) else 'partial' if ok else 'failed'

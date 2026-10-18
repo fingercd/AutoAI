@@ -12,9 +12,15 @@ from typing import Any, Callable
 
 from .artifacts import ManifestCorruptError, RunArtifactWriter
 from .contracts import RunRecord
+from ..feature_engineering import ALL_SCHEMES
+from ..parsers import natural_sort_key
 
 COMPARISON_SCHEMA_VERSION = "model-comparison-v1"
 _METRICS = ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1")
+
+
+def evaluation_payload(strategy: str) -> dict[str, str]:
+    return {'strategy':strategy,'primary_aggregation':'pooled_oof' if strategy=='leave_one_sample_id_cv' else 'direct_external_test' if strategy=='leave_one_sample_id_cv_with_external_test' else 'direct'}
 
 
 def aggregate_batch_state(records: list[RunRecord]) -> str:
@@ -34,15 +40,26 @@ def aggregate_batch_state(records: list[RunRecord]) -> str:
 
 def batch_status_payload(batch_id: str, records: list[RunRecord]) -> dict[str, Any]:
     counts = Counter(record.state for record in records)
+    config = records[0].config if records else {}
+    folds = config.get('expected_outer_folds', 1)
+    workload = {'model_count':len(config.get('requested_model_types') or {r.config.get('model_type') for r in records}),
+                'feature_count':len(config.get('feature_schemes') or [config.get('feature_scheme')]),
+                'combination_count':len(records),'inapplicable_count':len(config.get('inapplicable_combinations',[])),
+                'outer_folds_per_combination':folds,'total_outer_folds':len(records)*folds,
+                'completed_outer_folds':sum(folds if r.state=='succeeded' else min(folds,int(r.progress.get('completed_folds') or 0)) for r in records)}
     return {
         "batch_id": batch_id,
         "state": aggregate_batch_state(records),
         "run_count": len(records),
+        **({'workload':workload} if config.get('feature_schemes') else {}),
         "counts": {state: int(counts.get(state, 0)) for state in ("queued", "running", "succeeded", "failed", "cancelled")},
         "runs": [
             {
                 "run_id": record.run_id,
                 "model_type": record.config.get("model_type"),
+                'feature_scheme':record.config.get('feature_scheme'),
+                'feature_name':dict(ALL_SCHEMES).get(record.config.get('feature_scheme'), '默认方案'),
+                'expected_outer_folds':record.config.get('expected_outer_folds', 1),
                 "repeat_index": record.batch_repeat_index,
                 "state": record.state,
                 "error": record.error if record.state == "failed" else None,
@@ -161,6 +178,7 @@ def project_model_comparison(
     records: list[RunRecord],
     run_dir_for: Callable[[str], Path],
     include_history: bool = True,
+    group_features: bool = True,
 ) -> dict[str, Any]:
     """Aggregate only verified success artifacts; missing values are explicit."""
     successful = [record for record in records if record.state == "succeeded"]
@@ -177,7 +195,13 @@ def project_model_comparison(
         "class_recall": {"status": "missing", "labels": [], "rows": []},
         "class_metrics": {"status": "missing", "labels": [], "rows": []},
         "confusion_matrices": [],
+        'evaluation':evaluation_payload(str(records[0].config.get('evaluation_strategy') or records[0].config.get('split_mode') or '')) if records else {},
+        'dataset_name':(records[0].dataset_snapshot.get('name') or records[0].config.get('dataset_name')) if records else None,
     }
+    if group_features and records and records[0].config.get('feature_schemes'):
+        config=records[0].config
+        base.update(comparison_mode='model_feature_grid',feature_schemes=config['feature_schemes'],requested_model_types=config['requested_model_types'],
+                    inapplicable_combinations=config.get('inapplicable_combinations',[]),combination_status=batch_status_payload(batch_id,records))
     if not successful:
         base["reason"] = "批次中尚无成功且结果完整的模型"
         return base
@@ -210,6 +234,28 @@ def project_model_comparison(
         return base
     if len(fingerprints) != 1 or len(strategies) != 1 or len(label_sets) != 1 or len(dataset_signatures) != 1 or len(test_sample_sets) != 1:
         base["reason"] = "子 Run 的数据快照、划分、测试样品/标签映射或评估口径不一致，不能进行公平比较"
+        return base
+    if group_features and any(record.config.get('feature_schemes') for record in records):
+        config = records[0].config
+        groups = []
+        for feature in config['feature_schemes']:
+            subset = [r for r in records if r.config.get('feature_scheme') == feature]
+            part = project_model_comparison(batch_id=batch_id, records=subset, run_dir_for=run_dir_for, group_features=False)
+            if not subset:
+                part.update(state='not_applicable', reason='所选模型均不支持该特征处理')
+            part.update(feature_scheme=feature, feature_name=dict(ALL_SCHEMES)[feature])
+            groups.append(part)
+        models = [{**row, 'feature_scheme':part['feature_scheme'], 'feature_name':part['feature_name'],
+                   'comparison_id':row['model_type']+'__'+part['feature_scheme']}
+                  for part in groups for row in part['models']]
+        first = next(part for part in groups if part['comparable'])
+        base.update(comparable=True, comparison_mode='model_feature_grid', scheme_comparisons=groups, models=models,
+                    overall_metrics={'metrics':list(_METRICS),'rows':models},
+                    requested_model_types=config['requested_model_types'], feature_schemes=config['feature_schemes'],
+                    combination_status=batch_status_payload(batch_id, records),
+                    inapplicable_combinations=config.get('inapplicable_combinations',[]),
+                    evaluation=first['evaluation'], sample_correctness=first['sample_correctness'],
+                    class_metrics=first['class_metrics'], split_digest=first['split_digest'])
         return base
     if include_history:
         grouped_records: dict[str, list[RunRecord]] = defaultdict(list)
@@ -287,7 +333,7 @@ def project_model_comparison(
         })
         confusion_payloads.append({"model_type": model_type, "labels": labels, "confusion_matrix": matrix, "run_ids": [record.run_id for record, _test, _rows in entries]})
     model_rows.sort(key=lambda item: (-item["metrics"]["balanced_accuracy"]["mean"], -item["metrics"]["accuracy"]["mean"], -item["metrics"]["macro_f1"]["mean"], item["model_type"]))
-    sample_ids = sorted({sample_id for model in all_sample_predictions.values() for sample_id in model})
+    sample_ids = sorted({sample_id for model in all_sample_predictions.values() for sample_id in model}, key=natural_sort_key)
     correctness_rows = []
     stability_rows = []
     for model in model_rows:
@@ -351,7 +397,7 @@ def project_model_comparison(
         "class_metrics": {"status": "ready" if labels else "missing", "labels": labels, "rows": class_metric_rows},
         "confusion_matrices": confusion_payloads,
         "split_digest": next(iter(fingerprints)),
-        "evaluation": {"strategy": next(iter(strategies)), "primary_aggregation": "pooled_oof" if next(iter(strategies)) == "leave_one_sample_id_cv" else "direct_external_test" if next(iter(strategies)) == "leave_one_sample_id_cv_with_external_test" else "direct"},
+        "evaluation": evaluation_payload(next(iter(strategies))),
     })
     return base
 

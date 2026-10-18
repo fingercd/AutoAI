@@ -1605,7 +1605,7 @@ def test_classic_batch_comparison_renders_required_figures_without_metadata_bann
 def test_main_ui_uses_student_policy_and_prevents_duplicate_train_requests():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     policy = (ROOT / "static/js/classic-training-policy.js").read_text(encoding="utf-8")
-    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
+    assert 'SpecAutoAITrainingPolicy.studentPlan' in content
     assert 'train+valid+(three?test:0)!==10' in policy
     assert "训练、验证、测试比例必须为正整数且相加为 10" in policy
     assert "trainingRequestInFlight" in content
@@ -1624,7 +1624,7 @@ def test_main_ui_external_dataset_uses_defaults_and_legacy_cv_remains_in_policy(
     assert '主数据按 8:2 划分训练 / 验证，独立测试集只用于最终评估' in content
     assert 'leave_one_sample_id_cv_with_external_test' in policy
     assert 'applySplitPreset' not in content
-    assert 'external?[8,2,0]:[8,1,1]' in policy
+    assert "mode==='holdout'?[8,1,1]:[8,2,0]" in policy
 
 
 def test_main_ui_uses_documented_deep_training_defaults():
@@ -1661,15 +1661,15 @@ def test_main_ui_uses_student_defaults_and_preserves_cv_result_summary():
     assert '["数据量", summary.samples]' in content
     assert '["样本数", sampleIds.group_count]' in content
     assert '["样品种类",' not in content
-    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
+    assert 'SpecAutoAITrainingPolicy.studentPlan' in content
     assert 'rememberSplitPreferences' not in content
     assert 'splitPreferences.getCv()' not in content
     assert 'trainingScheme = payload.training_scheme || null;' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
-    assert "系统自动设置训练参数" in content
-    assert "每个独立样品都会让整套建模重新执行一次" in content
+    assert "个理论组合" in content
+    assert "有 24 个独立样品就执行 24 折" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content
     assert "function historyRows(result)" in results
@@ -1723,7 +1723,7 @@ def test_main_ui_manual_explains_sample_id_group_split():
     assert "已停用" not in content
     assert "相同 Sample_ID 会整组划分，避免重复测量泄露到测试集" in content
     assert "相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合" in content
-    assert "每个独立样品都会让整套建模重新执行一次" in content
+    assert "每折留出一个独立 Sample_ID 作测试" in content
 
 
 def test_main_ui_preserves_hplc_range_and_interpolation_controls():

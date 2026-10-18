@@ -1,6 +1,7 @@
 /** Classic comparison only. No training/STOP/store mutation and no v2 imports. */
 import { request, downloadFile } from './api-client.js';
 import { experimentDetails } from './experiment-details.js';
+import { naturalCompare } from './ui-utils.js';
 
 const metrics = [['accuracy','Accuracy'],['balanced_accuracy','Balanced Accuracy'],['macro_f1','Macro-F1'],['weighted_f1','Weighted-F1']];
 const featureMetrics = [['accuracy','准确率'],['balanced_accuracy','平衡准确率'],['macro_f1','宏平均 F1'],['weighted_f1','加权 F1']];
@@ -32,7 +33,7 @@ const labeled = (text, control) => {const node=element('label',text);node.append
 const details = (title, content) => {const node=element('details');node.append(element('summary',title),content);return node;};
 const focusKey = (node, key) => {node.dataset.focusKey=key;return node;};
 const percent = value => typeof value==='number'?`${(value*100).toFixed(2)}%`:'—';
-const table = (headers, rows) => {const wrap=element('div','','cmp-scroll'),node=element('table');const head=element('thead'),hr=element('tr');headers.forEach(text=>hr.append(element('th',text)));head.append(hr);const body=element('tbody');rows.forEach(row=>{const tr=element('tr');row.forEach(value=>tr.append(element('td',value==null?'—':String(value))));body.append(tr);});node.append(head,body);wrap.append(node);return wrap;};
+const table = (headers, rows) => {const wrap=element('div','','cmp-scroll'),node=element('table');const head=element('thead'),hr=element('tr');headers.forEach(text=>hr.append(element('th',text)));head.append(hr);const body=element('tbody');rows.forEach(row=>{const tr=element('tr');row.forEach(value=>{const cell=element('td');if(value?.nodeType)cell.append(value);else cell.textContent=value==null?'—':String(value);tr.append(cell);});body.append(tr);});node.append(head,body);wrap.append(node);return wrap;};
 
 export function sortedModels(data, sort='balanced_accuracy') {
   const value = row => typeof row.metrics?.[sort]?.mean==='number' ? row.metrics[sort].mean : -Infinity;
@@ -40,7 +41,7 @@ export function sortedModels(data, sort='balanced_accuracy') {
 }
 export function filteredSamples(data, search='', errors=false) {
   const sample=data.sample_correctness||{};
-  return (sample.sample_ids||[]).map((id,index)=>({id,index})).filter(({id,index})=>String(id).toLowerCase().includes(search.toLowerCase())&&(!errors||(sample.values||[]).some(row=>row.values?.[index]===0)));
+  return (sample.sample_ids||[]).map((id,index)=>({id,index})).filter(({id,index})=>String(id).toLowerCase().includes(search.toLowerCase())&&(!errors||(sample.values||[]).some(row=>row.values?.[index]===0))).sort((a,b)=>naturalCompare(a.id,b.id));
 }
 // 分类预测指标表：Recall 与 Precision 是两个不同指标，各占一张表；缺失值保持 —。
 export function classMetricValue(item,key){return typeof item?.[key]==='number'?`${(item[key]*100).toFixed(2)}%`:'—';}
@@ -59,7 +60,7 @@ const imageCache=new Map();
 function release() {controller?.abort();document.querySelectorAll('#view-comparison dialog').forEach(dialog=>dialog.remove());urls.forEach(url=>URL.revokeObjectURL(url));urls=[];renderToken+=1;}
 function blobUrl(blob) {const url=URL.createObjectURL(blob);urls.push(url);return url;}
 function saveBlob(blob,name) {const url=URL.createObjectURL(blob),link=element('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-function filename(options, extension) {return [options.kind, options.metric, options.model, options.kind==='samples'?`page-${options.page+1}`:'', options.kind==='matrix'?options.matrix_mode:''].filter(Boolean).join('_')+'.'+extension;}
+function filename(options, extension) {return [options.feature_scheme, options.kind, options.metric, options.model, options.kind==='samples'?`page-${options.page+1}`:'', options.kind==='matrix'?options.matrix_mode:''].filter(Boolean).join('_')+'.'+extension;}
 function section(title, controls=[]) {const node=element('section','','cmp-section'),head=element('div','','cmp-toolbar');head.append(element('h3',title));if(controls.length){const actions=element('div','','cmp-actions');actions.append(...controls);head.append(actions);}node.append(head);return node;}
 
 export function matrixZoomWidth(viewportWidth, viewportHeight) {
@@ -100,7 +101,7 @@ function chart(title, options, tasks, {sample=false, zoom=true}={}) {
     const cardStyle=window.getComputedStyle(card);
     const innerWidth=card.clientWidth-parseFloat(cardStyle.paddingLeft)-parseFloat(cardStyle.paddingRight);
     const chartWidth=options.kind==='matrix'?Math.min(460,innerWidth):innerWidth;
-    requested={sort:state.sort,width:Math.min(1800,Math.max(260,Math.floor(chartWidth))),...options};
+    requested={sort:state.sort,feature_scheme:state.featureScheme||'',width:Math.min(1800,Math.max(260,Math.floor(chartWidth))),...options};
     try {
       const cacheKey=JSON.stringify({batch:state.id,...requested});
       const result=imageCache.get(cacheKey)||await request(`/api/training/batches/${encodeURIComponent(state.id)}/figure`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requested),signal:controller.signal});
@@ -192,6 +193,32 @@ function features(data,models,tasks) {
   return feature;
 }
 
+export function comparisonScope(data,feature) {
+  return data.scheme_comparisons?.find(group=>group.feature_scheme===feature) || data.scheme_comparisons?.find(group=>group.comparable) || data.scheme_comparisons?.[0] || data;
+}
+
+function combinations(data,tasks) {
+  const metric=focusKey(select(featureMetrics,state.featureMetric,value=>{state.featureMetric=value;paint();}),'combination-metric');
+  const host=section('模型 × 特征处理：组合总览',[labeled('主指标',metric)]);
+  const work=data.combination_status.workload;
+  host.append(element('p',`${work.model_count} 个模型 × ${work.feature_count} 种特征处理；${work.combination_count} 个有效组合 × ${work.outer_folds_per_combination} 外层折 = ${work.total_outer_folds} 个外层折任务（另有 ${work.inapplicable_count} 个不适用组合）。`,'cmp-note'));
+  host.append(element('p','每个单元格是一个独立训练组合。留一法取全部外层 Test 合并的 OOF 指标，不平均不同特征处理，不按本页测试成绩自动选择最佳方案。','cmp-note'));
+  if(trainingScheme?.enabled)host.append(chart('特征处理 × 模型主指标',{kind:'features',metric:state.featureMetric,feature_scheme:''},tasks));
+  const states={queued:'排队中',running:'训练中',succeeded:'已完成',failed:'失败',cancelled:'已停止'};
+  const rows=data.combination_status.runs.map(run=>{
+    const result=data.models.find(model=>model.run_ids?.includes(run.run_id));
+    return [modelName(run.model_type),run.feature_name,states[run.state]||run.state,
+      ...metrics.map(([key])=>percent(result?.metrics?.[key]?.mean)),
+      result?Object.assign(element('a','查看该组合'),{href:'#/results?run_id='+run.run_id}):(run.error||'尚无完整结果')];
+  });
+  for(const skipped of data.inapplicable_combinations){
+    const feature=data.scheme_comparisons.find(group=>group.feature_scheme===skipped.feature_scheme);
+    rows.push([modelName(skipped.model_type),feature?.feature_name||skipped.feature_scheme,'不适用','—','—','—','—',skipped.reason]);
+  }
+  host.append(details('全部组合状态与精确成绩',table(['模型','特征处理','状态',...metrics.map(([,label])=>label),'结果 / 原因'],rows)));
+  return host;
+}
+
 function configurations(data,models) {
   const host=section('最佳配置与逐折参数');
   host.append(element('p','展开模型，查看所选方案、训练参数和实际数据划分。','cmp-note'));
@@ -207,12 +234,13 @@ function summary(data,models) {
   const status=element('span',statusNames[data.state]||'结果已就绪','cmp-status');
   if(data.state==='succeeded')status.prepend(icon('check'));
   else status.classList.add('cmp-status-pending');
-  const heading=element('div','','cmp-summary-title');heading.append(element('h3',meta.dataset_name||state.datasetName||'当前数据集'),status);
+  const heading=element('div','','cmp-summary-title');heading.append(element('h3',meta.dataset_name||data.dataset_name||state.datasetName||'当前数据集'),status);
   info.append(heading,element('p',`评估范围：${agg}`,'cmp-note'));
+  if(data.combination_status){const work=data.combination_status.workload;info.append(element('p',`${work.combination_count} 个有效组合 × ${work.outer_folds_per_combination} 外层折 = ${work.total_outer_folds} 个外层折任务；已完成 ${work.completed_outer_folds}。`,'cmp-note'));}
   const stats=element('div','','cmp-stats');
   const sampleCount=data.sample_correctness?.status==='ready'?data.sample_correctness.sample_ids.length:null;
   const labels=data.class_metrics?.labels||data.confusion_matrices?.[0]?.labels;
-  for(const [value,label] of [[data.comparable?models.length:null,'可比较模型'],[data.comparable?sampleCount:null,'测试样品 · Sample_ID'],[data.comparable?labels?.length:null,'类别']]){
+  for(const [value,label] of [[data.comparable?models.length:null,data.comparison_mode==='model_feature_grid'?'可比较组合':'可比较模型'],[data.comparable?sampleCount:null,'测试样品 · Sample_ID'],[data.comparable?labels?.length:null,'类别']]){
     const item=element('div','','cmp-stat');item.append(element('strong',value==null?'—':String(value)),element('span',label));stats.append(item);
   }
   const top=element('div','','cmp-summary-top');top.append(info,stats);hero.append(top);
@@ -231,7 +259,7 @@ function summary(data,models) {
 
 function tabs(data) {
   const items=[['overview','总体表现','chart',overview],['classes','分类指标','grid',classification],['samples','样品预测','samples',samples]];
-  if(trainingScheme?.enabled)items.push(['features','特征方案','layers',features]);
+  if(trainingScheme?.enabled&&!state.data.scheme_comparisons)items.push(['features','特征方案','layers',features]);
   items.push(['configuration','参数与划分','settings',configurations]);
   if(!items.some(([key])=>key===state.tab))state.tab='overview';
   const list=element('div','','cmp-tabs');list.setAttribute('role','tablist');list.setAttribute('aria-label','结果分析');
@@ -257,9 +285,18 @@ function paint() {
   // Preserve disclosure state across tab changes, filters, archive completion and resize.
   root.querySelectorAll('details').forEach(node=>{const key=node.querySelector('summary')?.textContent;if(node.open)state.openDetails.add(key);else state.openDetails.delete(key);});
   release();controller=new AbortController();
-  const data=state.archiveData||state.data,models=sortedModels(data,state.sort),tasks=[];
-  root.replaceChildren(summary(data,models));
-  if(!data.comparable){root.append(element('p',data.reason||'暂无完整可比较结果','cmp-empty'));return;}
+  const all=state.archiveData||state.data,tasks=[];
+  root.replaceChildren(summary(all,all.models||[]));
+  if(!all.comparable){root.append(element('p',all.reason||'暂无完整可比较结果','cmp-empty'));return;}
+  const data=comparisonScope(all,state.featureScheme),models=sortedModels(data,state.sort);
+  if(all.scheme_comparisons){
+    root.append(combinations(all,tasks));
+    state.featureScheme=data.feature_scheme;
+    const choice=focusKey(select(all.scheme_comparisons.map(group=>[group.feature_scheme,group.feature_name]),state.featureScheme,value=>{state.featureScheme=value;paint();}),'detail-feature');
+    root.append(section('按特征处理查看详细结果',[labeled('当前特征处理',choice)]));
+    root.append(element('p',`${data.feature_name}：下方模型指标、混淆矩阵、类别指标、样品预测和逐折配置只属于这一种特征处理。`,'cmp-note'));
+  }
+  if(!data.comparable){root.append(element('p',data.reason||'所选特征处理暂无完整结果','cmp-empty'));tasks.forEach(task=>task());return;}
   const {list,items}=tabs(data),workspace=element('div','','cmp-workspace');workspace.append(list);
   items.forEach(([key,,,renderPanel])=>{
     const panel=element('div','','cmp-tab-panel');panel.id=`cmp-panel-${key}`;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',`cmp-tab-${key}`);panel.tabIndex=0;panel.hidden=key!==state.tab;

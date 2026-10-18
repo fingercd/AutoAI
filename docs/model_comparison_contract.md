@@ -1,5 +1,11 @@
 # 模型比较接口契约（model-comparison-v1）
 
+2026-10-18 组合训练增量（显式 feature_schemes 请求启用）：comparison_mode=model_feature_grid，顶层 models 每项为一个组合，保留原生 model_type，并提供 feature_scheme、feature_name、comparison_id 和唯一 Run 来源。scheme_comparisons 每项是一个特征处理的原模型比较投影，详情图请求须指定 feature_scheme；总览 features 图不指定方案，生成方案×模型矩阵，不标测试选优星号。全局先验证数据、划分、标签与测试样品一致；旧单方案响应不变。不同方案绝不作为历史重复取第一条或求均值。图集 v7 分方案文件带前缀；Excel 列为“模型 · 方案”。
+
+
+2026-10-18 增量：新学生结果的 experiment.schemes 是 BIN3/6/12、PCA5/10/15 六行，未选方案为 not_run，CNN 的 PCA 为 not_applicable；旧结果仍是原七行。图集版本为 comparison-figures-v5，按结果方案组生成，混合新旧组时取两组并集，不丢数据。新 PCA 数字代表固定主成分数，不能与旧方差 PCA 混同；普通留一法仍取 pooled OOF，无全局最佳星号。
+
+
 当前实现核对：2026-09-29。经典比较页按“总体表现、分类指标、样品预测、特征方案、参数与划分”组织为标签页；特征方案标签由 `/api/models.training_scheme.enabled` 控制。类别 Recall 与 Precision 各显示一张热图，精确数值与 Support 可折叠查看。当前绘图版本为 `comparison-figures-v4`，过期或缺图的归档可从已验证 Run 产物补建。
 
 ## 2026-09-07 特征方案接通

@@ -2,9 +2,11 @@
 
 当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
 
-2026-10-18 学生界面调整：经典页面保留原 UI 和导航，建模配置只开放模型与全特征 / Binning 10 / PCA 95% 三种选择；新网页请求固定 quick、Z-score、默认 seed，无独立 Test 时 8:1:1，有独立 Test 时主数据 8:2，不读取旧会话的划分/CV 设置。后端 API 的完整比较、四种评估模式、自定义比例和模型能力不变。下文涉及学生界面开放这些控件的历史说明以本条为准。拉曼页面固定 arPLS；HPLC 范围与插值保留。方案与验收见 `docs/plans/2026-10-18-student-ui.md`。
+2026-10-18 最新学生界面：模型与 BIN3/6/12、PCA5/10/15 均为复选。每个有效模型×特征处理组合一个 Run，留一时每个 Run 完成 N 个 Sample_ID 外层折；显示理论组合、不适用组合、实际组合与实际外层折任务数，不能把它当成精确底层 fit 次数。CNN×PCA 明确不适用、不创建伪 Run、不替换方案。默认 BIN3、quick、Z-score、默认 seed，CV 可主动勾选并记忆，比例和其他高级参数仍隐藏。结果按特征×模型矩阵总览，详情按特征切换，CV 取 pooled OOF、逐折参数展开，绝不平均或丢弃同模型不同特征结果。旧 Full/方差 PCA、旧单方案 API 与历史结果语义保留。以 `docs/plans/2026-10-18-model-feature-grid.md` 为准。
 
 ## 默认协作规则
+
+- `run.py` 默认以 CPU 总预算托管最多 4 个 Worker，可用 `--workers` / `--threads-per-worker` 调整；多个模型×特征组合并行，单组合内外层折顺序执行。GPU 可用时 SQLite claim 事务保证同队列最多一个深度 Run，其余 Worker 继续 CPU 模型。配置与训练进度的“实验数”按有效组合数×外层折数计，不等于候选参数拟合次数。当前 Worker 契约为 `run-artifact-manifest-v2-parallel-workers-v1`，更新需 Web/Worker 同版本且不打断活跃训练。
 
 - 默认使用中文回复，除非用户明确要求英文。
 - 查看、截图和验证前端界面时使用经典前端（`/`，启动入口 `run.py` 或 `run_classic.py`）；v2 工作台已按用户要求移除。
@@ -74,9 +76,10 @@
 
 ## 结果、批次与可解释性
 
-- 单 Run 结果以 `GET /api/training/runs/{run_id}/result` 的 `run-result-v1` 为准；批次创建与比较沿用 `training-batch-v1`、`model-comparison-v1`。新 Batch 固定每模型一个 Run，`repeat_count=1`；不增加重复实验或重复一致性图。历史重复批次默认展示每模型第一条成功完整 Run，按单次结果切换，不合并为均值矩阵。
+- 单 Run 结果以 `GET /api/training/runs/{run_id}/result` 的 `run-result-v1` 为准；批次创建与比较沿用 `training-batch-v1`、`model-comparison-v1`。新 Batch 固定每个有效模型 × 特征处理组合一个 Run，`repeat_count=1`；不增加重复实验或重复一致性图。历史重复批次默认展示每模型第一条成功完整 Run，按单次结果切换，不合并为均值矩阵。
 - 多模型进度按 Batch 及子 Run 恢复，刷新后不能丢失其他模型或只显示某个单 Run；保留方案、外层折、搜索或 epoch 的真实进度。停止后重置当前训练面板、停止轮询与自动跳转；停止/删除只清理目标 Run 或 Batch 的产物与归档，不影响其他任务。
 - 最佳配置、逐折参数、留出样品和实际划分数量按需展开。`feature_experiments.json/csv` 经 Manifest 校验后可投影和下载；普通留一法不虚构全局最佳星号。
+- 比较页 Sample_ID 使用自然顺序（1、2、3、…、10；S1、S2、S10），热图、详情表及对应图像/CSV 导出一致；必须同步重排编号对应的预测值和详情，不只改标签，不改样品编号或训练划分。
 - 模型比较必须核对主/独立数据快照、评估与聚合口径、划分 digest、测试样品集合及标签映射一致，且来源产物通过 Manifest 校验；不一致则说明不可比较，不生成排行或热图。缺失、不适用、部分完成和失败保留原因，不填零，不自动重训历史 Run。
 - 经典比较页使用 `static/js/comparison-page.js/css` 和后端 `comparison_figures.py`；图像展示及 PNG/SVG 导出复用同一绘图函数，CSV 与 ZIP 对应同一数据。特征热图为七方案 × 所选模型，默认 Balanced Accuracy，可切换 Accuracy、Macro-F1、Weighted-F1；选优标记只来自验证/CV。类别 Recall 与 Precision 热图分别读取对应投影字段，精确数值与 Support 可展开查看；当前图集绘图版本为 `comparison-figures-v4`。
 - `GET /api/training/batches/{batch_id}/predictions.xlsx` 导出预测类别与预测概率两个工作表。概率按 `label_map` 顺序写为逗号分隔六位小数文本，舍入后不保证总和严格等于 1。普通留一法导出主数据 pooled OOF；留一法加独立 Test 同时导出主数据 OOF（`test`）和外部预测（`external_test`），其中外部 Test 是主指标、OOF 仅为审计。缺少新全量明细的历史 Run 仅回退导出现有测试预测，不重算或补造。

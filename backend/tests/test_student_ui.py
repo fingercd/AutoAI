@@ -27,11 +27,11 @@ class VisibilityParser(HTMLParser):
 def test_student_controls_are_hidden_without_hiding_modeling_and_hplc_actions():
     parser = VisibilityParser()
     parser.feed(Path('static/index.html').read_text(encoding='utf-8'))
-    for id_ in ['trainingProfile', 'splitTrain', 'splitValid', 'splitTest',
-                'cvEnabled', 'advancedToggle', 'normalization', 'seed', 'epochs',
+    for id_ in ['trainingProfile', 'featureScheme', 'splitTrain', 'splitValid', 'splitTest',
+                'advancedToggle', 'normalization', 'seed', 'epochs',
                 'ramanBaselineMethodMode', 'ramanCustomMethod']:
         assert parser.hidden_ids[id_] is True, id_
-    for id_ in ['featureScheme', 'startTrain', 'modelTypeChoices', 'datasetFileTrigger',
+    for id_ in ['featureSchemeChoices', 'cvEnabled', 'startTrain', 'modelTypeChoices', 'datasetFileTrigger',
                 'testDatasetFileTrigger', 'chromRangeMode', 'chromHplcInterp',
                 'ramanRangeMode', 'chromPreprocessButton']:
         assert parser.hidden_ids[id_] is False, id_

@@ -378,6 +378,7 @@ def _dataset_snapshot_for_reference(
     dataset_id: str | None,
     legacy_path: str | None,
     dataset_name: str | None,
+    include_summary: bool = False,
 ) -> dict[str, Any]:
     # 创建 Run 时对数据集做一次“指纹快照”：解析引用并重新计算 SHA-256。
     # 这样即使之后数据集文件被替换，也能在结果页/审计时发现训练时使用的
@@ -386,11 +387,16 @@ def _dataset_snapshot_for_reference(
     repository.initialize()
     record = repository.resolve_system(dataset_id, legacy_path=legacy_path)
     actual_sha256 = repository.verify_integrity(record)
-    return {
+    snapshot = {
         'dataset_id': dataset_id,
         'name': dataset_name or record.original_name,
         'sha256': actual_sha256,
     }
+    if include_summary:
+        from ..parsers import load_modeling_csv
+        dataset = load_modeling_csv(record.path)
+        snapshot.update(sample_id_count=len(set(dataset.sample_id)), curve_count=len(dataset.labels))
+    return snapshot
 
 
 def _summary_projection(record: RunRecord) -> dict[str, Any]:
@@ -437,6 +443,7 @@ def _summary_projection(record: RunRecord) -> dict[str, Any]:
         'result_state': result_state,
         'batch_id': record.batch_id,
         'model_type': record.config.get('model_type'),
+        'feature_scheme':record.config.get('feature_scheme'),
         'dataset_id': record.dataset_id,
         'dataset_name': snapshot.get('name') or _dataset_name_for_record(record),
         'created_at': created_at,
@@ -507,7 +514,10 @@ def create_run(payload: TrainingRunRequest, principal: Principal = Depends(get_p
         dataset_id=data_ref.dataset_id,
         legacy_path=data_ref.legacy_path,
         dataset_name=data_ref.dataset_name,
+        include_summary=config.get('experiment_version') == 'word-0904',
     )
+    if config.get('experiment_version') == 'word-0904':
+        config['expected_outer_folds'] = dataset_snapshot['sample_id_count'] if 'leave_one' in config['split_mode'] else 1
     if data_ref.test_dataset_id or data_ref.test_legacy_path:
         # 独立测试集同样记录 SHA-256 指纹，防止测试集被替换后结果被误读。
         test_snapshot = _dataset_snapshot_for_reference(

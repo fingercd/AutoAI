@@ -32,6 +32,7 @@ class TrainingBatchRequest(BaseModel):
     test_dataset_id: str | None = None
     test_data_path: str | None = None
     model_types: list[str] = Field(min_length=1, max_length=50)
+    feature_schemes: list[str] | None = Field(default=None, min_length=1, max_length=13)
     # 新请求只允许“一模型一个 Run”。仓储/结果投影仍能读取历史 R>1 批次，
     # 但公开创建接口不再接受新的重复训练。
     repeat_count: int = Field(default=1, ge=1, le=1)

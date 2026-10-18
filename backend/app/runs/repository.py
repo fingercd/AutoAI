@@ -334,7 +334,8 @@ class RunRepository:
         """
         if not model_types or not 1 <= int(repeat_count) <= 5:
             raise ValueError('batch requires models and repeat_count 1..5')
-        if len(model_types) * int(repeat_count) > 50:
+        combinations = config.get('combinations') or [{'model_type':model} for model in model_types]
+        if len(combinations) * int(repeat_count) > 50:
             raise ValueError('batch run count must not exceed 50')
         batch_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
@@ -356,13 +357,15 @@ class RunRepository:
                     principal.owner_id, principal.tenant_id, now, now,
                 ),
             )
-            for model_order, model_type in enumerate(model_types):
+            for model_order, combination in enumerate(combinations):
+                model_type = combination['model_type']
                 for repeat_index in range(1, int(repeat_count) + 1):
                     run_id = uuid.uuid4().hex
                     run_ids.append(run_id)
                     model_seed = int(base_seed) + repeat_index - 1
                     run_config = {
                         **config,
+                        **combination,
                         'model_type': model_type,
                         'seed': model_seed,
                         'model_seed': model_seed,
@@ -501,13 +504,25 @@ class RunRepository:
     # 回滚抛 InvalidRunTransition。claim_token 是本次执行的随机凭证，后续所有写操作
     # 都要出示；lease_expires_at 是租约死线，worker 须周期续租，过期可被回收重排。
     # started_at 用 COALESCE 保留首次启动时间（重排后再次 claim 不刷新）。
-    def claim_next(self, *, worker_id: str, now: datetime, lease_seconds: int = 30) -> RunRecord | None:
+    def claim_next(self, *, worker_id: str, now: datetime, lease_seconds: int = 30, exclusive_model_types: tuple[str, ...] = ()) -> RunRecord | None:
         now_text = _timestamp(now)
         lease_text = _timestamp(now + timedelta(seconds=lease_seconds))
         with self._connection() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            excluded = ()
+            if exclusive_model_types:
+                # 同一个写事务中检查 GPU 占用并领取，避免两个 Worker 同时通过检查。
+                placeholders = ','.join('?' for _ in exclusive_model_types)
+                busy = connection.execute(
+                    f"SELECT 1 FROM runs WHERE state='running' AND json_extract(config_json,'$.model_type') IN ({placeholders}) LIMIT 1",
+                    exclusive_model_types,
+                ).fetchone()
+                if busy:
+                    excluded = exclusive_model_types
+            # 深度任务暂不可领取时继续寻找 CPU 任务，不让 GPU 队头挡住整个队列。
+            condition = f" AND json_extract(config_json,'$.model_type') NOT IN ({','.join('?' for _ in excluded)})" if excluded else ''
             row = connection.execute(
-                "SELECT * FROM runs WHERE state = 'queued' ORDER BY created_at, run_id LIMIT 1"
+                "SELECT * FROM runs WHERE state='queued'" + condition + ' ORDER BY created_at, run_id LIMIT 1', excluded,
             ).fetchone()
             if row is None:
                 connection.commit()

@@ -1,5 +1,13 @@
 # SpecAutoAI 前后端接口契约
 
+2026-10-18 并行与计数增量：run.py 默认按 CPU 预算启动最多 4 个独立 Worker，GPU 可用时 claim 事务限制一个深度模型 Run、跳过暂受阻深度任务领取 CPU 模型。当前 Worker 契约为 `run-artifact-manifest-v2-parallel-workers-v1`。新 word-0904 单 Run 的 config.expected_outer_folds 来自主数据 Sample_ID 快照（非 CV 为 1），排队时也可恢复总实验数。组合批次训练区以 workload.completed_outer_folds / total_outer_folds 显示实时进度；配置预计数不覆盖正在运行批次的分母。失败/停止不补足未完成折，未知历史任务量不虚构。每个“实验”为一次外层训练/评估，内部选参拟合另有进度。
+
+2026-10-18 组合训练增量：TrainingBatchRequest 顶层可传 feature_schemes（非空列表），要求 word-0904/quick，config 不传 feature_scheme/model_type/各 seed。服务器规范化模型与方案、跳过并显式返回 CNN×PCA，事务性创建所有有效组合。状态 runs 含 feature_scheme/feature_name/expected_outer_folds；workload 含模型数、方案数、组合数、不适用数、每组合外层折数和总/已完成外层折数。旧无 feature_schemes 的请求保持旧语义。
+
+
+2026-10-18 首轮特征增量：能力目录的 `feature_schemes` 增加 `student_visible`，学生默认值为 `student_default_feature_scheme=bin_3`。学生入口只提供 bin_3/bin_6/bin_12/pca_components_5/pca_components_10/pca_components_15，PCA 为固定主成分数；旧 `default_feature_scheme=full` 与旧 full 请求语义保留。学生页面的可见 CV 开关支持四种评估口径，比例仍固定默认值。当时 Worker 能力为 `run-artifact-manifest-v2-student-features-v1`，已由顶部并行能力版本取代；Web 与 Worker 须同时更新。
+
+
 2026-10-07 增量：`training_scheme` 增加 `default_profile=quick`、`default_feature_scheme=full`、`profiles`、`feature_schemes`、`quick_candidate_count=3`。经典表单发送 `training_profile` 和 `feature_scheme`；默认快速训练只运行所选方案，传统模型最多三候选、一次验证、选定后重训。`full` 主动恢复原完整比较。CNN 快速模式不接受 PCA。HTTP 在入队前验证选项；未声明实验版本的兼容 API 不受影响。下述历史完整网格说明仅对应 full。
 
 2026-09-07 增量：`GET /api/models` 增加 `training_scheme`，含 enabled、version、传统/CNN 方案数量及训练 defaults；models 数组保持兼容。经典页面从该能力组装 `experiment_version=word-0904` 新请求；旧版无版本 API 和 v2 不变。两段划分不发送 split_test，由服务端规范化为 0；默认比例 8:2，可自定义，外部 Test 与留一法可以同时启用。传统模型采用完整五折网格；经典新版表单不提交旧手动搜索预算，CNN 使用文档默认固定训练参数。

@@ -636,6 +636,7 @@ function renderOverview(result) {
     stateBadge,
   );
   const grid = element('dl', { className: 'overview-grid' },
+    overviewItem('特征处理', result.experiment?.selected_configuration?.scheme_name || [...new Set((result.experiment?.fold_configurations||[]).map(row=>row.scheme_name||row.scheme_id))].join(' / ') || null),
     overviewItem('数据集', dataset.name || dataset.dataset_id),
     overviewItem('评估方式', evaluationLabel(evaluation.strategy)),
     overviewItem('主指标口径', aggregationLabel(evaluation.primary_aggregation)),

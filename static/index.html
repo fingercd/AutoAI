@@ -421,6 +421,20 @@
       .panel-title h2 {
         margin: 0;
       }
+      #view-modeling .experiment-count {
+        margin-left: auto;
+        color: #0f766e;
+        background: #e6f4ef;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 16px;
+      }
+      #view-modeling #experimentProgressBar {
+        width: 100%;
+        height: 12px;
+        margin-bottom: 10px;
+        accent-color: #0f766e;
+      }
       .metrics {
         display: grid;
         grid-template-columns: repeat(4, minmax(110px, 1fr));
@@ -1532,7 +1546,10 @@
               <div id="testDatasetInfo"></div>
             </div>
             <div class="panel">
-              <h2>训练配置</h2>
+              <div class="panel-title">
+                <h2>训练配置</h2>
+                <strong id="plannedExperimentCount" class="experiment-count" title="有效模型×特征组合数×外层折数；不等于底层选参拟合次数">预计实验 — 次</strong>
+              </div>
               <label for="modelTypeChoices">选择模型（可多选）</label>
               <div id="modelTypeChoices" class="model-checkbox-grid" aria-describedby="modelCatalogHint" aria-live="polite">
                 正在加载模型目录…
@@ -1549,8 +1566,9 @@
               <select id="trainingProfile"><option value="quick">快速训练（单方案、一次验证）</option></select>
               </div>
               <div id="featureSchemeField">
-                <label for="featureScheme">特征处理</label>
-                <select id="featureScheme"><option value="full">全特征</option></select>
+                <label id="featureSchemeLabel">特征处理（可多选）</label>
+                <div id="featureSchemeChoices" class="model-checkbox-grid" role="group" aria-labelledby="featureSchemeLabel">正在加载特征处理…</div>
+                <select id="featureScheme" hidden aria-hidden="true" tabindex="-1"><option value="">正在加载特征处理…</option></select>
               </div>
               <p id="trainingWorkHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0"></p>
               <!-- 保留共享脚本使用的 ID，但学生界面不开放训练参数。请求固定使用默认值。 -->
@@ -1570,16 +1588,16 @@
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
                 系统按 Sample_ID 整组划分，训练 / 验证 / 测试目标比例为 8:1:1；小样本时实际比例可能调整。
               </p>
-              <div hidden>
               <div id="cvOptions">
                 <label class="checkbox-line">
                   <input id="cvEnabled" type="checkbox" />
-                  逐个留出样品评估（耗时较长）
+                  按样品留一交叉验证
                 </label>
                 <p id="cvHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                  每个独立样品都会让整套建模重新执行一次；日常训练建议保持关闭。
+                  每折留出一个独立 Sample_ID 作测试，其余样品按 8:2 训练 / 验证；有 24 个独立样品就执行 24 折，耗时随样品数增加。
                 </p>
               </div>
+              <div hidden>
               <!-- TEMPORARILY_HIDDEN：解释性计算和入口均暂不向产品界面暴露。 -->
               <div class="actions">
                 <button class="secondary" id="advancedToggle" type="button">高级选项</button>
@@ -1683,9 +1701,11 @@
             <div class="panel wide">
               <div class="panel-title">
                 <h2>当前训练</h2>
+                <strong id="completedExperimentCount" class="experiment-count" aria-live="polite">已完成 0 / 0 次实验</strong>
                 <button id="stopTrain" class="danger hidden" type="button">停止训练</button>
               </div>
               <div id="runStatus" class="status" aria-live="polite">尚未开始</div>
+              <progress id="experimentProgressBar" value="0" max="1" aria-label="已完成 0 / 0 次实验"></progress>
               <div id="trainingProgress" aria-live="polite"></div>
               <div id="metrics" style="margin-top:14px"></div>
               <div id="trainingAudit"></div>
@@ -1928,11 +1948,11 @@
          下方经典脚本之前按顺序执行）：向 window 注入 SpecAutoAIUI /
          SpecAutoAITrainingStore / SpecAutoAIResults 等命名空间。
          就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
-    <script src="/static/js/classic-training-policy.js?v=20261018-student-ui"></script>
+    <script src="/static/js/classic-training-policy.js?v=20261018-model-feature-grid"></script>
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
-    <script type="module" src="/static/js/comparison-page.js?v=2"></script>
-    <script type="module" src="/static/js/run-results.js?v=20261018-student-ui"></script>
+    <script type="module" src="/static/js/comparison-page.js?v=20261018-grid-natural-order"></script>
+    <script type="module" src="/static/js/run-results.js?v=20261018-model-feature-grid"></script>
     <script>
       /*
        * ====================================================================
@@ -1975,6 +1995,7 @@
       let batchLastComparisonSignature = "";
       let healthPollTimer = null;
       let lastSummaryCurves = [];
+      let datasetSampleCount = 0;
       let lastTestSummaryCurves = [];
       let currentCurveSource = "train";
       let currentCurveMode = "selected";
@@ -2470,6 +2491,10 @@
           lastSummaryCurves = [...(summary.curves || [])].sort((a, b) => naturalCompare(a.sample_id ?? a.index, b.sample_id ?? b.index));
         }
         const sampleIds = summary.sample_id || {};
+        if (!isTest) {
+          datasetSampleCount = Number(sampleIds.group_count || 0);
+          if (trainingScheme?.enabled) updateTrainingWorkHint();
+        }
         const target = isTest ? $("testDatasetInfo") : $("datasetInfo");
         const metricGrid = document.createElement("div");
         metricGrid.className = "metrics summary-metrics";
@@ -2634,6 +2659,18 @@
       }
 
       let trainingScheme = null;
+      const STUDENT_CV_STORAGE_KEY = 'specautoai.student-cv.v1';
+
+      function restoreStudentCvPreference() {
+        try { $("cvEnabled").checked = window.sessionStorage.getItem(STUDENT_CV_STORAGE_KEY) === 'true'; } catch (_) {}
+      }
+
+      function rememberStudentCvPreference() {
+        try { window.sessionStorage.setItem(STUDENT_CV_STORAGE_KEY, String($("cvEnabled").checked)); } catch (_) {}
+        updateSplitOptionVisibility();
+      }
+
+      restoreStudentCvPreference();
 
       function applyTrainingSchemeControls() {
         if (!trainingScheme?.enabled) return;
@@ -2648,29 +2685,57 @@
         [...$("normalization").options].forEach(option=>{option.disabled=!['zscore','minmax'].includes(option.value);});
         if (!['zscore','minmax'].includes($("normalization").value)) $("normalization").value='zscore';
         $("trainingProfile").value='quick';
-        const select=$("featureScheme"), previous=select.value;
+        const select=$("featureScheme"), previous=selectedFeatureSchemes();
         const choices=window.SpecAutoAITrainingPolicy.studentFeatureSchemes(trainingScheme);
         select.replaceChildren(...choices.map(choice=>{
           const option=document.createElement('option');option.value=choice.id;option.textContent=choice.name;return option;
         }));
-        select.value=choices.some(choice=>choice.id===previous)?previous:trainingScheme.default_feature_scheme;
+        const host=$("featureSchemeChoices");host.replaceChildren();
+        choices.forEach(choice=>{
+          const label=document.createElement('label');label.className='checkbox-line';
+          const input=document.createElement('input');input.type='checkbox';input.dataset.featureId=choice.id;
+          input.checked=previous.length?previous.includes(choice.id):choice.id===trainingScheme.student_default_feature_scheme;
+          input.addEventListener('change',()=>{select.value=selectedFeatureSchemes()[0]||'';updateTrainingWorkHint();});
+          const text=document.createElement('span');text.textContent=choice.name;label.append(input,text);host.append(label);
+        });
+        select.value=selectedFeatureSchemes()[0]||'';
         updateTrainingWorkHint();
       }
 
-      function updateTrainingWorkHint() {
-        const incompatible=selectedModelTypes().includes('cnn1d') && $("featureScheme").value.startsWith('pca_');
-        $("trainingWorkHint").textContent=incompatible
-          ? '1D-CNN 不支持 PCA：请取消选择该模型，或改选全特征 / Binning。系统不会自动替换你的选择。'
-          : '系统自动设置训练参数；仅运行所选特征处理。相同 Sample_ID 的重复测量始终整组划分。';
+      function selectedFeatureSchemes() {
+        return [...document.querySelectorAll('#featureSchemeChoices input[data-feature-id]:checked')].map(input=>input.dataset.featureId);
       }
 
-      // 学生界面固定 quick、Z-score 与默认划分，不读取旧会话或隐藏控件的参数。
-      // 后端兼容 API 仍支持完整比较、自定义比例和留一法。
+      function updateTrainingWorkHint() {
+        try {
+          const models=selectedModelTypes(),features=selectedFeatureSchemes();
+          const plan=window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,models,features,Boolean(testDatasetId||testDatasetPath),$("cvEnabled").checked);
+          const folds=$("cvEnabled").checked?(datasetSampleCount||null):1;
+          $("plannedExperimentCount").textContent=`预计实验 ${folds===null?'—':plan.configs.length*folds} 次`;
+          $("trainingWorkHint").textContent=`${models.length} 个模型 × ${features.length} 种特征处理 = ${models.length*features.length} 个理论组合；${plan.configs.length} 个可运行组合`+
+            (plan.inapplicable.length?`，${plan.inapplicable.length} 个 CNN × PCA 组合不适用（不会替换方案）`:'')+
+            (folds?`；${plan.configs.length} × ${folds} = ${plan.configs.length*folds} 个外层折任务。`:'；加载数据后显示留一折数与总任务量。')+
+            '每个外层折还会独立选参/训练，外层折任务数不等于底层拟合次数。';
+        } catch(error) {
+          $("plannedExperimentCount").textContent=`预计实验 ${selectedModelTypes().length && selectedFeatureSchemes().length?'—':0} 次`;
+          $("trainingWorkHint").textContent=error.message;
+        }
+      }
+
+      function renderExperimentProgress(completed, total) {
+        const known=Number.isInteger(total) && total>=0;
+        const count=known?Math.min(total,Math.max(0,Number(completed)||0)):0;
+        const text=`已完成 ${known?count:'—'} / ${known?total:'—'} 次实验`;
+        $("completedExperimentCount").textContent=text;
+        const bar=$("experimentProgressBar");
+        bar.max=known?Math.max(1,total):1;
+        bar.value=count;
+        bar.setAttribute('aria-label',text);
+      }
+
       function configPayload() {
-        const models=selectedModelTypes();
-        const configs=models.map(model=>window.SpecAutoAITrainingPolicy.studentPayload(trainingScheme,
-          Boolean(testDatasetId || testDatasetPath),model,$("featureScheme").value));
-        return configs[0];
+        return window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,selectedModelTypes(),selectedFeatureSchemes(),
+          Boolean(testDatasetId || testDatasetPath),$("cvEnabled").checked).configs[0];
       }
 
       /**
@@ -2737,6 +2802,7 @@
       /** 重置"当前训练"面板：取消上一次训练的自动跳转与轮询，
        *  清空旧指标/图表/下载区，显示"正在创建新的训练任务"加载提示。 */
       function resetTrainingPanel(message = "模型正在训练") {
+        renderExperimentProgress(null,null);
         try { window.sessionStorage.removeItem("specautoai.training.idleAfterStop"); } catch (_) {}
         window.SpecAutoAIResults?.cancelAutoRedirect();
         window.SpecAutoAIResults?.stopTrainingWatch();
@@ -3090,7 +3156,10 @@
         const stateLabel = stateLabels[state] || state;
         const statusClass = state === "succeeded" ? "success" : state === "failed" ? "failed" : ["partial", "cancelled"].includes(state) ? "warning" : state === "running" ? "running" : "pending";
         const counts = status?.counts || {};
-        const countText = `排队 ${counts.queued || 0} · 运行 ${counts.running || 0} · 成功 ${counts.succeeded || 0} · 失败 ${counts.failed || 0} · 已停止 ${counts.cancelled || 0}`;
+        const workload = status.workload;
+        renderExperimentProgress(workload?.completed_outer_folds,workload?.total_outer_folds);
+        const countText = `排队 ${counts.queued || 0} · 运行 ${counts.running || 0} · 成功 ${counts.succeeded || 0} · 失败 ${counts.failed || 0} · 已停止 ${counts.cancelled || 0}`+
+          (workload?`；${workload.model_count} 模型 × ${workload.feature_count} 特征，${workload.combination_count} 个有效组合（${workload.inapplicable_count} 个不适用）；外层折 ${workload.completed_outer_folds}/${workload.total_outer_folds}`:'');
         $("runStatus").textContent = `批次 ${batchId} ${stateLabel}`;
         $("runStatus").className = `status ${statusClass}`;
         const link = document.createElement("a");
@@ -3149,8 +3218,9 @@
             rows.append(row);
           }
           row.children[0].textContent = window.SpecAutoAIModelMeta?.(run.model_type)?.displayName || run.model_type;
+          if (run.feature_scheme) row.children[0].textContent += ` · ${run.feature_name || run.feature_scheme}`;
           row.children[1].textContent = stateLabels[run.state] || run.state;
-          row.children[2].textContent = batchRunProgressText(run);
+          row.children[2].textContent = batchRunProgressText(run) + (run.expected_outer_folds>1?` · 外层折 ${run.state==='succeeded'?run.expected_outer_folds:run.progress?.completed_folds||0}/${run.expected_outer_folds}`:'');
         });
         Array.from(rows.children).forEach((row) => { if (!runIds.has(row.dataset.runId)) row.remove(); });
         $("batchComparison").replaceChildren();
@@ -3326,30 +3396,31 @@
           const selectedModels = selectedModelTypes();
           if (!selectedModels.length) throw new Error("至少选择一个可用模型");
           const config = configPayload();
+          const selectedFeatures = selectedFeatureSchemes();
           resetTrainingPanel(selectedModels.length > 1 ? "正在创建多模型训练批次" : "模型正在训练");
           const body = { config: { ...config, model_type: selectedModels[0] } };
           if (datasetId) body.dataset_id = datasetId;
           else body.data_path = datasetPath;
           if (testDatasetId) body.test_dataset_id = testDatasetId;
           else if (testDatasetPath) body.test_data_path = testDatasetPath;
-          if (selectedModels.length === 1) {
+          if (selectedModels.length === 1 && selectedFeatures.length === 1) {
             const result = await createRun(body);
             rememberCurrentRun(result.run_id);
             window.SpecAutoAIResults?.markNewRun(currentRunId);
             watchCurrentRun();
             return;
           }
-          const { model_type, seed, split_seed, model_seed, ...batchConfig } = config;
+          const { model_type, seed, split_seed, model_seed, feature_scheme, ...batchConfig } = config;
           const result = await api("/api/training/batches", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...body, model_types: selectedModels, base_seed: seed, config: batchConfig }),
+            body: JSON.stringify({ ...body, model_types: selectedModels, feature_schemes:selectedFeatures, base_seed: seed, config: batchConfig }),
           });
           $("runStatus").textContent = `批次 ${result.batch_id} 已排队`;
           $("runStatus").className = "status pending";
           clearRememberedCurrentRun();
           currentRunId = null;
-          $("trainingProgress").replaceChildren(currentRunNotice("success", "多模型批次已创建", `${result.run_count} 个模型 Run 已排队；实际并行数由可用 worker 决定。`));
+          $("trainingProgress").replaceChildren(currentRunNotice("success", "多模型批次已创建", `${result.run_count} 个模型 × 特征处理 Run 已排队；实际并行数由可用 worker 决定。`));
           watchBatchComparison(result.batch_id);
         } finally {
           trainingRequestInFlight = false;
@@ -3364,6 +3435,7 @@
       }
 
       function resetStoppedTrainingPanel() {
+        renderExperimentProgress(0,0);
         window.SpecAutoAIResults?.cancelAutoRedirect();
         window.SpecAutoAIResults?.stopTrainingWatch();
         stopBatchWatch({ clearIdentity: true });
@@ -3443,6 +3515,9 @@
         if (currentBatchId || trainingRequestInFlight) return;
         if (!run || String(run.run_id || "") !== String(currentRunId || "")) return;
         const canonicalState = String(run.state || run.status || "pending").toLowerCase();
+        const cv=String(run.evaluation_strategy||run.config?.split_mode||'').includes('leave_one');
+        const total=run.config?.expected_outer_folds||run.fold_count||(cv?null:1);
+        renderExperimentProgress(['succeeded','success'].includes(canonicalState)?total:run.completed_folds,total);
         const statusText = ["succeeded", "success"].includes(canonicalState)
           ? "训练完成"
           : canonicalState === "failed"
@@ -3994,6 +4069,7 @@
           const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");
           const modelId = run.model_type || run.config?.model_type;
           const modelName = String(window.SpecAutoAIModelMeta?.(modelId)?.displayName || modelId || "-");
+          const featureName = trainingScheme?.feature_schemes?.find(item=>item.id===run.feature_scheme)?.name || run.feature_scheme;
           const canonicalState = String(run.state || run.status || "unknown").toLowerCase();
           const terminal = ["succeeded", "success", "failed", "cancelled", "paused"].includes(canonicalState);
           const stopped = ["cancelled", "paused"].includes(canonicalState);
@@ -4003,7 +4079,7 @@
             formatTrainingTime(run),
             formatDuration(run),
             datasetName,
-            modelName,
+            featureName ? `${modelName} · ${featureName}` : modelName,
             window.SpecAutoAIUI?.formatMetric?.(run.test_macro_f1) || "—",
           ];
           values.forEach((value, index) => {
@@ -4090,6 +4166,7 @@
       /** 被删除的正是"当前训练"面板上显示的 Run 时，停止轮询、
        *  清空 currentRunId 并把面板切换为"记录已删除"提示。 */
       function clearDeletedRunPanel(runId) {
+        renderExperimentProgress(0,0);
         window.SpecAutoAIResults?.stopTrainingWatch();
         rememberCurrentRun(null);
         $("runStatus").textContent = `${runId} 记录已删除`;
@@ -4105,12 +4182,14 @@
        * 各结果区 DOM——保证换身份后看不到上一个 Principal 的任何数据。
        */
       window.SpecAutoAIClearSessionUi = () => {
+        renderExperimentProgress(0,0);
         datasetPath = null;
         testDatasetPath = null;
         datasetId = null;
         testDatasetId = null;
         rememberCurrentRun(null);
         lastSummaryCurves = [];
+        datasetSampleCount = 0;
         lastTestSummaryCurves = [];
         lastPreprocessCurve = null;
         loadedRunSummaries = [];
@@ -4164,9 +4243,11 @@
 
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
+        const cv = $("cvEnabled").checked;
         $("splitModeHint").textContent = hasExternalTest
-          ? "已加载独立测试集：主数据按 8:2 划分训练 / 验证，独立测试集只用于最终评估。"
-          : "系统按 Sample_ID 整组划分，训练 / 验证 / 测试目标比例为 8:1:1；小样本时实际比例可能调整，以保证各分区类别完整。";
+          ? (cv ? "主数据按 Sample_ID 留一交叉验证作审计；全部主数据重训后，以独立测试集作为最终测试。" : "已加载独立测试集：主数据按 8:2 划分训练 / 验证，独立测试集只用于最终评估。")
+          : (cv ? "按 Sample_ID 留一交叉验证：每折留一个独立样品作测试，其余按 8:2 训练 / 验证；主指标合并所有折的测试预测（pooled OOF）。" : "系统按 Sample_ID 整组划分，训练 / 验证 / 测试目标比例为 8:1:1；小样本时实际比例可能调整，以保证各分区类别完整。");
+        if (trainingScheme?.enabled) updateTrainingWorkHint();
       }
 
       function showView(viewName, route = {}) {
@@ -4237,6 +4318,7 @@
         else showView("manual");
       });
       $("modelType").addEventListener("change", updateModelOptionVisibility);
+      $("cvEnabled").addEventListener("change", rememberStudentCvPreference);
       $("featureScheme").addEventListener("change", updateTrainingWorkHint);
       $("toggleCurvePreview").addEventListener("click", () => {
         const body = $("curvePreviewBody");

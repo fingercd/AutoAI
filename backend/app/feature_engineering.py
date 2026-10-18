@@ -8,6 +8,9 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 EXPERIMENT_VERSION = 'word-0904'
 SCHEMES = [('full', '全特征'), ('bin_5', 'Binning 5'), ('bin_10', 'Binning 10'), ('bin_20', 'Binning 20'), ('pca_90', 'PCA 90%'), ('pca_95', 'PCA 95%'), ('pca_99', 'PCA 99%')]
+STUDENT_SCHEMES = [('bin_3', 'BIN3（宽度 3）'), ('bin_6', 'BIN6（宽度 6）'), ('bin_12', 'BIN12（宽度 12）'),
+                   ('pca_components_5', 'PCA5（5 个主成分）'), ('pca_components_10', 'PCA10（10 个主成分）'), ('pca_components_15', 'PCA15（15 个主成分）')]
+ALL_SCHEMES = SCHEMES + STUDENT_SCHEMES
 MODELS = {'pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'}
 
 
@@ -28,7 +31,7 @@ class FeatureTransform:
         return bin_mean(x, int(self.scheme_id.split('_')[1])) if self.scheme_id.startswith('bin_') else np.asarray(x, dtype=np.float64)
 
     def fit(self, x: np.ndarray) -> 'FeatureTransform':
-        if self.scheme_id not in dict(SCHEMES):
+        if self.scheme_id not in dict(ALL_SCHEMES):
             raise ValueError('未知特征工程方案')
         if self.normalization not in {'zscore', 'minmax'}:
             raise ValueError('0904 方案要求 zscore 或 minmax 特征标准化')
@@ -42,7 +45,14 @@ class FeatureTransform:
         if self.scheme_id.startswith('pca_'):
             if len(values) < 2 or not np.any(np.var(scaled, axis=0) > 0):
                 raise ValueError('PCA 需要至少两条记录和非零方差')
-            self.pca_ = PCA(n_components=int(self.scheme_id.split('_')[1]) / 100, svd_solver='full')
+            if self.scheme_id.startswith('pca_components_'):
+                components = int(self.scheme_id.removeprefix('pca_components_'))
+                limit = min(values.shape[0] - 1, values.shape[1])
+                if components > limit:
+                    raise ValueError(f'PCA{components} 需要至少 {components + 1} 条训练记录和 {components} 个特征；当前为 {values.shape[0]} 条记录、{values.shape[1]} 个特征，不自动降低主成分数')
+            else:
+                components = int(self.scheme_id.split('_')[1]) / 100
+            self.pca_ = PCA(n_components=components, svd_solver='full')
             scaled = self.pca_.fit_transform(scaled)
         self.output_features_ = scaled.shape[1]
         return self
@@ -54,7 +64,7 @@ class FeatureTransform:
         return np.asarray(values, dtype=np.float32)
 
     def metadata(self) -> dict:
-        return {'scheme_id': self.scheme_id, 'scheme_name': dict(SCHEMES)[self.scheme_id], 'normalization': self.normalization, 'input_features': self.input_features_, 'output_features': self.output_features_, 'pca_components': int(self.pca_.n_components_) if self.pca_ is not None else None, 'explained_variance_ratio': self.pca_.explained_variance_ratio_.tolist() if self.pca_ is not None else None}
+        return {'scheme_id': self.scheme_id, 'scheme_name': dict(ALL_SCHEMES)[self.scheme_id], 'normalization': self.normalization, 'input_features': self.input_features_, 'output_features': self.output_features_, 'pca_components': int(self.pca_.n_components_) if self.pca_ is not None else None, 'explained_variance_ratio': self.pca_.explained_variance_ratio_.tolist() if self.pca_ is not None else None}
 
 
 class FeatureClassifier:

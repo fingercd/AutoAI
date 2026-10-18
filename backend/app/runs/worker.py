@@ -8,7 +8,7 @@ worker 轮询 queued Run、事务性 claim，然后用独立心跳线程续租�
 repository.py（Run 状态机与 lease 存储）、status_projection.py（磁盘状态投影）协作。
 
 关键设计约束：
-- 单并发：一个 worker 进程同一时刻只执行一个 Run，避免本地训练互相争抢资源。
+- 每进程单 Run：启动器托管多个 Worker，进程之间并行、共享 CPU 线程预算。
 - claim token 防护：claim / 续租 / 完成提交都必须携带同一个 claim_token；
   lease 过期或 Run 被取消后，旧 worker 的迟到提交会被 InvalidRunTransition 拒绝。
 - worker 心跳与 Run lease 分离：前者用于运维可观测，后者用于所有权判定。
@@ -170,6 +170,7 @@ class RunWorker:
         project_status: Callable[[Any], None] | None = None,
         discard_artifacts: Callable[[str], None] | None = None,
         on_lease_lost: Callable[[str], None] | None = None,
+        exclusive_model_types: tuple[str, ...] = (),
     ) -> None:
         self.repository = repository
         self.worker_id = worker_id
@@ -179,6 +180,7 @@ class RunWorker:
         self.project_status = project_status
         self.discard_artifacts = discard_artifacts
         self.on_lease_lost = on_lease_lost
+        self.exclusive_model_types = exclusive_model_types
 
     def run_once(self) -> bool:
         """执行一轮"领取 → 训练 → 提交"循环。
@@ -198,7 +200,8 @@ class RunWorker:
             if self.discard_artifacts is not None:
                 self.discard_artifacts(stopped_run_id)
         # 事务性 claim：同一 Run 只会被一个 worker 领到，claim_token 是后续所有写操作的凭证
-        run = self.repository.claim_next(worker_id=self.worker_id, now=self.now())
+        claim_options = {'exclusive_model_types': self.exclusive_model_types} if self.exclusive_model_types else {}
+        run = self.repository.claim_next(worker_id=self.worker_id, now=self.now(), **claim_options)
         if run is None:
             return False
         try:
@@ -291,12 +294,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--poll-seconds', type=float, default=0.5)
+    parser.add_argument('--threads', type=int, default=os.environ.get('AUTOAI_WORKER_THREADS', '1'), help='本 Worker 的 CPU 线程预算')
     parser.add_argument(
         '--contract-version',
         default=None,
         help='启动器期望的 Worker 产物契约；不一致时拒绝启动',
     )
     args = parser.parse_args()
+    from .resources import worker_environment, worker_resource_plan
+    try:
+        worker_resource_plan(int(os.environ.get('AUTOAI_WORKER_COUNT', '1')), args.threads)
+    except ValueError as exc:
+        parser.error(str(exc))
+    os.environ.update(worker_environment(args.threads, int(os.environ.get('AUTOAI_WORKER_COUNT', '1'))))
     # 启动器与 worker 可能版本不一：契约版本不一致时直接拒绝启动，防止写出不兼容产物
     if args.contract_version and args.contract_version != WORKER_CONTRACT_VERSION:
         parser.error(
@@ -304,12 +314,21 @@ def main() -> None:
             f'expected={args.contract_version}, actual={WORKER_CONTRACT_VERSION}'
         )
 
+    import torch
+    from threadpoolctl import threadpool_limits
+    from ..models.registry import DEEP_MODEL_TYPES, TARGET_DEEP_MODEL_TYPES
+
+    torch.set_num_threads(args.threads)
+    torch.set_num_interop_threads(1)
+    deep_types = DEEP_MODEL_TYPES | TARGET_DEEP_MODEL_TYPES | {'transformer1d'}
+    exclusive_types = tuple(sorted(deep_types)) if torch.cuda.is_available() else ()
+
     # 延迟导入：模块加载期不触碰存储路径，便于测试在临时目录下替换
     from ..paths import RUNS_DATABASE, RUNS_DIR
     from .artifacts import discard_run_artifacts
     from .status_projection import project_status
 
-    # 同样延迟导入 execution/training：worker 空闲时不加载 torch/sklearn 等重依赖
+    # 延迟导入执行器；CPU/GPU 调度所需的 torch 已在资源设置后加载。
     def execute_claimed(record: Any) -> dict[str, str]:
         from .execution import execute_claimed_run
 
@@ -344,12 +363,14 @@ def main() -> None:
         project_status=lambda record: project_status(RUNS_DIR / record.run_id, record),
         discard_artifacts=discard_artifacts,
         on_lease_lost=exit_after_lease_loss,
+        exclusive_model_types=exclusive_types,
     )
-    while worker.run_once() or not args.once:
-        # 领到任务立即进入下一轮（可能还有积压）；空闲且非 once 模式则休眠后重试
-        if args.once:
-            break
-        time.sleep(args.poll_seconds)
+    with threadpool_limits(limits=args.threads):
+        while worker.run_once() or not args.once:
+            # 空闲时等待；停止某个 Run 后由该 Worker 的监督器单独重启。
+            if args.once:
+                break
+            time.sleep(args.poll_seconds)
 
 
 if __name__ == '__main__':

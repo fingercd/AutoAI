@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 
 const html = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
-const functions = ['stopBatchWatch', 'rememberCurrentBatch', 'rememberCurrentRun',
+const functions = ['renderExperimentProgress', 'stopBatchWatch', 'rememberCurrentBatch', 'rememberCurrentRun',
   'clearRememberedCurrentRun', 'renderBatchSnapshot', 'renderBatchPollingError',
   'watchBatchComparison', 'restoreCurrentBatch', 'restoreCurrentRun', 'restoreCurrentTraining',
   'batchRunProgressText', 'requestTrainingSnapshot', 'renderRun', 'watchCurrentRun',
@@ -37,7 +37,7 @@ function harness() {
       return null;
     }
   }
-  for (const id of ['runStatus','trainingProgress','stopTrain','batchComparison','batchComparisonPage','batchComparisonError','metrics','trainingAudit','trainingCharts','confusionMatrix','downloads']) {
+  for (const id of ['completedExperimentCount','experimentProgressBar','runStatus','trainingProgress','stopTrain','batchComparison','batchComparisonPage','batchComparisonError','metrics','trainingAudit','trainingCharts','confusionMatrix','downloads']) {
     const node = new Element('div'); node.id = id;
   }
   const timers = new Map(); let nextTimer = 0;
@@ -72,6 +72,28 @@ const fixture = () => ({state:'running', counts:{queued:2,running:1,succeeded:1}
   {run_id:'svm',model_type:'svm',state:'queued',progress:{}},
   {run_id:'rf',model_type:'random_forest',state:'succeeded',progress:{}},
 ]});
+
+test('authoritative experiment counters update and reset without faking completion',()=>{
+  const h=harness();h.run("currentBatchId='batch'");
+  const status={...fixture(),workload:{model_count:2,feature_count:2,combination_count:4,inapplicable_count:0,total_outer_folds:96,completed_outer_folds:17}};
+  h.context.renderBatchSnapshot('batch',status);
+  assert.equal(h.nodes.get('completedExperimentCount').textContent,'已完成 17 / 96 次实验');
+  assert.equal(h.nodes.get('experimentProgressBar').value,17);
+  assert.equal(h.nodes.get('experimentProgressBar').max,96);
+  status.state='partial';status.workload.completed_outer_folds=72;
+  h.context.renderBatchSnapshot('batch',status);
+  assert.equal(h.nodes.get('experimentProgressBar').value,72);
+  h.context.resetStoppedTrainingPanel();
+  assert.equal(h.nodes.get('completedExperimentCount').textContent,'已完成 0 / 0 次实验');
+});
+
+test('single Run restores expected fold count before its first fold',()=>{
+  const h=harness();h.run("currentRunId='r'");
+  h.context.renderRun({run_id:'r',state:'queued',config:{split_mode:'leave_one_sample_id_cv',expected_outer_folds:24}});
+  assert.equal(h.nodes.get('completedExperimentCount').textContent,'已完成 0 / 24 次实验');
+  h.context.renderRun({run_id:'r',state:'running',completed_folds:5,fold_count:24});
+  assert.equal(h.nodes.get('completedExperimentCount').textContent,'已完成 5 / 24 次实验');
+});
 
 test('batch renders every model, updates rows in place, and retains them on network error', () => {
   const h = harness(); h.run("currentBatchId='batch'");

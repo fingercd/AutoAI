@@ -216,7 +216,7 @@ def ensure_archive(repository, batch_id, principal, run_dir_for, *, force=False)
             comparison['archive'] = {'schema_version': ARCHIVE_VERSION, 'drawing_version': DRAWING_VERSION,
                                     'dataset_name': batch.dataset_snapshot.get('name') or batch.config.get('dataset_name') or batch.dataset_id,
                                     'dataset_id': batch.dataset_id, 'created_at': batch.created_at,
-                                    'runs': [{'run_id': r.run_id, 'model_type': r.config.get('model_type'), 'state': r.state,
+                                    'runs': [{'run_id': r.run_id, 'model_type': r.config.get('model_type'), 'feature_scheme':r.config.get('feature_scheme'), 'state': r.state,
                                               'message': '训练失败，详见该模型记录' if r.state == 'failed' else None} for r in records]}
             entries = {}
             def write(name, content):

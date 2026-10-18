@@ -15,14 +15,17 @@ from matplotlib import colors, font_manager
 from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
+from ..feature_engineering import STUDENT_SCHEMES as TRAINING_STUDENT_SCHEMES
+from ..parsers import natural_sort_key
 
-DRAWING_VERSION = 'comparison-figures-v4'
+DRAWING_VERSION = 'comparison-figures-v7'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
 PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f']
 MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'], PALETTE))
 SCHEMES = [('full', '全部特征'), ('bin_5', '分箱（宽度 5）'), ('bin_10', '分箱（宽度 10）'), ('bin_20', '分箱（宽度 20）'), ('pca_90', 'PCA（90%）'), ('pca_95', 'PCA（95%）'), ('pca_99', 'PCA（99%）')]
+STUDENT_SCHEMES = [(key, name.split('（', 1)[0]) for key, name in TRAINING_STUDENT_SCHEMES]
 _LOCK = RLock()
 _FONT_NAMES = {font.name for font in font_manager.fontManager.ttflist}
 _FONTS = [name for name in ['Microsoft YaHei', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei'] if name in _FONT_NAMES] + ['DejaVu Sans']
@@ -53,15 +56,23 @@ def ordered_models(data, sort='balanced_accuracy'):
 def sample_indices(data, search='', errors=False):
     samples = data.get('sample_correctness', {})
     rows = samples.get('values', [])
-    return [i for i, sid in enumerate(samples.get('sample_ids', []))
+    indices = [i for i, sid in enumerate(samples.get('sample_ids', []))
             if search.casefold() in str(sid).casefold()
             and (not errors or any(i < len(row.get('values', [])) and row['values'][i] == 0 for row in rows))]
+    return sorted(indices, key=lambda i:natural_sort_key(samples['sample_ids'][i]))
 
 
 def figure_specs(data):
     """Default archive inventory; every sample page and feature metric is included."""
     if not data.get('comparable'):
         return []
+    if data.get('scheme_comparisons'):
+        specs = [{'kind':'features','metric':metric,'id':f'features_{metric}'} for metric in METRICS] if feature_policy.FEATURE_ENGINEERING_ENABLED else []
+        for group in data['scheme_comparisons']:
+            for spec in figure_specs(group):
+                if spec['kind'] != 'features':
+                    specs.append({**spec,'feature_scheme':group['feature_scheme'],'id':group['feature_scheme']+'__'+spec['id']})
+        return specs
     result = [{'kind': 'overall', 'metric': metric, 'id': f'overall_{metric}'} for metric in METRICS]
     result += [{'kind': 'matrix', 'model': row['model_type'], 'id': f'matrix_{row["model_type"]}'} for row in data.get('confusion_matrices', []) if row.get('confusion_matrix')]
     if data.get('class_recall', {}).get('status') == 'ready':
@@ -75,7 +86,7 @@ def figure_specs(data):
     return result
 
 
-def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balanced_accuracy', page=0, search='', errors=False, matrix_mode='percent'):
+def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balanced_accuracy', page=0, search='', errors=False, matrix_mode='percent', feature_scheme=''):
     """Pure normalization used by renderer, CSV export and contract tests."""
     if kind == 'features' and not feature_policy.FEATURE_ENGINEERING_ENABLED:
         raise ValueError('特征工程暂时停用')
@@ -83,6 +94,29 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
         raise ValueError(data.get('reason') or '当前结果不可比较')
     if metric not in METRICS or matrix_mode not in {'percent', 'count'} or page < 0:
         raise ValueError('无效图像参数')
+    if data.get('scheme_comparisons'):
+        if feature_scheme:
+            group = next((g for g in data['scheme_comparisons'] if g['feature_scheme']==feature_scheme), None)
+            if group is None:
+                raise ValueError('批次不包含所选特征处理')
+            return figure_data(group, kind=kind, metric=metric, model=model, sort=sort, page=page, search=search, errors=errors, matrix_mode=matrix_mode)
+        if kind != 'features':
+            raise ValueError('多特征批次的详细图像必须指定 feature_scheme')
+        ids = data['requested_model_types']
+        values, reasons = [], []
+        for group in data['scheme_comparisons']:
+            rows = {row['model_type']:row for row in group['models']}
+            line, notes = [], []
+            for mid in ids:
+                row = rows.get(mid)
+                line.append(finite(row['metrics'].get(metric,{}).get('mean')) if row else None)
+                skipped = next((r for r in data['inapplicable_combinations'] if r['model_type']==mid and r['feature_scheme']==group['feature_scheme']), None)
+                status = next((r for r in data['combination_status']['runs'] if r['model_type']==mid and r['feature_scheme']==group['feature_scheme']), None)
+                notes.append(skipped['reason'] if skipped else (status.get('error') or status['state']) if status else '缺少校验通过的结果')
+            values.append(line);reasons.append(notes)
+        return {'rows':[g['feature_name'].split('（',1)[0] for g in data['scheme_comparisons']],
+                'columns':[NAMES.get(mid,mid) for mid in ids],'values':values,
+                'selected':[[False]*len(ids) for _ in values],'reasons':reasons}
     models = ordered_models(data, sort)
     ids = [row['model_type'] for row in models]
     names = [NAMES.get(mid, mid) for mid in ids]
@@ -123,7 +157,11 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
         return {'rows': names, 'columns': [str(source['sample_ids'][i]) for i in indices], 'values': values, 'total': len(selected)}
     if kind == 'features':
         values, marks, reasons = [], [], []
-        for scheme_id, _ in SCHEMES:
+        recorded = {item['scheme_id'] for row in models for item in (row.get('experiment') or {}).get('schemes', [])}
+        has_student = bool(recorded.intersection(dict(STUDENT_SCHEMES)))
+        has_legacy = bool(recorded.intersection(dict(SCHEMES)))
+        schemes = (SCHEMES if has_legacy or not has_student else []) + (STUDENT_SCHEMES if has_student else [])
+        for scheme_id, _ in schemes:
             line, stars, notes = [], [], []
             for row in models:
                 experiment = row.get('experiment') or {}
@@ -132,7 +170,7 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
                 stars.append((experiment.get('selected_configuration') or {}).get('scheme_id') == scheme_id)
                 notes.append(scheme.get('reason') or ('无历史特征工程数据' if not experiment else scheme.get('status', 'missing')))
             values.append(line); marks.append(stars); reasons.append(notes)
-        return {'rows': [name for _, name in SCHEMES], 'columns': names, 'values': values, 'selected': marks, 'reasons': reasons}
+        return {'rows': [name for _, name in schemes], 'columns': names, 'values': values, 'selected': marks, 'reasons': reasons}
     raise ValueError('未知图像类型')
 
 

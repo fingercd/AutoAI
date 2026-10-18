@@ -24,6 +24,14 @@ router = APIRouter()
 
 def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> tuple[list[str], dict[str, Any], list[str]]:
     raw = dict(payload.config or {})
+    explicit_features = payload.feature_schemes is not None
+    if explicit_features and ('feature_scheme' in raw or raw.get('experiment_version') != 'word-0904' or raw.get('training_profile', 'quick') != 'quick'):
+        raise TrainingConfigValidationError('多特征批次须使用 word-0904/quick，且 config 不得包含单个 feature_scheme')
+    features = list(dict.fromkeys(payload.feature_schemes or [raw.get('feature_scheme', 'full')]))
+    if explicit_features:
+        from ..feature_engineering import ALL_SCHEMES
+        if any(feature not in dict(ALL_SCHEMES) for feature in features):
+            raise TrainingConfigValidationError('未知特征处理方案')
     forbidden = {"model_type", "seed", "split_seed", "model_seed", "feature_selection_enabled", "explainability_enabled"}
     supplied = sorted(forbidden.intersection(raw))
     if supplied:
@@ -37,24 +45,35 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
     canonical: list[str] = []
     warnings: list[str] = []
     normalized_config: dict[str, Any] | None = None
+    combinations, inapplicable = [], []
     for raw_model in payload.model_types:
         model_type = canonical_model_type(str(raw_model))
         if model_type in canonical:
             continue
-        spec = TrainingSpec.from_legacy({**raw, "model_type": model_type}).validated(has_external_test=has_external_test)
-        canonical.append(str(spec.to_legacy_dict()["model_type"]))
-        warnings.extend(spec.warnings)
-        candidate = spec.to_legacy_dict()
-        candidate.pop("model_type", None)
-        if normalized_config is None:
-            normalized_config = candidate
+        canonical.append(model_type)
+        for feature in features:
+            if explicit_features and model_type == 'cnn1d' and feature.startswith('pca_'):
+                inapplicable.append({'model_type':model_type,'feature_scheme':feature,'reason':'CNN 不支持 PCA 输入'})
+                continue
+            spec = TrainingSpec.from_legacy({**raw, **({'feature_scheme':feature} if explicit_features else {}), "model_type": model_type}).validated(has_external_test=has_external_test)
+            warnings.extend(spec.warnings)
+            candidate = spec.to_legacy_dict()
+            candidate.pop('model_type', None)
+            if normalized_config is None:
+                normalized_config = candidate
+            combinations.append({'model_type':model_type,'feature_scheme':candidate.get('feature_scheme')})
     if not canonical:
         raise TrainingConfigValidationError("至少选择一个不同的模型")
-    if len(canonical) * int(payload.repeat_count) > 50:
-        raise TrainingConfigValidationError("模型数 × 重复次数不能超过 50")
+    if not combinations:
+        raise TrainingConfigValidationError('没有可运行的模型 × 特征处理组合')
+    if len(combinations) * int(payload.repeat_count) > 50:
+        raise TrainingConfigValidationError("有效模型 × 特征处理组合数不能超过 50")
     config = dict(normalized_config or {})
     config["split_seed"] = base_seed
     config["feature_selection_enabled"] = False
+    if explicit_features:
+        config.pop('feature_scheme', None)
+        config.update(feature_schemes=features, combinations=combinations, inapplicable_combinations=inapplicable, requested_model_types=canonical)
     return canonical, config, warnings
 
 
@@ -75,7 +94,10 @@ def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(g
         config["test_data_path"] = data_ref.test_legacy_path
     if data_ref.test_dataset_name:
         config["test_dataset_name"] = data_ref.test_dataset_name
-    snapshot = _dataset_snapshot_for_reference(dataset_id=data_ref.dataset_id, legacy_path=data_ref.legacy_path, dataset_name=data_ref.dataset_name)
+    snapshot = _dataset_snapshot_for_reference(dataset_id=data_ref.dataset_id, legacy_path=data_ref.legacy_path, dataset_name=data_ref.dataset_name, include_summary=payload.feature_schemes is not None)
+    if payload.feature_schemes is not None:
+        cv = config.get('split_mode') in {'leave_one_sample_id_cv','leave_one_sample_id_cv_with_external_test'}
+        config['expected_outer_folds'] = snapshot['sample_id_count'] if cv else 1
     if data_ref.test_dataset_id or data_ref.test_legacy_path:
         test_snapshot = _dataset_snapshot_for_reference(dataset_id=data_ref.test_dataset_id, legacy_path=data_ref.test_legacy_path, dataset_name=data_ref.test_dataset_name)
         config["test_dataset_sha256"] = test_snapshot["sha256"]
@@ -93,7 +115,9 @@ def create_batch(payload: TrainingBatchRequest, principal: Principal = Depends(g
     return {
         "batch_id": batch.batch_id, "state": "queued", "model_count": len(model_types),
         "repeat_count": batch.repeat_count, "run_count": len(records),
-        "runs": [{"model_type": record.config["model_type"], "repeat_index": record.batch_repeat_index, "run_id": record.run_id, "state": record.state} for record in records],
+        **batch_status_payload(batch.batch_id, records),
+        'feature_schemes': batch.config.get('feature_schemes'),
+        'inapplicable_combinations': batch.config.get('inapplicable_combinations', []),
         "warnings": warnings,
     }
 
@@ -106,7 +130,7 @@ def get_batch(batch_id: str, principal: Principal = Depends(get_principal)) -> d
         records = repository.list_batch_runs_scoped(batch_id, principal=principal)
     except RunNotFound as exc:
         raise HTTPException(status_code=404, detail="batch 不存在") from exc
-    return {"batch_id": batch.batch_id, "model_types": batch.model_types, "repeat_count": batch.repeat_count, "base_seed": batch.base_seed, "created_at": batch.created_at, **batch_status_payload(batch.batch_id, records)}
+    return {"batch_id": batch.batch_id, "model_types": batch.model_types, 'feature_schemes':batch.config.get('feature_schemes'), 'inapplicable_combinations':batch.config.get('inapplicable_combinations',[]), "repeat_count": batch.repeat_count, "base_seed": batch.base_seed, "created_at": batch.created_at, **batch_status_payload(batch.batch_id, records)}
 
 
 @router.post("/api/training/batches/{batch_id}/stop")
@@ -243,6 +267,7 @@ class ComparisonFigureRequest(BaseModel):
     kind: str = Field(pattern='^(overall|matrix|recall|precision|samples|features)$')
     metric: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')
     model: str = Field(default='', max_length=100, pattern='^[a-zA-Z0-9_-]*$')
+    feature_scheme: str = Field(default='', max_length=100, pattern='^[a-zA-Z0-9_-]*$')
     sort: str = Field(default='balanced_accuracy', pattern='^(accuracy|balanced_accuracy|macro_f1|weighted_f1)$')
     page: int = Field(default=0, ge=0, le=100000)
     search: str = Field(default='', max_length=128)

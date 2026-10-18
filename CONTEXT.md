@@ -1,6 +1,6 @@
 # SpecAutoAI 项目入口
 
-2026-10-18：经典前端按原版样式做交互减法。训练配置只开放模型与全特征 / Binning 10 / PCA 95%；固定 quick、Z-score、后端默认 seed、8:1:1（独立 Test 时主数据 8:2），旧会话的 CV 和比例不再影响新网页任务。后端 API 仍完整支持四种评估、自定义比例与 full。拉曼 UI 固定 arPLS；HPLC 范围/插值不变；结果技术信息与审计默认折叠，记录列表移除 Run ID 与复制 ID。此条覆盖下文旧的“页面可主动选择完整比较/自定义比例”等界面说明，详情见 `docs/plans/2026-10-18-student-ui.md`。
+2026-10-18 最新：经典建模页模型与六种特征均为复选；新 Batch 顶层 feature_schemes，按模型×特征建立独立 Run，CV 在每个 Run 内完成全部 Sample_ID 留一折。CNN×PCA 明确标为不适用，实际外层任务数=有效组合数×样品数。配置右上角显示预计实验数，训练区显示已完成/总数及进度条，刷新从服务端恢复。run.py 默认最多 4 个 Worker，按逻辑 CPU 分配每进程线程预算，组合间并行、组合内折顺序执行；GPU 可用时同队列最多一个深度 Run，CPU 任务可绕过等待中的深度任务。结果 scheme_comparisons 按特征分组，总览矩阵不合并同模型的不同方案；Excel 列名带模型和方案，图集分方案命名。旧单方案请求与历史结果保留。Worker 为 run-artifact-manifest-v2-parallel-workers-v1，绘图 comparison-figures-v7。详见 docs/plans/2026-10-18-model-feature-grid.md 和 docs/plans/2026-10-18-worker-pool-and-counters.md。
 
 `cnn_mamba1d` 在依赖不可用时保持 unavailable；隐藏模型不允许用近似网络替代。
 

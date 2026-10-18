@@ -25,15 +25,30 @@
   }
   // 学生界面只减少选择，不改变后端 quick/full 与四种评估模式的能力。
   function studentFeatureSchemes(scheme) {
-    const labels = {full:'全特征', bin_10:'Binning（每 10 个相邻点合并）', pca_95:'PCA（保留 95% 方差）'};
-    return (scheme?.feature_schemes || []).filter(item => Object.hasOwn(labels,item.id))
-      .map(item => ({...item,name:labels[item.id]}));
+    return (scheme?.feature_schemes || []).filter(item => item.student_visible === true);
   }
-  function studentPayload(scheme, external, model, feature='full') {
+  function studentPayload(scheme, external, model, feature=scheme?.student_default_feature_scheme, cv=false) {
     if (!studentFeatureSchemes(scheme).some(item=>item.id===feature))
       throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
-    return payload(scheme,external?'external':'holdout',external?[8,2,0]:[8,1,1],'zscore',model,
+    const mode=external?(cv?'external_loo':'external'):(cv?'loo':'holdout');
+    return payload(scheme,mode,mode==='holdout'?[8,1,1]:[8,2,0],'zscore',model,
       {training_profile:'quick',feature_scheme:feature});
   }
-  global.SpecAutoAITrainingPolicy = {splitPayload,payload,studentFeatureSchemes,studentPayload};
+  function studentPlan(scheme, models, features, external=false, cv=false) {
+    if (!models.length) throw new Error('至少选择一个可用模型');
+    if (!features.length) throw new Error('至少选择一种特征处理');
+    const available=studentFeatureSchemes(scheme), configs=[], inapplicable=[];
+    for (const feature of features) {
+      const entry=available.find(item=>item.id===feature);
+      if (!entry) throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
+      for (const model of models) {
+        if (model==='cnn1d' && entry.cnn_supported===false) {
+          inapplicable.push({model_type:model,feature_scheme:feature,reason:'CNN 不支持 PCA 输入'});
+        } else configs.push(studentPayload(scheme,external,model,feature,cv));
+      }
+    }
+    if (!configs.length) throw new Error('没有可运行的模型 × 特征处理组合：CNN 不支持 PCA 输入');
+    return {configs,inapplicable};
+  }
+  global.SpecAutoAITrainingPolicy = {splitPayload,payload,studentFeatureSchemes,studentPayload,studentPlan};
 })(typeof window==='undefined'?globalThis:window);

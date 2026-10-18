@@ -22,11 +22,12 @@
   以适应光谱/色谱小样本、高维特征、易过拟合的典型场景。
 - 固定 ``bootstrap=True``，这是启用 OOB（out-of-bag）评分的前提；OOB 是否
   计算由 ``oob_score`` 开关控制，便于 training.py 做不占用验证折的选优审计。
-- 固定 ``n_jobs=-1`` 使用全部 CPU 核心并行建树，单棵树之间天然独立。
+- Worker 内按进程线程预算并行建树；独立调用保留 ``n_jobs=-1``。
 - 随机性完全由传入的 ``seed`` 控制，保证同一评估口径下结果可复现。
 """
 
 from __future__ import annotations
+import os
 
 from sklearn.ensemble import RandomForestClassifier
 
@@ -82,8 +83,8 @@ def build_random_forest(
         max_features=max_features,
         class_weight=class_weight,
         random_state=seed,
-        # 使用全部 CPU 核心并行建树；树之间相互独立，并行无正确性风险。
-        n_jobs=-1,
+        # 多 Worker 共享 CPU，不能每个进程都占满全部核心。
+        n_jobs=int(os.environ.get('AUTOAI_WORKER_THREADS','-1')),
         # 强制有放回抽样：这是 OOB 评分存在的前提（每棵树约 1/3 样本留作袋外），
         # 也是随机森林降低方差的核心机制，因此写死而非暴露为参数。
         bootstrap=True,

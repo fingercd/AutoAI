@@ -68,7 +68,7 @@ def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
     # Hidden legacy controls remain, but the six-model Word request cannot
     # accidentally carry hidden DSCARNet parameters.
     assert 'dscarnet_input_mode: $("dscarnetInputMode").value' not in content
-    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
+    assert 'SpecAutoAITrainingPolicy.studentPlan' in content
     assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content
 
 

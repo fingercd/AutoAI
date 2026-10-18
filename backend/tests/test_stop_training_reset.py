@@ -71,10 +71,13 @@ def test_stop_resets_panel_and_forgets_current_training():
     start = html.index('      function resetStoppedTrainingPanel()')
     end = html.index('\n      }', start) + len('\n      }')
     function = html[start:end]
+    progress_start = html.index('      function renderExperimentProgress(')
+    progress_end = html.index('\n      }', progress_start) + len('\n      }')
+    function = html[progress_start:progress_end] + '\n' + function
     script = '''
 const assert = require('node:assert/strict');
 const nodes = new Map();
-const $ = id => { if (!nodes.has(id)) nodes.set(id, {textContent:'old',className:'old',disabled:true,classList:{add(){}},replaceChildren(){this.empty=true;}});return nodes.get(id); };
+const $ = id => { if (!nodes.has(id)) nodes.set(id, {textContent:'old',className:'old',disabled:true,classList:{add(){}},setAttribute(){},replaceChildren(){this.empty=true;}});return nodes.get(id); };
 const memory = new Map(); let currentRunId='run', currentBatchId='batch', stopped=false;
 const window={sessionStorage:{setItem(k,v){memory.set(k,v);}},SpecAutoAIResults:{cancelAutoRedirect(){},stopTrainingWatch(){stopped=true;}}};
 function stopBatchWatch(){currentBatchId=null;}
@@ -86,5 +89,7 @@ assert.equal(currentRunId,null);assert.equal(currentBatchId,null);assert.ok(stop
 assert.equal($('runStatus').textContent,'尚未开始');assert.equal($('runStatus').className,'status');
 assert.ok($('trainingProgress').empty);assert.ok($('batchComparison').empty);
 assert.equal(memory.get('specautoai.training.idleAfterStop'),'1');
+assert.equal($('completedExperimentCount').textContent,'已完成 0 / 0 次实验');
+assert.equal($('experimentProgressBar').value,0);
 '''
     subprocess.run(['node','-'],input=script,text=True,check=True,capture_output=True)

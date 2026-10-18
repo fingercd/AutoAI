@@ -22,7 +22,7 @@ from __future__ import annotations
 # 本文件是 SpecAutoAI 的“一键启动器”，处于整个系统的最外层入口，负责把
 # FastAPI 后端（backend.app.main:app）以 uvicorn 形式拉起，并可选地：
 #   1. 自动打开浏览器（经典前端 "/"）；
-#   2. 启动并托管一个独立的训练 worker 子进程（backend.app.runs.worker）。
+#   2. 按 CPU 预算启动并托管多个独立训练 Worker（backend.app.runs.worker）。
 #
 # 与系统其它部分的关系：
 #   - Web 进程只负责创建 queued Run，真正的模型训练由 worker 进程领取执行，
@@ -93,12 +93,14 @@ class WorkerSupervisor:
         用于让 ``stop()`` 能即时唤醒并终止该循环（Event.wait 兼作可中断 sleep）。
     """
 
-    def __init__(self, command: list[str], *, max_fast_restarts: int = 5) -> None:
+    def __init__(self, command: list[str], *, max_fast_restarts: int = 5, environment: dict[str, str] | None = None) -> None:
         # list(command) 拷贝一份，避免外部后续修改列表影响子进程命令。
         self.command = list(command)
         self.max_fast_restarts = max_fast_restarts
+        self.environment = environment
         self._process: subprocess.Popen[bytes] | None = None
         self._stop = threading.Event()
+        self._process_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         # _started_at：最近一次 spawn 的单调时钟起点；_fast_restarts：连续“快速失败”次数。
         self._started_at = 0.0
@@ -106,10 +108,12 @@ class WorkerSupervisor:
 
     def _spawn(self) -> None:
         """拉起一次 worker 子进程，并记录启动时间（供快速失败判定使用）。"""
-        self._process = subprocess.Popen(self.command)
-        # 用单调时钟（monotonic）而非 wall clock，避免系统时间被校时修改后
-        # 导致“存活时长”计算出现负值或跳变。
-        self._started_at = time.monotonic()
+        with self._process_lock:
+            if self._stop.is_set():
+                return
+            self._process = subprocess.Popen(self.command, env=self.environment)
+            # 用单调时钟判断存活时间，不受系统校时影响。
+            self._started_at = time.monotonic()
 
     def start(self) -> None:
         """启动 worker 并开启后台监视线程（立即返回，不阻塞调用方）。"""
@@ -157,7 +161,9 @@ class WorkerSupervisor:
     def stop(self) -> None:
         """停止监视并回收 worker 子进程（幂等，可在退出路径中安全调用）。"""
         self._stop.set()
-        process = self._process
+        # 与监视线程的重新拉起互斥，避免退出时漏回收刚创建的子进程。
+        with self._process_lock:
+            process = self._process
         if process is not None and process.poll() is None:
             # 先 SIGTERM（terminate）给 worker 优雅退出的机会……
             process.terminate()
@@ -192,12 +198,19 @@ def main(*, frontend_path: str = CLASSIC_FRONTEND_PATH) -> None:
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--reload", action="store_true", help="开启热重载（开发用）")
     parser.add_argument("--no-worker", action="store_true", help="不启动本地训练 worker")
+    parser.add_argument('--workers', type=int, default=None, help='训练 Worker 进程数（默认按 CPU 预算，最多 4 个）')
+    parser.add_argument('--threads-per-worker', type=int, default=None, help='每个 Worker 的 CPU 线程预算（默认自动分配）')
     parser.add_argument(
         "--server",
         action="store_true",
         help="启用服务器安全模式（必须通过环境变量设置 AUTOAI_API_TOKEN）",
     )
     args = parser.parse_args()
+    from backend.app.runs.resources import worker_resource_plan, worker_environment
+    try:
+        worker_count, worker_threads = worker_resource_plan(args.workers, args.threads_per_worker)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # --server 只是写入环境变量的快捷方式；真正的判定统一读取
     # AUTOAI_DEPLOYMENT_MODE，这样直接设置环境变量启动也走同一条路径。
@@ -254,23 +267,18 @@ def main(*, frontend_path: str = CLASSIC_FRONTEND_PATH) -> None:
   ╚══════════════════════════════════════════════╝
 """)
 
-    worker: WorkerSupervisor | None = None
-    if not args.no_worker:
-        # Web 只负责创建 queued Run；训练能力依赖这个独立子进程。使用当前
-        # 解释器可确保 worker 与 uvicorn 共享同一虚拟环境和依赖集。
-        # --contract-version 把后端的结果契约版本（WORKER_CONTRACT_VERSION）
-        # 显式传给 worker，避免 worker 与 Web 对 run-result 契约理解不一致。
-        worker = WorkerSupervisor(
-            [
-                sys.executable,
-                "-m",
-                "backend.app.runs.worker",
-                "--contract-version",
-                WORKER_CONTRACT_VERSION,
-            ]
-        )
-        worker.start()
+    workers: list[WorkerSupervisor] = []
     try:
+        if not args.no_worker:
+            print(f'训练并行：{worker_count} 个 Worker，每个最多 {worker_threads} 个 CPU 线程；GPU 深度模型最多同时 1 个。')
+            environment = worker_environment(worker_threads, worker_count)
+            for _ in range(worker_count):
+                worker = WorkerSupervisor(
+                    [sys.executable, '-m', 'backend.app.runs.worker', '--contract-version', WORKER_CONTRACT_VERSION],
+                    environment=environment,
+                )
+                workers.append(worker)
+                worker.start()
         uvicorn.run(
             "backend.app.main:app",
             host=args.host,
@@ -280,7 +288,7 @@ def main(*, frontend_path: str = CLASSIC_FRONTEND_PATH) -> None:
     finally:
         # 无论正常退出还是 Ctrl+C，都回收由本启动器创建的 worker，避免残留
         # 进程继续领取新 Run。外部独立托管的 worker 不受这里影响。
-        if worker is not None:
+        for worker in workers:
             worker.stop()
 
 

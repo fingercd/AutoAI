@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 
 import numpy as np
 
@@ -89,7 +90,7 @@ def build_xgboost(
         raise ValueError("The current environment does not have xgboost installed, so XGBoost cannot be trained.") from exc
 
     # 通用超参数：eval_metric 按任务类型选择 logloss/mlogloss，与 objective 配套；
-    # n_jobs 固定为 1，避免与外层训练编排的并行策略叠加造成线程超额订阅。
+    # 服从 Worker 的线程预算；独立调用仍使用 1 个线程。
     params: dict[str, Any] = {
         "n_estimators": n_estimators,
         "max_depth": max_depth,
@@ -101,7 +102,7 @@ def build_xgboost(
         "gamma": gamma,
         "eval_metric": "logloss" if class_count == 2 else "mlogloss",
         "random_state": seed,
-        "n_jobs": 1,
+        "n_jobs": int(os.environ.get('AUTOAI_WORKER_THREADS','1')),
     }
     if class_count == 2:
         # 二分类：logistic 目标直接输出正类概率。
