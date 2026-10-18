@@ -1,5 +1,9 @@
 # SpecAutoAI 前后端接口契约
 
+2026-10-18 恢复模型增量：ui_visible 开放十一模型（新增 sPLS-DA/PCA-LDA/PCA-SVM/CNN-SE/ResNet），学生六特征为 BIN5/10/20、固定 PCA5/10/20。特征目录额外返回 unsupported_models 与 inapplicable_reasons，前后端均跳过不适用组合。三种卷积模型、PCA-LDA/PCA-SVM 不叠加外层 PCA。全选 51 有效、15 不适用，批次上限 100；旧特征仅为兼容 API 和历史结果保留。
+
+2026-10-18 结果范围提示：多特征批次以左侧按钮切换详细结果，选中项浅绿色突出，按钮下方简短显示当前特征名称，不增加整块彩色背景或重复标题。首次打开选择第一个 comparable 特征组，不按 Test 成绩选优；四个页签及图像请求都限定所选 feature_scheme，不合并不同特征的指标。切换特征时重置样品分页，保留当前页签。
+
 2026-10-18 并行与计数增量：run.py 默认按 CPU 预算启动最多 4 个独立 Worker，GPU 可用时 claim 事务限制一个深度模型 Run、跳过暂受阻深度任务领取 CPU 模型。当前 Worker 契约为 `run-artifact-manifest-v2-parallel-workers-v1`。新 word-0904 单 Run 的 config.expected_outer_folds 来自主数据 Sample_ID 快照（非 CV 为 1），排队时也可恢复总实验数。组合批次训练区以 workload.completed_outer_folds / total_outer_folds 显示实时进度；配置预计数不覆盖正在运行批次的分母。失败/停止不补足未完成折，未知历史任务量不虚构。每个“实验”为一次外层训练/评估，内部选参拟合另有进度。
 
 2026-10-18 组合训练增量：TrainingBatchRequest 顶层可传 feature_schemes（非空列表），要求 word-0904/quick，config 不传 feature_scheme/model_type/各 seed。服务器规范化模型与方案、跳过并显式返回 CNN×PCA，事务性创建所有有效组合。状态 runs 含 feature_scheme/feature_name/expected_outer_folds；workload 含模型数、方案数、组合数、不适用数、每组合外层折数和总/已完成外层折数。旧无 feature_schemes 的请求保持旧语义。

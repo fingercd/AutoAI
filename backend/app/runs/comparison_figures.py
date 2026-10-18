@@ -15,13 +15,15 @@ from matplotlib import colors, font_manager
 from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
-from ..feature_engineering import STUDENT_SCHEMES as TRAINING_STUDENT_SCHEMES
+from ..feature_engineering import STUDENT_SCHEMES as TRAINING_STUDENT_SCHEMES, HISTORICAL_SCHEMES
 from ..parsers import natural_sort_key
 
-DRAWING_VERSION = 'comparison-figures-v7'
+DRAWING_VERSION = 'comparison-figures-v8'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
+NAMES['pca_lda'] = 'PCA-LDA'
+NAMES.update(cnn1d_se='1D CNN-SE', resnet1d='1D ResNet')
 PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f']
 MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'], PALETTE))
 SCHEMES = [('full', '全部特征'), ('bin_5', '分箱（宽度 5）'), ('bin_10', '分箱（宽度 10）'), ('bin_20', '分箱（宽度 20）'), ('pca_90', 'PCA（90%）'), ('pca_95', 'PCA（95%）'), ('pca_99', 'PCA（99%）')]
@@ -158,9 +160,12 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
     if kind == 'features':
         values, marks, reasons = [], [], []
         recorded = {item['scheme_id'] for row in models for item in (row.get('experiment') or {}).get('schemes', [])}
-        has_student = bool(recorded.intersection(dict(STUDENT_SCHEMES)))
-        has_legacy = bool(recorded.intersection(dict(SCHEMES)))
-        schemes = (SCHEMES if has_legacy or not has_student else []) + (STUDENT_SCHEMES if has_student else [])
+        historical = bool(recorded.intersection(dict(HISTORICAL_SCHEMES)))
+        student = historical or any(key.startswith('pca_components_') for key in recorded)
+        old_schemes = [(k, n.split('（', 1)[0]) for k, n in HISTORICAL_SCHEMES] + [s for s in STUDENT_SCHEMES if s[0] in {'pca_components_5', 'pca_components_10'}]
+        schemes = (old_schemes if historical else STUDENT_SCHEMES) if student else SCHEMES
+        if student and recorded.intersection({'full', 'pca_90', 'pca_95', 'pca_99'}):
+            schemes = list(dict(SCHEMES + schemes).items())
         for scheme_id, _ in schemes:
             line, stars, notes = [], [], []
             for row in models:

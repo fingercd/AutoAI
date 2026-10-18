@@ -17,6 +17,7 @@
     if (!scheme.profiles?.some(item=>item.id===profile) || !scheme.feature_schemes?.some(item=>item.id===feature))
       throw new Error('训练配置尚未就绪，请更新并重启后端与 Worker 后刷新页面');
     if (profile==='quick' && model==='cnn1d' && feature.startsWith('pca_')) throw new Error('CNN 不支持 PCA，请选择全特征或相邻点合并');
+    if (profile==='quick' && scheme.feature_schemes.find(item=>item.id===feature)?.unsupported_models?.includes(model)) throw new Error('该模型不支持所选外层特征处理，请选择相邻点合并');
     return {...splitPayload(selectedMode,ratios),experiment_version:scheme.version,model_type:model,normalization,
       training_profile:profile,feature_scheme:feature,
       epochs:d.epochs,batch_size:d.batch_size,learning_rate:d.learning_rate,weight_decay:d.weight_decay,
@@ -42,12 +43,12 @@
       const entry=available.find(item=>item.id===feature);
       if (!entry) throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
       for (const model of models) {
-        if (model==='cnn1d' && entry.cnn_supported===false) {
-          inapplicable.push({model_type:model,feature_scheme:feature,reason:'CNN 不支持 PCA 输入'});
+        if (entry.unsupported_models?.includes(model) || (model==='cnn1d' && entry.cnn_supported===false)) {
+          inapplicable.push({model_type:model,feature_scheme:feature,reason:entry.inapplicable_reasons?.[model] || (model==='cnn1d'?'CNN 不支持 PCA 输入':'模型内置 PCA，不重复叠加外层 PCA')});
         } else configs.push(studentPayload(scheme,external,model,feature,cv));
       }
     }
-    if (!configs.length) throw new Error('没有可运行的模型 × 特征处理组合：CNN 不支持 PCA 输入');
+    if (!configs.length) throw new Error('没有可运行的模型 × 特征处理组合：CNN 不支持 PCA，内置 PCA 模型也不重复叠加外层 PCA');
     return {configs,inapplicable};
   }
   global.SpecAutoAITrainingPolicy = {splitPayload,payload,studentFeatureSchemes,studentPayload,studentPlan};

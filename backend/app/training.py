@@ -1869,10 +1869,10 @@ def _run_legacy_training(
         from . import feature_policy
         if not feature_policy.FEATURE_ENGINEERING_ENABLED:
             raise ValueError('特征工程暂时停用，请使用普通训练配置')
-        from .feature_engineering import MODELS
+        from .feature_engineering import MODELS, DEEP_MODELS
         from .training_experiments import fit_experiment_fold, summarize_experiments
         if model_type not in MODELS:
-            raise ValueError('0904 方案仅支持六类公开模型')
+            raise ValueError('0904 方案仅支持已接通的公开分类模型')
     experiment_folds = []
     external_experiment = None
     evaluation_strategy = policy.strategy
@@ -2077,7 +2077,7 @@ def _run_legacy_training(
             train_eval, valid_eval, test_eval = (winner['evals'][name] for name in ('train', 'valid', 'test'))
             fold_best_params = {'feature_scheme': winner['scheme_id'], **winner['params']}
             fold_selection_metric, fold_selection_score = winner['selection_metric'], winner['selection_score']
-            fold_final_fit_indices = np.asarray(sorted(set(splits['train']) | set(splits['valid']))) if model_type != 'cnn1d' else np.asarray(splits['train'])
+            fold_final_fit_indices = np.asarray(sorted(set(splits['train']) | set(splits['valid']))) if model_type not in DEEP_MODELS else np.asarray(splits['train'])
             best_search_rows.extend(winner['search_rows'])
             history_rows.extend({**row, 'fold_index': fold_index, 'feature_scheme': winner['scheme_id']} for row in winner['history'])
             winner['test_sample_ids'] = fold.get('test_sample_ids') or ([fold['test_sample_id']] if fold.get('test_sample_id') is not None else [])
@@ -2091,7 +2091,7 @@ def _run_legacy_training(
                 # 传统方案模型是 FeatureClassifier（自带 fitted transform），直接吃
                 # 原始特征矩阵；CNN 需先过本方案 fitted transform 再前向。
                 all_indices = list(range(len(metadata)))
-                if model_type == 'cnn1d':
+                if model_type in DEEP_MODELS:
                     transformed = winner['transformer'].transform(x_model_raw)
                     transformed_probabilities = _deep_probabilities(model, transformed)
                     transformed_predictions = np.asarray(transformed_probabilities).argmax(axis=1)
@@ -2104,7 +2104,7 @@ def _run_legacy_training(
                     y_model=y_model, indices=all_indices, metadata=metadata, label_names=label_names,
                     splits=splits, strategy=evaluation_strategy, fold_index=fold_index,
                 ))
-            if model_type == 'cnn1d':
+            if model_type in DEEP_MODELS:
                 import joblib
                 joblib.dump(winner['transformer'], run_dir / 'feature_transform.joblib')
             dscarnet_mapping_metadata = None
@@ -2386,7 +2386,7 @@ def _run_legacy_training(
             external_mapping_metadata = None
             best_search_rows.extend(external_experiment['search_rows'])
             history_rows.extend({**row, 'fold_index': 'external_final'} for row in external_experiment['history'])
-            if model_type == 'cnn1d':
+            if model_type in DEEP_MODELS:
                 import joblib
                 joblib.dump(external_experiment['transformer'], run_dir / 'feature_transform.joblib')
         elif model_family(model_type) == "traditional_ml":
@@ -2530,7 +2530,7 @@ def _run_legacy_training(
         selected = external_experiment or experiment_folds[-1]
         model_metadata.update(architecture_version='docx-classification-v4-0904', experiment_version='word-0904',
                               training_profile=config.training_profile, feature_transform=selected['transform'])
-        if model_type == 'cnn1d':
+        if model_type in DEEP_MODELS:
             model_metadata.update(profile=selected['profile'], model_profile=selected['profile'], resolved_profile=selected['profile'], N_train=selected['profile']['N'], L=selected['profile']['L'])
             profile_payload = selected['profile']
             metadata_train_count = selected['profile']['N']
@@ -2544,7 +2544,7 @@ def _run_legacy_training(
         )
     if getattr(last_model, "pca_metadata", None) is not None:
         model_metadata["pca"] = last_model.pca_metadata
-    if modern and model_type == 'cnn1d':
+    if modern and model_type in DEEP_MODELS:
         model_metadata.update(classification_head='multiclass_logits', loss_function='CrossEntropyLoss', output_dim=len(label_names))
     if model_type == "spls_da" and getattr(last_model, "selected_feature_indices_by_component", None) is not None:
         model_metadata["spls_da"] = {

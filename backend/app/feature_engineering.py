@@ -8,10 +8,12 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 EXPERIMENT_VERSION = 'word-0904'
 SCHEMES = [('full', '全特征'), ('bin_5', 'Binning 5'), ('bin_10', 'Binning 10'), ('bin_20', 'Binning 20'), ('pca_90', 'PCA 90%'), ('pca_95', 'PCA 95%'), ('pca_99', 'PCA 99%')]
-STUDENT_SCHEMES = [('bin_3', 'BIN3（宽度 3）'), ('bin_6', 'BIN6（宽度 6）'), ('bin_12', 'BIN12（宽度 12）'),
-                   ('pca_components_5', 'PCA5（5 个主成分）'), ('pca_components_10', 'PCA10（10 个主成分）'), ('pca_components_15', 'PCA15（15 个主成分）')]
-ALL_SCHEMES = SCHEMES + STUDENT_SCHEMES
-MODELS = {'pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'}
+STUDENT_SCHEMES = [('bin_5', 'BIN5（宽度 5）'), ('bin_10', 'BIN10（宽度 10）'), ('bin_20', 'BIN20（宽度 20）'),
+                   ('pca_components_5', 'PCA5（5 个主成分）'), ('pca_components_10', 'PCA10（10 个主成分）'), ('pca_components_20', 'PCA20（20 个主成分）')]
+HISTORICAL_SCHEMES = [('bin_3', 'BIN3（宽度 3）'), ('bin_6', 'BIN6（宽度 6）'), ('bin_12', 'BIN12（宽度 12）'), ('pca_components_15', 'PCA15（15 个主成分）')]
+ALL_SCHEMES = list(dict(SCHEMES + HISTORICAL_SCHEMES + STUDENT_SCHEMES).items())
+DEEP_MODELS = {'cnn1d', 'cnn1d_se', 'resnet1d'}
+MODELS = {'pls_da', 'spls_da', 'pca_lda', 'pca_svm', 'logistic_regression', 'svm', 'random_forest', 'xgboost'} | DEEP_MODELS
 
 
 def bin_mean(x: np.ndarray, width: int) -> np.ndarray:

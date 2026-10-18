@@ -52,8 +52,10 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
             continue
         canonical.append(model_type)
         for feature in features:
-            if explicit_features and model_type == 'cnn1d' and feature.startswith('pca_'):
-                inapplicable.append({'model_type':model_type,'feature_scheme':feature,'reason':'CNN 不支持 PCA 输入'})
+            from ..feature_policy import inapplicable_reason
+            reason = inapplicable_reason(model_type, feature) if explicit_features else None
+            if reason:
+                inapplicable.append({'model_type':model_type,'feature_scheme':feature,'reason':'CNN 不支持 PCA 输入' if model_type == 'cnn1d' else reason})
                 continue
             spec = TrainingSpec.from_legacy({**raw, **({'feature_scheme':feature} if explicit_features else {}), "model_type": model_type}).validated(has_external_test=has_external_test)
             warnings.extend(spec.warnings)
@@ -66,8 +68,8 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
         raise TrainingConfigValidationError("至少选择一个不同的模型")
     if not combinations:
         raise TrainingConfigValidationError('没有可运行的模型 × 特征处理组合')
-    if len(combinations) * int(payload.repeat_count) > 50:
-        raise TrainingConfigValidationError("有效模型 × 特征处理组合数不能超过 50")
+    if len(combinations) * int(payload.repeat_count) > 100:
+        raise TrainingConfigValidationError("有效模型 × 特征处理组合数不能超过 100")
     config = dict(normalized_config or {})
     config["split_seed"] = base_seed
     config["feature_selection_enabled"] = False

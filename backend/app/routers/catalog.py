@@ -12,7 +12,7 @@
 #   边界，不影响后端兼容训练能力。
 #
 # 关键设计约束：
-#   - 模型目录返回所有后端能力；前端只能渲染 ui_visible=true 的六项；
+#   - 模型目录返回所有后端能力；前端只渲染 ui_visible=true 的模型；
 #     可选依赖（mamba-ssm、aggmap）缺失时只标 available=false，
 #     绝不用近似实现静默顶替。
 #   - capability 探测运行在 Web 请求路径上，必须廉价：只查文件存在性与
@@ -49,17 +49,17 @@ router = APIRouter()
 # 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族, ui_visible) 四元组。
 _MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml", True),
-    ("spls_da", "sPLS-DA", "traditional_ml", False),
-    ("pca_lda", "PCA-LDA", "traditional_ml", False),
+    ("spls_da", "sPLS-DA", "traditional_ml", True),
+    ("pca_lda", "PCA-LDA", "traditional_ml", True),
     ("logistic_regression", "Elastic Net", "traditional_ml", True),
     ("svm", "SVM", "traditional_ml", True),
-    ("pca_svm", "PCA-SVM", "traditional_ml", False),
+    ("pca_svm", "PCA-SVM", "traditional_ml", True),
     ("random_forest", "Random Forest", "traditional_ml", True),
     ("xgboost", "XGBoost", "traditional_ml", True),
     ("pca_mlp", "PCA-MLP", "basic_deep", False),
     ("cnn1d", "1D-CNN", "basic_deep", True),
-    ("cnn1d_se", "1D CNN-SE", "convolutional", False),
-    ("resnet1d", "1D ResNet", "convolutional", False),
+    ("cnn1d_se", "1D CNN-SE", "convolutional", True),
+    ("resnet1d", "1D ResNet", "convolutional", True),
     ("inception1d", "1D Inception", "convolutional", False),
     ("tcn1d", "1D TCN", "convolutional", False),
     ("cnn_transformer1d", "CNN-Transformer", "long_range", False),

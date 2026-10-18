@@ -16,7 +16,7 @@ from backend.app.runs import comparison_figures as figures
 from backend.tests.test_word0904_experiments import _small_frame
 
 
-@pytest.mark.parametrize('width', [3, 6, 12])
+@pytest.mark.parametrize('width', [5, 10, 20])
 def test_requested_bins_average_adjacent_points_and_keep_tail(width):
     x = np.arange(1, 30, dtype=float)[None, :]
     expected = [[x[0, start:start + width].mean() for start in range(0, 29, width)]]
@@ -26,7 +26,7 @@ def test_requested_bins_average_adjacent_points_and_keep_tail(width):
     np.testing.assert_allclose(transform.scaler_.mean_, np.array(expected)[0] + 2.5)
 
 
-@pytest.mark.parametrize('count', [5, 10, 15])
+@pytest.mark.parametrize('count', [5, 10, 20])
 def test_fixed_pca_matches_sklearn_and_never_learns_from_test(count):
     rng = np.random.default_rng(42)
     x = rng.normal(size=(24, 40))
@@ -50,7 +50,7 @@ def test_fixed_pca_insufficient_training_dimension_fails_without_clipping(shape)
 
 def test_capability_advertises_six_student_options_and_retains_old_api():
     scheme = training_scheme()
-    assert scheme['student_default_feature_scheme'] == 'bin_3'
+    assert scheme['student_default_feature_scheme'] == 'bin_5'
     assert [(s['id'], s['name']) for s in scheme['feature_schemes'] if s['student_visible']] == STUDENT_SCHEMES
     assert scheme['default_feature_scheme'] == 'full'
     for sid, _ in SCHEMES + STUDENT_SCHEMES:
@@ -106,7 +106,7 @@ def test_fixed_pca_four_modes_keep_groups_and_test_scope(tmp_path, monkeypatch, 
     assert sum(map(sum, result['metrics']['test']['confusion_matrix'])) == (8 if 'external' in strategy else 48 if 'leave_one' in strategy else 4)
 
 
-@pytest.mark.parametrize('sid', ['bin_3','bin_6','bin_12'])
+@pytest.mark.parametrize('sid', ['bin_5','bin_10','bin_20'])
 def test_cnn_accepts_each_new_bin_without_changing_its_training_policy(tmp_path, monkeypatch, sid):
     path = tmp_path / 'cnn.csv'
     grouped_frame(length=160).to_csv(path, index=False)
@@ -122,13 +122,13 @@ def test_cnn_accepts_each_new_bin_without_changing_its_training_policy(tmp_path,
 
 def test_feature_heatmap_supports_six_new_rows_and_mixed_historical_rows():
     base = {'comparable':True,'models':[{'model_type':'pls_da','metrics':{},'experiment':{
-        'selected_configuration':{'scheme_id':'bin_3'},'schemes':[
-            {'scheme_id':sid,'status':'ready' if sid == 'bin_3' else 'not_run','metrics':{'balanced_accuracy':.8} if sid == 'bin_3' else None}
+        'selected_configuration':{'scheme_id':'bin_5'},'schemes':[
+            {'scheme_id':sid,'status':'ready' if sid == 'bin_5' else 'not_run','metrics':{'balanced_accuracy':.8} if sid == 'bin_5' else None}
             for sid, _ in STUDENT_SCHEMES]}}]}
     spec = figures.figure_data(base, kind='features')
-    assert spec['rows'] == ['BIN3','BIN6','BIN12','PCA5','PCA10','PCA15']
+    assert spec['rows'] == ['BIN5','BIN10','BIN20','PCA5','PCA10','PCA20']
     assert spec['values'][0] == [.8] and spec['values'][1] == [None]
     assert spec['selected'][0] == [True]
     mixed = copy.deepcopy(base)
     mixed['models'].append({'model_type':'svm','metrics':{},'experiment':{'schemes':[{'scheme_id':'full','status':'ready','metrics':{'balanced_accuracy':.7}}]}})
-    assert len(figures.figure_data(mixed, kind='features')['rows']) == 13
+    assert len(figures.figure_data(mixed, kind='features')['rows']) == 10

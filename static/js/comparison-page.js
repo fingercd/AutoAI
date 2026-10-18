@@ -6,6 +6,8 @@ import { naturalCompare } from './ui-utils.js';
 const metrics = [['accuracy','Accuracy'],['balanced_accuracy','Balanced Accuracy'],['macro_f1','Macro-F1'],['weighted_f1','Weighted-F1']];
 const featureMetrics = [['accuracy','准确率'],['balanced_accuracy','平衡准确率'],['macro_f1','宏平均 F1'],['weighted_f1','加权 F1']];
 const names = {pls_da:'PLS-DA',logistic_regression:'Elastic Net',svm:'SVM',random_forest:'Random Forest',xgboost:'XGBoost',cnn1d:'1D-CNN'};
+Object.assign(names,{spls_da:'sPLS-DA',pca_lda:'PCA-LDA',pca_svm:'PCA-SVM'});
+Object.assign(names,{cnn1d_se:'1D CNN-SE',resnet1d:'1D ResNet'});
 // 新版能力只从后端目录获取，不设置另一个独立的前端开关。
 let trainingScheme = null;
 let capabilityRequest = null;
@@ -292,12 +294,20 @@ function paint() {
   if(all.scheme_comparisons){
     root.append(combinations(all,tasks));
     state.featureScheme=data.feature_scheme;
-    const choice=focusKey(select(all.scheme_comparisons.map(group=>[group.feature_scheme,group.feature_name]),state.featureScheme,value=>{state.featureScheme=value;paint();}),'detail-feature');
-    root.append(section('按特征处理查看详细结果',[labeled('当前特征处理',choice)]));
-    root.append(element('p',`${data.feature_name}：下方模型指标、混淆矩阵、类别指标、样品预测和逐折配置只属于这一种特征处理。`,'cmp-note'));
+    const scope=section('按特征处理查看详细结果');scope.classList.add('cmp-feature-scope');
+    const choices=element('div','','cmp-feature-choices');choices.setAttribute('role','group');choices.setAttribute('aria-label','选择详细结果的特征处理');
+    all.scheme_comparisons.forEach(group=>{
+      const selected=group.feature_scheme===state.featureScheme;
+      const choice=focusKey(button(group.feature_name,()=>{state.featureScheme=group.feature_scheme;state.page=0;paint();}),`detail-feature-${group.feature_scheme}`);
+      choice.setAttribute('aria-pressed',String(selected));choices.append(choice);
+    });
+    const current=element('p',`当前显示：${data.feature_name}；下方各页签仅展示此特征处理的结果。`,'cmp-note');current.setAttribute('aria-live','polite');
+    scope.append(choices,current);
+    root.append(scope);
   }
   if(!data.comparable){root.append(element('p',data.reason||'所选特征处理暂无完整结果','cmp-empty'));tasks.forEach(task=>task());return;}
-  const {list,items}=tabs(data),workspace=element('div','','cmp-workspace');workspace.append(list);
+  const {list,items}=tabs(data),workspace=element('div','','cmp-workspace');
+  workspace.append(list);
   items.forEach(([key,,,renderPanel])=>{
     const panel=element('div','','cmp-tab-panel');panel.id=`cmp-panel-${key}`;panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',`cmp-tab-${key}`);panel.tabIndex=0;panel.hidden=key!==state.tab;
     if(!panel.hidden)panel.append(renderPanel(data,models,tasks));workspace.append(panel);

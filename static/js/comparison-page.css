@@ -129,6 +129,9 @@
   #view-comparison .cmp-tabs { padding:0 10px; gap:2px; }
   #view-comparison .cmp-tabs button { font-size:12px; padding:16px 10px; }
 }
+#view-comparison .cmp-feature-choices { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:8px; margin:10px 0; }
+#view-comparison .cmp-feature-choices button { padding:8px 14px; }
+#view-comparison .cmp-feature-choices button[aria-pressed=true] { background:#e5f3ee; color:#176f60; border-color:#399582; font-weight:600; }
 @media (max-width:600px) {
   #view-comparison .cmp-page-heading { align-items:flex-start; gap:14px; flex-wrap:wrap; }
   #view-comparison .cmp-page-heading h2 { font-size:23px; }

@@ -37,6 +37,15 @@ test('feature details are scoped and never fall back to merged model averages',(
   const legacy={models:[{model_type:'svm'}]};assert.equal(context.comparisonScope(legacy,''),legacy);
 });
 
+test('feature switch is visible, marks selection and resets sample pagination',()=>{
+  assert.ok(source.includes("choices.setAttribute('role','group')"));
+  assert.ok(source.includes("choice.setAttribute('aria-pressed',String(selected))"));
+  assert.ok(source.includes('state.featureScheme=group.feature_scheme;state.page=0;paint();'));
+  assert.ok(source.includes('当前显示：${data.feature_name}'));
+  assert.ok(!source.includes('cmp-feature-context'));
+  assert.ok(!source.includes("labeled('当前特征处理',choice)"));
+});
+
 test('matrix enlargement stays bounded by both screen dimensions',()=>{
   for(const [width,height] of [[2549,1401],[1920,1080],[1440,900],[540,900],[900,600]]){
     const size=context.matrixZoomWidth(width,height);

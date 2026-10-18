@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch import nn
 from sklearn.cross_decomposition import PLSRegression
-from .feature_engineering import SCHEMES, STUDENT_SCHEMES, ALL_SCHEMES, FeatureTransform, FeatureClassifier
+from .feature_engineering import SCHEMES, STUDENT_SCHEMES, HISTORICAL_SCHEMES, ALL_SCHEMES, DEEP_MODELS, FeatureTransform, FeatureClassifier
 
 
 class PLS0904:
@@ -65,6 +65,15 @@ class CNN0904(nn.Module):
 def candidate_configs(config, model_type, n_features, min_train):
     from . import training as t
     if config.training_profile == 'quick':
+        if model_type == 'spls_da':
+            return [t._clone_config(config, spls_components=n, spls_keepx=min(50, n_features))
+                    for n in (1, 3, 5) if n <= min(min_train - 1, n_features)]
+        if model_type == 'pca_lda':
+            return [t._clone_config(config, pca_components=n)
+                    for n in (5, 10, 20) if n <= min(min_train, n_features)]
+        if model_type == 'pca_svm':
+            return [t._clone_config(config, pca_components=min(10, min_train, n_features),
+                                   svm_c=c, svm_kernel='linear', svm_gamma='scale') for c in (.1, 1., 10.)]
         if model_type == 'pls_da':
             return [t._clone_config(config, pls_components=n) for n in (1, 3, 5)
                     if n <= min(min_train - 1, n_features)]
@@ -118,7 +127,16 @@ def train_cnn(config, x, y, splits, groups, labels, cancel, progress, *, fixed_e
         raise ValueError('变换后特征数不足以执行 CNN 三层池化')
     torch.manual_seed(config.model_seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = CNN0904(profile, len(labels)).to(device)
+    if config.model_type == 'cnn1d':
+        model = CNN0904(profile, len(labels))
+    else:
+        from .models.cnn_se1d import CNNSE1DDocumentV2
+        from .models.resnet1d import ResNet1DDocumentV2
+        constructor = {'cnn1d_se': CNNSE1DDocumentV2, 'resnet1d': ResNet1DDocumentV2}[config.model_type]
+        model = constructor(input_length=x.shape[1], class_count=len(labels), sample_count=profile['N'],
+                            dropout=profile['dropout'], profile=profile)
+        profile['model_class'] = type(model).__name__
+    model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=config.scheduler_factor, patience=config.scheduler_patience, min_lr=config.min_learning_rate)
     criterion = nn.CrossEntropyLoss()
@@ -168,27 +186,29 @@ def train_cnn(config, x, y, splits, groups, labels, cancel, progress, *, fixed_e
 
 def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fold_index, cancel, progress, *, external_final=False):
     from . import training as t
-    from .feature_policy import validate_training_options
+    from .feature_policy import validate_training_options, inapplicable_reason
     validate_training_options(config.training_profile, config.feature_scheme, model_type)
     quick = config.training_profile == 'quick'
-    traditional = model_type != 'cnn1d'
+    traditional = model_type not in DEEP_MODELS
     pool = sorted(set(splits['train']) | set(splits['valid']))
     inner = ([(np.asarray(splits['train']), np.asarray(splits['valid']))] if quick else
              grouped_experiment_folds(y, groups, pool, config.split_seed, labels)) if traditional else []
     results, search, winner = [], [], None
-    schemes = STUDENT_SCHEMES if quick and config.feature_scheme in dict(STUDENT_SCHEMES) else SCHEMES
+    schemes = (STUDENT_SCHEMES if config.feature_scheme in dict(STUDENT_SCHEMES) else
+               HISTORICAL_SCHEMES if config.feature_scheme in dict(HISTORICAL_SCHEMES) else SCHEMES) if quick else SCHEMES
     selected_schemes = [(key, name) for key, name in schemes if not quick or key == config.feature_scheme]
     for scheme, name in schemes:
         if quick and scheme != config.feature_scheme:
-            unsupported = model_type == 'cnn1d' and scheme.startswith('pca_')
+            unsupported = inapplicable_reason(model_type, scheme)
             results.append({'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index,
                             'status': 'not_applicable' if unsupported else 'not_run',
-                            'reason': 'CNN 不使用 PCA 输入' if unsupported else '快速训练仅运行所选特征方案'})
+                            'reason': unsupported or '快速训练仅运行所选特征方案'})
     for scheme_index, (scheme, name) in enumerate(selected_schemes):
         cancel()
         item = {'scheme_id': scheme, 'scheme_name': name, 'fold_index': fold_index, 'status': 'ready', 'reason': None}
-        if not traditional and scheme.startswith('pca_'):
-            results.append({**item, 'status': 'not_applicable', 'reason': 'CNN 保留光谱顺序，不使用 PCA 输入'}); continue
+        reason = inapplicable_reason(model_type, scheme)
+        if reason:
+            results.append({**item, 'status': 'not_applicable', 'reason': reason}); continue
         def update(**extra):
             progress({'feature_scheme': name, 'feature_scheme_index': scheme_index + 1,
                       'feature_scheme_count': len(selected_schemes) if traditional else sum(not key.startswith('pca_') for key, _ in selected_schemes),

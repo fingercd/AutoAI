@@ -75,9 +75,9 @@ def test_invalid_grid_config_fails_before_insertion(config,features):
 
 
 def test_grid_run_limit_is_product_not_just_model_count():
-    from backend.app.feature_engineering import ALL_SCHEMES
-    with pytest.raises(TrainingConfigValidationError,match='不能超过 50'):
-        _batch_config(TrainingBatchRequest(model_types=['pls_da','svm','logistic_regression','random_forest','xgboost','cnn1d'],feature_schemes=[key for key,_ in ALL_SCHEMES],config={'experiment_version':'word-0904'}),has_external_test=False)
+    from backend.app.feature_engineering import ALL_SCHEMES, MODELS
+    with pytest.raises(TrainingConfigValidationError,match='不能超过 100'):
+        _batch_config(TrainingBatchRequest(model_types=sorted(MODELS),feature_schemes=[key for key,_ in ALL_SCHEMES],config={'experiment_version':'word-0904'}),has_external_test=False)
 
 
 def finished_grid(tmp_path):

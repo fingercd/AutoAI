@@ -2713,7 +2713,7 @@
           const folds=$("cvEnabled").checked?(datasetSampleCount||null):1;
           $("plannedExperimentCount").textContent=`预计实验 ${folds===null?'—':plan.configs.length*folds} 次`;
           $("trainingWorkHint").textContent=`${models.length} 个模型 × ${features.length} 种特征处理 = ${models.length*features.length} 个理论组合；${plan.configs.length} 个可运行组合`+
-            (plan.inapplicable.length?`，${plan.inapplicable.length} 个 CNN × PCA 组合不适用（不会替换方案）`:'')+
+            (plan.inapplicable.length?`，${plan.inapplicable.length} 个模型 × 特征处理组合不适用（不会替换方案）`:'')+
             (folds?`；${plan.configs.length} × ${folds} = ${plan.configs.length*folds} 个外层折任务。`:'；加载数据后显示留一折数与总任务量。')+
             '每个外层折还会独立选参/训练，外层折任务数不等于底层拟合次数。';
         } catch(error) {

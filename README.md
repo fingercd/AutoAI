@@ -1,5 +1,7 @@
 # SpecAutoAI
 
+2026-10-18 模型与特征更新：经典建模开放十一项分类模型，恢复 sPLS-DA、PCA-LDA、PCA-SVM、1D CNN-SE、1D ResNet；DSCARNet 不开放。可多选 BIN5/10/20、固定主成分数 PCA5/10/20，默认 BIN5。卷积模型和内置 PCA 模型的外层 PCA 组合标为不适用，全选为 51 个有效组合。旧训练记录保持原样，详见 [本轮计划与验收](docs/plans/2026-10-18-restored-models-and-features.md)。
+
 2026-10-18 并行执行：`run.py` 默认按 CPU 预算启动最多 4 个 Worker，分别领取不同模型×特征组合；同一组合内留一折仍依次执行。Worker 是进程，不等于一个 CPU 核心。每进程限制 BLAS/OpenMP/PyTorch 与树模型线程，避免重复占满整机；检测到 GPU 时最多一个深度模型 Run，其余 Worker 可继续跑 CPU 模型。配置右上角显示预计实验数，当前训练区实时显示完成数/总数与进度条；“实验”指一次外层训练/评估，不是内部选参的精确 fit 次数。详见 [并行与计数](docs/plans/2026-10-18-worker-pool-and-counters.md)。
 
 ## 研究生界面（2026-10-18）

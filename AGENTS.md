@@ -1,5 +1,7 @@
 # SpecAutoAI Agent 工作规则
 
+2026-10-18 最新模型范围：经典 UI 共十一项，除八个传统模型外开放 cnn1d、cnn1d_se、resnet1d；DSCARNet 继续隐藏。学生特征为 BIN5/10/20、固定 PCA5/10/20，默认 BIN5。三种卷积模型与 pca_lda/pca_svm 不叠加外层 PCA，目录 feature_schemes.unsupported_models/inapplicable_reasons 为组合约束来源。全选 51 个有效、15 个不适用组合，组合上限 100。历史 BIN3/6/12、PCA15 保留兼容；恢复模型及真实验证详见 docs/plans/2026-10-18-restored-models-and-features.md，下方早期数量记录按日期使用。
+
 当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
 
 2026-10-18 最新学生界面：模型与 BIN3/6/12、PCA5/10/15 均为复选。每个有效模型×特征处理组合一个 Run，留一时每个 Run 完成 N 个 Sample_ID 外层折；显示理论组合、不适用组合、实际组合与实际外层折任务数，不能把它当成精确底层 fit 次数。CNN×PCA 明确不适用、不创建伪 Run、不替换方案。默认 BIN3、quick、Z-score、默认 seed，CV 可主动勾选并记忆，比例和其他高级参数仍隐藏。结果按特征×模型矩阵总览，详情按特征切换，CV 取 pooled OOF、逐折参数展开，绝不平均或丢弃同模型不同特征结果。旧 Full/方差 PCA、旧单方案 API 与历史结果语义保留。以 `docs/plans/2026-10-18-model-feature-grid.md` 为准。

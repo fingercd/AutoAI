@@ -18,12 +18,12 @@ function harness(memory=new Map()) {
     function selectedModelTypes(){return models;}
     function selectedFeatureSchemes(){return features||[$('featureScheme').value];}
     const STUDENT_CV_STORAGE_KEY='specautoai.student-cv.v1';
-    let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',student_default_feature_scheme:'bin_3',
+    let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',student_default_feature_scheme:'bin_5',
       profiles:[{id:'quick'},{id:'full'}],feature_schemes:[{id:'full'},{id:'bin_5'},{id:'bin_10'},{id:'bin_20'},{id:'pca_90'},{id:'pca_95'},{id:'pca_99'},
-        ...['bin_3','bin_6','bin_12','pca_components_5','pca_components_10','pca_components_15'].map(id=>({id,name:id,student_visible:true,cnn_supported:!id.startsWith('pca_')}))],
+        ...['bin_5','bin_10','bin_20','pca_components_5','pca_components_10','pca_components_20'].map(id=>({id,name:id,student_visible:true,cnn_supported:!id.startsWith('pca_')}))],
       defaults:{epochs:200,batch_size:8,learning_rate:.001,weight_decay:.0001,scheduler_factor:.5,scheduler_patience:10,min_learning_rate:.000001,early_stopping_patience:20,seed:42}};
     ${source};restoreStudentCvPreference();`,context);
-  get('featureScheme').value='bin_3';
+  get('featureScheme').value='bin_5';
   return {run:s=>vm.runInContext(s,context),get,memory,context};
 }
 
@@ -34,7 +34,7 @@ test('student requests ignore old hidden preferences, ratios, profile, normaliza
   const p=h.run('configPayload()');
   assert.equal(p.split_mode,'stratified_holdout');assert.equal(p.split_train,8);assert.equal(p.split_valid,1);assert.equal(p.split_test,1);
   assert.equal(p.experiment_version,'word-0904');assert.equal(p.epochs,200);assert.equal(p.seed,42);
-  assert.equal(p.training_profile,'quick');assert.equal(p.feature_scheme,'bin_3');assert.equal(p.normalization,'zscore');
+  assert.equal(p.training_profile,'quick');assert.equal(p.feature_scheme,'bin_5');assert.equal(p.normalization,'zscore');
   for(const key of ['dropout','svm_c','random_forest_search_iterations','hidden_size'])assert.equal(key in p,false);
 });
 
@@ -66,12 +66,12 @@ test('visible CV switch selects both LOO modes and survives refresh without data
 
 test('six feature choices are capability-filtered, with no Full or old percentages',()=>{
   const h=harness();
-  const features=['bin_3','bin_6','bin_12','pca_components_5','pca_components_10','pca_components_15'];
+  const features=['bin_5','bin_10','bin_20','pca_components_5','pca_components_10','pca_components_20'];
   assert.equal(h.run('JSON.stringify(window.SpecAutoAITrainingPolicy.studentFeatureSchemes(trainingScheme).map(s=>s.id))'),JSON.stringify(features));
   for(const feature of features){
     h.get('featureScheme').value=feature;assert.equal(h.run('configPayload().feature_scheme'),feature);
   }
-  for(const feature of ['full','bin_5','pca_95']){
+  for(const feature of ['full','bin_3','pca_95']){
     h.get('featureScheme').value=feature;assert.throws(()=>h.run('configPayload()'),/不可用/);
   }
   h.run("trainingScheme.feature_schemes=trainingScheme.feature_schemes.filter(s=>s.id!=='pca_components_5')");
@@ -101,28 +101,42 @@ test('single and batch HTTP submission use the same defaults and keep dataset ID
     h.context.rememberCurrentRun=()=>{};h.context.watchCurrentRun=()=>{};h.context.watchBatchComparison=()=>{};
     h.context.currentRunNotice=()=>({});h.context.trainingContractIssue=()=>null;
     h.context.window.SpecAutoAIHealth={ready:true};h.context.window.SpecAutoAIResults={markNewRun(){}};
-    h.get('trainingProgress').replaceChildren=()=>{};h.get('seed').value='999';h.get('featureScheme').value='bin_6';
+    h.get('trainingProgress').replaceChildren=()=>{};h.get('seed').value='999';h.get('featureScheme').value='bin_10';
     h.run(`let trainingRequestInFlight=false,datasetId='main',datasetPath=null,currentRunId=null;models=${JSON.stringify(models)};testDatasetId='external'`);
     await h.run('startTrain()');
     assert.equal(calls.length,1);const [url,body]=calls[0];
     assert.equal(body.dataset_id,'main');assert.equal(body.test_dataset_id,'external');assert.equal('data_path' in body,false);
     assert.equal(body.config.training_profile,'quick');
     assert.equal(body.config.split_mode,'external_test_holdout');
-    if(models.length>1){assert.equal(url,'/api/training/batches');assert.equal(body.base_seed,42);assert.deepEqual(body.model_types,models);assert.deepEqual(body.feature_schemes,['bin_6']);assert.equal('feature_scheme' in body.config,false);}
-    else {assert.equal(body.config.seed,42);assert.equal(body.config.model_type,'svm');assert.equal(body.config.feature_scheme,'bin_6');}
+    if(models.length>1){assert.equal(url,'/api/training/batches');assert.equal(body.base_seed,42);assert.deepEqual(body.model_types,models);assert.deepEqual(body.feature_schemes,['bin_10']);assert.equal('feature_scheme' in body.config,false);}
+    else {assert.equal(body.config.seed,42);assert.equal(body.config.model_type,'svm');assert.equal(body.config.feature_scheme,'bin_10');}
   }
 });
 
 test('model x feature x Sample_ID multiplication and empty selections',()=>{
-  const h=harness();h.run("models=['pls_da','svm'];features=['bin_3','pca_components_5'];$('cvEnabled').checked=true;updateTrainingWorkHint()");
+  const h=harness();h.run("models=['pls_da','svm'];features=['bin_5','pca_components_5'];$('cvEnabled').checked=true;updateTrainingWorkHint()");
   assert.match(h.get('trainingWorkHint').textContent,/4 × 24 = 96/);
   assert.equal(h.get('plannedExperimentCount').textContent,'预计实验 96 次');
   assert.equal(h.run("window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,models,features,false,true).configs.length"),4);
   h.run("models=['pls_da','cnn1d'];updateTrainingWorkHint()");assert.match(h.get('trainingWorkHint').textContent,/3 × 24 = 72/);
   h.run('features=[]');assert.throws(()=>h.run('configPayload()'),/至少选择一种/);
   h.run('updateTrainingWorkHint()');assert.equal(h.get('plannedExperimentCount').textContent,'预计实验 0 次');
-  h.run("features=['bin_3'];datasetSampleCount=0;updateTrainingWorkHint()");
+  h.run("features=['bin_5'];datasetSampleCount=0;updateTrainingWorkHint()");
   assert.equal(h.get('plannedExperimentCount').textContent,'预计实验 — 次');
+});
+
+test('eleven models and six feature schemes produce 51 valid combinations',()=>{
+  const h=harness();
+  const result=h.run(`(()=>{
+    for(const row of trainingScheme.feature_schemes){
+      row.unsupported_models=row.id.startsWith('pca_')?['cnn1d','cnn1d_se','resnet1d','pca_lda','pca_svm']:[];
+    }
+    const plan=window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,
+      ['pls_da','spls_da','pca_lda','logistic_regression','svm','pca_svm','random_forest','xgboost','cnn1d','cnn1d_se','resnet1d'],
+      window.SpecAutoAITrainingPolicy.studentFeatureSchemes(trainingScheme).map(s=>s.id),false,true);
+    return JSON.stringify({valid:plan.configs.length,skipped:plan.inapplicable.length});
+  })()`);
+  assert.deepEqual(JSON.parse(result),{valid:51,skipped:15});
 });
 
 test('Raman always submits arPLS even with stale hidden custom fields',()=>{

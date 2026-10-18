@@ -62,6 +62,9 @@ MODEL_DISPLAY_NAMES = {
     "cnn1d": "1D-CNN",
     "spls_da": "sPLS-DA",
     "pca_svm": "PCA-SVM",
+    "pca_lda": "PCA-LDA",
+    "cnn1d_se": "1D CNN-SE",
+    "resnet1d": "1D ResNet",
 }
 EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _INVALID_SHEET_CHARS = str.maketrans({char: "_" for char in ":\\/?*[]"})
