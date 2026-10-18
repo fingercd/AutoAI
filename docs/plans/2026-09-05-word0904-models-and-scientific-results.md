@@ -24,4 +24,4 @@ CNN 是独立 CNN0904，实现三段 Conv/BN/ReLU/MaxPool、AdaptiveAvgPool、Dr
 
 后端 feature_engineering.py 定义折内变换，training_experiments.py 完成方案与参数选择，training.py 保留原调度、划分、指标汇总与产物发布。feature_experiments.json/csv 是 Manifest 校验的公开结果；完整模型与拟合变换仍为私有产物。
 
-验收包括完整后端回归、六模型固定合成数据、三条额外外部/CV 路径、防泄露、组件数值测试和多宽度浏览器检查。六模型验收中传统模型执行完整网格，CNN 使用两 epoch 验证训练闭环；不将该小数据成绩解读为模型泛化能力。根目录无 data.csv，真实实验效果未验收。
+验收包括完整后端回归、六模型固定合成数据、三条额外外部/CV 路径、防泄露、组件数值测试和多宽度浏览器检查。六模型验收中传统模型执行完整网格，CNN 使用两 epoch 验证训练闭环；不将该小数据成绩解读为模型泛化能力。该历史轮次未验收真实实验效果，不作为当前数据可用性的判断依据。

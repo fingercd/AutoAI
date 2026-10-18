@@ -2,6 +2,8 @@
 
 当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
 
+2026-10-18 学生界面调整：经典页面保留原 UI 和导航，建模配置只开放模型与全特征 / Binning 10 / PCA 95% 三种选择；新网页请求固定 quick、Z-score、默认 seed，无独立 Test 时 8:1:1，有独立 Test 时主数据 8:2，不读取旧会话的划分/CV 设置。后端 API 的完整比较、四种评估模式、自定义比例和模型能力不变。下文涉及学生界面开放这些控件的历史说明以本条为准。拉曼页面固定 arPLS；HPLC 范围与插值保留。方案与验收见 `docs/plans/2026-10-18-student-ui.md`。
+
 ## 默认协作规则
 
 - 默认使用中文回复，除非用户明确要求英文。
@@ -27,7 +29,7 @@
 - 训练 HTTP 请求只创建 queued Run，不直接启动训练；BackgroundTasks 不承担训练执行。独立 Worker 从 SQLite 队列领取任务，状态转换由事务、claim token 和 lease 控制。
 - `run.py` 默认托管并监督 Worker；仅启动 uvicorn 时还需单独运行 `python -m backend.app.runs.worker`。排查 queued 或更新未生效时核对 Web/Worker 是否加载同一代码、`/health` 的 worker 可用性与契约兼容性，以及 `/api/models` 响应中的 `training_scheme`；浏览器刷新不能更新 Python 进程。不在训练进行中主动强制重启服务。
 - local 模式只面向本机；server 模式必须配置 `AUTOAI_DEPLOYMENT_MODE=server`、至少 32 字符的 `AUTOAI_API_TOKEN` 和明确 CORS 来源。请求体不接受 owner_id/tenant_id，身份只经服务端 Principal 注入。
-- server 模式训练只接受 `dataset_id`/`test_dataset_id`，不接受浏览器传入 data_path，也不回退根目录 `data.csv`。浏览器 token 只能进当前标签页 sessionStorage，不得写入 URL、localStorage、日志或仓库。
+- server 模式训练只接受 `dataset_id`/`test_dataset_id`，不接受浏览器传入 data_path，也不回退本地文件。浏览器 token 只能进当前标签页 sessionStorage，不得写入 URL、localStorage、日志或仓库。
 - Dataset 的访问及 Run/Batch 的读取、取消、删除和下载必须按 Principal scope；历史 owner 为空 Run 在 server 默认不可见，只能通过显式 migration dry-run/rebind。
 - 前端使用原生 Hash 路由；专属结果 URL 为 `#/results?run_id=...`，导航顺序固定为“AI 建模 → 建模结果 → 训练记录”。不引入 React/Vue/Vite。
 
@@ -88,7 +90,7 @@
 
 纯文档修改检查事实、引用、UTF-8 编码和目标文件的 `git diff --check -- <文件>`，无需启动服务、训练或完整运行时测试。运行时代码改动先执行最相关专项测试，交付前运行整个 `backend/tests` 与 compileall；测试和验收使用隔离临时目录，避免影响现有训练与用户产物。
 
-除单元/冒烟测试外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，交付前在项目根目录存在本地 `data.csv` 时还需要跑一次真实数据流程验证；`data.csv` 是本地验证数据，不能提交进 Git。优先选择轻量模型完成一次训练/评估闭环；如果因为耗时、环境、数据缺失或数据状态无法运行，必须在交付说明中明确写出未运行原因。
+除单元/冒烟测试外，凡是改动训练、评估、模型、预处理或前端训练请求逻辑，交付前使用本轮用户指定或已确认可用的真实 CSV 完成一次流程验证。当前本机验证文件为根目录 `测试.csv`；不要求验证文件使用固定英文文件名，也不能因某个历史文件名不存在就判定没有验证数据。先核验实际文件和格式，再优先用轻量模型完成训练/评估闭环；数据和产物不提交 Git。如果确实无法运行，明确说明实际原因。
 
 ```powershell
 Set-Location -LiteralPath 'D:\PythonProject\AutoAI'
@@ -100,7 +102,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 
 前端 `static/index.html` 内联脚本改动后，先抽取 `<script>` 内容，再用 `node --check --input-type=commonjs` 做语法解析，并运行相关 Node 纯函数/契约测试。没有 Playwright 时不要强行引入新依赖。
 
-训练入口改动重点覆盖四种划分、自定义比例、逐折防泄露与 Test 口径；多模型改动保留进度、刷新恢复、停止重置、比较和归档回归。新版完整训练验收要求传统模型完整网格与 CNN 正常调度/早停流程，不以读取历史结果或仅跑两轮 CNN 代替；合成数据只证明相应功能，不代表真实数据性能。2026-09-07 核对时根目录无 `data.csv`，后续任务仍须重新检查，不能擅自改用上传数据启动训练。
+训练入口改动重点覆盖四种划分、自定义比例、逐折防泄露与 Test 口径；多模型改动保留进度、刷新恢复、停止重置、比较和归档回归。新版完整训练验收要求传统模型完整网格与 CNN 正常调度/早停流程，不以读取历史结果或仅跑两轮 CNN 代替；合成数据只证明相应功能，不代表真实数据性能。历史文件状态不代表当前数据是否可用；按本轮指定文件核验，不擅自改用其他上传数据启动训练。
 
 ## 交付说明
 

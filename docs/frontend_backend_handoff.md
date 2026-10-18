@@ -317,7 +317,7 @@ GET /api/training/runs?projection=summary&limit=20&cursor=<Run ID>
       "status": "success",
       "result_state": "ready",
       "model_type": "pls_da",
-      "dataset_name": "teacher-data.csv",
+      "dataset_name": "example.csv",
       "created_at": "...",
       "started_at": "...",
       "finished_at": "...",
@@ -517,4 +517,4 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
 ```
 
-前端脚本还必须执行 Node 语法检查和纯函数测试。项目根目录存在本地 `data.csv` 时，使用轻量模型完成上传 → queued → worker → succeeded → 结果 URL → 刷新 → 下载的真实闭环；数据、Run 目录和模型产物不得提交进 Git。
+前端脚本还必须执行 Node 语法检查和纯函数测试。使用本轮指定或已确认可用的真实 CSV（当前本机为 `测试.csv`），通过轻量模型完成上传 → queued → worker → succeeded → 结果 URL → 刷新 → 下载的真实闭环；不要求固定文件名。数据、Run 目录和模型产物不得提交进 Git。

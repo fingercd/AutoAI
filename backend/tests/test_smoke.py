@@ -1602,10 +1602,10 @@ def test_classic_batch_comparison_renders_required_figures_without_metadata_bann
     assert 'text.setAttribute("font-weight", "600")' in content
 
 
-def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
+def test_main_ui_uses_student_policy_and_prevents_duplicate_train_requests():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     policy = (ROOT / "static/js/classic-training-policy.js").read_text(encoding="utf-8")
-    assert 'SpecAutoAITrainingPolicy.payload' in content
+    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
     assert 'train+valid+(three?test:0)!==10' in policy
     assert "训练、验证、测试比例必须为正整数且相加为 10" in policy
     assert "trainingRequestInFlight" in content
@@ -1615,16 +1615,16 @@ def test_main_ui_enforces_cv_split_sum_and_prevents_duplicate_train_requests():
     assert "startButton.disabled = false" in content
 
 
-def test_main_ui_external_dataset_supports_optional_cv_audit():
+def test_main_ui_external_dataset_uses_defaults_and_legacy_cv_remains_in_policy():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    policy = (ROOT / "static/js/classic-training-policy.js").read_text(encoding="utf-8")
 
-    assert "function applySplitPreset(mode)" in content
     assert 'id="cvOptions"' in content
     assert 'id="splitTestField"' in content
-    assert '$("cvOptions").classList.remove("hidden")' in content
-    assert 'leave_one_sample_id_cv_with_external_test' in content
-    assert 'applySplitPreset(window.SpecAutoAITrainingPolicy.mode(hasExternalTest,cvEnabled))' in content
-    assert '$("cvEnabled").checked = false' not in content
+    assert '主数据按 8:2 划分训练 / 验证，独立测试集只用于最终评估' in content
+    assert 'leave_one_sample_id_cv_with_external_test' in policy
+    assert 'applySplitPreset' not in content
+    assert 'external?[8,2,0]:[8,1,1]' in policy
 
 
 def test_main_ui_uses_documented_deep_training_defaults():
@@ -1654,22 +1654,21 @@ def test_main_ui_handles_cancelled_runs_while_explainability_is_hidden():
     assert 'id="intensitySummary"' not in content
 
 
-def test_main_ui_exposes_custom_split_and_cv_epoch_summary():
+def test_main_ui_uses_student_defaults_and_preserves_cv_result_summary():
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
     assert '["数据量", summary.samples]' in content
     assert '["样本数", sampleIds.group_count]' in content
     assert '["样品种类",' not in content
-    assert 'SpecAutoAITrainingPolicy.payload' in content
-    assert 'rememberSplitPreferences();' in content
-    assert "readSplitNumber('splitTrain',8)" in content
-    assert 'let cvEnabled = $("cvEnabled").checked;' in content
+    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
+    assert 'rememberSplitPreferences' not in content
+    assert 'splitPreferences.getCv()' not in content
     assert 'trainingScheme = payload.training_scheme || null;' in content
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
-    assert "开启交叉验证" in content
+    assert "系统自动设置训练参数" in content
     assert "每个独立样品都会让整套建模重新执行一次" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content
@@ -1691,7 +1690,7 @@ def test_training_records_use_summary_projection_and_result_page_owns_split_metr
     content = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
     results = (ROOT / "static" / "js" / "run-results.js").read_text(encoding="utf-8")
 
-    assert '["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "测试集 Macro F1", "状态", ""]' in content
+    assert '["训练时间", "耗时", "数据集", "模型", "测试集 Macro F1", "状态", "操作"]' in content
     assert "run.test_macro_f1" in content
     assert 'new URLSearchParams({ projection: "summary", limit: "50" })' in content
     assert 'const datasetName = String(run.dataset_name || run.config?.dataset_name || "-");' in content
@@ -1716,13 +1715,13 @@ def test_main_ui_manual_explains_sample_id_group_split():
 
     assert "AI 建模操作说明" in content
     assert "数据划分比例" in content
-    assert "开启交叉验证" in content
+    assert "系统按 Sample_ID 整组划分" in content
     assert "外层留一交叉验证" not in content
     assert "独立测试集" in content
     assert "external_test_holdout" in content
     assert "加载独立测试集" in content
     assert "已停用" not in content
-    assert "相同 Sample_ID 会整组进入同一数据分区" in content
+    assert "相同 Sample_ID 会整组划分，避免重复测量泄露到测试集" in content
     assert "相同 Sample_ID 会整组划分，避免重复测量泄漏到不同集合" in content
     assert "每个独立样品都会让整套建模重新执行一次" in content
 

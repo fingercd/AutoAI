@@ -68,7 +68,7 @@ def test_official_ui_exposes_dscarnet_input_modes_only_for_dscarnet():
     # Hidden legacy controls remain, but the six-model Word request cannot
     # accidentally carry hidden DSCARNet parameters.
     assert 'dscarnet_input_mode: $("dscarnetInputMode").value' not in content
-    assert 'SpecAutoAITrainingPolicy.payload' in content
+    assert 'SpecAutoAITrainingPolicy.studentPayload' in content
     assert '$("dscarnetOptions").classList.toggle("hidden", modelType !== "dscarnet")' in content
 
 
@@ -272,4 +272,4 @@ def test_classic_ui_uses_unified_business_terms_and_test_macro_f1_column():
     assert "formatTrainingTime(run)," in html
     assert "测试集 Macro F1" in html
     assert "run.test_macro_f1" in html
-    assert "cell.colSpan = 8" in html
+    assert "cell.colSpan = 7" in html

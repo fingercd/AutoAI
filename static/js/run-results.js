@@ -636,8 +636,6 @@ function renderOverview(result) {
     stateBadge,
   );
   const grid = element('dl', { className: 'overview-grid' },
-    overviewItem('Run ID', runId, copyButton(runId)),
-    overviewItem('模型 ID', model.type),
     overviewItem('数据集', dataset.name || dataset.dataset_id),
     overviewItem('评估方式', evaluationLabel(evaluation.strategy)),
     overviewItem('主指标口径', aggregationLabel(evaluation.primary_aggregation)),
@@ -648,14 +646,21 @@ function renderOverview(result) {
     overviewItem('样本数', dataset.sample_id_count),
     overviewItem('类别数', dataset.class_count),
     overviewItem('特征数', dataset.feature_count),
-    overviewItem('数据指纹', dataset.sha256 ? String(dataset.sha256).slice(0, 16) : null),
     overviewItem('交叉验证折数', evaluation.fold_count),
+  );
+  const technical = element('details', {},
+    element('summary', { text: '任务技术详情' }),
+    element('dl', { className: 'overview-grid' },
+      overviewItem('Run ID', runId, copyButton(runId)),
+      overviewItem('模型 ID', model.type),
+      overviewItem('数据指纹', dataset.sha256 ? String(dataset.sha256).slice(0, 16) : null),
+    ),
   );
   const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
   const warningList = warnings.length
     ? element('div', { className: 'result-warnings' }, ...warnings.map((warning) => notice('warning', '结果提示', String(warning))))
     : null;
-  replaceChildren(target, titleRow, grid, warningList);
+  replaceChildren(target, titleRow, grid, technical, warningList);
 }
 
 /**
@@ -1903,7 +1908,7 @@ function renderResultError(error, runId) {
 }
 
 /**
- * 渲染"结果落地页"（无 run_id 时）：Run ID 输入表单 + 最近 10 条任务列表。
+ * 渲染"结果落地页"（无 run_id 时）：最近 10 条任务列表，ID 查询默认折叠。
  * 列表优先用 projection=summary 轻量投影（含可空 test_macro_f1），旧后端不支持
  * 该参数时回退完整列表接口。列表项兼容新旧两种 Run 形状（扁平字段或嵌套 run/model）。
  */
@@ -1919,7 +1924,8 @@ async function renderResultLanding() {
     event.preventDefault();
     if (input.value.trim()) navigateToResult(input.value.trim());
   });
-  replaceChildren(target, notice('empty', '请选择一次训练任务', '输入 Run ID，或从下面的最近任务与训练记录进入。'), form);
+  replaceChildren(target, notice('empty', '请选择一次训练任务', '从下面的最近任务或训练记录查看结果。'),
+    element('details', {}, element('summary', { text: '按任务 ID 查找' }), form));
   const overview = byId('resultOverview');
   try {
     let runs;
@@ -1934,7 +1940,6 @@ async function renderResultLanding() {
       const timeLabel = trainingTimeText(run);
       const link = element('a', { className: 'button secondary compact', href: buildResultHash(runId), text: '查看' });
       return element('tr', {},
-        element('td', {}, element('span', { className: 'truncate-text', text: runId, title: runId })),
         element('td', {}, element('span', { className: 'truncate-text', text: datasetName, title: datasetName })),
         element('td', { text: modelName }),
         element('td', { text: stateMeta(canonicalState(run))[0] }),
@@ -1944,9 +1949,9 @@ async function renderResultLanding() {
       );
     });
     replaceChildren(overview,
-      element('div', { className: 'section-heading' }, element('div', {}, element('h2', { text: '最近任务' }), element('p', { text: '列表只加载摘要，完整结果在进入 Run 后获取。' }))),
+      element('div', { className: 'section-heading' }, element('div', {}, element('h2', { text: '最近任务' }))),
       rows.length ? element('div', { className: 'table-scroll' }, element('table', {},
-        element('thead', {}, element('tr', {}, ...['Run ID', '数据集', '模型', '状态', '训练时间', '耗时', ''].map((label) => element('th', { text: label })))),
+        element('thead', {}, element('tr', {}, ...['数据集', '模型', '状态', '训练时间', '耗时', ''].map((label) => element('th', { text: label })))),
         element('tbody', {}, ...rows),
       )) : notice('empty', '暂无训练记录', '完成一次 AI 建模后可在此查看结果。'),
     );

@@ -1331,6 +1331,7 @@
         border-radius: 8px;
         background: #fff;
       }
+      [hidden],
       .hidden {
         display: none !important;
       }
@@ -1514,8 +1515,8 @@
             <summary>AI 建模操作说明</summary>
             <ol>
               <li>加载 wide-feature-v2 宽表：前三列为 Index、Label、Sample_ID，第 4 列 Name 保留原文件名，第 5 列起是真实 XXX 坐标；旧 wide-feature-v1 仍可加载。</li>
-              <li>选择模型和评估方式。相同 Sample_ID 会整组进入同一数据分区。</li>
-              <li>提交后只创建排队任务，训练由独立 worker 执行；完成后可进入专属结果页。</li>
+              <li>选择模型和特征处理，然后开始训练。相同 Sample_ID 会整组划分，避免重复测量泄露到测试集。</li>
+              <li>系统自动设置训练参数；完成后可进入建模结果页查看指标和图表。</li>
             </ol>
           </details>
           <div class="grid modeling-primary-grid">
@@ -1532,7 +1533,7 @@
             </div>
             <div class="panel">
               <h2>训练配置</h2>
-              <label for="modelTypeChoices">模型架构（可多选）</label>
+              <label for="modelTypeChoices">选择模型（可多选）</label>
               <div id="modelTypeChoices" class="model-checkbox-grid" aria-describedby="modelCatalogHint" aria-live="polite">
                 正在加载模型目录…
               </div>
@@ -1543,13 +1544,17 @@
               <p id="modelCatalogHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
                 请选择一个或多个模型；同一批次使用固定的数据划分进行公平比较。
               </p>
+              <div hidden>
               <label for="trainingProfile">训练方式</label>
               <select id="trainingProfile"><option value="quick">快速训练（单方案、一次验证）</option></select>
+              </div>
               <div id="featureSchemeField">
                 <label for="featureScheme">特征处理</label>
                 <select id="featureScheme"><option value="full">全特征</option></select>
               </div>
               <p id="trainingWorkHint" role="status" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0"></p>
+              <!-- 保留共享脚本使用的 ID，但学生界面不开放训练参数。请求固定使用默认值。 -->
+              <div hidden>
               <label>数据划分比例</label>
               <div id="customSplitOptions" aria-hidden="false">
                 <label id="customSplitLabel">训练 / 验证 / 测试比例（总和为 10）</label>
@@ -1561,9 +1566,11 @@
                   </div>
                 </div>
               </div>
+              </div>
               <p id="splitModeHint" style="color:#667085;font-size:12px;line-height:1.5;margin:6px 0 0">
-                默认目标为 8:1:1；Valid 和 Test 至少各包含每类 1 个样品，数据较少时实际占比会自动提高。加载独立测试集或开启交叉验证时，仅使用训练/验证比例。
+                系统按 Sample_ID 整组划分，训练 / 验证 / 测试目标比例为 8:1:1；小样本时实际比例可能调整。
               </p>
+              <div hidden>
               <div id="cvOptions">
                 <label class="checkbox-line">
                   <input id="cvEnabled" type="checkbox" />
@@ -1650,6 +1657,7 @@
                 <label for="seed">随机种子</label>
                 <input id="seed" type="number" value="42" min="0" />
               </div>
+              </div>
               <div class="actions">
                 <button class="primary" id="startTrain">开始训练</button>
               </div>
@@ -1721,6 +1729,8 @@
                 <label for="ramanXMax">拉曼位移上限（留空不限制）</label>
                 <input id="ramanXMax" type="number" step="any" placeholder="例如 1800" />
               </div>
+              <p class="section-note">基线校正：默认 arPLS，先截取范围再校正。</p>
+              <div hidden>
               <label for="ramanBaselineMethodMode">基线校正方法</label>
               <select id="ramanBaselineMethodMode">
                 <option value="arPLS">默认 arPLS</option>
@@ -1729,6 +1739,7 @@
               <div id="ramanCustomMethodBox" class="hidden">
                 <label for="ramanCustomMethod">自选方法名称</label>
                 <input id="ramanCustomMethod" type="text" value="poly" placeholder="例如 poly / als / drPLS / arPLS" />
+              </div>
               </div>
               <div class="actions">
                 <button class="primary" data-preprocess="raman">生成整理 CSV</button>
@@ -1917,11 +1928,11 @@
          下方经典脚本之前按顺序执行）：向 window 注入 SpecAutoAIUI /
          SpecAutoAITrainingStore / SpecAutoAIResults 等命名空间。
          就绪后派发 "specautoai:modules-ready" 事件驱动主脚本初始化。 -->
-    <script src="/static/js/classic-training-policy.js"></script>
+    <script src="/static/js/classic-training-policy.js?v=20261018-student-ui"></script>
     <script type="module" src="/static/js/ui-utils.js"></script>
     <script type="module" src="/static/js/training-store.js"></script>
     <script type="module" src="/static/js/comparison-page.js?v=2"></script>
-    <script type="module" src="/static/js/run-results.js?v=20260820-compact-visualization-v3"></script>
+    <script type="module" src="/static/js/run-results.js?v=20261018-student-ui"></script>
     <script>
       /*
        * ====================================================================
@@ -1934,7 +1945,7 @@
        *   4. Canvas 绘图公共层     —— HiDPI 适配 + 曲线/对比图绘制
        *   5. 数据集摘要与上传      —— renderSummary / uploadDataset
        *   6. 健康检查与版本契约    —— run-result-v1 契约与 worker 兼容性
-       *   7. TrainConfig 组装      —— 三种评估口径的互斥与比例校验
+       *   7. TrainConfig 组装      —— 学生界面默认策略与独立测试集切换
        *   8. Run 生命周期          —— 创建 queued Run、轮询、进度渲染
        *   9. 预处理表单编排        —— 拉曼 / HPLC 管线提交与结果预览
        *  10. 训练记录与删除       —— projection=summary 列表、终态删除
@@ -2622,35 +2633,7 @@
         return Number(value);
       }
 
-      /** 读取划分比例输入，非法值（非数字）回退到 fallback。 */
-      function readSplitNumber(id, fallback) {
-        const value = Number($(id).value);
-        return Number.isFinite(value) ? value : fallback;
-      }
-
-      /**
-       * 按评估口径写入划分比例预设：
-       * 四模式分别记住用户比例；external/loo/external_loo 初始 8:2，
-       * holdout 初始 8:1:1。独立测试集不取消留一法，重复渲染不重置输入。
-       * 默认值与校验在 classic-training-policy；后端仍执行独立校验。
-       */
       let trainingScheme = null;
-      const splitPreferences = window.SpecAutoAITrainingPolicy.createPreferences(window.sessionStorage);
-      let displayedSplitMode = null;
-      $("cvEnabled").checked = splitPreferences.getCv();
-
-      function rememberSplitPreferences() {
-        if (displayedSplitMode) splitPreferences.set(displayedSplitMode, [readSplitNumber('splitTrain',8),readSplitNumber('splitValid',2),readSplitNumber('splitTest',0)]);
-        splitPreferences.setCv($("cvEnabled").checked);
-      }
-
-      function applySplitPreset(mode) {
-        if (displayedSplitMode === mode) return;
-        rememberSplitPreferences();
-        displayedSplitMode = mode;
-        const values = splitPreferences.get(mode);
-        ['splitTrain','splitValid','splitTest'].forEach((id,i)=>{$(id).value=String(values[i]);});
-      }
 
       function applyTrainingSchemeControls() {
         if (!trainingScheme?.enabled) return;
@@ -2664,49 +2647,30 @@
         [...Object.keys(fixed),'dropout','hiddenSize','transformerHeads','rfEstimators','rfSearchIterations','svmC','svmGamma','xgbEstimators','xgbMaxDepth','xgbLearningRate','xgbSubsample','xgbColsample','xgbRegLambda','classBalance'].forEach(id=>{if($(id)){$(id).disabled=true;$(id).title='Word 0904 方案自动搜索或使用固定训练策略';}});
         [...$("normalization").options].forEach(option=>{option.disabled=!['zscore','minmax'].includes(option.value);});
         if (!['zscore','minmax'].includes($("normalization").value)) $("normalization").value='zscore';
-        for (const [id, choices] of [['trainingProfile',trainingScheme.profiles],['featureScheme',trainingScheme.feature_schemes]]) {
-          const select=$(id), previous=select.value;
-          select.replaceChildren(...choices.map(choice=>{
-            const option=document.createElement('option');option.value=choice.id;option.textContent=choice.name;return option;
-          }));
-          select.value=choices.some(choice=>choice.id===previous)?previous:(id==='trainingProfile'?trainingScheme.default_profile:trainingScheme.default_feature_scheme);
-        }
+        $("trainingProfile").value='quick';
+        const select=$("featureScheme"), previous=select.value;
+        const choices=window.SpecAutoAITrainingPolicy.studentFeatureSchemes(trainingScheme);
+        select.replaceChildren(...choices.map(choice=>{
+          const option=document.createElement('option');option.value=choice.id;option.textContent=choice.name;return option;
+        }));
+        select.value=choices.some(choice=>choice.id===previous)?previous:trainingScheme.default_feature_scheme;
         updateTrainingWorkHint();
       }
 
       function updateTrainingWorkHint() {
-        const quick=$("trainingProfile").value==='quick';
-        $("featureSchemeField").classList.toggle('hidden',!quick);
-        const cnnSelected=selectedModelTypes().includes('cnn1d');
-        [...$("featureScheme").options].forEach(option=>{
-          option.disabled=cnnSelected && !trainingScheme.feature_schemes.find(s=>s.id===option.value).cnn_supported;
-        });
-        if (cnnSelected && $("featureScheme").value.startsWith('pca_')) $("featureScheme").value='full';
-        $("trainingWorkHint").textContent=quick
-          ? '传统模型最多尝试 3 套参数，用验证样品检查一次，选定后重训；CNN 只训练所选方案，保留早停。'
-          : '传统模型比较 7 种特征方案，每套参数轮换检查 5 次；CNN 比较 4 种方案。';
+        const incompatible=selectedModelTypes().includes('cnn1d') && $("featureScheme").value.startsWith('pca_');
+        $("trainingWorkHint").textContent=incompatible
+          ? '1D-CNN 不支持 PCA：请取消选择该模型，或改选全特征 / Binning。系统不会自动替换你的选择。'
+          : '系统自动设置训练参数；仅运行所选特征处理。相同 Sample_ID 的重复测量始终整组划分。';
       }
 
-      // 将表单转换成后端 TrainConfig。四种评估模式在这里先做比例校验，
-      // 后端 classification_policy 会再次校验，前端校验不能替代服务端约束。
-      /**
-       * 把整个训练配置表单组装成后端 TrainConfig JSON。
-       * 评估口径推导规则（与 AGENTS.md 契约一致）：
-       *  - 有独立测试集 → external_test_holdout；开启留一时保留外部 Test；
-       *  - 开启交叉验证 → leave_one_sample_id_cv（每折留 1 个 Sample_ID）；
-       *  - 否则 → stratified_holdout，三项比例之和必须等于 10。
-       * 两段模式 train+valid==10，不提交 split_test；其他为三段正整数比。
-       * TEMPORARILY_HIDDEN：解释性配置不随训练请求发送。
-       * @returns {object} TrainConfig
-       * @throws {Error} 比例不满足约束时抛出中文错误（调用方 alert）
-       */
+      // 学生界面固定 quick、Z-score 与默认划分，不读取旧会话或隐藏控件的参数。
+      // 后端兼容 API 仍支持完整比较、自定义比例和留一法。
       function configPayload() {
-        rememberSplitPreferences();
-        return window.SpecAutoAITrainingPolicy.payload(trainingScheme,
-          window.SpecAutoAITrainingPolicy.mode(Boolean(testDatasetId || testDatasetPath),$("cvEnabled").checked),
-          [readSplitNumber('splitTrain',8),readSplitNumber('splitValid',1),readSplitNumber('splitTest',1)],
-          $("normalization").value,$("modelType").value,
-          {training_profile:$("trainingProfile").value,feature_scheme:$("featureScheme").value});
+        const models=selectedModelTypes();
+        const configs=models.map(model=>window.SpecAutoAITrainingPolicy.studentPayload(trainingScheme,
+          Boolean(testDatasetId || testDatasetPath),model,$("featureScheme").value));
+        return configs[0];
       }
 
       /**
@@ -3361,8 +3325,8 @@
         try {
           const selectedModels = selectedModelTypes();
           if (!selectedModels.length) throw new Error("至少选择一个可用模型");
-          resetTrainingPanel(selectedModels.length > 1 ? "正在创建多模型训练批次" : "模型正在训练");
           const config = configPayload();
+          resetTrainingPanel(selectedModels.length > 1 ? "正在创建多模型训练批次" : "模型正在训练");
           const body = { config: { ...config, model_type: selectedModels[0] } };
           if (datasetId) body.dataset_id = datasetId;
           else body.data_path = datasetPath;
@@ -3379,7 +3343,7 @@
           const result = await api("/api/training/batches", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...body, model_types: selectedModels, base_seed: Number($("seed").value), config: batchConfig }),
+            body: JSON.stringify({ ...body, model_types: selectedModels, base_seed: seed, config: batchConfig }),
           });
           $("runStatus").textContent = `批次 ${result.batch_id} 已排队`;
           $("runStatus").className = "status pending";
@@ -3660,12 +3624,8 @@
       window.openRun = (runId) => window.SpecAutoAIResults?.navigateToResult(runId);
 
       // 预处理表单编排：色谱 UI 固定映射到服务端配置驱动的 HPLC 管线。
-      /** 读取拉曼基线校正方法："custom" 时取用户输入（空则回退 arPLS），
-       *  默认固定 arPLS；处理顺序永远是先截取范围再基线校正（后端保证）。 */
+      /** 学生界面固定 arPLS；后端仍保留其他基线算法。 */
       function selectedRamanBaselineMethod() {
-        if ($("ramanBaselineMethodMode").value === "custom") {
-          return $("ramanCustomMethod").value.trim() || "arPLS";
-        }
         return "arPLS";
       }
 
@@ -3999,8 +3959,8 @@
        * 投影含可空 test_macro_f1，仅成功且 Manifest 完整的 Run 才有值；
        * CV 取 pooled test 而非 fold mean）；接口不支持分页参数的旧后端
        * 自动回退到无参请求。有 next_cursor 时渲染"加载更多"按钮追加分页。
-       * 每行：训练时间/耗时/Run ID/数据集名/模型显示名/测试集 Macro F1/
-       * 状态徽章 + 操作（查看结果或进度、复制 ID、删除）。
+       * 每行：训练时间/耗时/数据集名/模型显示名/测试集 Macro F1/
+       * 状态徽章 + 当前状态可用的操作；Run ID 留在结果页技术详情中。
        * 删除按钮仅终态（succeeded/failed/cancelled/paused）可用。
        * @param {{append?: boolean}} [options] append=true 表示追加下一页
        */
@@ -4023,7 +3983,7 @@
         const table = document.createElement("table");
         const head = document.createElement("thead");
         const headRow = document.createElement("tr");
-        ["训练时间", "耗时", "Run ID", "上传的数据集名", "模型", "测试集 Macro F1", "状态", ""].forEach((label) => {
+        ["训练时间", "耗时", "数据集", "模型", "测试集 Macro F1", "状态", "操作"].forEach((label) => {
           const th = document.createElement("th");
           th.textContent = label;
           headRow.append(th);
@@ -4042,15 +4002,14 @@
           const values = [
             formatTrainingTime(run),
             formatDuration(run),
-            run.run_id || "-",
             datasetName,
             modelName,
             window.SpecAutoAIUI?.formatMetric?.(run.test_macro_f1) || "—",
           ];
           values.forEach((value, index) => {
-            const cell = document.createElement(index === 2 ? "th" : "td");
+            const cell = document.createElement("td");
             const span = document.createElement("span");
-            span.className = index === 2 || index === 3 ? "truncate-text" : "";
+            span.className = index === 2 ? "truncate-text" : "";
             span.textContent = String(value);
             span.title = String(value);
             cell.append(span);
@@ -4059,7 +4018,7 @@
           const statusCell = document.createElement("td");
           const status = document.createElement("span");
           status.className = `status ${stopped ? "cancelled" : ["running", "pending", "failed", "success"].includes(run.status) ? run.status : terminal && canonicalState === "succeeded" ? "success" : ""}`;
-          status.textContent = stopped ? "STOP" : run.status || canonicalState;
+          status.textContent = stopped ? "STOP" : ({queued:"排队中",pending:"排队中",running:"训练中",succeeded:"已完成",success:"已完成",failed:"失败"}[canonicalState] || canonicalState);
           statusCell.append(status);
           row.append(statusCell);
           const actionCell = document.createElement("td");
@@ -4071,14 +4030,6 @@
           viewButton.textContent = stopped ? "无结果" : terminal ? "查看结果" : "查看进度";
           viewButton.disabled = stopped;
           if (!stopped) viewButton.addEventListener("click", () => window.openRun(run.run_id));
-          const copy = document.createElement("button");
-          copy.className = "secondary";
-          copy.type = "button";
-          copy.textContent = "复制 ID";
-          copy.addEventListener("click", async () => {
-            try { await navigator.clipboard.writeText(String(run.run_id)); copy.textContent = "已复制"; }
-            catch (_) { copy.textContent = "复制失败"; }
-          });
           const stopButton = document.createElement("button");
           stopButton.type = "button";
           stopButton.textContent = "停止";
@@ -4093,7 +4044,9 @@
           deleteButton.disabled = !terminal;
           deleteButton.title = terminal ? "永久删除该训练记录及产物" : "排队中或运行中的任务不能删除";
           if (terminal) deleteButton.addEventListener("click", () => window.deleteRun(run.run_id));
-          actionWrap.append(viewButton, copy, stopButton, deleteButton);
+          actionWrap.append(viewButton);
+          if (active) actionWrap.append(stopButton);
+          if (terminal) actionWrap.append(deleteButton);
           if (run.batch_id && !stopped) {
             const comparisonLink = document.createElement("a");
             comparisonLink.className = "secondary";
@@ -4108,7 +4061,7 @@
         if (!runs.length) {
           const row = document.createElement("tr");
           const cell = document.createElement("td");
-          cell.colSpan = 8;
+          cell.colSpan = 7;
           cell.className = "empty-state";
           cell.textContent = "暂无训练记录";
           row.append(cell);
@@ -4211,22 +4164,9 @@
 
       function updateSplitOptionVisibility() {
         const hasExternalTest = Boolean(testDatasetId || testDatasetPath);
-        let cvEnabled = $("cvEnabled").checked;
-        applySplitPreset(window.SpecAutoAITrainingPolicy.mode(hasExternalTest,cvEnabled));
-        $("cvOptions").classList.remove("hidden");
-        $("splitTestField").classList.toggle("hidden", hasExternalTest || cvEnabled);
-        $("customSplitLabel").textContent = hasExternalTest || cvEnabled ? "训练 / 验证比例（总和为 10）" : "训练 / 验证 / 测试比例（总和为 10）";
-        $("splitTest").disabled = hasExternalTest || cvEnabled;
-        $("customSplitOptions").setAttribute("aria-hidden", "false");
-        if (hasExternalTest) {
-          $("splitModeHint").textContent = cvEnabled
-            ? "已加载独立测试集：主数据按 Sample_ID 留一交叉验证作审计，并在全部主数据拟合后对独立测试集做最终评估。"
-            : "已加载独立测试集：主数据默认 8:2 训练/验证，可自定义；独立测试集作为唯一最终测试集。";
-        } else if (cvEnabled) {
-          $("splitModeHint").textContent = "交叉验证开启：每折留 1 个 Sample_ID 作测试，其余默认 8:2 训练/验证，可自定义。";
-        } else {
-          $("splitModeHint").textContent = "默认以 8:1:1 单次划分；Valid/Test 至少各包含每类 1 个样品，三项比例相加必须等于 10。";
-        }
+        $("splitModeHint").textContent = hasExternalTest
+          ? "已加载独立测试集：主数据按 8:2 划分训练 / 验证，独立测试集只用于最终评估。"
+          : "系统按 Sample_ID 整组划分，训练 / 验证 / 测试目标比例为 8:1:1；小样本时实际比例可能调整，以保证各分区类别完整。";
       }
 
       function showView(viewName, route = {}) {
@@ -4297,21 +4237,12 @@
         else showView("manual");
       });
       $("modelType").addEventListener("change", updateModelOptionVisibility);
-      $("cvEnabled").addEventListener("change", updateSplitOptionVisibility);
-      $("trainingProfile").addEventListener("change", updateTrainingWorkHint);
       $("featureScheme").addEventListener("change", updateTrainingWorkHint);
-      ['splitTrain','splitValid','splitTest'].forEach(id=>$(id).addEventListener('input',rememberSplitPreferences));
-      $("advancedToggle").addEventListener("click", () => {
-        $("advancedOptions").classList.toggle("hidden");
-      });
       $("toggleCurvePreview").addEventListener("click", () => {
         const body = $("curvePreviewBody");
         const collapsed = body.classList.toggle("hidden");
         $("toggleCurvePreview").textContent = collapsed ? "展开" : "收起";
         if (!collapsed) redrawCurrentCurvePreview();
-      });
-      $("ramanBaselineMethodMode").addEventListener("change", () => {
-        $("ramanCustomMethodBox").classList.toggle("hidden", $("ramanBaselineMethodMode").value !== "custom");
       });
       $("ramanRangeMode").addEventListener("change", () => updatePreprocessRangeMode("raman"));
       $("chromRangeMode").addEventListener("change", () => updatePreprocessRangeMode("chromatography"));

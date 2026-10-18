@@ -33,7 +33,7 @@ git clone https://github.com/fingercd/AutoAI-v2.git ~/AutoAI-v2
 cd ~/AutoAI-v2
 ```
 
-仓库不包含 `data.csv`、上传数据、模型或历史运行产物。不要把本地附件或内部计划打入部署包。
+仓库不包含 真实验证 CSV、上传数据、模型或历史运行产物。不要把本地附件或内部计划打入部署包。
 
 ## 3. Python 3.12 与依赖
 

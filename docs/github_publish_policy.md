@@ -24,7 +24,7 @@ SpecAutoAI 的 GitHub 仓库只保存可协作、可审查和可复现的源码�
 
 ## 必须排除
 
-- 真实数据与上传：`data.csv`、其他 CSV、拉曼/色谱数据目录、`storage/`。
+- 真实数据与上传：所有真实 CSV、拉曼/色谱数据目录、`storage/`。
 - 模型与运行结果：PT/PTH/PKL/JOBLIB/ONNX、Run artifacts、SQLite/DB、日志和 PID。
 - 压缩包、音视频、二进制工具、缓存、虚拟环境和构建目录。
 - `.env`、`auth.json`、`.sandbox-secrets/`、证书、私钥和认证缓存。

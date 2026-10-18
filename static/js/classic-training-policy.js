@@ -1,22 +1,5 @@
-/* Classic entry only: mode-local split preferences and versioned request policy. */
+/* Classic entry only: versioned request policy and student-facing defaults. */
 (function (global) {
-  const defaults = {holdout:[8,1,1], external:[8,2,0], loo:[8,2,0], external_loo:[8,2,0]};
-  const key = 'specautoai.split-preferences.v1';
-  function createPreferences(storage) {
-    let saved = {};
-    try { saved = JSON.parse(storage.getItem(key) || '{}'); } catch (_) {}
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = {};
-    const ratios = {};
-    for (const mode of Object.keys(defaults)) {
-      const value = saved.ratios?.[mode];
-      ratios[mode] = Array.isArray(value) && value.length===3 && value.every(Number.isFinite) ? value : [...defaults[mode]];
-    }
-    let cv = saved.cv === true;
-    const persist = () => {try {storage.setItem(key, JSON.stringify({ratios,cv}));} catch (_) {}};
-    return {get: mode => [...ratios[mode]], set(mode, value) {ratios[mode]=[...value];persist();},
-      getCv:()=>cv, setCv(value) {cv=Boolean(value);persist();}};
-  }
-  function mode(external, cv) {return external ? (cv?'external_loo':'external') : (cv?'loo':'holdout');}
   function splitPayload(selectedMode, values) {
     const [train,valid,test] = values.map(Number);
     const three = selectedMode==='holdout';
@@ -40,5 +23,17 @@
       scheduler_factor:d.scheduler_factor,scheduler_patience:d.scheduler_patience,min_learning_rate:d.min_learning_rate,
       early_stopping_patience:d.early_stopping_patience,seed:d.seed,class_balance:'none'};
   }
-  global.SpecAutoAITrainingPolicy = {createPreferences,mode,splitPayload,payload};
+  // 学生界面只减少选择，不改变后端 quick/full 与四种评估模式的能力。
+  function studentFeatureSchemes(scheme) {
+    const labels = {full:'全特征', bin_10:'Binning（每 10 个相邻点合并）', pca_95:'PCA（保留 95% 方差）'};
+    return (scheme?.feature_schemes || []).filter(item => Object.hasOwn(labels,item.id))
+      .map(item => ({...item,name:labels[item.id]}));
+  }
+  function studentPayload(scheme, external, model, feature='full') {
+    if (!studentFeatureSchemes(scheme).some(item=>item.id===feature))
+      throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
+    return payload(scheme,external?'external':'holdout',external?[8,2,0]:[8,1,1],'zscore',model,
+      {training_profile:'quick',feature_scheme:feature});
+  }
+  global.SpecAutoAITrainingPolicy = {splitPayload,payload,studentFeatureSchemes,studentPayload};
 })(typeof window==='undefined'?globalThis:window);

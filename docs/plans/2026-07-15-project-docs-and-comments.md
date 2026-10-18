@@ -10,7 +10,7 @@
 - 历史路线、内部评审材料和 ADR 的时间属性被明确保留，不把历史方案改写成当前实现。
 - 生产代码的重要模块、公共接口、非显然算法和安全边界有模块说明、docstring 或就地注释；避免逐行复述代码和给简单包装器制造噪声。
 - 注释编辑不改变公共接口、请求/响应结构、模型算法、状态转换或前端行为。
-- Python 编译、后端测试、前端脚本语法检查全部通过；如根目录存在本地 `data.csv`，再完成一次轻量真实训练闭环，否则在交付中记录未执行原因。
+- Python 编译、后端测试、前端脚本语法检查全部通过；再用本轮指定或已确认可用的真实 CSV 完成轻量训练闭环，无法执行时记录实际原因。
 
 ## 范围与事实优先级
 
@@ -99,7 +99,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 
 前端如有任何脚本注释变更：抽取 `static/index.html` 的内联 `<script>` 内容，并运行 `node --check --input-type=commonjs`；两个独立 JS 文件分别运行 `node --check`。同时运行 `git diff --check` 和定向文档术语搜索，确认没有残留冲突。
 
-根目录存在 `data.csv` 时，使用轻量传统模型完成上传、queued Run、worker 执行、评估和 artifact 下载闭环；不存在或环境不满足时不创建/提交替代数据，并在交付说明中记录原因。
+使用本轮指定或已确认可用的真实 CSV，通过轻量传统模型完成上传、queued Run、worker 执行、评估和 artifact 下载闭环；核验实际文件，不以固定文件名作为前提。无法执行时说明实际原因，不补造数据。
 
 **最终审查：** 对照本计划检查修改文件清单、用户原有改动、测试结果、未解决风险和文档时间属性。只有代码注释、文档校准和验证都完成后才结束目标。
 
@@ -117,5 +117,5 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 - `backend/app` 每个 Python 模块及所有公开顶层类/函数均已有模块说明或 docstring；训练、解释性、状态机、前端和部署脚本另补充了关键不变量与流程注释。
 - Python compileall、启动器帮助、内联/独立 JavaScript、PowerShell、Bash 和 `git diff --check` 均通过。
 - 全量自动化测试最终结果：`283 passed, 3 skipped`。
-- 本地 `data.csv` 真实验证：Logistic Regression 分层 8:1:1 训练成功；另通过上传 API 创建 queued Run，由独立 worker 执行到 `succeeded`，Manifest 为 `manifest.json`，`metrics.json` 下载重复 5 次均返回 HTTP 200。
+- 该轮本地真实 CSV 验证：Logistic Regression 分层 8:1:1 训练成功；另通过上传 API 创建 queued Run，由独立 worker 执行到 `succeeded`，Manifest 为 `manifest.json`，`metrics.json` 下载重复 5 次均返回 HTTP 200。
 - 用户原有未跟踪计划 `docs/plans/2026-07-14-raman-csv-excel-safe.md` 保持未修改。

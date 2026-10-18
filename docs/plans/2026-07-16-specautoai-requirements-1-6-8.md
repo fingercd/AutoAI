@@ -326,7 +326,7 @@ node --check --input-type=commonjs
 
 ### 3. 真实数据闭环
 
-项目根目录存在 `data.csv` 时，使用轻量传统模型完成：上传数据集 → 创建 queued Run → worker 训练 → 查看当前九项指标 → 查看训练记录 → 下载 `cv_predictions.csv`。随后用 sklearn 对合并预测独立重算 macro Precision、macro Recall、macro F1，并与页面 Test 指标逐项比对。
+使用本轮指定或已确认可用的真实 CSV，使用轻量传统模型完成：上传数据集 → 创建 queued Run → worker 训练 → 查看当前九项指标 → 查看训练记录 → 下载 `cv_predictions.csv`。随后用 sklearn 对合并预测独立重算 macro Precision、macro Recall、macro F1，并与页面 Test 指标逐项比对。
 
 如真实数据、环境或耗时导致无法执行，交付说明必须明确未运行原因，不能只以单元测试代替而不说明。
 

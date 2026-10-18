@@ -288,7 +288,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 & 'C:\Users\lenovo\anaconda3\envs\pytorch\python.exe' -m compileall 'D:\PythonProject\AutoAI\backend\app' -q
 ```
 
-另外使用一组真实或等价的 7500 点 HPLC 文件完成：上传 → 严格校验 → 固定轴映射 → 下载 CSV → 再上传为建模数据 → 轻量分类训练的闭环。项目根目录 `data.csv` 若存在，按项目规则另跑一次轻量真实训练回归，但它不能替代专门的 7500 点 HPLC 验证。
+另外使用一组真实或等价的 7500 点 HPLC 文件完成：上传 → 严格校验 → 固定轴映射 → 下载 CSV → 再上传为建模数据 → 轻量分类训练的闭环。使用本轮指定的建模 CSV，按项目规则另跑一次轻量真实训练回归，但它不能替代专门的 7500 点 HPLC 验证。
 
 ## 9. 风险、兼容性与回滚
 

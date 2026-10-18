@@ -1,5 +1,7 @@
 # SpecAutoAI 项目入口
 
+2026-10-18：经典前端按原版样式做交互减法。训练配置只开放模型与全特征 / Binning 10 / PCA 95%；固定 quick、Z-score、后端默认 seed、8:1:1（独立 Test 时主数据 8:2），旧会话的 CV 和比例不再影响新网页任务。后端 API 仍完整支持四种评估、自定义比例与 full。拉曼 UI 固定 arPLS；HPLC 范围/插值不变；结果技术信息与审计默认折叠，记录列表移除 Run ID 与复制 ID。此条覆盖下文旧的“页面可主动选择完整比较/自定义比例”等界面说明，详情见 `docs/plans/2026-10-18-student-ui.md`。
+
 `cnn_mamba1d` 在依赖不可用时保持 unavailable；隐藏模型不允许用近似网络替代。
 
 ## 项目目标
@@ -35,7 +37,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - HPLC 保留范围选择与插值开关：开启时范围选择固定目标轴的对应切片，再用完整源曲线左右邻点线性映射；第 n 点真实时间按完整网格的 `(n-1)/(point_count-1)` 位置计算。边界仅允许一个采样间隔内线性延伸。关闭时保留所选原始 X/Y，时间范围应用于每条原始轴，但多文件所选轴必须完全一致，否则拒绝导出。均不消负或做面积归一化。
 - HPLC 的实际目标/原始公共轴逐点写入宽表特征表头；`common_time`/`hplc_axis` 继续描述预览所用的真实轴。成功请求只生成一个宽表建模 CSV 并只返回主 `download_url`；不生成逐点 `_xxx.csv`，也不返回 `xxx_download_url`/`xxx_rows`。
 - `/api/files` 只允许下载 `storage/uploads`、`storage/preprocessed` 下的文件；Run artifact 必须通过 Manifest-backed Run 路由下载。
-- server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或默认 `data.csv` 回退。
+- server 模式训练请求必须使用 `dataset_id`/`test_dataset_id`，不接受 `data_path` 或本地文件回退。
 
 ## 模型与可解释性
 
@@ -67,7 +69,7 @@ SpecAutoAI 是一个面向拉曼、色谱/HPLC 曲线数据的预处理与自动
 - `TEMPORARILY_HIDDEN` 期间新训练不生成任何 `feature_importance`、`sample_feature_importance` 或模型特征图 artifact；历史同类 artifact 也不提供公开下载。
 - DSCARNet 使用仅由当前训练折拟合的 AggMap/PCA 生成 SAR/CAR 2D 输入，额外写入 `dscarnet_mapping.json` 和若干 joblib 映射对象；当前下载接口不开放这些私有 joblib 文件。
 - 当前没有正式 ROC-AUC、ROC 曲线或 Precision-Recall 曲线产物；结果 API 明确返回 unavailable，前端不绘制虚假图表。
-- 仓库不包含真实 `data.csv`；该文件仅可作为本地验证数据存在，不得提交。
+- 本机真实验证文件为根目录 `测试.csv`；后续以用户指定或已确认可用的实际文件为准，不按固定英文文件名判断数据是否存在。真实 CSV 及其训练产物不提交 Git。
 
 ## 运行方式
 

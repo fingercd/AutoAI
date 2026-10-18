@@ -29,4 +29,4 @@
 
 SwanLab 记录：https://swanlab.cn/@ryfrcd693/AutoAI-Timing/runs/z4yp73sl ，已完成上传并回读总耗时、拟合次数和测试指标。此次不启动既有排队任务、不提交或推送，也不替六模型宣称完整真实数据性能验收。
 
-最终整套 `backend/tests`：531 passed、9 skipped，90.57 秒；compileall、经典内联脚本及改动 JS 语法检查、相关文件 diff --check 通过。真实数据哈希、Train/Valid/Test 样品集合与基线一致，15 个 Manifest 文件的大小及 SHA-256 校验通过。根目录无 data.csv，本轮真实流程按用户明确指定的测试.csv 执行。8000 端口现有旧 Web 未重启，Worker 不可用；页面使用新配置前须让 Web 和 Worker 同时加载新代码，避免误启动既有排队任务。
+最终整套 `backend/tests`：531 passed、9 skipped，90.57 秒；compileall、经典内联脚本及改动 JS 语法检查、相关文件 diff --check 通过。真实数据哈希、Train/Valid/Test 样品集合与基线一致，15 个 Manifest 文件的大小及 SHA-256 校验通过。本轮真实流程按用户明确指定的 `测试.csv` 执行。8000 端口现有旧 Web 未重启，Worker 不可用；页面使用新配置前须让 Web 和 Worker 同时加载新代码，避免误启动既有排队任务。

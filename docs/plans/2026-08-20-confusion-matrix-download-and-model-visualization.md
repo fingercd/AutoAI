@@ -370,7 +370,7 @@ node 'D:\PythonProject\AutoAI\static\v2\tests\run-tests.mjs'
 1. 文档写清模型适配矩阵、CV 限制、score/VIP/permutation 的解释边界和 artifact 下载行为。
 2. 运行 smoke、全套 `backend/tests`、compileall 和 v2 Node 测试。
 3. 检查 `git diff --check`、`git status --short`，确认未 stage/修改用户已有的两份未跟踪计划文件。
-4. 项目根目录当前没有 `data.csv`（2026-08-20 已检查），因此本轮计划不能预先保证真实数据闭环；实施结束时再次检查。若出现 `data.csv`，用 `pls_da + stratified_holdout` 跑一次轻量真实训练并核对 artifact/结果页；若仍缺失，在交付中明确记录“未运行：本地验证数据不存在”。
+4. 使用本轮用户指定或已确认可用的真实 CSV，以 `pls_da + stratified_holdout` 跑一次轻量训练并核对 artifact/结果页。核验实际文件，不以某个历史文件名不存在作为跳过理由；确实无法运行时记录实际原因。
 
 **验证：**
 
@@ -385,7 +385,7 @@ git diff --check
 git status --short
 ```
 
-预期：全部自动化测试通过；若 `data.csv` 缺失，只有真实数据闭环被明确跳过，其余验证不受影响。
+预期：全部自动化测试通过，并完成本轮指定文件的真实数据闭环；无法运行时说明实际原因。
 
 ## 7. 风险、性能与回滚
 

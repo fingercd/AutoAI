@@ -23,7 +23,7 @@
 7. 比较页按真实产物提供：混淆矩阵入口、四项总体指标图、Sample_ID×模型正确率热图、重复实验一致性图、类别 Recall/Sensitivity 热图；模型数量从 2 到 10 时布局自适应。
 8. 可解释性默认关闭：新 Run 不执行特征遮挡、Grad-CAM 或模型特征可视化，不生成对应 artifact；结果 API 不公开其内容或下载地址；经典前端和 v2 均不渲染、不懒加载、不显示占位卡片。
 9. 代码中存在唯一明确标记：`TEMPORARILY_HIDDEN: do not re-enable without an explicit product requirement and synchronized backend/frontend tests`。不能通过普通请求参数或环境变量意外重新开启。
-10. 自动化测试覆盖 10 个前端可见模型、两个新增模型、七个后端保留但前端隐藏的深度模型、5 折选参、无泄漏、批次事务、重复实验、比较图数据、可解释性禁用和 server Principal 权限；存在本地 `data.csv` 时跑一个轻量多模型真实闭环。
+10. 自动化测试覆盖 10 个前端可见模型、两个新增模型、七个后端保留但前端隐藏的深度模型、5 折选参、无泄漏、批次事务、重复实验、比较图数据、可解释性禁用和 server Principal 权限；使用本轮指定或已确认可用的真实 CSV 跑一个轻量多模型闭环。
 
 ## 3. DOCX 要求解析与采用范围
 
@@ -420,7 +420,7 @@ Batch 比较页不把多个矩阵叠在一张图中。每个模型提供“查�
 
 ### 任务 11：全量测试、真实数据和文档交付
 
-**实施：**先跑模型/5折/隐藏功能定向测试，再跑 Batch/Comparison 和前端纯函数，最后跑整个后端。若根目录有 `data.csv`，用 `pls_da + logistic_regression`、R=2 做真实闭环；sPLS-DA 另跑固定参考 fixture。
+**实施：**先跑模型/5折/隐藏功能定向测试，再跑 Batch/Comparison 和前端纯函数，最后跑整个后端。使用本轮指定或已确认可用的真实 CSV，用 `pls_da + logistic_regression`、R=2 做真实闭环；sPLS-DA 另跑固定参考 fixture。
 
 **验收：**全部自动化通过；真实比较值与各子 Run `metrics.primary` 一致；没有数据、模型、Run、渲染图、缓存、DOCX 副本或二进制进入 Git。
 

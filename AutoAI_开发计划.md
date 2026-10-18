@@ -1,3 +1,5 @@
+> 文件路径说明：`<CSV_PATH>` 仅表示本轮用户指定或已确认可用的 CSV 路径，不代表根目录固定文件；不得据此推断没有验证数据。
+
 # SpecAutoAI 谱学数据预处理与自动建模平台开发计划（历史路线）
 
 > **历史文档，不作为当前实现或安装说明。** 本文件保留早期需求与技术路线原文，其中 React/Vite、BackgroundTasks、Redis/RQ、旧模型清单和旧命令均可能已经失效。当前事实以 `README.md`、`CONTEXT.md`、`AGENTS.md` 和 `docs/frontend_backend_handoff.md` 为准；维护者不得据此直接修改正式主线。
@@ -11,7 +13,7 @@
 - 训练产物包含常规配置、指标、预测结果、模型文件和解释性 JSON/CSV；DSCARNet 额外写入 AggMap/PCA 映射元数据与 joblib 文件。
 - 下面 1-9 步保留原始规划语境，出现 React/Vite、BackgroundTasks、Redis/RQ、旧模型或旧命令时，均按历史计划理解。
 
-本文档根据 `AutoAI要求.docx`、示例建模数据 `data.csv`、原始拉曼数据目录 `拉曼/`、原始色谱数据目录 `色谱/` 整理。目标是在服务器内网部署一个网页系统，让用户通过浏览器完成数据上传、预处理、自动划分、模型训练、结果查看和结果下载。
+本文档根据 `AutoAI要求.docx`、示例建模数据 `<CSV_PATH>`、原始拉曼数据目录 `拉曼/`、原始色谱数据目录 `色谱/` 整理。目标是在服务器内网部署一个网页系统，让用户通过浏览器完成数据上传、预处理、自动划分、模型训练、结果查看和结果下载。
 
 本计划覆盖 1-9 步开发，不包含 Docker 安装与 Docker 化部署。原计划曾优先采用 Miniconda + FastAPI + React/Vite + 后台任务队列的方式跑通完整功能；当前实现已调整为 FastAPI 同源托管静态前端。
 
@@ -46,7 +48,7 @@
 
 ### 2. 示例数据特征
 
-`data.csv` 字段：
+`<CSV_PATH>` 字段：
 
 ```text
 Index, Name, XXX, Intensity, Label, Sample_ID
@@ -157,7 +159,7 @@ AutoAI/
     runs/
     reports/
   sample_data/
-    data.csv
+    <CSV_PATH>
     raman/
     chromatography/
   docs/
@@ -171,7 +173,7 @@ AutoAI/
 ### 实现
 
 - 从 `AutoAI要求.docx` 整理需求清单。
-- 对 `data.csv` 做字段、标签、曲线长度、解析错误统计。
+- 对 `<CSV_PATH>` 做字段、标签、曲线长度、解析错误统计。
 - 对 `拉曼/` 和 `色谱/` 原始 CSV 做格式抽样。
 - 建立 `sample_data/`，放入最小可复现样例。
 - 建立 `docs/`，保存需求拆解、接口草案和数据格式说明。
@@ -180,14 +182,14 @@ AutoAI/
 ### 运行测试
 
 ```powershell
-python -m backend.app.services.parsers --inspect sample_data/data.csv
+python -m backend.app.services.parsers --inspect <CSV_PATH>
 python -m pytest backend/tests/test_parsers.py
 ```
 
 ### 如何验证
 
 - 控制台能输出样本数、类别数、每条曲线长度。
-- `data.csv` 解析后没有数组长度不一致。
+- `<CSV_PATH>` 解析后没有数组长度不一致。
 - 能正确识别：
   - 建模 CSV：`XXX` + `Intensity` 数组字段。
   - 拉曼原始 CSV：`RamanShift/Raman_Shift` + `Intensity`。
@@ -369,14 +371,14 @@ storage/runs/{run_id}/
 ### 运行测试
 
 ```powershell
-python -m backend.app.ml.train --data data.csv --model auto_cnn --epochs 3 --output storage/runs/smoke_test
+python -m backend.app.ml.train --data <CSV_PATH> --model auto_cnn --epochs 3 --output storage/runs/smoke_test
 python -m pytest backend/tests/test_splits.py
 python -m pytest backend/tests/test_train_smoke.py
 ```
 
 ### 如何验证
 
-- 使用 `data.csv` 能跑完 3 个 epoch 的 smoke test。
+- 使用 `<CSV_PATH>` 能跑完 3 个 epoch 的 smoke test。
 - 生成 `metrics.json`、`history.csv`、`predictions.csv`、`model.pt`。
 - `predictions.csv` 格式满足需求：
 
@@ -454,7 +456,7 @@ http://127.0.0.1:8000/docs
 
 - `/health` 返回正常。
 - `/docs` 中能看到所有接口。
-- 上传 `data.csv` 后，数据集 summary 返回：
+- 上传 `<CSV_PATH>` 后，数据集 summary 返回：
   - 样本总数。
   - 标签类别数。
   - 每类样本数。
@@ -691,7 +693,7 @@ report.md
 ### 运行测试
 
 ```powershell
-python -m backend.app.ml.train --data data.csv --model auto_cnn --epochs 3 --output storage/runs/report_test
+python -m backend.app.ml.train --data <CSV_PATH> --model auto_cnn --epochs 3 --output storage/runs/report_test
 python -m pytest backend/tests/test_result_exporter.py
 ```
 
@@ -894,7 +896,7 @@ http://服务器内网IP/
 
 ### 第 1 个里程碑：命令行闭环
 
-目标：不用网页，直接用 `data.csv` 跑完整训练。
+目标：不用网页，直接用 `<CSV_PATH>` 跑完整训练。
 
 包含：
 
@@ -906,7 +908,7 @@ http://服务器内网IP/
 验收：
 
 ```powershell
-python -m backend.app.ml.train --data data.csv --epochs 3 --output storage/runs/mvp_cli
+python -m backend.app.ml.train --data <CSV_PATH> --epochs 3 --output storage/runs/mvp_cli
 ```
 
 能生成完整 run 目录。
@@ -991,7 +993,7 @@ http://127.0.0.1:8000/docs
 
 ```text
 实现 backend/app/services/parsers.py：
-1. 能解析 data.csv 中的 XXX/Intensity 数组。
+1. 能解析 <CSV_PATH> 中的 XXX/Intensity 数组。
 2. 能解析拉曼原始 CSV。
 3. 能解析色谱原始 CSV。
 4. 输出统一的 SpectrumSample 数据结构。

@@ -1,3 +1,5 @@
+> 文件路径说明：`<CSV_PATH>` 仅表示本轮用户指定或已确认可用的 CSV 路径，不代表根目录固定文件；不得据此推断没有验证数据。
+
 # 建模页与建模结果页问题修复实施计划
 
 > 日期：2026-07-16
@@ -396,7 +398,7 @@ Worker 心跳表增加可空的 `contract_version` 字段。旧 Worker 心跳没
 
 ```json
 {
-  "dataset_name": "data.csv",
+  "dataset_name": "<CSV_PATH>",
   "created_at": "...",
   "started_at": "...",
   "finished_at": "...",
@@ -604,7 +606,7 @@ Worker 心跳表增加可空的 `contract_version` 字段。旧 Worker 心跳没
 **验收标准：**
 
 - 新 Run 概览字段完整。
-- 示例旧 Run 至少能恢复 `data.csv`、90 条曲线、30 个 Sample_ID、2 类、160 特征。
+- 示例旧 Run 至少能恢复 `<CSV_PATH>`、90 条曲线、30 个 Sample_ID、2 类、160 特征。
 - 无法恢复的开始时间仍为 `-`，不生成假时间。
 
 **验证方式：**
@@ -1016,7 +1018,7 @@ Worker 心跳表增加可空的 `contract_version` 字段。旧 Worker 心跳没
 
 **验收标准：**
 
-- 示例 Run 显示 `data.csv`。
+- 示例 Run 显示 `<CSV_PATH>`。
 - 新 Run 显示正确开始时间和耗时。
 - 训练记录页和最近任务页口径一致。
 
@@ -1101,9 +1103,9 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 
 #### 任务 14：真实数据闭环和部署升级验证
 
-**目标：** 用同版本 Web/Worker、真实 `data.csv` 和现场旧 Run 完成最终闭环，并同步所有面向开发和部署的文档。
+**目标：** 用同版本 Web/Worker、真实 `<CSV_PATH>` 和现场旧 Run 完成最终闭环，并同步所有面向开发和部署的文档。
 
-**前置依赖：** 任务 1–13 完成且专项测试通过；本机存在可用 `data.csv` 和约定的 PyTorch Python 环境。
+**前置依赖：** 任务 1–13 完成且专项测试通过；本轮指定的真实 CSV 已通过格式检查，并已准备约定的 PyTorch Python 环境。
 
 **涉及文件或模块：**
 
@@ -1121,7 +1123,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
    - `/health.contracts`
    - Worker compatible
    - OpenAPI `/result`
-3. 使用本地 `data.csv` 跑：
+3. 使用本地 `<CSV_PATH>` 跑：
    - 一个轻量传统模型（建议 PLS-DA）
    - 一个轻量深度模型（建议 CNN1D；DSCARNet 可作为额外验证）
 4. 对每个 Run 验证：
@@ -1144,7 +1146,7 @@ $env:PYTHONPATH='D:\PythonProject\AutoAI'
 **验证与证据：**
 
 - 保存 API 响应摘要、Manifest 文件名清单和关键页面截图到 `work/`。
-- 不提交 `data.csv`、Run 目录、截图缓存、模型和下载文件。
+- 不提交 `<CSV_PATH>`、Run 目录、截图缓存、模型和下载文件。
 
 **风险与回滚：**
 

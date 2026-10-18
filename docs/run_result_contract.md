@@ -100,7 +100,7 @@ queued | running | succeeded | failed | cancelled
 ```json
 {
   "dataset_id": "ds_abc",
-  "name": "teacher-data.csv",
+  "name": "example.csv",
   "sha256": "...",
   "curve_count": 90,
   "sample_id_count": 30,

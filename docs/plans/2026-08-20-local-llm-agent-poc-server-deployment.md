@@ -17,7 +17,7 @@
 
 - 默认由一个主执行者按 Task 1 → 4 顺序推进，不强制子代理、分支、提交或推送。
 - 不读取或上传 `.env`、`auth.json`、token、密钥、认证缓存、`.sandbox-secrets`。
-- 不上传 `storage/`、`data.csv`、模型、训练产物、缓存、压缩包或本地环境。
+- 不上传 `storage/`、真实验证 CSV、模型、训练产物、缓存、压缩包或本地环境。
 - 不抢占他人的 GPU；每次启动前重新检查 GPU 进程和显存。GPU 不足属于资源等待，不得通过杀进程或改用他人显卡绕过。
 - Web、Worker、Agent Adapter 与模型服务只能通过 HTTP/JSON 交互；LLM 不直接访问 SQLite、`RunRepository`、Worker、文件系统、Shell 或 Test 产物。
 - 搜索阶段只向 Agent 暴露 Validation。Test 只允许在 Finalize 后用于一次最终报告，不能回流到下一次决策。
@@ -134,7 +134,7 @@ Agent POC ── OpenAI client ── selected vLLM endpoint
 
 **涉及文件或模块：**
 
-- 当前工作树全部代码/文档，但排除 `.git/`、`storage/`、`work/`、`outputs/`、`data.csv`、缓存、模型与秘密文件。
+- 当前工作树全部代码/文档，但排除 `.git/`、`storage/`、`work/`、`outputs/`、真实验证 CSV、缓存、模型与秘密文件。
 - 创建服务器目录 `/users/fotile/AutoAI/...`。
 - 创建：`shared/manifests/source-20260820-poc-bootstrap.txt`（提交、dirty 文件、包 hash、文件数）。
 - 后续修改：`deploy/server_deploy.md`（从历史 `~/AutoAI-v2` 统一到新的共享发布布局）。
@@ -146,7 +146,7 @@ Agent POC ── OpenAI client ── selected vLLM endpoint
 - [ ] 创建 `/users/fotile/AutoAI/{deployments,shared/{models/qwen,hf-cache,storage,traces,manifests},envs,runtime,logs,incoming}`。
 - [ ] 生成排除敏感/大文件的压缩包，计算 SHA-256 后用 `scp` 上传。
 - [ ] 在 `deployments/20260820-poc-bootstrap/source` 解压；远端再次计算包 SHA-256，必须与本地一致。
-- [ ] 远端检查不得出现 `.env`、`auth.json`、`.sandbox-secrets`、`storage`、`data.csv`、`.git`、模型扩展名或 Python cache。
+- [ ] 远端检查不得出现 `.env`、`auth.json`、`.sandbox-secrets`、`storage`、真实验证 CSV、`.git`、模型扩展名或 Python cache。
 - [ ] 统计源文件数、大小并运行 `git status` 对照清单；只有校验通过才允许创建 `current` 软链接。
 - [ ] 创建 Python 3.12 的路径式环境 `envs/autoai-app`，在 node2 安装依赖，在 node3 验证 `torch.cuda.is_available()`；不要复用 base Python 3.9。
 - [ ] 将 AutoAI runtime storage 指向 `shared/storage`。实现时优先新增受测试保护的 `AUTOAI_STORAGE_DIR`，不要把部署绝对路径写死进 `backend/app/paths.py`。
