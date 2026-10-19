@@ -1,359 +1,172 @@
 # SpecAutoAI
 
-2026-10-19：**特征处理多选仅作用于机器学习，1D-CNN/CNN-SE/ResNet 始终使用全特征**，每个深度模型只跑一次，不做外部 Binning/PCA。保留训练折标准化和网络自身卷积/池化。全选十三模型与六特征为 **10×6+3=63 个 Run**，24 样品留一为 1512 外层任务；结果中深度模型单列为“全特征（深度学习）”。旧结果保留，见 [全特征计划与验证](docs/plans/2026-10-19-deep-full-features.md)。
+面向拉曼与色谱 / HPLC 曲线的**数据预处理、分类建模与结果比较平台**。通过网页完成数据上传、预处理、模型训练和结果导出，无需手动编写训练脚本。
 
-2026-10-18 最终清单：上方机器学习十项 **PLS-DA、Shrinkage-LDA、Lasso、Ridge、Elastic Net、SVM、KNN、Random Forest、Extra Trees、XGBoost**；下方保留 **1D-CNN、CNN-SE、ResNet**，共十三项。Lasso/Ridge 是 L1/L2 正则化逻辑回归分类，不是回归器；Shrinkage-LDA 是自动收缩 LDA，不是 PCA-LDA。此前其他模型保留后端和历史，六特征全选 69 有效组合、9 不适用，详见 [分类基线计划与验证](docs/plans/2026-10-18-classical-baselines.md)。
+当前仅支持分类：即使 `Label` 为数字，也作为类别处理，不作为连续回归目标。
 
-2026-10-18 模型与特征更新：经典建模开放十一项分类模型，恢复 sPLS-DA、PCA-LDA、PCA-SVM、1D CNN-SE、1D ResNet；DSCARNet 不开放。可多选 BIN5/10/20、固定主成分数 PCA5/10/20，默认 BIN5。卷积模型和内置 PCA 模型的外层 PCA 组合标为不适用，全选为 51 个有效组合。旧训练记录保持原样，详见 [本轮计划与验收](docs/plans/2026-10-18-restored-models-and-features.md)。
+## 快速开始
 
-2026-10-18 并行执行：`run.py` 默认按 CPU 预算启动最多 4 个 Worker，分别领取不同模型×特征组合；同一组合内留一折仍依次执行。Worker 是进程，不等于一个 CPU 核心。每进程限制 BLAS/OpenMP/PyTorch 与树模型线程，避免重复占满整机；检测到 GPU 时最多一个深度模型 Run，其余 Worker 可继续跑 CPU 模型。配置右上角显示预计实验数，当前训练区实时显示完成数/总数与进度条；“实验”指一次外层训练/评估，不是内部选参的精确 fit 次数。详见 [并行与计数](docs/plans/2026-10-18-worker-pool-and-counters.md)。
-
-## 研究生界面（2026-10-18）
-
-模型和特征处理均可多选：按“模型 × 特征处理”建立独立训练组合，勾选样品留一后，每个组合再完成 N 个外层折。例如 2 模型 × 2 特征 × 24 样品，共 4 个 Run、96 个外层折任务；每折内部还可能多次选参/拟合。CNN × PCA 等不兼容组合明确标为不适用，从实际任务量扣除，不悄悄替换。
-
-结果先看特征处理 × 模型矩阵，再选择一种特征处理查看其模型指标、混淆矩阵、类别/样品预测和逐折参数。留一主指标使用 pooled OOF，不把折均值当最终成绩，也不平均不同特征处理。预测 Excel 每列均标明模型与特征处理。详见 [组合训练和展示](docs/plans/2026-10-18-model-feature-grid.md)。
-
-经典前端保留墨绿色按钮、白色卡片、左侧导航和页面名称。加载数据、选择模型与特征处理后即可开始训练。学生页面提供 **BIN3、BIN6、BIN12、PCA5、PCA10、PCA15** 六项，默认 BIN3；BIN 表示相邻点均值的箱宽，PCA 表示固定主成分个数，不是方差百分比。Full 不再出现在学生入口。CNN 不支持 PCA 时明确提示，不自动改选。
-
-可勾选“按样品留一交叉验证”：每折留出一个独立 Sample_ID 作测试，其余样品按 8:2 训练/验证，24 个独立样品即 24 折；成绩取合并 OOF。未勾选时目标比例为 8:1:1。加载独立 Test 不会取消 CV，独立 Test 始终是该场景的最终测试。CV 选择在当前标签页记忆；比例和高级参数仍不开放，训练固定 quick、Z-score 与后端默认随机种子。
-
-后端 API 的旧 Full、方差 PCA、完整比较、自定义比例和四种评估方式保留；下文相关页面描述是历史记录，以本节为准。拉曼固定 arPLS、HPLC 范围和插值不变，技术详情默认折叠。详见 [六方案与交叉验证](docs/plans/2026-10-18-six-feature-schemes.md) 和 [首轮界面简化记录](docs/plans/2026-10-18-student-ui.md)。
-
-## Word 0904 新版训练入口（当前状态核对：2026-09-29）
-
-2026-10-07 起，经典 AI 建模默认快速训练：只运行所选特征处理（默认全特征），五种传统模型最多尝试三套参数，用验证样品检查一次，选定后重训一次；通常共四次拟合。CNN 只训练所选方案，保留最多 200 epochs、调度与早停。逐个留出样品评估仍需主动启用，每个样品会让整套建模重做一次。
-
-页面可主动选择完整比较：传统模型在 Train+Valid 内按 Sample_ID 分层五折搜索，全特征、Binning 5/10/20、PCA 90/95/99% 独立比较；CNN 比较全特征与三种 Binning，按 validation loss 选择。每模型一个 Run，不增加重复次数。快速训练中未选方案显示未运行；历史结果不重算。详见 [默认训练数量压缩](docs/plans/2026-10-07-quick-training.md)。
-
-有独立 Test、无独立 Test、留一法及留一法加独立 Test 均支持自定义比例（合计 10）；每个模式单独记住比例。结果页/对比页提供可展开的最佳配置、逐折参数与实际划分数量。特征工程热图使用指标切换器，PNG/SVG/CSV/ZIP 与页面同源；旧结果没有特征产物时不会补造或重训。
-
-对比页“下载全部”旁边提供“下载 Excel”：第一个工作表是 `Index, Label, Sample_ID, 划分` 加每个模型一列的预测类别，第二个工作表布局相同，每个模型单元格是按 `label_map` 类别顺序排列、逗号分隔的六位小数概率文本。原始概率按类别归一化；写成六位小数后总和可能有舍入误差。`stratified_holdout` 与 `external_test_holdout` 用最终拟合模型预测全量记录并标注 `train/valid/test`，独立测试记录标为 `external_test`。普通留一法导出主数据 pooled OOF 行，每条记录只出现一次且划分为 `test`；留一法加独立 Test 时还包含 pooled OOF 主数据行和外部测试行，后者标为 `external_test`。该模式的独立 Test 是主指标，主数据 pooled OOF 仅作审计。历史 Run 没有全量明细时只导出已有 test/OOF 行，不补造。
-
-对比页按“总体表现、分类指标、样品预测、特征方案、参数与划分”组织为标签页；特征方案标签只在后端能力开启时出现。分类预测指标显示各类别召回率与 Precision（精确率）两张热图，精确数值与 Support 折叠查看，单图支持 SVG、PNG 下载与放大，CSV 随归档提供。绘图版本为 `comparison-figures-v4`，过期或缺图的归档可从已有训练产物幂等补建，不重训。
-
-更新代码后，需让 Web 与 Worker 都加载新代码，再刷新页面。不要在训练进行中强制重启。`/api/models` 的 `training_scheme` 字段表示当前 Web 的新版能力；未声明方案版本的 API 请求继续兼容旧行为。
-
-当前训练入口仅支持分类。`cnn_mamba1d` 在依赖不可用时返回 unavailable，不使用替代网络。
-
-SpecAutoAI 是面向拉曼与色谱/HPLC 曲线的预处理和分类建模平台。它通过同一个 FastAPI 服务提供网页、数据上传、预处理、训练任务、指标与模型产物下载；训练由独立 worker 从 SQLite Run 队列领取执行。
-
-当前版本只支持分类。`Label` 即使是数字也按类别处理，不提供 PLSR、SVR 等回归入口。
-
-## 正式功能
-
-- 拉曼：按行号或 X 轴范围截取，固定先截取目标范围，再对截取后的片段执行基线校正。
-- HPLC：保留行号/保留时间范围和线性插值开关；选择文件后逐个检测原文件名、点数与时间范围，支持任意一致且不少于 2 的点数，行号上限随当前批次动态变化。点数不一致时列出异常文件和实际点数，X 非严格递增时直接报错。
-- 开启插值时，范围只选择固定 0–50 分钟轴上的实际目标点（例如 100–4000 共 3901 点），再按完整源 X 左右邻点线性映射；仪器轴与固定轴仅有一个采样间隔内的边界相位差时使用首尾两点线性延伸。关闭时保留所选原始 X/Y，但批次内轴不一致会拒绝导出。均不消负或做面积归一化。
-- 分类评估：以分层 8:1:1 为目标且保证 Train/Valid/Test 各自类别完整、按 `Sample_ID` 留一交叉验证、独立测试集 holdout；批量比较时同一批次固定 `split_seed`，确保所有模型使用同一测试对象。
-- 每次训练使用唯一 Run ID；训练完成后通过中央提示框在 3 秒后进入可刷新、可复制链接的独立“建模结果”页，也可立即查看或留在当前页。
-- 结果页按 Train、Valid、Test 分层展示混淆矩阵、各类别指标和竖向预测分布；传统模型不显示训练曲线，深度模型曲线包含数值坐标。
-- 前端建模页显示 Word 0904 六类：PLS-DA、Elastic Net（logistic_regression）、SVM、Random Forest、XGBoost、1D-CNN。其他模型保留后端兼容能力。
-- 多模型批次保持“一模型一 Run”。新版后端支持 experiment_version=word-0904 的七/四种特征方案；历史任务未声明该版本时仍按原训练流程。经典多模型对比页支持响应式四指标条图、墨绿色方形矩阵、正误筛选分页，以及 PNG/SVG/CSV 整套归档下载；单模型结果页保持原样。没有特征工程结果的历史批次不补造数据。
-- 可解释性实现已保留，但当前产品面通过内部 `TEMPORARILY_HIDDEN` 开关完全关闭：新训练不计算或生成解释性 artifact，结果投影仅返回隐藏状态，历史 artifact 也不开放直接下载。
-
-## 前端入口
-
-特征方案训练与比较已启用；经典页面依据 `/api/models` 的 `training_scheme.enabled` 展示相应方案结果。历史批次缺少特征产物时只说明缺失，不补造或重训。可解释性仍由 `TEMPORARILY_HIDDEN` 关闭，新训练不生成解释性结果，历史解释性 artifact 也不开放下载。经典混淆矩阵放大窗口限制在视口范围内。
-
-当前正式前端为经典入口 `/`，代码位于 `static/index.html` 与 `static/js/`，使用 FastAPI、鉴权、Dataset/Run API、artifact 白名单和 `run-result-v1` 契约。
-
-2026-10-07 按用户要求移除 v2 工作台及其专属代码。经典前端使用原生 HTML/CSS/JavaScript，不依赖 React、Vue、Vite 或外部 CDN；新增接口和结果字段继续维护接口契约。
-
-## 环境要求
-
-- 仓库依赖基线记录 Python `3.12.12`；本轮未重新验收运行环境。
-- CPU 环境可直接安装核心依赖。
-- NVIDIA CUDA 环境应先按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/)安装匹配驱动/CUDA 的 PyTorch，再安装其余依赖。不要依赖通用 requirements 自动猜测 CUDA wheel。
-- `/api/models` 注册 17 个分类模型；当前可用性由运行环境的依赖探测动态返回，不能把目录总数当作可训练数。DSCARNet 依赖可选安装的 AggMap；`cnn_mamba1d` 需要 `mamba-ssm`。前端仅显示 `ui_visible=true` 的六个模型，隐藏模型在依赖可用时仍保留兼容 API。
-
-建议新建虚拟环境：
+依赖基线为 **Python 3.12**。建议在独立环境中安装，在项目根目录执行：
 
 ```bash
 python -m venv .venv
 ```
 
-Windows PowerShell：
+激活环境：Windows PowerShell 使用 `.\.venv\Scripts\Activate.ps1`；Linux / macOS 使用 `source .venv/bin/activate`。然后安装并启动：
 
-```powershell
-.\.venv\Scripts\Activate.ps1
+```bash
 python -m pip install --upgrade pip
-```
-
-Linux/macOS：
-
-```bash
-source .venv/bin/activate
-python -m pip install --upgrade pip
-```
-
-## 三种安装方式
-
-### 核心运行环境
-
-普通兼容安装：
-
-```bash
-python -m pip install -r backend/requirements.txt
-```
-
-使用当前环境验证过的直接依赖版本基线：
-
-```bash
 python -m pip install -r backend/requirements.txt -c backend/constraints-verified.txt
-```
-
-### 开发和测试环境
-
-```bash
-python -m pip install -r backend/requirements-dev.txt -c backend/constraints-verified.txt
-```
-
-### DSCARNet 可选环境
-
-AggMap 1.2.1 的 PyPI 元数据包含过时的 `tensorflow-gpu` 和 `lapjv` 依赖，必须分两步安装：
-
-```bash
-python -m pip install -r backend/requirements-dscarnet.txt -c backend/constraints-verified.txt
-python -m pip install aggmap==1.2.1 --no-deps
-```
-
-SpecAutoAI 使用 SciPy 提供 `lapjv` 兼容实现，并且只调用 AggMap 的 SAR/CAR 映射，不使用 TensorFlow AggModel。
-
-AggMap 1.2.1 的包元数据固定依赖多个过时版本，并声明本项目不使用的 `tensorflow-gpu`、`lapjv` 和 `shap`。因此按上述方式安装后，`pip check` 仍会报告 AggMap 的已知元数据冲突；这不表示 SpecAutoAI 使用的 SAR/CAR 映射链路缺少依赖。核心环境不安装 AggMap 时不受此问题影响。
-
-## 启动
-
-### 一键启动
-
-使用公共启动器或经典前端快捷入口，均打开 `http://127.0.0.1:8000/`：
-
-```bash
-python run_classic.py
-```
-
-启动器支持公共参数，例如：
-
-```bash
-python run.py --port 9000
-python run_classic.py --no-browser
-python run.py --reload
-```
-
-不要在同一端口重复启动服务；如服务已经启动，直接在浏览器中访问 `/`。
-
-`run.py` 继续作为公共兼容启动器，默认打开经典前端：
-
-```bash
 python run.py
 ```
 
-常用参数：
+启动器会打开 [本地网页](http://127.0.0.1:8000/)，并自动托管训练 Worker。`python run_classic.py` 是同一前端的快捷入口。
+
+> 使用 NVIDIA GPU 时，先安装与实际驱动匹配的 PyTorch，再安装其余依赖；通用依赖文件不会自动选择 CUDA 安装包。当前网页模型无需安装可选 AggMap / Mamba 依赖。
+
+常用选项：
 
 ```bash
-python run.py --help
-python run.py --host 0.0.0.0 --port 8000 --no-browser
-python run.py --reload
-python run.py --no-worker
+python run.py --port 8877
+python run.py --no-browser
 python run.py --workers 4 --threads-per-worker 5
+python run.py --help
 ```
 
-### 手动拆分 Web 与 worker
+默认端口为 **8000**，不是固定使用演示端口 8877。同一端口不要重复启动服务。
 
-终端 1：
+## 使用流程
 
-```bash
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
+1. **准备数据**：已有建模宽表 CSV 可直接进入「AI 建模」；原始曲线先在「拉曼预处理」或「色谱预处理」中生成建模 CSV。
+2. **加载数据集**：检查样品数、类别分布和曲线预览；需要独立测试时另行加载测试集。
+3. **选择配置**：勾选模型和机器学习特征处理，可启用「按样品留一交叉验证」。配置区会显示预计实验数。
+4. **开始训练**：查看完成数 / 总数、各组合状态，以及外层折、参数搜索或 epoch 的实时进度。
+5. **查看结果**：按特征处理比较模型，查看指标、混淆矩阵、样品预测和逐折参数，下载图表、预测 Excel 或整套归档。
 
-终端 2：
+### 预处理
 
-```bash
-python -m backend.app.runs.worker
-```
+| 数据类型 | 处理方式 |
+| --- | --- |
+| 拉曼 | 按行号或 X 轴范围截取，再做基线校正；页面默认 arPLS |
+| 色谱 / HPLC | 检查文件点数与时间范围，按行号或时间范围截取，可选线性插值到公共 0–50 分钟目标轴 |
 
-只启动 uvicorn 时，训练任务会停留在 queued，直到 worker 启动。
+HPLC 目标点数由批次动态检测，不固定为 4000。关闭插值时保留所选原始轴；多文件轴不一致会拒绝导出。HPLC 不执行消负或面积归一化。
 
-默认预算在 24 个逻辑 CPU 上为 4 个 Worker × 每进程 5 个 CPU 线程；较少 CPU 的机器自动缩减，也可显式调整上面两个参数，但乘积不得超过逻辑 CPU 数。独立手动 Worker 默认 1 个 CPU 线程，可用 `--threads N` 设置；多进程手动部署需自行保证合计预算。不要在已有训练进行中强制重启以更换配置。
+## 模型与特征处理
 
-### 服务器模式
+### 网页可选模型
 
-对外监听必须启用服务器安全模式，并提供至少 32 个字符的随机 Bearer 令牌。不要把令牌写入命令行参数、脚本、URL 或仓库文件；应由进程管理器、受限环境文件或 secret manager 注入。
+| 分组 | 模型 |
+| --- | --- |
+| 机器学习（10 个） | PLS-DA、Shrinkage-LDA、Lasso、Ridge、Elastic Net、SVM、KNN、Random Forest、Extra Trees、XGBoost |
+| 深度学习（3 个） | 1D-CNN、1D CNN-SE、1D ResNet |
 
-Linux 示例：
+Lasso / Ridge 分别是 **L1 / L2 正则化逻辑回归分类器**，不是回归预测后取整；Shrinkage-LDA 使用自动收缩 LDA。DSCARNet 不在当前网页列表中。其他历史模型保留后端兼容能力，可用性以 `/api/models` 为准。
 
-```bash
-export AUTOAI_DEPLOYMENT_MODE=server
-export AUTOAI_API_TOKEN="$(< /secure/path/autoai_api_token)"
-export AUTOAI_PRINCIPAL_ID=server-admin
-export AUTOAI_TENANT_ID=default
-export AUTOAI_ALLOWED_ORIGINS=https://autoai.example.edu
-python run.py --server --host 0.0.0.0 --no-browser
-```
+### 特征处理规则
 
-`AUTOAI_ALLOWED_ORIGINS` 可用逗号分隔多个明确来源，禁止 `*`。同源部署不需要额外跨域来源。浏览器首次访问受保护 API 时会要求令牌，令牌只保存在当前标签页的 `sessionStorage` 中。
+- **机器学习**：可多选 BIN5、BIN10、BIN20、PCA5、PCA10、PCA20，每个「模型 × 特征处理」建立独立 Run。
+- **BIN**：按宽度 5 / 10 / 20 对相邻特征点取均值，不是压缩到 5 / 10 / 20 个特征。
+- **PCA**：固定保留 5 / 10 / 20 个主成分，不是方差百分比。训练数据不足时明确报错，不自动减少主成分数。
+- **深度学习**：始终使用全部输入特征，每个模型只建立一个全特征 Run，**不执行外部 BIN / PCA**；保留训练折标准化和网络自身卷积、池化。
 
-如果通过 SSH tunnel 访问，推荐让服务继续监听 `127.0.0.1` 并使用 local 模式，无需将端口直接暴露到网络。
+网页默认使用 **BIN5、快速训练（quick）、Z-score 和后端默认随机种子**，留一交叉验证需要主动勾选。标准化、PCA 只在允许的训练数据上拟合，测试数据不参与选参或权重选择。后端保留完整搜索能力，但它不是当前网页的默认策略。
 
-### 正式本地 URL
-
-- 经典前端：<http://127.0.0.1:8000/>
-- 经典专属结果页：`http://127.0.0.1:8000/#/results?run_id=<Run ID>`
-- 训练记录：<http://127.0.0.1:8000/#/runs>
-- API 文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/health>
-
-专属结果页从 `GET /api/training/runs/{run_id}/result` 读取 `run-result-v1`。留一 Sample_ID CV 的测试主指标使用 pooled OOF；折均值和标准差仅作审计。
-
-## 分类模型 v2 契约
-
-后端保留 17 个分类模型，依赖可用性按环境检测。UI 以 ui_visible 过滤显示六类模型，Label 按类别编码，Sample_ID 用于分组，隐藏模型保留兼容 API。
-
-UI 新 Run 使用 architecture_version=docx-classification-v4-0904，CNN 二分类也使用两类别输出与 CrossEntropyLoss。未指定新版 experiment_version 的兼容 API 保留旧模型与单 logit 契约；旧权重不载入新结构。详情见 docs/plans/2026-09-05-word0904-models-and-scientific-results.md。
-
-评估策略固定为：`stratified_holdout` 以 8:1:1 为目标；如果 10% 对应的样品组不足以覆盖全部类别，Valid 和 Test 会自动提高到每类至少 1 个 `Sample_ID`，Train 同样必须类别完整。因而该模式要求每类至少有 3 个不同 `Sample_ID`，不足时训练会给出明确错误。`leave_one_sample_id_cv` 每次留一个 `Sample_ID` 作 test、其余按 8:2 分 train/valid；`external_test_holdout` 使用主数据 8:2，独立数据作为最终 test。交叉验证的主测试指标由所有折的 OOF 测试预测合并后计算；逐折均值与标准差仅作为审计值保留。传统模型以按 `Sample_ID` 分组的内层 5 折 Balanced Accuracy 选优，标准化和 PCA 均在内层训练折拟合，锁定参数后用外层 train+valid 重训。深度模型使用 AdamW、batch size 8、最多 200 epochs，并以最低 validation loss 保存最佳权重。
-
-可解释性实现矩阵（传统模型窗口遮挡、卷积模型 Grad-CAM、DSCARNet 双通路 2D 回投）保留在后端源码中，但当前 `TEMPORARILY_HIDDEN`：新训练不计算、不写出解释性 artifact，经典与 v2 前端均不显示入口或发起请求，`sample_feature_importance.*`、`feature_importance.*`、`model_feature_visualization.json` 与 `dscarnet_mapping.json` 均不开放下载。`model.pt/model.pkl` 仍可由训练内部生成，但不属于公开下载白名单。
-
-## 建模 CSV
-
-新预处理文件使用 `wide-feature-v2` 宽表。一条曲线占一行，前四列名称与顺序固定；第 5 列起的列名是真实 `XXX` 坐标，单元格是对应的标量 `Intensity`：
-
-```csv
-Index,Label,Sample_ID,Name,0,0.0066675556740898788,...,50
-1,A,S001,GSGC-001.csv,0.12,0.15,...,0.08
-2,A,S001,GSGC-002.csv,0.11,0.16,...,0.09
-```
-
-- `Index`、`Label`、`Sample_ID`、`Name` 必须依次位于前四列；`Name` 保存原始文件名，`Label` 必填并始终作为分类类别。
-- 第 5 列起的表头必须能解析为有限浮点数，数值唯一且严格递增；生成器使用 float64 可往返文本保存真实坐标。
-- 每个特征单元格必须是有限标量强度；预处理输出最多保留 5 位小数，不再把整条数组塞入单元格，也不自适应降低精度。
-- `Sample_ID` 表示同一样品的重复测量组；同组不得混入多个 `Label`，不同样品的重复次数应一致。
-- 所有行必须共享表头所表示的公共轴。拉曼、简单色谱及关闭插值的 HPLC 在多文件轴不一致时拒绝导出；开启插值的 HPLC 使用公共固定目标轴。
-- 独立测试集必须与主数据集具有完全相同的特征坐标及顺序。没有 `Name` 的 `wide-feature-v1` 宽表仍可训练；旧 `Index,Name,XXX,Intensity,Label,Sample_ID` 数组/JSON 文件会被明确拒绝，不做有损自动迁移。
-- Excel 工作表最多 16,384 列；扣除四个元数据列后，v2 单个文件最多 16,380 个特征。
-
-一次预处理仍只生成并下载一个统一建模 CSV。响应中的 `output_precision` 以 `format=wide-feature-v2`、`xxx_encoding=column_headers` 描述宽表，报告特征数、总列数和 Excel 兼容性。
-
-最小工作流程：
-
-1. 在网页上传拉曼/色谱原始 CSV 并完成预处理。
-2. 下载统一 CSV，补全 `Label` 与 `Sample_ID`。
-3. 将建模 CSV 上传到“AI 建模”。
-4. 选择一个或多个模型与评估口径；单模型创建一个 queued Run，多模型创建统一 Batch，并为每个模型创建一个 Run。
-5. worker 完成后，浏览器中央提示框提供“立即查看结果”和“留在当前页”；未操作时 3 秒后进入该 Run 的专属结果 URL。
-6. 在结果页查看 Train/Valid/Test 或 pooled OOF 指标、三分区混淆矩阵、各类别指标、预测分布和训练/参数审计；批次比较页还提供 Accuracy 排名、四指标分组柱图或热力表，以及样品与类别热力图。
-7. 在每项真实产物旁下载对应 JSON/CSV；裸 `model.pkl`、`model.pt` 和内部 joblib 本轮不开放。
-
-真实验证文件以用户指定或本机已确认可用的 CSV 为准，不要求固定文件名。本地验证数据、上传文件、模型和运行结果都位于 Git 管理范围之外。
-
-## 目录结构
+### 实验数量
 
 ```text
-backend/app/                 FastAPI、预处理、训练、Run 队列与模型
-backend/tests/               自动化测试
-backend/requirements*.txt    核心、开发、DSCARNet 依赖与验证约束
-static/index.html            经典前端入口（兼容基线）
-static/js/                   经典前端与共享 API 客户端
-deploy/                      集群部署脚本与说明
-docs/                        接口契约、ADR 和发布规范
-storage/                     本地上传、SQLite 与训练产物（不进 Git）
-run.py                       服务与 Worker 启动器（打开经典前端）
-run_classic.py               启动服务并打开经典前端
+Run 数 = 机器学习模型数 × 特征方案数 + 深度学习模型数
+普通留一外层任务数 = Run 数 × 独立 Sample_ID 数
 ```
 
-## 验证
+例如，全选 10 个机器学习模型、6 种特征处理和 3 个深度模型：
 
-安装开发依赖后，可先跑快速 smoke，再执行交付门禁：
+- 不做留一：`10 × 6 + 3 = 63` 个 Run。
+- 24 个独立样品做留一：`63 × 24 = 1512` 个外层训练 / 评估任务。
+
+**这不是底层模型拟合次数**：每个外层任务内部还可能尝试多个参数、重训或运行多个 epoch。
+
+## 数据格式与评估
+
+### 建模 CSV
+
+新预处理导出 `wide-feature-v2` 宽表：一行对应一条测量曲线，前四列固定为 `Index,Label,Sample_ID,Name`，后续列名为真实坐标，单元格为强度。例如：
+
+```csv
+Index,Label,Sample_ID,Name,0,0.5,1
+1,A,S1,sample_1.csv,0.12,0.15,0.08
+2,A,S1,sample_2.csv,0.11,0.16,0.09
+3,B,S2,sample_3.csv,0.32,0.25,0.18
+```
+
+以上仅示意文件结构，不是满足训练划分要求的完整数据集。
+
+- `Label` 是类别，`Sample_ID` 标识独立样品；同一样品的重复测量使用同一个 ID，且标签必须一致。
+- 特征坐标必须有限、唯一、严格递增，强度必须为有限标量；所有曲线共享公共轴。
+- 独立测试集必须与主数据集的特征坐标及顺序一致。
+- 兼容没有 `Name` 列的 `wide-feature-v1`；旧数组 / JSON 单元格格式需要重新预处理。
+
+### 评估口径
+
+所有划分均按 `Sample_ID` 整组进行，重复测量不会跨训练、验证和测试分区。
+
+| 模式 | 数据划分 | 主测试成绩 |
+| --- | --- | --- |
+| 普通留出 | 主数据目标 Train:Valid:Test = 8:1:1 | 留出 Test |
+| 样品留一 | 每次留一个 Sample_ID 作 Test，其余目标 Train:Valid = 8:2 | 全部外层测试预测合并后的 pooled OOF |
+| 独立测试 | 主数据目标 Train:Valid = 8:2，独立数据作 Test | 独立 Test |
+| 样品留一 + 独立测试 | 主数据执行留一，确定配置后用全部主数据重训 | 独立 Test；主数据 OOF 仅作审计 |
+
+小样本下实际比例可能为保证类别完整而调整。普通三分区留出要求每类至少 3 个独立样品；其他模式和参数搜索也有相应数据量要求，不会拆散样品凑比例。
+
+留一结果没有统一的「最佳参数」，应查看逐折配置；最终成绩使用 **pooled OOF**，不以折均值替代。
+
+## 并行训练与结果展示
+
+**Worker 是训练进程，不等于一个 CPU 核心。** 启动器默认按 CPU 预算托管最多 4 个 Worker，并限制每进程的计算线程，避免过度争抢资源。
+
+- 不同模型 / 特征组合可以并行，同一个 Run 内的留一折依次执行。
+- GPU 可用时，同一队列最多同时运行一个深度学习 Run，其余 Worker 可继续执行 CPU 模型。
+- 多个深度任务等待同一 GPU 时排队是正常现象；全部任务长期排队则应检查 Worker。
+- 更新代码需要让 Web 和 Worker 加载同一版本；**不要在训练进行中强制重启**。
+
+比较页先展示「特征处理 × 模型」总览，再切换某种特征处理查看完整指标。深度模型只在 **全特征（深度学习）** 分组中展示，不把同一成绩复制到各 BIN / PCA 分组。历史结果保留原方案，不自动重训或改标签。
+
+支持总体指标、混淆矩阵、类别指标、样品预测、参数与划分，以及 PNG / SVG 图表、预测 Excel 和批次归档。缺失或不适用的结果保留原因，不填零。当前可解释性入口关闭，也不提供无正式产物支持的 ROC / PR 图表。
+
+## 常见问题与部署
+
+| 问题 | 检查方法 |
+| --- | --- |
+| 一直显示「等待可用 Worker」 | 查看 `/health` 的 `worker.available`、`worker.compatible`；仅启动 Web 不会执行训练，推荐使用 `python run.py` |
+| 更新后仍是旧行为 | 等当前训练结束，从同一代码版本重启 Web 和 Worker，再刷新网页 |
+| GPU 未使用 | 运行 `python -c "import torch; print(torch.cuda.is_available())"`，检查 PyTorch 安装与驱动匹配情况 |
+| 上传数据被拒绝 | 检查列名、坐标顺序、有限强度、同一 Sample_ID 的标签，以及主 / 独立数据轴是否一致 |
+| 结果缺失或下载不可用 | 保留 Run ID，查看页面原因及日志；不要自行拼接文件下载地址 |
+
+默认只监听本机 `127.0.0.1`。服务器推荐通过 SSH 隧道访问；直接对外监听必须启用 `server` 模式，配置至少 32 字符的 `AUTOAI_API_TOKEN`，跨域访问使用明确的允许来源。令牌不得进入 URL、日志或 Git，浏览器仅在当前标签页保存。
+
+常用地址（默认端口）：[网页](http://127.0.0.1:8000/) · [API 文档](http://127.0.0.1:8000/docs) · [健康检查](http://127.0.0.1:8000/health)
+
+## 开发与文档
+
+项目使用 **FastAPI + 原生 HTML / CSS / JavaScript + SQLite 任务队列 + 独立 Worker**，不需要 React、Vite 或 Redis。网页入口为 `static/index.html`，后端入口为 `backend.app.main:app`。
 
 ```bash
-python -m pytest backend/tests/test_smoke.py -q
+python -m pip install -r backend/requirements-dev.txt -c backend/constraints-verified.txt
 python -m pytest backend/tests -q
 python -m compileall backend/app -q
-python run.py --help
-python -c "from backend.app.main import app; print(app.title)"
-python -c "from backend.app.runs.worker import RunWorker; print(RunWorker.__name__)"
 ```
 
-服务启动后：
+数据、训练产物、权重与本地缓存不提交 Git。开发实验的记录与验收要求见 [AGENTS.md](AGENTS.md)。
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+| 文档 | 用途 |
+| --- | --- |
+| [前后端契约](docs/frontend_backend_handoff.md) | 接口、能力目录与请求规则 |
+| [Run 结果契约](docs/run_result_contract.md) | 单任务结果与产物结构 |
+| [模型比较契约](docs/model_comparison_contract.md) | 比较、聚合及下载规则 |
+| [服务器部署](deploy/server_deploy.md) | 部署与访问配置；具体路径按实际环境调整 |
+| [分类模型实现与验收](docs/plans/2026-10-18-classical-baselines.md) | 当前十种机器学习模型的实现依据 |
+| [深度模型全特征规则与验收](docs/plans/2026-10-19-deep-full-features.md) | 深度模型特征策略、任务计数与验证记录 |
 
-应返回：
-
-```json
-{
-  "status": "ok",
-  "deployment_mode": "local",
-  "contracts": {
-    "run_result": "run-result-v1",
-    "artifact_manifest": "run-artifact-manifest-v2",
-    "run_summary": "v1"
-  },
-  "worker": {
-    "available": true,
-    "compatible": true,
-    "contract_version": "run-artifact-manifest-v2",
-    "live_count": 1,
-    "last_seen_at": "...",
-    "active_run_count": 0
-  }
-}
-```
-
-`status="ok"` 表示 Web 可用；`worker.available=false` 表示当前没有近期心跳，训练会停在 queued。`worker.compatible=false` 表示活跃 Worker 与 Web 的结果产物契约不一致；此时创建训练会返回 503 `worker_contract_mismatch`，应同时重启 Web 与 Worker。健康接口是匿名探针，只返回汇总，不暴露令牌、Principal 或 worker_id。
-
-前端改动还要抽取 `static/index.html` 的内联脚本并用 `node --check --input-type=commonjs` 检查，同时执行 `backend/tests/test_result_frontend_contract.py` 中的 Node 纯函数测试。没有 Playwright/JSDOM 时不强行增加依赖。
-
-## 常见问题
-
-### 安装了 CUDA 驱动但 PyTorch 仍使用 CPU
-
-检查 `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`。若为 `False`，按 PyTorch 官方渠道重新安装与驱动/CUDA 匹配的 wheel，然后再安装 SpecAutoAI 其余依赖。
-
-### AggMap 安装时尝试拉取 tensorflow-gpu
-
-不要直接执行普通的 `pip install aggmap`。先安装 `requirements-dscarnet.txt`，再执行 `python -m pip install aggmap==1.2.1 --no-deps`。
-
-安装后执行 `pip check` 会按 AggMap 1.2.1 的旧元数据报告 `tensorflow-gpu`、`lapjv`、`shap` 和若干固定旧版本冲突，这是当前兼容安装方式的已知现象。SpecAutoAI 不调用 AggMap 的 TensorFlow AggModel，并为所用映射路径提供 SciPy `lapjv` 兼容层。
-
-### pandas 提示 numexpr 版本过低
-
-`numexpr` 不是 SpecAutoAI 的必需依赖。如果环境中已经安装旧版并触发 pandas 警告，可升级到 pandas 提示的最低版本，或在不被其他项目使用时卸载旧版 `numexpr`；不要仅为消除警告改动 SpecAutoAI 的核心依赖集合。
-
-### 任务一直显示 queued
-
-先查看 `/health` 的 `worker.available` 和 `worker.compatible`。没有 Worker 时确认独立进程正在运行，或改用默认会托管并监督 Worker 的 `python run.py`；版本不兼容时停止旧 Web/Worker，并从同一代码版本重新启动二者。
-
-### 服务器页面提示需要访问令牌
-
-确认服务端使用 `AUTOAI_DEPLOYMENT_MODE=server`，并由管理员安全分发与 `AUTOAI_API_TOKEN` 相同的令牌。浏览器只把令牌保存在当前标签页；刷新可继续使用，关闭标签页后需要重新输入。不要把令牌放在结果链接中。
-
-### 升级到 server 模式后看不到历史 Run
-
-这是所有权隔离的预期行为。先备份 `storage/`，然后执行只读预览：
-
-```bash
-python -m backend.app.runs.migration --dry-run \
-  --owner-id server-admin --tenant-id default --rebind-unowned
-```
-
-确认数量正确后去掉 `--dry-run`。命令幂等，不移动或改写历史 Run 目录，也不会在服务启动时自动执行。owner/tenant 参数应与服务器进程的 `AUTOAI_PRINCIPAL_ID`、`AUTOAI_TENANT_ID` 一致。
-
-### 结果页显示“部分结果”或下载按钮禁用
-
-结果页会分别识别未生成、不适用、Manifest 缺失/损坏和文件完整性失败。不要手动猜下载 URL；保留 Run ID，检查页面原因、`/health` 和服务日志。ROC-AUC、ROC 与 Precision-Recall 当前没有正式训练产物，因此不会绘制虚假图表。
-
-### 修改代码后浏览器仍显示旧行为
-
-未使用 `--reload` 的服务不会自动加载新代码。静态文件会被新请求读取，但 Web/Worker Python 进程仍可能是旧版本；应停止并从同一提交同时重启 Web 与 Worker，再确认 `/health.contracts`、`worker.compatible=true` 和 OpenAPI 中存在 `/api/training/runs/{run_id}/result`。
-
-### 上传后提示 Label 或 Sample_ID 无效
-
-检查前四列是否依次为 `Index,Label,Sample_ID,Name` 且没有空值；第 5 列起的坐标表头是否为有限、唯一、严格递增的数值；所有强度是否为有限标量；同一 `Sample_ID` 是否只对应一个标签。已有 `wide-feature-v1` 仍兼容；旧六列数组/JSON 文件需要重新预处理导出。
-
-## 协作与发布
-
-前后端契约见 `docs/frontend_backend_handoff.md`，结果结构见 `docs/run_result_contract.md`，部署见 `deploy/server_deploy.md`，GitHub 内容策略见 `docs/github_publish_policy.md`。架构决策记录在 `docs/adr/`；`AutoAI_开发计划.md` 仅保留为历史路线资料，不代表当前实现。
+本 README 描述截至 **2026-10-19** 的当前行为。历史变更和实验记录保留在专题文档中，不作为当前默认配置。
