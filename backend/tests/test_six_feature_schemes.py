@@ -58,7 +58,7 @@ def test_capability_advertises_six_student_options_and_retains_old_api():
         config = TrainingSpec.from_legacy({'model_type':'pls_da', 'experiment_version':'word-0904', 'feature_scheme':sid}).validated(has_external_test=False).to_legacy_dict()
         assert config['feature_scheme'] == sid
     for sid, _ in STUDENT_SCHEMES[3:]:
-        with pytest.raises(ValueError, match='CNN 不支持 PCA'):
+        with pytest.raises(ValueError, match='深度学习固定使用全特征'):
             validate_training_options('quick', sid, 'cnn1d')
 
 
@@ -114,10 +114,10 @@ def test_cnn_accepts_each_new_bin_without_changing_its_training_policy(tmp_path,
     result = t.train_model(path, {'model_type':'cnn1d','experiment_version':'word-0904','feature_scheme':sid,'epochs':2}, run_id='cnn')
     exp = json.loads((Path(result['run_dir']) / 'feature_experiments.json').read_text(encoding='utf-8'))
     assert sum(s['status'] == 'ready' for s in exp['schemes']) == 1
-    assert sum(s['status'] == 'not_applicable' for s in exp['schemes']) == 3
+    assert len(exp['schemes']) == 1 and exp['schemes'][0]['scheme_id'] == 'full'
     selected = exp['selected_configuration']
     assert selected['params']['optimizer'] == 'AdamW'
-    assert selected['transform']['output_features'] == int(np.ceil(160 / int(sid.split('_')[1])))
+    assert selected['transform']['output_features'] == 160
 
 
 def test_feature_heatmap_supports_six_new_rows_and_mixed_historical_rows():

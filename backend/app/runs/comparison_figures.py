@@ -15,15 +15,17 @@ from matplotlib import colors, font_manager
 from matplotlib.figure import Figure
 import numpy as np
 from .. import feature_policy
-from ..feature_engineering import STUDENT_SCHEMES as TRAINING_STUDENT_SCHEMES, HISTORICAL_SCHEMES
+from ..feature_engineering import STUDENT_SCHEMES as TRAINING_STUDENT_SCHEMES, HISTORICAL_SCHEMES, DEEP_MODELS
 from ..parsers import natural_sort_key
 
-DRAWING_VERSION = 'comparison-figures-v8'
+DRAWING_VERSION = 'comparison-figures-v10'
 METRICS = {'accuracy': 'Accuracy', 'balanced_accuracy': 'Balanced Accuracy', 'macro_f1': 'Macro-F1', 'weighted_f1': 'Weighted-F1'}
 FEATURE_METRICS = {'accuracy': '准确率', 'balanced_accuracy': '平衡准确率', 'macro_f1': '宏平均 F1', 'weighted_f1': '加权 F1'}
 NAMES = {'pls_da': 'PLS-DA', 'logistic_regression': 'Elastic Net', 'svm': 'SVM', 'random_forest': 'Random Forest', 'xgboost': 'XGBoost', 'cnn1d': '1D-CNN', 'spls_da': 'sPLS-DA', 'pca_svm': 'PCA-SVM'}
 NAMES['pca_lda'] = 'PCA-LDA'
 NAMES.update(cnn1d_se='1D CNN-SE', resnet1d='1D ResNet')
+NAMES.update(lasso='Lasso', ridge='Ridge', knn='KNN', extra_trees='Extra Trees')
+NAMES['shrinkage_lda'] = 'Shrinkage-LDA'
 PALETTE = ['#42756a', '#825c80', '#b48139', '#bb7159', '#647775', '#88924f']
 MODEL_COLORS = dict(zip(['pls_da', 'logistic_regression', 'svm', 'random_forest', 'xgboost', 'cnn1d'], PALETTE))
 SCHEMES = [('full', '全部特征'), ('bin_5', '分箱（宽度 5）'), ('bin_10', '分箱（宽度 10）'), ('bin_20', '分箱（宽度 20）'), ('pca_90', 'PCA（90%）'), ('pca_95', 'PCA（95%）'), ('pca_99', 'PCA（99%）')]
@@ -114,7 +116,9 @@ def figure_data(data, *, kind, metric='balanced_accuracy', model='', sort='balan
                 line.append(finite(row['metrics'].get(metric,{}).get('mean')) if row else None)
                 skipped = next((r for r in data['inapplicable_combinations'] if r['model_type']==mid and r['feature_scheme']==group['feature_scheme']), None)
                 status = next((r for r in data['combination_status']['runs'] if r['model_type']==mid and r['feature_scheme']==group['feature_scheme']), None)
-                notes.append(skipped['reason'] if skipped else (status.get('error') or status['state']) if status else '缺少校验通过的结果')
+                unused = data['combination_status']['workload'].get('deep_full_features') and not status
+                notes.append(skipped['reason'] if skipped else (status.get('error') or status['state']) if status else
+                             ('深度学习仅在全特征行展示' if mid in DEEP_MODELS else '未配置此组合') if unused else '缺少校验通过的结果')
             values.append(line);reasons.append(notes)
         return {'rows':[g['feature_name'].split('（',1)[0] for g in data['scheme_comparisons']],
                 'columns':[NAMES.get(mid,mid) for mid in ids],'values':values,

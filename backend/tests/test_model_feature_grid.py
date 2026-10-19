@@ -51,14 +51,14 @@ def test_cartesian_grid_and_cv_workload_deduplicate_and_keep_native_model_identi
     assert all(r.state=='cancelled' for r in repository.list_batch_runs_scoped(batch.batch_id,principal=Principal()))
 
 
-def test_incompatible_pairs_are_explicit_and_do_not_replace_feature_scheme(tmp_path):
+def test_deep_runs_use_full_once_and_preserve_ml_schemes(tmp_path):
     repository=repo(tmp_path)
     batch,runs=grid(repository,models=['pls_da','cnn1d'])
     assert len(runs)==3
-    assert batch.config['inapplicable_combinations']==[{'model_type':'cnn1d','feature_scheme':'pca_components_5','reason':'CNN 不支持 PCA 输入'}]
-    assert {(r.config['model_type'],r.config['feature_scheme']) for r in runs}=={('pls_da','bin_3'),('pls_da','pca_components_5'),('cnn1d','bin_3')}
-    with pytest.raises(TrainingConfigValidationError,match='没有可运行'):
-        _batch_config(TrainingBatchRequest(model_types=['cnn1d'],feature_schemes=['pca_components_5'],config={'experiment_version':'word-0904'}),has_external_test=False)
+    assert batch.config['inapplicable_combinations']==[]
+    assert {(r.config['model_type'],r.config['feature_scheme']) for r in runs}=={('pls_da','bin_3'),('pls_da','pca_components_5'),('cnn1d','full')}
+    _, config, _ = _batch_config(TrainingBatchRequest(model_types=['cnn1d'],feature_schemes=['pca_components_5'],config={'experiment_version':'word-0904'}),has_external_test=False)
+    assert config['combinations']==[{'model_type':'cnn1d','feature_scheme':'full'}]
 
 
 def test_legacy_batches_do_not_invent_unrecorded_cv_workload(tmp_path):
@@ -123,7 +123,7 @@ def test_cross_scheme_comparison_still_blocks_different_snapshot(tmp_path):
     assert not data['comparable'] and '不一致' in data['reason']
 
 
-def test_all_inapplicable_column_has_reason_and_never_fills_zero(tmp_path):
+def test_deep_only_results_have_one_explicit_full_group(tmp_path):
     repository=repo(tmp_path)
     batch,runs=grid(repository,models=['cnn1d'],features=['pca_components_5','bin_3'])
     assert len(runs)==1
@@ -131,9 +131,9 @@ def test_all_inapplicable_column_has_reason_and_never_fills_zero(tmp_path):
     _write_comparison_artifacts(tmp_path/record.run_id,record.run_id,score=.8,sample_suffix='same')
     data=project_model_comparison(batch_id=batch.batch_id,records=[replace(record,state='succeeded')],run_dir_for=lambda rid:tmp_path/rid)
     matrix=figure_data(data,kind='features')
-    assert matrix['values']==[[None],[.8]]
-    assert 'CNN' in matrix['reasons'][0][0]
-    assert data['scheme_comparisons'][0]['state']=='not_applicable'
+    assert matrix['values']==[[.8]]
+    assert data['scheme_comparisons'][0]['feature_scheme']=='full'
+    assert data['scheme_comparisons'][0]['feature_name']=='全特征（深度学习）'
 
 
 @pytest.mark.parametrize('mode',['stratified_holdout','leave_one_sample_id_cv','external_test_holdout','leave_one_sample_id_cv_with_external_test'])

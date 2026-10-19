@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 
 
 CANONICAL_MODELS = {
+    'shrinkage_lda',
+    'lasso', 'ridge', 'knn', 'extra_trees',
     "pls_da",
     "spls_da",
     "pca_lda",
@@ -37,7 +39,7 @@ def test_models_catalog_exposes_all_backend_models_with_explicit_ui_visibility()
     models = _catalog_models()
 
     assert {item["id"] for item in models} == CANONICAL_MODELS
-    assert len(models) == 17
+    assert len(models) == 22
     assert len({item["id"] for item in models}) == len(models)
     for item in models:
         assert set(item) == {

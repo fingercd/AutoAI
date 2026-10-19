@@ -114,8 +114,7 @@ def test_quick_cnn_keeps_scheduler_and_single_scheme(tmp_path, monkeypatch):
     assert params['loss'] == 'CrossEntropyLoss'
 
 
-@pytest.mark.parametrize('options', [{'training_profile': 'invalid'}, {'feature_scheme': 'invalid'},
-                                    {'model_type': 'cnn1d', 'feature_scheme': 'pca_95'}])
+@pytest.mark.parametrize('options', [{'training_profile': 'invalid'}, {'feature_scheme': 'invalid'}])
 def test_invalid_quick_options_rejected_before_enqueue(options):
     with pytest.raises(TrainingConfigValidationError):
         TrainingSpec.from_legacy({'model_type': 'svm', 'experiment_version': 'word-0904', **options}).validated(has_external_test=False)

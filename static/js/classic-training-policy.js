@@ -13,10 +13,9 @@
     if (!['zscore','minmax'].includes(normalization)) throw new Error('新版方案请选择 Z-score 或 Min-Max 标准化');
     const d=scheme.defaults;
     const profile=options.training_profile || scheme.default_profile;
-    const feature=options.feature_scheme || scheme.default_feature_scheme;
+    const feature=scheme.forced_feature_schemes?.[model] || options.feature_scheme || scheme.default_feature_scheme;
     if (!scheme.profiles?.some(item=>item.id===profile) || !scheme.feature_schemes?.some(item=>item.id===feature))
       throw new Error('训练配置尚未就绪，请更新并重启后端与 Worker 后刷新页面');
-    if (profile==='quick' && model==='cnn1d' && feature.startsWith('pca_')) throw new Error('CNN 不支持 PCA，请选择全特征或相邻点合并');
     if (profile==='quick' && scheme.feature_schemes.find(item=>item.id===feature)?.unsupported_models?.includes(model)) throw new Error('该模型不支持所选外层特征处理，请选择相邻点合并');
     return {...splitPayload(selectedMode,ratios),experiment_version:scheme.version,model_type:model,normalization,
       training_profile:profile,feature_scheme:feature,
@@ -29,7 +28,7 @@
     return (scheme?.feature_schemes || []).filter(item => item.student_visible === true);
   }
   function studentPayload(scheme, external, model, feature=scheme?.student_default_feature_scheme, cv=false) {
-    if (!studentFeatureSchemes(scheme).some(item=>item.id===feature))
+    if (!scheme?.forced_feature_schemes?.[model] && !studentFeatureSchemes(scheme).some(item=>item.id===feature))
       throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
     const mode=external?(cv?'external_loo':'external'):(cv?'loo':'holdout');
     return payload(scheme,mode,mode==='holdout'?[8,1,1]:[8,2,0],'zscore',model,
@@ -37,19 +36,22 @@
   }
   function studentPlan(scheme, models, features, external=false, cv=false) {
     if (!models.length) throw new Error('至少选择一个可用模型');
-    if (!features.length) throw new Error('至少选择一种特征处理');
+    const forced=scheme?.forced_feature_schemes || {};
+    const deepCount=models.filter(model=>forced[model]).length, traditionalCount=models.length-deepCount;
+    if (traditionalCount && !features.length) throw new Error('至少选择一种特征处理');
     const available=studentFeatureSchemes(scheme), configs=[], inapplicable=[];
     for (const feature of features) {
       const entry=available.find(item=>item.id===feature);
       if (!entry) throw new Error('所选特征处理不可用，请刷新模型目录后重新选择');
-      for (const model of models) {
-        if (entry.unsupported_models?.includes(model) || (model==='cnn1d' && entry.cnn_supported===false)) {
-          inapplicable.push({model_type:model,feature_scheme:feature,reason:entry.inapplicable_reasons?.[model] || (model==='cnn1d'?'CNN 不支持 PCA 输入':'模型内置 PCA，不重复叠加外层 PCA')});
+      for (const model of models.filter(model=>!forced[model])) {
+        if (entry.unsupported_models?.includes(model)) {
+          inapplicable.push({model_type:model,feature_scheme:feature,reason:entry.inapplicable_reasons?.[model] || '模型内置 PCA，不重复叠加外层 PCA'});
         } else configs.push(studentPayload(scheme,external,model,feature,cv));
       }
     }
-    if (!configs.length) throw new Error('没有可运行的模型 × 特征处理组合：CNN 不支持 PCA，内置 PCA 模型也不重复叠加外层 PCA');
-    return {configs,inapplicable};
+    for(const model of models.filter(model=>forced[model]))configs.push(studentPayload(scheme,external,model,forced[model],cv));
+    if (!configs.length) throw new Error('没有可运行的模型 × 特征处理组合：内置 PCA 模型不重复叠加外层 PCA');
+    return {configs,inapplicable,traditionalCount,deepCount};
   }
   global.SpecAutoAITrainingPolicy = {splitPayload,payload,studentFeatureSchemes,studentPayload,studentPlan};
 })(typeof window==='undefined'?globalThis:window);

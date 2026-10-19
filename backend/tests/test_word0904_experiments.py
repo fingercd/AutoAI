@@ -153,7 +153,7 @@ def test_cnn_external_loso_refits_selected_epochs(tmp_path,monkeypatch):
     assert selected['params']['N']==12
     assert selected['params']['selection_sample_count']==selected['split_summary']['train']['sample_count']
     assert selected['split_summary']['train']['sample_count']+selected['split_summary']['valid']['sample_count']==12
-    assert sum(s['status']=='ready' for s in experiment['schemes'])==4
+    assert sum(s['status']=='ready' for s in experiment['schemes'])==1
     assert sum(map(sum,result['metrics']['test']['confusion_matrix']))==4
     assert result['model_metadata']['loss_function']=='CrossEntropyLoss'
 
@@ -177,6 +177,6 @@ def test_six_model_experiment(tmp_path, monkeypatch, model):
     experiment=json.loads((root/'feature_experiments.json').read_text(encoding='utf-8'))
     assert experiment['selected_configuration']
     assert len(experiment['schemes'])==7
-    assert sum(s['status']=='ready' for s in experiment['schemes'])==(4 if model=='cnn1d' else 7)
+    assert sum(s['status']=='ready' for s in experiment['schemes'])==(1 if model=='cnn1d' else 7)
     assert sum(map(sum,result['metrics']['test']['confusion_matrix']))==6
     assert (root/'manifest.json').is_file()

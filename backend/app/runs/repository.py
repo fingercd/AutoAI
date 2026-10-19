@@ -335,8 +335,8 @@ class RunRepository:
         if not model_types or not 1 <= int(repeat_count) <= 5:
             raise ValueError('batch requires models and repeat_count 1..5')
         combinations = config.get('combinations') or [{'model_type':model} for model in model_types]
-        if len(combinations) * int(repeat_count) > 50:
-            raise ValueError('batch run count must not exceed 50')
+        if len(combinations) * int(repeat_count) > 100:
+            raise ValueError('batch run count must not exceed 100')
         batch_id = uuid.uuid4().hex
         now = _timestamp(datetime.now(timezone.utc))
         run_ids: list[str] = []

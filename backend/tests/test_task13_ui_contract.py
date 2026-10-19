@@ -8,11 +8,9 @@ def test_official_ui_loads_model_catalog_without_hard_coded_legacy_options():
     assert 'apiWithTimeout("/api/models", 30000)' in content
     assert 'function renderModelCatalog(models' in content
     assert 'const MODEL_CATALOG_GROUPS' in content
-    assert '传统模型' in content
-    assert '基础深度模型' in content
-    assert '卷积改进模型' in content
-    assert '长距离模型' in content
-    assert '二维映射模型' in content
+    assert 'label: "机器学习模型"' in content
+    assert 'label: "深度学习模型"' in content
+    assert 'convolutional: "basic_deep"' in content
     assert '<option value="pls_da">PLS-DA</option>' not in content
     assert '<option value="transformer1d">1D-Transformer</option>' not in content
 

@@ -61,5 +61,5 @@ def test_all_visible_combinations_fit_batch_limit():
     from backend.app.feature_engineering import MODELS, STUDENT_SCHEMES
     from backend.app.routers.batches import _batch_config
     _, config, _ = _batch_config(TrainingBatchRequest(model_types=sorted(MODELS), feature_schemes=[s for s, _ in STUDENT_SCHEMES], config={'experiment_version': 'word-0904'}), has_external_test=False)
-    assert len(config['combinations']) == 51
-    assert len(config['inapplicable_combinations']) == 15
+    assert len(config['combinations']) == 75
+    assert len(config['inapplicable_combinations']) == 6

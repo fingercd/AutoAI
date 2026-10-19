@@ -1,5 +1,9 @@
 # SpecAutoAI 前后端接口契约
 
+2026-10-19 深度全特征：training_scheme.forced_feature_schemes 映射 cnn1d/cnn1d_se/resnet1d→full，cnn_scheme_count=1。新单 Run、批次和直接训练均归一化深度 full；批次多选不重复建立深度 Run。新批次保存 requested_feature_schemes、实际 feature_schemes 与 deep_full_features=true，workload 增加 traditional_model_count/deep_model_count/requested_feature_count。公式为 ML×特征数+DL×1，再乘外层折数；结果 full 分组显式标为“全特征（深度学习）”。历史批次无标记时保留原投影语义。
+
+2026-10-18 最终传统分类增量：新增 shrinkage_lda（自动收缩 LDA）、lasso（L1 Logistic/OvR）、ridge（L2 Logistic/OvR）、knn、extra_trees。UI 依老师清单显示十个机器学习、三个深度模型；spls_da/pca_lda/pca_svm 改为隐藏，后端/历史不删除。新增 Extra Trees 配置字段 extra_trees_n_estimators/max_depth/min_samples_leaf/max_features；KNN 复用原 knn_n_neighbors/weights/metric/p 并在入队前校验。五个新增模型均有真实 predict_proba，参数独立展示。界面六特征全选 69 有效、9 不适用；Worker 为 run-artifact-manifest-v2-classic-baselines-v1。
+
 2026-10-18 恢复模型增量：ui_visible 开放十一模型（新增 sPLS-DA/PCA-LDA/PCA-SVM/CNN-SE/ResNet），学生六特征为 BIN5/10/20、固定 PCA5/10/20。特征目录额外返回 unsupported_models 与 inapplicable_reasons，前后端均跳过不适用组合。三种卷积模型、PCA-LDA/PCA-SVM 不叠加外层 PCA。全选 51 有效、15 不适用，批次上限 100；旧特征仅为兼容 API 和历史结果保留。
 
 2026-10-18 结果范围提示：多特征批次以左侧按钮切换详细结果，选中项浅绿色突出，按钮下方简短显示当前特征名称，不增加整块彩色背景或重复标题。首次打开选择第一个 comparable 特征组，不按 Test 成绩选优；四个页签及图像请求都限定所选 feature_scheme，不合并不同特征的指标。切换特征时重置样品分页，保留当前页签。

@@ -15,6 +15,8 @@ def test_registry_retains_backend_models_and_adds_two_comparison_classifiers():
     )
 
     assert TARGET_TRADITIONAL_MODEL_TYPES == {
+        'shrinkage_lda',
+        'lasso', 'ridge', 'knn', 'extra_trees',
         "pls_da",
         "spls_da",
         "pca_lda",
@@ -36,6 +38,8 @@ def test_registry_retains_backend_models_and_adds_two_comparison_classifiers():
         "dscarnet",
     }
     assert TRADITIONAL_MODEL_TYPES == {
+        'shrinkage_lda',
+        'lasso', 'ridge', 'knn', 'extra_trees',
         "pls_da",
         "spls_da",
         "pca_lda",

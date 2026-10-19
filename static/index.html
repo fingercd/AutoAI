@@ -1566,7 +1566,7 @@
               <select id="trainingProfile"><option value="quick">快速训练（单方案、一次验证）</option></select>
               </div>
               <div id="featureSchemeField">
-                <label id="featureSchemeLabel">特征处理（可多选）</label>
+                <label id="featureSchemeLabel">机器学习特征处理（可多选；深度学习固定全特征）</label>
                 <div id="featureSchemeChoices" class="model-checkbox-grid" role="group" aria-labelledby="featureSchemeLabel">正在加载特征处理…</div>
                 <select id="featureScheme" hidden aria-hidden="true" tabindex="-1"><option value="">正在加载特征处理…</option></select>
               </div>
@@ -2098,11 +2098,8 @@
       // 模型目录由 /api/models 驱动。分组只控制展示顺序，不决定后端可训练能力；
       // available=false 的模型由 option.disabled 明确呈现。
       const MODEL_CATALOG_GROUPS = [
-        { id: "traditional", label: "传统模型" },
-        { id: "basic_deep", label: "基础深度模型" },
-        { id: "convolutional", label: "卷积改进模型" },
-        { id: "long_range", label: "长距离模型" },
-        { id: "two_dimensional_mapping", label: "二维映射模型" },
+        { id: "traditional", label: "机器学习模型" },
+        { id: "basic_deep", label: "深度学习模型" },
       ];
 
       const MODEL_FAMILY_GROUP_ALIASES = {
@@ -2110,12 +2107,12 @@
         traditional_ml: "traditional",
         basic_deep: "basic_deep",
         basic_deep_learning: "basic_deep",
-        convolutional: "convolutional",
-        convolutional_improvement: "convolutional",
-        long_range: "long_range",
-        long_distance: "long_range",
-        two_dimensional_mapping: "two_dimensional_mapping",
-        mapping_2d: "two_dimensional_mapping",
+        convolutional: "basic_deep",
+        convolutional_improvement: "basic_deep",
+        long_range: "basic_deep",
+        long_distance: "basic_deep",
+        two_dimensional_mapping: "basic_deep",
+        mapping_2d: "basic_deep",
       };
 
       function modelCatalogGroupId(family) {
@@ -2712,7 +2709,8 @@
           const plan=window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,models,features,Boolean(testDatasetId||testDatasetPath),$("cvEnabled").checked);
           const folds=$("cvEnabled").checked?(datasetSampleCount||null):1;
           $("plannedExperimentCount").textContent=`预计实验 ${folds===null?'—':plan.configs.length*folds} 次`;
-          $("trainingWorkHint").textContent=`${models.length} 个模型 × ${features.length} 种特征处理 = ${models.length*features.length} 个理论组合；${plan.configs.length} 个可运行组合`+
+          $("trainingWorkHint").textContent=(plan.traditionalCount?`${plan.traditionalCount} 个机器学习模型 × ${features.length} 种特征处理`:'')+
+            (plan.deepCount?`${plan.traditionalCount?' + ':''}${plan.deepCount} 个深度模型 × 全特征（不做 BIN/PCA、不重复训练）`:'')+`；${plan.configs.length} 个可运行组合`+
             (plan.inapplicable.length?`，${plan.inapplicable.length} 个模型 × 特征处理组合不适用（不会替换方案）`:'')+
             (folds?`；${plan.configs.length} × ${folds} = ${plan.configs.length*folds} 个外层折任务。`:'；加载数据后显示留一折数与总任务量。')+
             '每个外层折还会独立选参/训练，外层折任务数不等于底层拟合次数。';
@@ -3159,7 +3157,7 @@
         const workload = status.workload;
         renderExperimentProgress(workload?.completed_outer_folds,workload?.total_outer_folds);
         const countText = `排队 ${counts.queued || 0} · 运行 ${counts.running || 0} · 成功 ${counts.succeeded || 0} · 失败 ${counts.failed || 0} · 已停止 ${counts.cancelled || 0}`+
-          (workload?`；${workload.model_count} 模型 × ${workload.feature_count} 特征，${workload.combination_count} 个有效组合（${workload.inapplicable_count} 个不适用）；外层折 ${workload.completed_outer_folds}/${workload.total_outer_folds}`:'');
+          (workload?`；${workload.deep_full_features?[workload.traditional_model_count?`${workload.traditional_model_count} 机器学习 × ${workload.requested_feature_count} 特征`:'',workload.deep_model_count?`${workload.deep_model_count} 深度 × 全特征`:''].filter(Boolean).join(' + '):`${workload.model_count} 模型 × ${workload.feature_count} 特征`}，${workload.combination_count} 个有效组合（${workload.inapplicable_count} 个不适用）；外层折 ${workload.completed_outer_folds}/${workload.total_outer_folds}`:'');
         $("runStatus").textContent = `批次 ${batchId} ${stateLabel}`;
         $("runStatus").className = `status ${statusClass}`;
         const link = document.createElement("a");
@@ -3403,7 +3401,7 @@
           else body.data_path = datasetPath;
           if (testDatasetId) body.test_dataset_id = testDatasetId;
           else if (testDatasetPath) body.test_data_path = testDatasetPath;
-          if (selectedModels.length === 1 && selectedFeatures.length === 1) {
+          if (selectedModels.length === 1 && (selectedFeatures.length === 1 || trainingScheme.forced_feature_schemes?.[selectedModels[0]])) {
             const result = await createRun(body);
             rememberCurrentRun(result.run_id);
             window.SpecAutoAIResults?.markNewRun(currentRunId);
@@ -3414,7 +3412,7 @@
           const result = await api("/api/training/batches", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...body, model_types: selectedModels, feature_schemes:selectedFeatures, base_seed: seed, config: batchConfig }),
+            body: JSON.stringify({ ...body, model_types: selectedModels, feature_schemes:selectedFeatures.length?selectedFeatures:['full'], base_seed: seed, config: batchConfig }),
           });
           $("runStatus").textContent = `批次 ${result.batch_id} 已排队`;
           $("runStatus").className = "status pending";

@@ -6,9 +6,9 @@ FEATURE_ENGINEERING_ENABLED = True
 
 def inapplicable_reason(model_type, scheme):
     from .feature_engineering import DEEP_MODELS
+    if model_type in DEEP_MODELS and scheme != 'full':
+        return '深度学习固定使用全特征，不执行 Binning 或 PCA'
     if scheme.startswith('pca_'):
-        if model_type in DEEP_MODELS:
-            return 'CNN 不支持 PCA，请选择全特征或相邻点合并'
         if model_type in {'pca_lda', 'pca_svm'}:
             return '该模型内置 PCA，不重复叠加外层 PCA，请选择全特征或相邻点合并'
     return None
@@ -29,17 +29,18 @@ def training_scheme():
     """Public capability; the classic UI must not invent its own enable switch."""
     from dataclasses import asdict
     from .classification_policy import DEEP_TRAINING_DEFAULTS
-    from .feature_engineering import ALL_SCHEMES, STUDENT_SCHEMES
+    from .feature_engineering import ALL_SCHEMES, STUDENT_SCHEMES, DEEP_MODELS
     from .feature_engineering import MODELS
     return {'enabled': FEATURE_ENGINEERING_ENABLED, 'version': 'word-0904',
-            'traditional_scheme_count': 7, 'cnn_scheme_count': 4,
+            'traditional_scheme_count': 7, 'cnn_scheme_count': 1,
+            'forced_feature_schemes': {model: 'full' for model in sorted(DEEP_MODELS)},
             'default_profile': 'quick', 'default_feature_scheme': 'full',
             'student_default_feature_scheme': 'bin_5',
             'profiles': [{'id': 'quick', 'name': '快速训练（单方案、一次验证）'},
                          {'id': 'full', 'name': '完整比较（多方案、五次验证）'}],
-            'feature_schemes': [{'id': key, 'name': name, 'cnn_supported': not key.startswith('pca_'),
+            'feature_schemes': [{'id': key, 'name': name, 'cnn_supported': key == 'full',
                                 'student_visible': key in dict(STUDENT_SCHEMES),
-                                'unsupported_models': ['cnn1d', 'cnn1d_se', 'resnet1d', 'pca_lda', 'pca_svm'] if key.startswith('pca_') else [],
+                                'unsupported_models': [model for model in sorted(MODELS) if inapplicable_reason(model, key)],
                                 'inapplicable_reasons': {model: reason for model in sorted(MODELS) if (reason := inapplicable_reason(model, key))}} for key, name in ALL_SCHEMES],
             'quick_candidate_count': 3,
             'defaults': asdict(DEEP_TRAINING_DEFAULTS)}

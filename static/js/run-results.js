@@ -58,7 +58,7 @@ const TERMINAL_STATES = new Set(['succeeded', 'success', 'failed', 'cancelled', 
  * 六个传统机器学习模型 ID。它们不产生逐 Epoch 训练曲线（无 history），
  * 渲染"训练过程"卡片时据此直接跳过。
  */
-const TRADITIONAL_MODEL_IDS = new Set(['pls_da', 'spls_da', 'pca_lda', 'logistic_regression', 'svm', 'pca_svm', 'random_forest', 'xgboost']);
+const TRADITIONAL_MODEL_IDS = new Set(['pls_da', 'spls_da', 'pca_lda', 'logistic_regression', 'lasso', 'ridge', 'knn', 'extra_trees', 'shrinkage_lda', 'svm', 'pca_svm', 'random_forest', 'xgboost']);
 
 /**
  * URL path → 内部视图名的别名表。

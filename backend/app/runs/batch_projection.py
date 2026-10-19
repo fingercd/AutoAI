@@ -47,6 +47,12 @@ def batch_status_payload(batch_id: str, records: list[RunRecord]) -> dict[str, A
                 'combination_count':len(records),'inapplicable_count':len(config.get('inapplicable_combinations',[])),
                 'outer_folds_per_combination':folds,'total_outer_folds':len(records)*folds,
                 'completed_outer_folds':sum(folds if r.state=='succeeded' else min(folds,int(r.progress.get('completed_folds') or 0)) for r in records)}
+    if config.get('deep_full_features'):
+        from ..feature_engineering import DEEP_MODELS
+        types = set(config['requested_model_types'])
+        workload.update(deep_full_features=True, deep_model_count=len(types & DEEP_MODELS),
+                        traditional_model_count=len(types - DEEP_MODELS),
+                        requested_feature_count=len(config['requested_feature_schemes']))
     return {
         "batch_id": batch_id,
         "state": aggregate_batch_state(records),
@@ -238,12 +244,15 @@ def project_model_comparison(
     if group_features and any(record.config.get('feature_schemes') for record in records):
         config = records[0].config
         groups = []
+        from ..feature_engineering import DEEP_MODELS
         for feature in config['feature_schemes']:
             subset = [r for r in records if r.config.get('feature_scheme') == feature]
             part = project_model_comparison(batch_id=batch_id, records=subset, run_dir_for=run_dir_for, group_features=False)
             if not subset:
                 part.update(state='not_applicable', reason='所选模型均不支持该特征处理')
             part.update(feature_scheme=feature, feature_name=dict(ALL_SCHEMES)[feature])
+            if config.get('deep_full_features') and feature == 'full' and subset and all(r.config['model_type'] in DEEP_MODELS for r in subset):
+                part['feature_name'] = '全特征（深度学习）'
             groups.append(part)
         models = [{**row, 'feature_scheme':part['feature_scheme'], 'feature_name':part['feature_name'],
                    'comparison_id':row['model_type']+'__'+part['feature_scheme']}

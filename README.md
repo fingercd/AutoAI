@@ -1,5 +1,9 @@
 # SpecAutoAI
 
+2026-10-19：**特征处理多选仅作用于机器学习，1D-CNN/CNN-SE/ResNet 始终使用全特征**，每个深度模型只跑一次，不做外部 Binning/PCA。保留训练折标准化和网络自身卷积/池化。全选十三模型与六特征为 **10×6+3=63 个 Run**，24 样品留一为 1512 外层任务；结果中深度模型单列为“全特征（深度学习）”。旧结果保留，见 [全特征计划与验证](docs/plans/2026-10-19-deep-full-features.md)。
+
+2026-10-18 最终清单：上方机器学习十项 **PLS-DA、Shrinkage-LDA、Lasso、Ridge、Elastic Net、SVM、KNN、Random Forest、Extra Trees、XGBoost**；下方保留 **1D-CNN、CNN-SE、ResNet**，共十三项。Lasso/Ridge 是 L1/L2 正则化逻辑回归分类，不是回归器；Shrinkage-LDA 是自动收缩 LDA，不是 PCA-LDA。此前其他模型保留后端和历史，六特征全选 69 有效组合、9 不适用，详见 [分类基线计划与验证](docs/plans/2026-10-18-classical-baselines.md)。
+
 2026-10-18 模型与特征更新：经典建模开放十一项分类模型，恢复 sPLS-DA、PCA-LDA、PCA-SVM、1D CNN-SE、1D ResNet；DSCARNet 不开放。可多选 BIN5/10/20、固定主成分数 PCA5/10/20，默认 BIN5。卷积模型和内置 PCA 模型的外层 PCA 组合标为不适用，全选为 51 个有效组合。旧训练记录保持原样，详见 [本轮计划与验收](docs/plans/2026-10-18-restored-models-and-features.md)。
 
 2026-10-18 并行执行：`run.py` 默认按 CPU 预算启动最多 4 个 Worker，分别领取不同模型×特征组合；同一组合内留一折仍依次执行。Worker 是进程，不等于一个 CPU 核心。每进程限制 BLAS/OpenMP/PyTorch 与树模型线程，避免重复占满整机；检测到 GPU 时最多一个深度模型 Run，其余 Worker 可继续跑 CPU 模型。配置右上角显示预计实验数，当前训练区实时显示完成数/总数与进度条；“实验”指一次外层训练/评估，不是内部选参的精确 fit 次数。详见 [并行与计数](docs/plans/2026-10-18-worker-pool-and-counters.md)。

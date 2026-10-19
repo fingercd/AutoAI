@@ -13,7 +13,7 @@ STUDENT_SCHEMES = [('bin_5', 'BIN5（宽度 5）'), ('bin_10', 'BIN10（宽度 1
 HISTORICAL_SCHEMES = [('bin_3', 'BIN3（宽度 3）'), ('bin_6', 'BIN6（宽度 6）'), ('bin_12', 'BIN12（宽度 12）'), ('pca_components_15', 'PCA15（15 个主成分）')]
 ALL_SCHEMES = list(dict(SCHEMES + HISTORICAL_SCHEMES + STUDENT_SCHEMES).items())
 DEEP_MODELS = {'cnn1d', 'cnn1d_se', 'resnet1d'}
-MODELS = {'pls_da', 'spls_da', 'pca_lda', 'pca_svm', 'logistic_regression', 'svm', 'random_forest', 'xgboost'} | DEEP_MODELS
+MODELS = {'pls_da', 'spls_da', 'pca_lda', 'pca_svm', 'shrinkage_lda', 'logistic_regression', 'lasso', 'ridge', 'knn', 'extra_trees', 'svm', 'random_forest', 'xgboost'} | DEEP_MODELS
 
 
 def bin_mean(x: np.ndarray, width: int) -> np.ndarray:

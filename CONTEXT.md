@@ -1,5 +1,9 @@
 # SpecAutoAI 项目入口
 
+2026-10-19 最新：三个深度模型固定 full，不再执行外部 BIN/PCA；机器学习模型仍按多选方案展开。深度模型每个只建立一个全特征 Run；全选为 10×6+3=63 个 Run，24 样品留一为 1512 外层任务。新批次以 deep_full_features 标记区分历史，结果分为机器学习各方案与“全特征（深度学习）”，不复制深度分数。Worker 为 run-artifact-manifest-v2-deep-full-features-v1，绘图 comparison-figures-v10。详见 docs/plans/2026-10-19-deep-full-features.md；以下按历史日期使用。
+
+2026-10-18 最终老师清单：机器学习十项 PLS-DA、Shrinkage-LDA、Lasso（L1 Logistic）、Ridge（L2 Logistic）、Elastic Net、SVM、KNN、Random Forest、Extra Trees、XGBoost；下方保留三个深度模型，共十三项可选。此前 sPLS-DA/PCA-LDA/PCA-SVM 隐藏但保留后端及历史。后端二十二项能力，六特征不变；界面全选 69 有效、9 不适用，24 样品留一为 1656 外层任务。Worker 为 run-artifact-manifest-v2-classic-baselines-v1，图集 comparison-figures-v9，详见 docs/plans/2026-10-18-classical-baselines.md。以下为此前批次记录。
+
 2026-10-18 本轮更新：经典入口开放十一项分类模型，新增恢复 sPLS-DA、PCA-LDA、PCA-SVM、1D CNN-SE、1D ResNet；DSCARNet 继续隐藏。表单六种特征为 BIN5/10/20、固定 PCA5/10/20，默认 BIN5。三种卷积模型及内置 PCA 的两个模型不叠加外层 PCA，组合数为全选 51 个有效、15 个不适用。历史 BIN3/6/12、PCA15 结果保留。详情及本轮验证见 docs/plans/2026-10-18-restored-models-and-features.md，以下首轮记录按其历史范围使用。
 
 2026-10-18 最新：经典建模页模型与六种特征均为复选；新 Batch 顶层 feature_schemes，按模型×特征建立独立 Run，CV 在每个 Run 内完成全部 Sample_ID 留一折。CNN×PCA 明确标为不适用，实际外层任务数=有效组合数×样品数。配置右上角显示预计实验数，训练区显示已完成/总数及进度条，刷新从服务端恢复。run.py 默认最多 4 个 Worker，按逻辑 CPU 分配每进程线程预算，组合间并行、组合内折顺序执行；GPU 可用时同队列最多一个深度 Run，CPU 任务可绕过等待中的深度任务。结果 scheme_comparisons 按特征分组，总览矩阵不合并同模型的不同方案；Excel 列名带模型和方案，图集分方案命名。旧单方案请求与历史结果保留。Worker 为 run-artifact-manifest-v2-parallel-workers-v1，绘图 comparison-figures-v7。详见 docs/plans/2026-10-18-model-feature-grid.md 和 docs/plans/2026-10-18-worker-pool-and-counters.md。

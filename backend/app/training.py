@@ -184,7 +184,7 @@ class TrainConfig:
     # ── 运行时解析字段：每折真实参与建模的 N/L，由训练循环回填，不信任客户端传值 ──
     resolved_train_sample_count: int = 100
     resolved_feature_count: int = 1000
-    # ── 传统模型超参数（knn 为历史兼容字段，当前 15 模型能力目录不含 knn） ──
+    # ── 传统分类模型超参数 ──
     knn_n_neighbors: int = 5
     knn_weights: str = "distance"
     knn_metric: str = "minkowski"
@@ -210,6 +210,10 @@ class TrainConfig:
     svm_kernel: str = "rbf"
     random_forest_max_features: str | float = "sqrt"
     random_forest_oob_score: bool = False
+    extra_trees_n_estimators: int = 300
+    extra_trees_max_depth: int | None = None
+    extra_trees_min_samples_leaf: int = 1
+    extra_trees_max_features: str | float = 'sqrt'
     xgboost_min_child_weight: float = 1.0
     xgboost_gamma: float = 0.0
     # ── 可解释性（特征区间识别）配置：窗口数、top_k、重复次数与评估集合 ──
@@ -1245,6 +1249,23 @@ def _traditional_candidate_configs(
     if inner_train_size < 1:
         return []
 
+    quick = config.training_profile == 'quick'
+    if model_type == 'shrinkage_lda':
+        return [config]  # Ledoit-Wolf automatic shrinkage is fitted on train only.
+    if model_type in {'lasso', 'ridge'}:
+        return [_clone_config(config, logistic_c=c) for c in ((.1, 1., 10.) if quick else (.01, .1, 1., 10., 100.))]
+    if model_type == 'knn':
+        return [_clone_config(config, knn_n_neighbors=k, knn_weights=weight, knn_metric='minkowski', knn_p=p)
+                for k in ((1, 3, 5) if quick else (1, 3, 5, 7, 9)) if k <= inner_train_size
+                for weight in (('uniform',) if quick else ('uniform', 'distance'))
+                for p in ((2,) if quick else (1, 2))]
+    if model_type == 'extra_trees':
+        return [_clone_config(config, extra_trees_n_estimators=300, extra_trees_max_depth=depth,
+                              extra_trees_min_samples_leaf=leaf, extra_trees_max_features=features)
+                for depth in (None, 5, 10)
+                for leaf in ((1,) if quick else (1, 3))
+                for features in (('sqrt',) if quick else ('sqrt', .3))]
+
     if model_type == "pls_da":
         raw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
         cap = max(1, min(inner_train_size, n_features))
@@ -1320,6 +1341,17 @@ def _traditional_candidate_configs(
 
 def _traditional_params(config: TrainConfig, model_type: str) -> dict[str, Any]:
     """Return only the parameters that actually configure the selected model."""
+
+    if model_type == 'shrinkage_lda':
+        return {'solver': 'lsqr', 'shrinkage': 'auto'}
+
+    if model_type in {'lasso', 'ridge'}:
+        return {'logistic_c': config.logistic_c, 'penalty': 'l1' if model_type == 'lasso' else 'l2',
+                'solver': 'liblinear', 'multiclass_strategy': 'one_vs_rest', 'max_iter': 5000}
+    if model_type == 'knn':
+        return {key: getattr(config, key) for key in ('knn_n_neighbors', 'knn_weights', 'knn_metric', 'knn_p')}
+    if model_type == 'extra_trees':
+        return {key: getattr(config, key) for key in ('extra_trees_n_estimators', 'extra_trees_max_depth', 'extra_trees_min_samples_leaf', 'extra_trees_max_features')}
 
     if model_type == "pls_da":
         return {"pls_components": config.pls_components}
@@ -1873,6 +1905,11 @@ def _run_legacy_training(
         from .training_experiments import fit_experiment_fold, summarize_experiments
         if model_type not in MODELS:
             raise ValueError('0904 方案仅支持已接通的公开分类模型')
+        if model_type in DEEP_MODELS:
+            from .feature_engineering import ALL_SCHEMES
+            if config.feature_scheme not in dict(ALL_SCHEMES):
+                raise ValueError('未知特征处理方案')
+            config.feature_scheme = 'full'
     experiment_folds = []
     external_experiment = None
     evaluation_strategy = policy.strategy

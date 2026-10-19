@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from ..contracts import TrainingBatchRequest, TrainingConfigValidationError, TrainingSpec
 from ..http.principal import get_principal
 from ..models import canonical_model_type
+from ..feature_engineering import DEEP_MODELS
+from ..feature_policy import inapplicable_reason
 from ..runs.batch_projection import batch_status_payload, project_model_comparison
 from ..runs.contracts import Principal
 from ..runs.repository import InvalidRunTransition, RunNotFound
@@ -51,8 +53,8 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
         if model_type in canonical:
             continue
         canonical.append(model_type)
-        for feature in features:
-            from ..feature_policy import inapplicable_reason
+        model_features = ['full'] if raw.get('experiment_version') == 'word-0904' and model_type in DEEP_MODELS else features
+        for feature in model_features:
             reason = inapplicable_reason(model_type, feature) if explicit_features else None
             if reason:
                 inapplicable.append({'model_type':model_type,'feature_scheme':feature,'reason':'CNN 不支持 PCA 输入' if model_type == 'cnn1d' else reason})
@@ -73,9 +75,13 @@ def _batch_config(payload: TrainingBatchRequest, *, has_external_test: bool) -> 
     config = dict(normalized_config or {})
     config["split_seed"] = base_seed
     config["feature_selection_enabled"] = False
+    if raw.get('experiment_version') == 'word-0904':
+        config['combinations'] = combinations
     if explicit_features:
         config.pop('feature_scheme', None)
-        config.update(feature_schemes=features, combinations=combinations, inapplicable_combinations=inapplicable, requested_model_types=canonical)
+        config.update(feature_schemes=list(dict.fromkeys(c['feature_scheme'] for c in combinations)),
+                      requested_feature_schemes=features, deep_full_features=True,
+                      combinations=combinations, inapplicable_combinations=inapplicable, requested_model_types=canonical)
     return canonical, config, warnings
 
 

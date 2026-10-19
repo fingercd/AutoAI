@@ -64,10 +64,15 @@ _KNOWN_TRAINING_CONFIG_FIELDS = frozenset(
         'feature_selection_enabled', 'feature_window_count', 'feature_top_k',
         'feature_n_repeats', 'feature_eval_split', 'spls_components', 'spls_keepx',
         'logistic_l1_ratio',
+        'extra_trees_n_estimators', 'extra_trees_max_depth',
+        'extra_trees_min_samples_leaf', 'extra_trees_max_features',
     }
 )
 
 _MODEL_ALIASES = {
+    'shrinkage_lda': 'shrinkage_lda', 'shrinkage-lda': 'shrinkage_lda',
+    'lasso': 'lasso', 'ridge': 'ridge', 'knn': 'knn', 'k-nearest-neighbors': 'knn',
+    'extra_trees': 'extra_trees', 'extra-trees': 'extra_trees',
     'pls': 'pls_da', 'pls-da': 'pls_da', 'pls_da': 'pls_da',
     'spls_da': 'spls_da', 'spls-da': 'spls_da',
     'pca_lda': 'pca_lda',
@@ -135,13 +140,15 @@ class TrainingSpec:
             from . import feature_policy
             if not feature_policy.FEATURE_ENGINEERING_ENABLED:
                 raise TrainingConfigValidationError('特征工程暂时停用，请使用普通训练配置')
-            from .feature_engineering import MODELS
+            from .feature_engineering import MODELS, DEEP_MODELS, ALL_SCHEMES
             if model_type not in MODELS:
                 raise TrainingConfigValidationError('0904 方案仅支持已接通的公开分类模型')
             if values.get('normalization', 'zscore') not in {'zscore', 'minmax'}:
                 raise TrainingConfigValidationError('0904 方案要求 zscore 或 minmax 特征标准化')
             values.setdefault('training_profile', 'quick')
             values.setdefault('feature_scheme', 'full')
+            if model_type in DEEP_MODELS and values['feature_scheme'] in dict(ALL_SCHEMES):
+                values['feature_scheme'] = 'full'
             try:
                 feature_policy.validate_training_options(values['training_profile'], values['feature_scheme'], model_type)
             except ValueError as exc:
@@ -177,6 +184,7 @@ class TrainingSpec:
         )
 
         positive_integer_fields = {
+            'knn_n_neighbors', 'knn_p', 'extra_trees_n_estimators', 'extra_trees_min_samples_leaf',
             'epochs', 'batch_size', 'scheduler_patience', 'early_stopping_patience',
             'hidden_size', 'transformer_heads', 'dscarnet_inception_blocks',
             'dscarnet_pca_components', 'dscarnet_cluster_channels',
@@ -225,7 +233,7 @@ class TrainingSpec:
                     raise TrainingConfigValidationError(f'{field} 必须是整数')
                 values[field] = int(seed)
 
-        for field in ('pls_components', 'spls_components', 'spls_keepx', 'pca_components', 'random_forest_max_depth'):
+        for field in ('pls_components', 'spls_components', 'spls_keepx', 'pca_components', 'random_forest_max_depth', 'extra_trees_max_depth'):
             if field in values and values[field] is not None:
                 number = _finite_number(values[field], field=field)
                 if number < 1 or not number.is_integer():
@@ -255,6 +263,17 @@ class TrainingSpec:
                 raise TrainingConfigValidationError('svm_gamma 必须大于 0')
             values['svm_gamma'] = gamma
 
+        if 'knn_weights' in values and values['knn_weights'] not in {'uniform', 'distance'}:
+            raise TrainingConfigValidationError('knn_weights 必须是 uniform 或 distance')
+        if 'knn_metric' in values and values['knn_metric'] not in {'minkowski', 'euclidean', 'manhattan'}:
+            raise TrainingConfigValidationError('knn_metric 必须是 minkowski、euclidean 或 manhattan')
+        if 'extra_trees_max_features' in values:
+            value = values['extra_trees_max_features']
+            if value is not None and value not in ('sqrt', 'log2'):
+                number = _finite_number(value, field='extra_trees_max_features')
+                if not 0 < number <= 1:
+                    raise TrainingConfigValidationError('extra_trees_max_features 必须是 sqrt、log2、null 或 (0,1] 内的比例')
+                values['extra_trees_max_features'] = number
         return TrainingSpec(values, warnings=self.warnings)
 
     def to_legacy_dict(self) -> dict[str, Any]:

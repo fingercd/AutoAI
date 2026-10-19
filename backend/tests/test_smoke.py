@@ -453,6 +453,8 @@ def test_registry_allows_only_current_active_classification_models():
     from backend.app.models.registry import DEEP_MODEL_TYPES, TRADITIONAL_MODEL_TYPES, canonical_model_type
 
     assert TRADITIONAL_MODEL_TYPES == {
+        'shrinkage_lda',
+        'lasso', 'ridge', 'knn', 'extra_trees',
         "pls_da",
         "spls_da",
         "pca_lda",
@@ -477,7 +479,8 @@ def test_registry_allows_only_current_active_classification_models():
     assert canonical_model_type("1D-ResNet") == "resnet1d"
     assert canonical_model_type("1D-Inception") == "inception1d"
     assert canonical_model_type("1D-TCN") == "tcn1d"
-    for retired in ["knn", "mlp", "unet1d", "plsr", "svr"]:
+    assert canonical_model_type('knn') == 'knn'
+    for retired in ["mlp", "unet1d", "plsr", "svr"]:
         with pytest.raises(ValueError, match="当前仅支持登记的分类模型"):
             canonical_model_type(retired)
 
@@ -1668,7 +1671,8 @@ def test_main_ui_uses_student_defaults_and_preserves_cv_result_summary():
     assert '$("customSplitOptions").classList.toggle("hidden"' not in content
     assert 'id="splitMode"' not in content
     assert 'id="cvEnabled"' in content
-    assert "个理论组合" in content
+    assert "个机器学习模型 ×" in content
+    assert "个深度模型 × 全特征" in content
     assert "有 24 个独立样品就执行 24 折" in content
     assert content.index('id="advancedOptions"') < content.index('id="deepOptions"')
     assert 'id="trainTimeBlock"' not in content

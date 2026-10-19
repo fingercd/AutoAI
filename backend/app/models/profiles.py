@@ -37,6 +37,8 @@ class ModelProfile:
 
 # 支持 profile 分档的模型集合：未列入的模型 ID 会被 build_model_profile 直接拒绝。
 PROFILE_MODEL_TYPES = {
+    'shrinkage_lda',
+    'lasso', 'ridge', 'knn', 'extra_trees',
     "pls_da",
     "spls_da",
     "pca_lda",

@@ -64,6 +64,8 @@ class CNN0904(nn.Module):
 
 def candidate_configs(config, model_type, n_features, min_train):
     from . import training as t
+    if model_type in {'lasso', 'ridge', 'knn', 'extra_trees', 'shrinkage_lda'}:
+        return t._traditional_candidate_configs(config, model_type, n_features, min_train)
     if config.training_profile == 'quick':
         if model_type == 'spls_da':
             return [t._clone_config(config, spls_components=n, spls_keepx=min(50, n_features))
@@ -197,6 +199,8 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
     schemes = (STUDENT_SCHEMES if config.feature_scheme in dict(STUDENT_SCHEMES) else
                HISTORICAL_SCHEMES if config.feature_scheme in dict(HISTORICAL_SCHEMES) else SCHEMES) if quick else SCHEMES
     selected_schemes = [(key, name) for key, name in schemes if not quick or key == config.feature_scheme]
+    if not traditional:
+        schemes = selected_schemes = [('full', '全特征')]
     for scheme, name in schemes:
         if quick and scheme != config.feature_scheme:
             unsupported = inapplicable_reason(model_type, scheme)
@@ -255,7 +259,8 @@ def fit_experiment_fold(config, model_type, x_raw, y, groups, splits, labels, fo
                         evaluations[key]=eval_probabilities(t._traditional_probabilities(audit,audit_transform.transform(x_raw[splits[key]])),y,splits[key],labels,audit.predict(audit_transform.transform(x_raw[splits[key]])))
                 score,metric,params,history,profile=best_score,metric,t._traditional_params(best_candidate,model_type),[],None
                 if model_type == 'logistic_regression':
-                    params.update(penalty='elasticnet', solver='saga')
+                    params.update(penalty=estimator.penalty, solver=estimator.solver,
+                                  max_iter=estimator.max_iter, tol=estimator.tol)
             else:
                 transform=FeatureTransform(scheme,config.normalization).fit(x_raw[splits['train']]); x=transform.transform(x_raw)
                 model,predict,history,loss,best_epoch,profile=train_cnn(config,x,y,splits,groups,labels,cancel,lambda epoch:update(current_epoch=epoch))

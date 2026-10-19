@@ -49,12 +49,17 @@ router = APIRouter()
 # 模型能力目录（全系统单一事实来源）：(模型 id, 展示名, 家族, ui_visible) 四元组。
 _MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
     ("pls_da", "PLS-DA", "traditional_ml", True),
-    ("spls_da", "sPLS-DA", "traditional_ml", True),
-    ("pca_lda", "PCA-LDA", "traditional_ml", True),
+    ('shrinkage_lda', 'Shrinkage-LDA', 'traditional_ml', True),
+    ("spls_da", "sPLS-DA", "traditional_ml", False),
+    ("pca_lda", "PCA-LDA", "traditional_ml", False),
+    ('lasso', 'Lasso', 'traditional_ml', True),
+    ('ridge', 'Ridge', 'traditional_ml', True),
     ("logistic_regression", "Elastic Net", "traditional_ml", True),
     ("svm", "SVM", "traditional_ml", True),
-    ("pca_svm", "PCA-SVM", "traditional_ml", True),
+    ("pca_svm", "PCA-SVM", "traditional_ml", False),
+    ('knn', 'KNN', 'traditional_ml', True),
     ("random_forest", "Random Forest", "traditional_ml", True),
+    ('extra_trees', 'Extra Trees', 'traditional_ml', True),
     ("xgboost", "XGBoost", "traditional_ml", True),
     ("pca_mlp", "PCA-MLP", "basic_deep", False),
     ("cnn1d", "1D-CNN", "basic_deep", True),
@@ -70,6 +75,11 @@ _MODEL_CATALOG: tuple[tuple[str, str, str, bool], ...] = (
 # 各模型对应的内部实现模块路径，用于“模块文件是否存在”的廉价探测；
 # cnn_mamba1d 与 dscarnet 不在此表——它们走专属的可选依赖探测函数。
 _MODEL_MODULES = {
+    'shrinkage_lda': 'backend.app.models.classical_baselines',
+    'lasso': 'backend.app.models.classical_baselines',
+    'ridge': 'backend.app.models.classical_baselines',
+    'knn': 'backend.app.models.classical_baselines',
+    'extra_trees': 'backend.app.models.classical_baselines',
     "pls_da": "backend.app.models.pls_da",
     "spls_da": "backend.app.models.spls_da",
     "pca_lda": "backend.app.models.pca_lda",

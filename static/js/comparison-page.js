@@ -8,6 +8,8 @@ const featureMetrics = [['accuracy','准确率'],['balanced_accuracy','平衡准
 const names = {pls_da:'PLS-DA',logistic_regression:'Elastic Net',svm:'SVM',random_forest:'Random Forest',xgboost:'XGBoost',cnn1d:'1D-CNN'};
 Object.assign(names,{spls_da:'sPLS-DA',pca_lda:'PCA-LDA',pca_svm:'PCA-SVM'});
 Object.assign(names,{cnn1d_se:'1D CNN-SE',resnet1d:'1D ResNet'});
+Object.assign(names,{lasso:'Lasso',ridge:'Ridge',knn:'KNN',extra_trees:'Extra Trees'});
+names.shrinkage_lda='Shrinkage-LDA';
 // 新版能力只从后端目录获取，不设置另一个独立的前端开关。
 let trainingScheme = null;
 let capabilityRequest = null;
@@ -203,7 +205,9 @@ function combinations(data,tasks) {
   const metric=focusKey(select(featureMetrics,state.featureMetric,value=>{state.featureMetric=value;paint();}),'combination-metric');
   const host=section('模型 × 特征处理：组合总览',[labeled('主指标',metric)]);
   const work=data.combination_status.workload;
-  host.append(element('p',`${work.model_count} 个模型 × ${work.feature_count} 种特征处理；${work.combination_count} 个有效组合 × ${work.outer_folds_per_combination} 外层折 = ${work.total_outer_folds} 个外层折任务（另有 ${work.inapplicable_count} 个不适用组合）。`,'cmp-note'));
+  const formula=work.deep_full_features?[work.traditional_model_count?`${work.traditional_model_count} 个机器学习模型 × ${work.requested_feature_count} 种特征处理`:'',work.deep_model_count?`${work.deep_model_count} 个深度模型 × 全特征`:''].filter(Boolean).join(' + '):`${work.model_count} 个模型 × ${work.feature_count} 种特征处理`;
+  host.append(element('p',`${formula}；${work.combination_count} 个有效组合 × ${work.outer_folds_per_combination} 外层折 = ${work.total_outer_folds} 个外层折任务（另有 ${work.inapplicable_count} 个不适用组合）。`,'cmp-note'));
+  if(work.deep_full_features&&work.deep_model_count)host.append(element('p','深度学习结果只在“全特征（深度学习）”中展示一次；不执行 BIN/PCA，也不把同一结果复制到多个特征处理下。','cmp-note'));
   host.append(element('p','每个单元格是一个独立训练组合。留一法取全部外层 Test 合并的 OOF 指标，不平均不同特征处理，不按本页测试成绩自动选择最佳方案。','cmp-note'));
   if(trainingScheme?.enabled)host.append(chart('特征处理 × 模型主指标',{kind:'features',metric:state.featureMetric,feature_scheme:''},tasks));
   const states={queued:'排队中',running:'训练中',succeeded:'已完成',failed:'失败',cancelled:'已停止'};

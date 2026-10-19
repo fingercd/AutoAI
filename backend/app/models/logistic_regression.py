@@ -40,21 +40,20 @@ def build_logistic_regression(
         c: 正则化强度的倒数 C（sklearn 惯例）：C 越大正则越弱、
            模型越贴近训练数据；越小则系数收缩越强、模型越平滑。
            ``float(c)`` 兼容配置层传入字符串数字的情况。
-        seed: 随机种子，固定 ``random_state`` 保证同一配置下训练
-           结果可复现（lbfgs 本身是确定性的，种子主要保证接口
-           一致性与潜在随机过程的稳定）。
+        seed: 随机种子，固定 ``random_state`` 控制 SAGA 的随机更新顺序。
         class_weight: 类别权重，通常为 None 或 "balanced"；后者按
            类别频率反比加权，缓解类别不平衡。
 
     返回：
         配置完成的 sklearn ``LogisticRegression`` 实例（未拟合）。
-        ``max_iter=1000`` 比默认值 100 更充裕，降低高维光谱特征
-        下 saga 未收敛警告的概率。
+        ``max_iter=10000``、``tol=1e-3`` 为高维相关特征提供足够迭代预算，
+        仍由 SAGA 的相对系数更新停止条件判断收敛，不隐藏警告。
     """
     return LogisticRegression(
         C=float(c),
         class_weight=class_weight,
-        max_iter=1000,
+        max_iter=10000,
+        tol=1e-3,
         random_state=int(seed),
         solver="saga",
         penalty="elasticnet",

@@ -18,7 +18,7 @@ function harness(memory=new Map()) {
     function selectedModelTypes(){return models;}
     function selectedFeatureSchemes(){return features||[$('featureScheme').value];}
     const STUDENT_CV_STORAGE_KEY='specautoai.student-cv.v1';
-    let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',student_default_feature_scheme:'bin_5',
+    let trainingScheme={enabled:true,version:'word-0904',default_profile:'quick',default_feature_scheme:'full',student_default_feature_scheme:'bin_5',forced_feature_schemes:{cnn1d:'full',cnn1d_se:'full',resnet1d:'full'},
       profiles:[{id:'quick'},{id:'full'}],feature_schemes:[{id:'full'},{id:'bin_5'},{id:'bin_10'},{id:'bin_20'},{id:'pca_90'},{id:'pca_95'},{id:'pca_99'},
         ...['bin_5','bin_10','bin_20','pca_components_5','pca_components_10','pca_components_20'].map(id=>({id,name:id,student_visible:true,cnn_supported:!id.startsWith('pca_')}))],
       defaults:{epochs:200,batch_size:8,learning_rate:.001,weight_decay:.0001,scheduler_factor:.5,scheduler_patience:10,min_learning_rate:.000001,early_stopping_patience:20,seed:42}};
@@ -78,11 +78,14 @@ test('six feature choices are capability-filtered, with no Full or old percentag
   h.get('featureScheme').value='pca_components_5';assert.throws(()=>h.run('configPayload()'),/不可用/);
 });
 
-test('mixed model grid skips CNN PCA only, without silently changing feature',()=>{
+test('deep models use full exactly once while ML preserves selected features',()=>{
   const h=harness();h.get('featureScheme').value='pca_components_5';h.run("models=['svm','cnn1d'];updateTrainingWorkHint()");
-  assert.equal(h.get('featureScheme').value,'pca_components_5');assert.match(h.get('trainingWorkHint').textContent,/不适用/);
+  assert.equal(h.get('featureScheme').value,'pca_components_5');assert.match(h.get('trainingWorkHint').textContent,/全特征/);
   assert.equal(h.run('configPayload().model_type'),'svm');
-  h.run("models=['cnn1d']");assert.throws(()=>h.run('configPayload()'),/CNN 不支持 PCA/);
+  h.run("models=['cnn1d'];features=['bin_5','pca_components_5']");assert.equal(h.run('configPayload().feature_scheme'),'full');
+  assert.equal(h.run("window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,models,features).configs.length"),1);
+  h.run("features=[]");assert.equal(h.run('configPayload().feature_scheme'),'full');
+  h.run("features=null");
   h.run("models=['svm'];updateTrainingWorkHint()");assert.equal(h.run('configPayload().feature_scheme'),'pca_components_5');
 });
 
@@ -125,18 +128,18 @@ test('model x feature x Sample_ID multiplication and empty selections',()=>{
   assert.equal(h.get('plannedExperimentCount').textContent,'预计实验 — 次');
 });
 
-test('eleven models and six feature schemes produce 51 valid combinations',()=>{
+test('thirteen models produce 60 ML combinations and 3 full deep runs',()=>{
   const h=harness();
   const result=h.run(`(()=>{
     for(const row of trainingScheme.feature_schemes){
       row.unsupported_models=row.id.startsWith('pca_')?['cnn1d','cnn1d_se','resnet1d','pca_lda','pca_svm']:[];
     }
     const plan=window.SpecAutoAITrainingPolicy.studentPlan(trainingScheme,
-      ['pls_da','spls_da','pca_lda','logistic_regression','svm','pca_svm','random_forest','xgboost','cnn1d','cnn1d_se','resnet1d'],
+      ['pls_da','shrinkage_lda','lasso','ridge','logistic_regression','svm','knn','random_forest','extra_trees','xgboost','cnn1d','cnn1d_se','resnet1d'],
       window.SpecAutoAITrainingPolicy.studentFeatureSchemes(trainingScheme).map(s=>s.id),false,true);
     return JSON.stringify({valid:plan.configs.length,skipped:plan.inapplicable.length});
   })()`);
-  assert.deepEqual(JSON.parse(result),{valid:51,skipped:15});
+  assert.deepEqual(JSON.parse(result),{valid:63,skipped:0});
 });
 
 test('Raman always submits arPLS even with stale hidden custom fields',()=>{

@@ -54,6 +54,8 @@ PROBABILITY_DECIMALS = 6
 # Mirrors comparison_figures.NAMES; the frontend keeps the same short names.
 # test_prediction_export asserts the two tables cannot drift apart silently.
 MODEL_DISPLAY_NAMES = {
+    'shrinkage_lda': 'Shrinkage-LDA',
+    'lasso': 'Lasso', 'ridge': 'Ridge', 'knn': 'KNN', 'extra_trees': 'Extra Trees',
     "pls_da": "PLS-DA",
     "logistic_regression": "Elastic Net",
     "svm": "SVM",

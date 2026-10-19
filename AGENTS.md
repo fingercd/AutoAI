@@ -1,5 +1,9 @@
 # SpecAutoAI Agent 工作规则
 
+2026-10-19 最新规则：公开的 cnn1d/cnn1d_se/resnet1d 新 word-0904 训练固定 feature_scheme=full，不做外部 BIN/PCA，特征多选只影响机器学习。批次每个深度模型只产生一个 full Run；全选 10×6+3=63 Run，24 样品 CV 为 1512 外层任务。保留训练折标准化、原网络、调度和早停。能力目录 forced_feature_schemes 为前端唯一来源；深度结果只在全特征分组，不复制到 BIN/PCA，不重标记历史完成结果。见 docs/plans/2026-10-19-deep-full-features.md；以下按历史范围使用。
+
+2026-10-18 最终老师清单优先：机器学习十项 pls_da/shrinkage_lda/lasso/ridge/logistic_regression/svm/knn/random_forest/extra_trees/xgboost；下方保留 cnn1d/cnn1d_se/resnet1d，共十三项。sPLS-DA/PCA-LDA/PCA-SVM 隐藏但保留后端与历史，目录共二十二项。Lasso/Ridge 为 L1/L2 Logistic + 显式 OvR，不能用回归器四舍五入伪造类别或概率；Shrinkage-LDA 必须是真实自动收缩 LDA。全选六特征为 69 有效、9 不适用，24 样品 CV 为 1656 外层任务。以 docs/plans/2026-10-18-classical-baselines.md 为本轮范围，以下为此前记录。
+
 2026-10-18 最新模型范围：经典 UI 共十一项，除八个传统模型外开放 cnn1d、cnn1d_se、resnet1d；DSCARNet 继续隐藏。学生特征为 BIN5/10/20、固定 PCA5/10/20，默认 BIN5。三种卷积模型与 pca_lda/pca_svm 不叠加外层 PCA，目录 feature_schemes.unsupported_models/inapplicable_reasons 为组合约束来源。全选 51 个有效、15 个不适用组合，组合上限 100。历史 BIN3/6/12、PCA15 保留兼容；恢复模型及真实验证详见 docs/plans/2026-10-18-restored-models-and-features.md，下方早期数量记录按日期使用。
 
 当前实现核对日期：2026-10-07。功能事实依据当前工作区代码、专项测试及本项目近期已确认需求；历史计划和验收记录按日期与适用范围使用。
