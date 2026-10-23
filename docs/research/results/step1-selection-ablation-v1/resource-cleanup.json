@@ -1,0 +1,1 @@
+{"completed_at_utc": "2026-10-23T13:03:51.686032+00:00", "gpu": 1, "node": "ibnode2", "only_this_run_processes": true, "processes": [{"component": "service", "pid": 83855, "termination_requested": true}, {"component": "collector", "pid": 83857, "termination_requested": true}], "service_requests": 258}

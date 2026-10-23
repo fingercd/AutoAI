@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "audited_at_utc": "2026-10-23T13:00:28.888475+00:00",
+  "tasks": 129,
+  "physical_service_completions": 258,
+  "accepted_choices": 258,
+  "classifier_fits": 0,
+  "extra_requests": 0,
+  "unknown_usage_requests": 0,
+  "frozen_requests_verified": 258,
+  "actual_rendered_prompt_hashes_verified": 258,
+  "independently_reparsed_responses": 258,
+  "independently_recomputed_methods": 10,
+  "cloud_state": "FINISHED",
+  "cloud_summary_fields_verified": 24,
+  "cloud_ref": {
+    "path": "ryfrcd693/AutoAI-step1-selection/530df38d2fd84d148e0e7",
+    "run_id": "530df38d2fd84d148e0e7",
+    "url": "https://swanlab.cn/@ryfrcd693/AutoAI-step1-selection/runs/530df38d2fd84d148e0e7"
+  },
+  "git_head": "5e129abbd7e7de1eb4ace7de53aedc5fc7468999",
+  "code_tag": "step1-selection-ablation-v1-20261023",
+  "manifest_sha256": "9deb82e8b26c77ab760844424df9642a7bb9f95d1d9ca189834b11d6c85f2d14",
+  "summary_sha256": "b24f39107161705553e524885560535f224bf177f0a8751e4dd9d8b50b1b9a4e",
+  "task_report_sha256": "84496fe8beceabfdf61f8712a9788af8cbc6c2e61c270b5f02743c2899152247",
+  "checker_sha256": "8bc5d52d91bf65b3f5b1968e475d3608a49dd86176fb545434e6776b07617ed3"
+}

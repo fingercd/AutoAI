@@ -200,6 +200,25 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(opener.calls, 1)
 
 
+    def test_report_reads_persisted_score_path(self):
+        score_path = self.root / "scores.json"
+        runner.atomic_json(score_path, [score()])
+        entries = []
+        for i, condition in enumerate(CONDITIONS):
+            key = "report-" + str(i)
+            entries.append({"key": key})
+            runner.atomic_json(self.root / "receipts" / (key + ".json"), dict(
+                suite="example", task_id="one", condition=condition, outcome="accepted",
+                choice={"model_id": "svm"}, request_duration_seconds=1,
+                usage=dict(prompt_tokens=1, completion_tokens=2, total_tokens=3)))
+        manifest = dict(entries=entries, score_table=str(score_path))
+        with patch.object(runner, "verify_frozen", return_value=manifest):
+            result = runner.build_report(self.root)
+        self.assertTrue(result["primary_comparison_complete"])
+        self.assertEqual(result["cost"]["physical_requests"], 2)
+        self.assertTrue((self.root / "report/report.md").is_file())
+
+
 class HardwareTests(unittest.TestCase):
     def test_v100_and_a100_policy(self):
         spec = importlib.util.spec_from_file_location("service", Path(__file__).resolve().parents[2] / "scripts/serve_selection_llm.py")

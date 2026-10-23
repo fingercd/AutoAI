@@ -1,0 +1,29 @@
+{
+  "additional_requests": 0,
+  "by_condition": {
+    "with_knowledge": {
+      "completion_tokens": 6848,
+      "prompt_tokens": 286966,
+      "request_seconds": 465.98827274516225,
+      "requests": 129,
+      "total_tokens": 293814
+    },
+    "without_knowledge": {
+      "completion_tokens": 7009,
+      "prompt_tokens": 192353,
+      "request_seconds": 435.8002175912261,
+      "requests": 129,
+      "total_tokens": 199362
+    }
+  },
+  "first_request_utc": "2026-10-23T12:19:22.841127+00:00",
+  "known_completion_tokens": 13857,
+  "known_prompt_tokens": 479319,
+  "known_total_tokens": 493176,
+  "last_response_utc": "2026-10-23T12:48:40.380129+00:00",
+  "mean_request_seconds": 3.4953042261100324,
+  "physical_requests": 258,
+  "request_seconds": 901.7884903363883,
+  "selection_wall_seconds": 1757.539002,
+  "unknown_usage_requests": 0
+}

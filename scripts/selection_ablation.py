@@ -221,7 +221,7 @@ def build_report(root):
     receipts = [read_json(root / "receipts" / (item["key"] + ".json")) for item in manifest["entries"]]
     if any(r is None or "outcome" not in r for r in receipts):
         raise ValueError("Do not evaluate an incomplete selection run")
-    summary, rows = summarize(read_json(manifest["score_table"]), receipts)
+    summary, rows = summarize(read_json(Path(manifest["score_table"])), receipts)
     summary["cost"] = dict(physical_requests=len(receipts), additional_requests=0,
         known_prompt_tokens=sum(r.get("usage", {}).get("prompt_tokens", 0) for r in receipts),
         known_completion_tokens=sum(r.get("usage", {}).get("completion_tokens", 0) for r in receipts),

@@ -1,0 +1,63 @@
+{
+  "actual_service_source_sha256": "d873dc3c1d95ca531952b43ca373e46534c95069cfb6ae17b1eea682a10a4afa",
+  "audit_file": "independent-audit.json",
+  "classification_score_table_sha256": "3ec49abcf51d841ff707d110aba0ea754f397381fc9842a0ec0ba08abaca7c8a",
+  "classifier_fits_added": 0,
+  "cloud_ref": {
+    "path": "ryfrcd693/AutoAI-step1-selection/530df38d2fd84d148e0e7",
+    "run_id": "530df38d2fd84d148e0e7",
+    "url": "https://swanlab.cn/@ryfrcd693/AutoAI-step1-selection/runs/530df38d2fd84d148e0e7"
+  },
+  "date": "2026-10-23",
+  "dtype": "torch.float16",
+  "execution_tests": {
+    "selection_tests": 15,
+    "tracking_tests": 19
+  },
+  "export_scope": "Aggregate scores, task-level model choices, cost and provenance only; no raw data, training profiles, samples, predictions, raw requests or responses.",
+  "final_tests": {
+    "selection_tests": 16,
+    "tracking_tests": 19
+  },
+  "gpu_name": "Tesla V100-PCIE-32GB",
+  "inference_settings": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "max_tokens": 1024,
+    "model": "qwen35_9b",
+    "stream": false,
+    "temperature": 0,
+    "top_p": 1
+  },
+  "manifest_sha256": "9deb82e8b26c77ab760844424df9642a7bb9f95d1d9ca189834b11d6c85f2d14",
+  "node": "ibnode2",
+  "original_input_manifest_sha256": "b0dcbce88d014f818655056c780318580eb0a977fc59fe97f56ee44e8487e8ec",
+  "physical_gpu": 1,
+  "protocol": "step1-selection-ablation-v1",
+  "reporting_repair": "Path-only IO fix after 258 accepted requests. Original manifest and inputs unchanged; no new inference or fitting.",
+  "runtime_policy": {
+    "attention": "sdpa",
+    "dtype": "float16",
+    "linear_attention": "transformers_torch_reference",
+    "sdpa_math_only": true
+  },
+  "source_commit": "5e129abbd7e7de1eb4ace7de53aedc5fc7468999",
+  "source_files": {
+    "backend/app/benchmark_tracking.py": "e88f7fb830eb5cb195bc71c95982c137f09eff469a25dd63814425292e483bc0",
+    "backend/app/selection_ablation.py": "d02e73e5f345041f2dd187562c2d5f879677c0a4ac98fba9183b65e65d69720c",
+    "backend/tests/test_selection_ablation.py": "377f1df4d8fc6a15a8d86f0ee15c5aebc72a28c1bf8768be24eadf65065caaff",
+    "docs/research/step1-selection-ablation-v1.md": "0fb98cd5a7e74e10fb9ca865d12def246772fd9ee13fd576422a77fe189eb3a1",
+    "scripts/selection_ablation.py": "398a8f0578e23aabc2ea2f7095c8f1293f1221b6a41120cb66395ae028609b13",
+    "scripts/serve_selection_llm.py": "d873dc3c1d95ca531952b43ca373e46534c95069cfb6ae17b1eea682a10a4afa"
+  },
+  "source_tag": "step1-selection-ablation-v1-20261023",
+  "torch_version": "2.5.1+cu124",
+  "transformers_version": "5.14.1",
+  "weight_sha256": {
+    "model.safetensors-00001-of-00004.safetensors": "db6f444b43d318c92f360a13a25561a6a65b10c0631b8ed305a426dbaa6c380e",
+    "model.safetensors-00002-of-00004.safetensors": "31c7d7e2dd5d207840b31cc59083c8f4c4718959149e0358c0364052bb9a0330",
+    "model.safetensors-00003-of-00004.safetensors": "7ec36ba3a4176a44c3c0876ad80c56a2f70c84bf008d82e9501df642f17dadec",
+    "model.safetensors-00004-of-00004.safetensors": "b62b0c4cd7e44edee103ee8f4fe225f246d5e768e07bfd5f25b63a8aa1fdd0c6"
+  }
+}
